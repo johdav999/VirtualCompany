@@ -1,0 +1,476 @@
+diff --git a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+index eec91b4..f96034b 100644
+--- a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+@@ -1,6 +1,9 @@
++using System.Text.Json;
++using System.Text.Json.Serialization;
++
+ namespace VirtualCompany.Domain.Enums;
+ 
++ [JsonConverter(typeof(CompanyMembershipRoleJsonConverter))]
+ public enum CompanyMembershipRole
+ {
+     Owner = 1,
+@@ -15,27 +18,104 @@ public enum CompanyMembershipStatus
+     Revoked = 3
+ }
+ 
+-public static class CompanyMembershipRoleValues
++public sealed record CompanyMembershipRoleOption(
++    CompanyMembershipRole Role,
++    string Value,
++    string DisplayName);
++
++public static class CompanyMembershipRoles
+ {
+-    public static string ToStorageValue(this CompanyMembershipRole role) =>
+-        role switch
++    private static readonly CompanyMembershipRoleOption[] SupportedRoles =
++    [
++        new(CompanyMembershipRole.Owner, "owner", "Owner"),
++        new(CompanyMembershipRole.Admin, "admin", "Admin"),
++        new(CompanyMembershipRole.Manager, "manager", "Manager"),
++        new(CompanyMembershipRole.Employee, "employee", "Employee"),
++        new(CompanyMembershipRole.FinanceApprover, "finance_approver", "Finance Approver"),
++        new(CompanyMembershipRole.SupportSupervisor, "support_supervisor", "Support Supervisor")
++    ];
++
++    private static readonly IReadOnlyDictionary<CompanyMembershipRole, CompanyMembershipRoleOption> RolesByEnum =
++        SupportedRoles.ToDictionary(x => x.Role);
++
++    private static readonly IReadOnlyDictionary<string, CompanyMembershipRole> RolesByValue =
++        SupportedRoles.ToDictionary(x => x.Value, x => x.Role, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<CompanyMembershipRoleOption> All { get; } = SupportedRoles;
++
++    public static IReadOnlyList<string> AllowedValues { get; } =
++        SupportedRoles.Select(x => x.Value).ToArray();
++
++    public static bool IsSupported(CompanyMembershipRole role) => RolesByEnum.ContainsKey(role);
++
++    public static CompanyMembershipRoleOption Get(CompanyMembershipRole role) =>
++        RolesByEnum.TryGetValue(role, out var option)
++            ? option
++            : throw new ArgumentOutOfRangeException(nameof(role), role, BuildValidationMessage());
++
++    public static string ToStorageValue(CompanyMembershipRole role) => Get(role).Value;
++
++    public static string ToDisplayName(CompanyMembershipRole role) => Get(role).DisplayName;
++
++    public static bool TryParse(string? value, out CompanyMembershipRole role)
++    {
++        role = default;
++        if (string.IsNullOrWhiteSpace(value))
+         {
+-            CompanyMembershipRole.Owner => "owner",
+-            CompanyMembershipRole.Admin => "admin",
+-            CompanyMembershipRole.Manager => "manager",
+-            CompanyMembershipRole.Employee => "employee",
+-            CompanyMembershipRole.FinanceApprover => "finance_approver",
+-            CompanyMembershipRole.SupportSupervisor => "support_supervisor",
+-            _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported company membership role.")
+-        };
++            return false;
++        }
++
++        var normalized = value.Trim();
++        if (RolesByValue.TryGetValue(normalized, out role))
++        {
++            return true;
++        }
++
++        if (Enum.TryParse<CompanyMembershipRole>(normalized, ignoreCase: true, out var legacyRole) &&
++            IsSupported(legacyRole))
++        {
++            role = legacyRole;
++            return true;
++        }
++
++        return false;
++    }
+ 
+     public static CompanyMembershipRole Parse(string value)
+     {
+-        if (string.IsNullOrWhiteSpace(value))
++        if (TryParse(value, out var role))
+         {
+-            throw new ArgumentException("Membership role is required.", nameof(value));
++            return role;
+         }
+ 
+-        return value.Trim().ToLowerInvariant() switch
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static void EnsureSupported(CompanyMembershipRole role, string paramName)
++    {
++        if (!IsSupported(role))
++        {
++            throw new ArgumentOutOfRangeException(paramName, role, BuildValidationMessage());
++        }
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Membership role is required. Allowed values: {allowedValues}."
++            : $"Unsupported company membership role value '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
++
++public static class CompanyMembershipRoleValues
++{
++    public static IReadOnlyList<CompanyMembershipRoleOption> All => CompanyMembershipRoles.All;
++
++    public static IReadOnlyList<string> AllowedValues => CompanyMembershipRoles.AllowedValues;
++
++    public static string ToStorageValue(this CompanyMembershipRole role) =>
++        CompanyMembershipRoles.ToStorageValue(role);
++
++    public static string ToDisplayName(this CompanyMembershipRole role) =>
++        CompanyMembershipRoles.ToDisplayName(role);
++
++    public static CompanyMembershipRole Parse(string value) =>
++        CompanyMembershipRoles.Parse(value);
++}
++
++public static class CompanyMembershipStatusValues
++{
++    public static string ToStorageValue(this CompanyMembershipStatus status) =>
++        status switch
+         {
+-            "owner" => CompanyMembershipRole.Owner,
+-            "admin" => CompanyMembershipRole.Admin,
+-            "manager" => CompanyMembershipRole.Manager,
+-            "employee" => CompanyMembershipRole.Employee,
+-            "finance_approver" => CompanyMembershipRole.FinanceApprover,
+-            "support_supervisor" => CompanyMembershipRole.SupportSupervisor,
+-            _ when Enum.TryParse<CompanyMembershipRole>(value.Trim(), ignoreCase: true, out var legacyRole) => legacyRole,
+-            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company membership role value.")
++            CompanyMembershipStatus.Pending => "pending",
++            CompanyMembershipStatus.Active => "active",
++            CompanyMembershipStatus.Revoked => "revoked",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company membership status.")
+         };
+-    }
+-}
+-
+-public static class CompanyMembershipStatusValues
+-{
+-    public static string ToStorageValue(this CompanyMembershipStatus status) =>
+-        status switch
+-        {
+-            CompanyMembershipStatus.Pending => "pending",
+-            CompanyMembershipStatus.Active => "active",
+-            CompanyMembershipStatus.Revoked => "revoked",
+-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company membership status.")
+-        };
+@@ -58,3 +138,22 @@ public static class CompanyMembershipStatusValues
+             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company membership status value.")
+         };
+     }
+ }
++
++internal sealed class CompanyMembershipRoleJsonConverter : JsonConverter<CompanyMembershipRole>
++{
++    public override CompanyMembershipRole Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
++    {
++        if (reader.TokenType != JsonTokenType.String)
++        {
++            throw new JsonException(CompanyMembershipRoles.BuildValidationMessage());
++        }
++
++        var value = reader.GetString();
++        if (CompanyMembershipRoles.TryParse(value, out var role))
++        {
++            return role;
++        }
++
++        throw new JsonException(CompanyMembershipRoles.BuildValidationMessage(value));
++    }
++
++    public override void Write(Utf8JsonWriter writer, CompanyMembershipRole value, JsonSerializerOptions options) => writer.WriteStringValue(value.ToStorageValue());
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index c49fd14..dd28394 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -213,6 +213,8 @@ public sealed class CompanyMembership
+             throw new InvalidOperationException("Active memberships must be bound to a user.");
+         }
+ 
++        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         UserId = userId;
+@@ -235,12 +237,16 @@ public sealed class CompanyMembership
+ 
+     public void UpdateRole(CompanyMembershipRole role)
+     {
++        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
++
+         Role = role;
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+     public void RefreshInvitation(CompanyMembershipRole role, string invitedEmail)
+     {
++        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
++
+         if (Status == CompanyMembershipStatus.Active)
+         {
+             throw new InvalidOperationException("Active memberships cannot be converted back to pending invitations.");
+diff --git a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+index 4ab7755..f1ca1b9 100644
+--- a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+@@ -21,6 +21,8 @@ public sealed class CompanyInvitation
+             throw new ArgumentException("InvitedByUserId is required.", nameof(invitedByUserId));
+         }
+ 
++        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         Email = NormalizeEmail(email);
+@@ -63,6 +65,8 @@ public sealed class CompanyInvitation
+             throw new ArgumentException("InvitedByUserId is required.", nameof(invitedByUserId));
+         }
+ 
++        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
++
+         ExpiresAtUtc = EnsureFuture(expiresAtUtc, nameof(expiresAtUtc));
+         Role = role;
+         Status = CompanyInvitationStatus.Pending;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+index 15558b4..c9cb831 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -71,6 +71,7 @@ public sealed class CompanyMembershipAdministrationService
+     public async Task<CompanyInvitationDeliveryDto> InviteUserAsync(Guid companyId, InviteUserToCompanyRequest request, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++        var requestedRole = ValidateRequestedRole(request.Role);
+         var email = NormalizeEmail(request.Email);
+ 
+         await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken);
+@@ -80,7 +81,7 @@ public sealed class CompanyMembershipAdministrationService
+                      x.Status == CompanyInvitationStatus.Pending &&
+                      x.ExpiresAtUtc > DateTime.UtcNow,
+                 cancellationToken);
+ 
+-        var membership = await EnsurePendingMembershipAsync(companyId, email, request.Role, cancellationToken);
++        var membership = await EnsurePendingMembershipAsync(companyId, email, requestedRole, cancellationToken);
+ 
+         var token = GenerateInvitationToken();
+         var expiresAtUtc = DateTime.UtcNow.AddDays(InvitationLifetimeDays);
+@@ -91,7 +92,7 @@ public sealed class CompanyMembershipAdministrationService
+                 Guid.NewGuid(),
+                 companyId,
+                 email,
+-                request.Role,
++                requestedRole,
+                 companyContext.UserId,
+                 ComputeTokenHash(token),
+                 expiresAtUtc);
+@@ -134,8 +135,8 @@ public sealed class CompanyMembershipAdministrationService
+             return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, false);
+         }
+ 
+-        existingPendingInvitation.Resend(ComputeTokenHash(token), expiresAtUtc, request.Role, companyContext.UserId);
+-        membership.RefreshInvitation(request.Role, email);
++        existingPendingInvitation.Resend(ComputeTokenHash(token), expiresAtUtc, requestedRole, companyContext.UserId);
++        membership.RefreshInvitation(requestedRole, email);
+ 
+         EnqueueOutbox(companyId, "company.invitation.created", new
+         {
+@@ -259,6 +260,7 @@ public sealed class CompanyMembershipAdministrationService
+     public async Task<CompanyMemberDirectoryEntryDto> ChangeMembershipRoleAsync(Guid companyId, Guid membershipId, ChangeCompanyMembershipRoleRequest request, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++        var requestedRole = ValidateRequestedRole(request.Role);
+ 
+         var membership = await _dbContext.CompanyMemberships
+             .Include(x => x.User)
+@@ -276,7 +278,7 @@ public sealed class CompanyMembershipAdministrationService
+             throw BuildValidationException("MembershipId", "Only active memberships can have their role updated.");
+         }
+ 
+-        if (membership.Role == CompanyMembershipRole.Owner &&
+-            request.Role != CompanyMembershipRole.Owner)
++        if (membership.Role == CompanyMembershipRole.Owner &&
++            requestedRole != CompanyMembershipRole.Owner)
+         {
+             var activeOwnerCount = await _dbContext.CompanyMemberships.CountAsync(
+                 x => x.CompanyId == companyId &&
+@@ -291,10 +293,10 @@ public sealed class CompanyMembershipAdministrationService
+         }
+         var previousRole = membership.Role;
+ 
+-        if (membership.Role != request.Role)
++        if (membership.Role != requestedRole)
+         {
+-            membership.UpdateRole(request.Role);
++            membership.UpdateRole(requestedRole);
+ 
+             EnqueueOutbox(companyId, "company.membership.role_changed", new
+             {
+@@ -507,6 +509,15 @@ public sealed class CompanyMembershipAdministrationService
+         return normalized;
+     }
+ 
++    private static CompanyMembershipRole ValidateRequestedRole(CompanyMembershipRole role)
++    {
++        if (CompanyMembershipRoles.IsSupported(role))
++        {
++            return role;
++        }
++
++        throw BuildValidationException("Role", CompanyMembershipRoles.BuildValidationMessage());
++    }
++
+     private static string GenerateInvitationToken()
+     {
+         var bytes = RandomNumberGenerator.GetBytes(32);
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+index 1514031..d9c7538 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -87,6 +87,35 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFix
+         Assert.False(payload.IsReinvite);
+     }
+ 
++    public static IEnumerable<object[]> SupportedRoleValues()
++    {
++        foreach (var role in CompanyMembershipRoleValues.All)
++        {
++            yield return [role.Value, role.Role];
++        }
++    }
++
++    [Theory]
++    [MemberData(nameof(SupportedRoleValues))]
++    public async Task InviteUser_accepts_each_supported_role(string roleValue, CompanyMembershipRole expectedRole)
++    {
++        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
++
++        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/invitations",
++            new { Email = $"{roleValue}@example.com", Role = roleValue });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(roleValue, payload!.Invitation.Role);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == seed.CompanyId && x.InvitedEmail == $"{roleValue}@example.com");
++        Assert.Equal(expectedRole, membership.Role);
++    }
++
+     [Fact]
+     public async Task AcceptInvitation_activates_membership_for_matching_authenticated_user()
+     {
+@@ -180,6 +209,34 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFix
+         Assert.Equal(HttpStatusCode.OK, afterResponse.StatusCode);
+     }
+ 
++    [Theory]
++    [MemberData(nameof(SupportedRoleValues))]
++    public async Task ChangeMembershipRole_accepts_each_supported_role(string roleValue, CompanyMembershipRole expectedRole)
++    {
++        var seed = await SeedRoleChangeScenarioAsync();
++
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var changeResponse = await ownerClient.PatchAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/memberships/{seed.EmployeeMembershipId}/role",
++            new { Role = roleValue });
++
++        Assert.Equal(HttpStatusCode.OK, changeResponse.StatusCode);
++
++        var payload = await changeResponse.Content.ReadFromJsonAsync<CompanyMemberDirectoryEntryResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(roleValue, payload!.Role);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var membership = await dbContext.CompanyMemberships
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == seed.EmployeeMembershipId);
++
++        Assert.Equal(expectedRole, membership.Role);
++
++        var membershipsResponse = await ownerClient.GetFromJsonAsync<List<CompanyMemberDirectoryEntryResponse>>(
++            $"/api/companies/{seed.CompanyId}/memberships");
++        Assert.Contains(membershipsResponse!, x => x.MembershipId == seed.EmployeeMembershipId && x.Role == roleValue);
++    }
++
+     [Fact]
+     public async Task InviteUser_reinvites_existing_pending_invitation_instead_of_creating_duplicate()
+     {
+@@ -257,7 +314,15 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFix
+             new { Email = "invalid-role@example.com", Role = "superhero" });
+ 
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Contains(problem!.Errors.SelectMany(x => x.Value), error => error.Contains("owner", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(problem.Errors.SelectMany(x => x.Value), error => error.Contains("support_supervisor", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    [Fact]
++    public async Task ChangeMembershipRole_with_invalid_role_returns_bad_request()
++    {
++        var seed = await SeedRoleChangeScenarioAsync();
++
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var response = await ownerClient.PatchAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/memberships/{seed.EmployeeMembershipId}/role",
++            new { Role = "superhero" });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Contains(problem!.Errors.SelectMany(x => x.Value), error => error.Contains("owner", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(problem.Errors.SelectMany(x => x.Value), error => error.Contains("support_supervisor", StringComparison.OrdinalIgnoreCase));
++    }
++
+     [Fact]
+     public async Task Owner_cannot_invite_users_into_a_different_company()
+     {
+@@ -392,6 +457,18 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFix
+         public string Status { get; set; } = string.Empty;
+     }
+ 
++    private sealed class CompanyMemberDirectoryEntryResponse
++    {
++        public Guid MembershipId { get; set; }
++        public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++        public Guid? UserId { get; set; }
++        public string Email { get; set; } = string.Empty;
++        public string? DisplayName { get; set; }
++        public string Role { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++    }
++
++    private sealed class ValidationProblemResponse
++    {
++        public Dictionary<string, string[]> Errors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    }
++
+     private sealed class AcceptInvitationResponse
+     {
+         public Guid CompanyId { get; set; }
+@@ -401,4 +478,4 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFix
+         public string Role { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
+ }
+END_OF_PATCH

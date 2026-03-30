@@ -97,7 +97,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         Assert.False(response.CompanySelectionRequired);
         Assert.NotNull(response.ActiveCompany);
         Assert.Equal(ids.CompanyAId, response.ActiveCompany!.CompanyId);
-        Assert.Equal("manager", response.ActiveCompany.Role);
+        Assert.Equal("manager", response.ActiveCompany.MembershipRole);
         Assert.Equal("active", response.ActiveCompany.Status);
     }
 
@@ -128,7 +128,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         Assert.NotNull(response);
         Assert.NotNull(response!.ActiveCompany);
         Assert.Equal(ids.CompanyBId, response.ActiveCompany!.CompanyId);
-        Assert.Equal("employee", response.ActiveCompany.Role);
+        Assert.Equal("employee", response.ActiveCompany.MembershipRole);
         Assert.False(response.CompanySelectionRequired);
     }
 
@@ -142,9 +142,9 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
 
         Assert.NotNull(memberships);
         Assert.Equal(3, memberships!.Count);
-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Role == "admin" && x.Status == "active");
-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyBId && x.Role == "employee" && x.Status == "active");
-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Role == "employee" && x.Status == "pending");
+        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.MembershipRole == "admin" && x.Status == "active");
+        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyBId && x.MembershipRole == "employee" && x.Status == "active");
+        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.MembershipRole == "employee" && x.Status == "pending");
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         Assert.Equal(CompanyContextResolutionMiddleware.CompanyHeaderName, payload.HeaderName);
         Assert.Equal(ids.CompanyBId.ToString(), payload.HeaderValue);
         Assert.Equal(ids.CompanyBId, payload.ActiveCompany.CompanyId);
-        Assert.Equal("employee", payload.ActiveCompany.Role);
+        Assert.Equal("employee", payload.ActiveCompany.MembershipRole);
         Assert.Equal("active", payload.ActiveCompany.Status);
     }
 
@@ -285,6 +285,30 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider("Active"));
     }
 
+    [Fact]
+    public async Task Company_admin_policy_ignores_membership_access_configuration_that_looks_like_agent_permissions()
+    {
+        var userId = Guid.NewGuid();
+        var companyId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "agent-like@example.com", "Agent Like", "dev-header", "agent-like"));
+            dbContext.Companies.Add(new Company(companyId, "Company A"));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(
+                Guid.NewGuid(),
+                companyId,
+                userId,
+                CompanyMembershipRole.Employee,
+                CompanyMembershipStatus.Active,
+                membershipAccessConfigurationJson: """{"agentToolPermissions":["execute_all","read_all"]}"""));
+            return Task.CompletedTask;
+        });
+
+        using var client = CreateAuthenticatedClient("agent-like", "agent-like@example.com", "Agent Like");
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/companies/{companyId}/access/admin")).StatusCode);
+    }
+
     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, string? provider = null)
     {
         var client = _factory.CreateClient();
@@ -383,7 +407,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         public Guid MembershipId { get; set; }
         public Guid CompanyId { get; set; }
         public string CompanyName { get; set; } = string.Empty;
-        public string Role { get; set; } = string.Empty;
+        public string MembershipRole { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
     }
 
@@ -409,7 +433,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         public Guid MembershipId { get; set; }
         public Guid CompanyId { get; set; }
         public string CompanyName { get; set; } = string.Empty;
-        public string Role { get; set; } = string.Empty;
+        public string MembershipRole { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
     }
 

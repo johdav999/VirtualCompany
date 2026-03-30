@@ -261,7 +261,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         return state?.StarterGuidance is { Count: > 0 } guidance ? guidance : DefaultStarterGuidance;
     }
     private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
-        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+        new(membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
 
     private sealed record DashboardEntryProjection(
         Guid CompanyId,
@@ -278,8 +278,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
     }
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
 }

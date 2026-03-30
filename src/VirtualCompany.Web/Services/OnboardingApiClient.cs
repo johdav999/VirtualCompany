@@ -359,7 +359,7 @@ public sealed class OnboardingApiClient
                         MembershipId = _completed.MembershipId,
                         CompanyId = _completed.CompanyId,
                         CompanyName = _completed.CompanyName,
-                        Role = "owner",
+                        MembershipRole = "owner",
                         Status = "active"
                     });
 
@@ -368,7 +368,7 @@ public sealed class OnboardingApiClient
                         MembershipId = _completed.MembershipId,
                         CompanyId = _completed.CompanyId,
                         CompanyName = _completed.CompanyName,
-                        Role = "owner",
+                        MembershipRole = "owner",
                         Status = "active"
                     };
                 }
@@ -568,7 +568,7 @@ public sealed class OnboardingApiClient
                 {
                     CompanyId = companyId,
                     CompanyName = _completed.CompanyName,
-                    Role = "owner",
+                    MembershipRole = "owner",
                     Status = "active"
                 };
             }
@@ -833,7 +833,7 @@ public sealed class CompanyAccessViewModel
 {
     public Guid CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
-    public string Role { get; set; } = string.Empty;
+    public string MembershipRole { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
 }
 
@@ -869,7 +869,7 @@ public sealed class CompanyMembershipViewModel
     public Guid MembershipId { get; set; }
     public Guid CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
-    public string Role { get; set; } = string.Empty;
+    public string MembershipRole { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
 }
 
@@ -878,6 +878,6 @@ public sealed class ResolvedCompanyContextViewModel
     public Guid MembershipId { get; set; }
     public Guid CompanyId { get; set; }
     public string CompanyName { get; set; } = string.Empty;
-    public string Role { get; set; } = string.Empty;
+    public string MembershipRole { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
 }

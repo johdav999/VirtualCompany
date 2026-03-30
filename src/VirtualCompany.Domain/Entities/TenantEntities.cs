@@ -217,45 +217,137 @@ public sealed class CompanyMembership
     public CompanyMembership(
         Guid id,
         Guid companyId,
-        Guid userId,
+        Guid? userId,
         CompanyMembershipRole role,
         CompanyMembershipStatus status,
-        string? permissionsJson = null)
+        string? membershipAccessConfigurationJson = null,
+        string? invitedEmail = null)
     {
+        if (companyId == Guid.Empty)
+        {
+            throw new ArgumentException("CompanyId is required.", nameof(companyId));
+        }
+
+        if (userId.HasValue && userId.Value == Guid.Empty)
+        {
+            throw new ArgumentException("UserId cannot be empty.", nameof(userId));
+        }
+
+        var normalizedInvitedEmail = NormalizeOptionalEmail(invitedEmail);
+        if (!userId.HasValue && normalizedInvitedEmail is null)
+        {
+            throw new ArgumentException("Either UserId or invitedEmail is required.", nameof(invitedEmail));
+        }
+
+        if (status == CompanyMembershipStatus.Active && !userId.HasValue)
+        {
+            throw new InvalidOperationException("Active memberships must be bound to a user.");
+        }
+
+        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
+
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
         UserId = userId;
+        InvitedEmail = status == CompanyMembershipStatus.Active ? null : normalizedInvitedEmail;
         Role = role;
         Status = status;
-        PermissionsJson = string.IsNullOrWhiteSpace(permissionsJson) ? null : permissionsJson.Trim();
+        MembershipAccessConfigurationJson = string.IsNullOrWhiteSpace(membershipAccessConfigurationJson) ? null : membershipAccessConfigurationJson.Trim();
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
     }
 
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
-    public Guid UserId { get; private set; }
+    public Guid? UserId { get; private set; }
+    public string? InvitedEmail { get; private set; }
     public CompanyMembershipRole Role { get; private set; }
     public CompanyMembershipStatus Status { get; private set; }
-    public string? PermissionsJson { get; private set; }
+    // Membership access configuration is tenant-scoped human authorization metadata.
+    // It must never be interpreted as agent execution policy or agent tool permissions.
+    public string? MembershipAccessConfigurationJson { get; private set; }
+
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
-    public User User { get; private set; } = null!;
+    public User? User { get; private set; }
 
     public bool IsActive => Status == CompanyMembershipStatus.Active;
 
     public void UpdateRole(CompanyMembershipRole role)
     {
+        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
+
         Role = role;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void RefreshInvitation(CompanyMembershipRole role, string invitedEmail)
+    {
+        CompanyMembershipRoles.EnsureSupported(role, nameof(role));
+
+        if (Status == CompanyMembershipStatus.Active)
+        {
+            throw new InvalidOperationException("Active memberships cannot be converted back to pending invitations.");
+        }
+
+        Role = role;
+        Status = CompanyMembershipStatus.Pending;
+        InvitedEmail = NormalizeEmail(invitedEmail);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void Accept(Guid userId)
+    {
+        if (userId == Guid.Empty)
+        {
+            throw new ArgumentException("UserId is required.", nameof(userId));
+        }
+
+        if (Status != CompanyMembershipStatus.Pending)
+        {
+            throw new InvalidOperationException("Only pending memberships can be accepted.");
+        }
+
+        if (UserId.HasValue && UserId.Value != userId)
+        {
+            throw new InvalidOperationException("Pending membership is already associated with a different user.");
+        }
+
+        UserId = userId;
+        InvitedEmail = null;
+        Status = CompanyMembershipStatus.Active;
         UpdatedUtc = DateTime.UtcNow;
     }
 
     public void UpdateStatus(CompanyMembershipStatus status)
     {
+        if (status == CompanyMembershipStatus.Active && !UserId.HasValue)
+        {
+            throw new InvalidOperationException("Active memberships must be bound to a user.");
+        }
+
+        if (status == CompanyMembershipStatus.Active)
+        {
+            InvitedEmail = null;
+        }
+
         Status = status;
         UpdatedUtc = DateTime.UtcNow;
     }
+
+    private static string NormalizeEmail(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            throw new ArgumentException("Email is required.", nameof(email));
+        }
+
+        return email.Trim().ToLowerInvariant();
+    }
+
+    private static string? NormalizeOptionalEmail(string? email) =>
+        string.IsNullOrWhiteSpace(email) ? null : NormalizeEmail(email);
 }
 
 public sealed class CompanyOwnedNote : ICompanyOwnedEntity

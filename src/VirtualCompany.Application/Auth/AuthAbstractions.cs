@@ -41,7 +41,7 @@ public sealed record ResolvedCompanyMembershipContext(
     Guid CompanyId,
     Guid UserId,
     string CompanyName,
-    CompanyMembershipRole Role,
+    CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status);
 
 public interface ICurrentUserAccessor

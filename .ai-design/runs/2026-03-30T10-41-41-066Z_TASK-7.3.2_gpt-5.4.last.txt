@@ -1,0 +1,578 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs b/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
+index 623dc98..dc3a961 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
+@@ -7,9 +7,9 @@ public sealed record CompanyMemberDirectoryEntryDto(
+     Guid MembershipId,
+     Guid CompanyId,
+     string CompanyName,
+-    Guid UserId,
++    Guid? UserId,
+     string Email,
+-    string DisplayName,
++    string? DisplayName,
+     CompanyMembershipRole Role,
+     CompanyMembershipStatus Status,
+     DateTime CreatedUtc,
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index e522478..7367f47 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -194,22 +194,39 @@ public sealed class CompanyMembership
+     public CompanyMembership(
+         Guid id,
+         Guid companyId,
+-        Guid userId,
++        Guid? userId,
+         CompanyMembershipRole role,
+         CompanyMembershipStatus status,
+-        string? permissionsJson = null)
++        string? permissionsJson = null,
++        string? invitedEmail = null)
+     {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (userId.HasValue && userId.Value == Guid.Empty)
++        {
++            throw new ArgumentException("UserId cannot be empty.", nameof(userId));
++        }
++
++        var normalizedInvitedEmail = NormalizeOptionalEmail(invitedEmail);
++        if (!userId.HasValue && normalizedInvitedEmail is null)
++        {
++            throw new ArgumentException("Either UserId or invitedEmail is required.", nameof(invitedEmail));
++        }
++
++        if (status == CompanyMembershipStatus.Active && !userId.HasValue)
++        {
++            throw new InvalidOperationException("Active memberships must be bound to a user.");
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         UserId = userId;
++        InvitedEmail = status == CompanyMembershipStatus.Active ? null : normalizedInvitedEmail;
+         Role = role;
+         Status = status;
+         PermissionsJson = string.IsNullOrWhiteSpace(permissionsJson) ? null : permissionsJson.Trim();
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+@@ -217,23 +234,68 @@ public sealed class CompanyMembership
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+-    public Guid UserId { get; private set; }
++    public Guid? UserId { get; private set; }
++    public string? InvitedEmail { get; private set; }
+     public CompanyMembershipRole Role { get; private set; }
+     public CompanyMembershipStatus Status { get; private set; }
+     public string? PermissionsJson { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+-    public User User { get; private set; } = null!;
++    public User? User { get; private set; }
+ 
+     public bool IsActive => Status == CompanyMembershipStatus.Active;
+ 
+     public void UpdateRole(CompanyMembershipRole role)
+     {
+         Role = role;
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public void RefreshInvitation(CompanyMembershipRole role, string invitedEmail)
++    {
++        if (Status == CompanyMembershipStatus.Active)
++        {
++            throw new InvalidOperationException("Active memberships cannot be converted back to pending invitations.");
++        }
++
++        Role = role;
++        Status = CompanyMembershipStatus.Pending;
++        InvitedEmail = NormalizeEmail(invitedEmail);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Accept(Guid userId)
++    {
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        if (Status != CompanyMembershipStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending memberships can be accepted.");
++        }
++
++        if (UserId.HasValue && UserId.Value != userId)
++        {
++            throw new InvalidOperationException("Pending membership is already associated with a different user.");
++        }
++
++        UserId = userId;
++        InvitedEmail = null;
++        Status = CompanyMembershipStatus.Active;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void UpdateStatus(CompanyMembershipStatus status)
+     {
++        if (status == CompanyMembershipStatus.Active && !UserId.HasValue)
++        {
++            throw new InvalidOperationException("Active memberships must be bound to a user.");
++        }
++
++        if (status == CompanyMembershipStatus.Active)
++        {
++            InvitedEmail = null;
++        }
++
+         Status = status;
+         UpdatedUtc = DateTime.UtcNow;
+     }
++
++    private static string NormalizeEmail(string email)
++    {
++        if (string.IsNullOrWhiteSpace(email))
++        {
++            throw new ArgumentException("Email is required.", nameof(email));
++        }
++
++        return email.Trim().ToLowerInvariant();
++    }
++
++    private static string? NormalizeOptionalEmail(string? email) =>
++        string.IsNullOrWhiteSpace(email) ? null : NormalizeEmail(email);
+ }
+ 
+ public sealed class CompanyOwnedNote : ICompanyOwnedEntity
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+index e3164e8..5af7ffc 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -39,18 +39,18 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+             .OrderBy(x => x.Status)
+-            .ThenBy(x => x.User.DisplayName)
+-            .ThenBy(x => x.User.Email)
++            .ThenBy(x => x.User != null ? x.User.DisplayName : x.InvitedEmail)
++            .ThenBy(x => x.User != null ? x.User.Email : x.InvitedEmail)
+             .Select(x => new CompanyMemberDirectoryEntryDto(
+                 x.Id,
+                 x.CompanyId,
+                 x.Company.Name,
+                 x.UserId,
+-                x.User.Email,
+-                x.User.DisplayName,
++                x.User != null ? x.User.Email : x.InvitedEmail!,
++                x.User != null ? x.User.DisplayName : null,
+                 x.Role,
+                 x.Status,
+-                x.CreatedUtc,
++                x.CreatedUtc,
+                 x.UpdatedUtc))
+             .ToListAsync(cancellationToken);
+     }
+@@ -77,7 +77,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+                      x.ExpiresAtUtc > DateTime.UtcNow,
+                 cancellationToken);
+ 
+-        await EnsureInvitableAsync(companyId, email, cancellationToken);
++        var membership = await EnsurePendingMembershipAsync(companyId, email, request.Role, cancellationToken);
+ 
+         var token = GenerateInvitationToken();
+         var expiresAtUtc = DateTime.UtcNow.AddDays(InvitationLifetimeDays);
+@@ -108,6 +108,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             {
+                 invitationId = invitation.Id,
+                 companyId,
++                membershipId = membership.Id,
+                 email,
+                 role = invitation.Role,
+                 invitedByUserId = companyContext.UserId
+@@ -123,13 +124,13 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, false);
+         }
+ 
+         existingPendingInvitation.Resend(ComputeTokenHash(token), expiresAtUtc, request.Role, companyContext.UserId);
++        membership.RefreshInvitation(request.Role, email);
+ 
+         EnqueueOutbox(companyId, "company.invitation.created", new
+         {
+-            invitationId = invitation.Id,
++            invitationId = existingPendingInvitation.Id,
+             companyId,
++            membershipId = membership.Id,
+             email,
+-            role = invitation.Role,
+-            invitedByUserId = companyContext.UserId
++            role = existingPendingInvitation.Role,
++            invitedByUserId = companyContext.UserId
+         });
+ 
+         EnqueueOutbox(companyId, "company.invitation.delivery_requested", new
+@@ -164,7 +165,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             throw BuildValidationException("InvitationId", "Accepted invitations cannot be resent.");
+         }
+ 
+-        await EnsureInvitableAsync(companyId, invitation.Email, cancellationToken);
++        var membership = await EnsurePendingMembershipAsync(companyId, invitation.Email, invitation.Role, cancellationToken);
+ 
+         var token = GenerateInvitationToken();
+         invitation.Resend(ComputeTokenHash(token), DateTime.UtcNow.AddDays(InvitationLifetimeDays), invitation.Role, companyContext.UserId);
+@@ -217,6 +218,13 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+ 
+         invitation.Revoke();
+ 
++        var membership = await FindMembershipByInvitationTargetAsync(companyId, invitation.Email, cancellationToken);
++        if (membership is not null && membership.Status == CompanyMembershipStatus.Pending)
++        {
++            membership.UpdateStatus(CompanyMembershipStatus.Revoked);
++        }
++
+         EnqueueOutbox(companyId, "company.invitation.revoked", new
+         {
+             invitationId = invitation.Id,
+@@ -245,7 +253,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             EnqueueOutbox(companyId, "company.membership.role_changed", new
+             {
+                 membershipId = membership.Id,
+-                companyId,
++                companyId,
+                 userId = membership.UserId,
+                 previousRole,
+                 newRole = request.Role,
+@@ -331,7 +339,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+         }
+ 
+         var membership = await _dbContext.CompanyMemberships
+-            .SingleOrDefaultAsync(x => x.CompanyId == invitation.CompanyId && x.UserId == userId, cancellationToken);
++            .SingleOrDefaultAsync(x => x.CompanyId == invitation.CompanyId &&
++                                       (x.UserId == userId || x.InvitedEmail == invitation.Email), cancellationToken);
+ 
+         if (membership?.Status == CompanyMembershipStatus.Active)
+         {
+@@ -344,15 +353,20 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+                 Guid.NewGuid(),
+                 invitation.CompanyId,
+                 userId,
+-                invitation.Role,
+-                CompanyMembershipStatus.Active);
++                invitation.Role,
++                CompanyMembershipStatus.Active);
+ 
+             _dbContext.CompanyMemberships.Add(membership);
+         }
+         else
+         {
++            if (membership.Status != CompanyMembershipStatus.Pending)
++            {
++                throw BuildValidationException("Token", "Only pending memberships can accept this invitation.");
++            }
++
+             membership.UpdateRole(invitation.Role);
+-            membership.UpdateStatus(CompanyMembershipStatus.Active);
++            membership.Accept(userId);
+         }
+ 
+         invitation.Accept(userId);
+@@ -400,16 +414,49 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+         return membership;
+     }
+ 
+-    private async Task EnsureInvitableAsync(Guid companyId, string email, CancellationToken cancellationToken)
++    private async Task<CompanyMembership> EnsurePendingMembershipAsync(Guid companyId, string email, CompanyMembershipRole role, CancellationToken cancellationToken)
+     {
+-        var isActiveMember = await _dbContext.CompanyMemberships
+-            .AsNoTracking()
+-            .AnyAsync(x => x.CompanyId == companyId &&
+-                           x.Status == CompanyMembershipStatus.Active &&
+-                           x.User.Email == email, cancellationToken);
++        await EnsureInvitableAsync(companyId, email, cancellationToken);
++
++        var membership = await FindMembershipByInvitationTargetAsync(companyId, email, cancellationToken);
++        if (membership is null)
++        {
++            membership = new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId: null,
++                role,
++                CompanyMembershipStatus.Pending,
++                invitedEmail: email);
++
++            _dbContext.CompanyMemberships.Add(membership);
++            return membership;
++        }
++
++        if (membership.Status == CompanyMembershipStatus.Active)
++        {
++            throw BuildValidationException("Email", "The invited email is already an active company member.");
++        }
++
++        membership.RefreshInvitation(role, email);
++        return membership;
++    }
++
++    private async Task EnsureInvitableAsync(Guid companyId, string email, CancellationToken cancellationToken)
++    {
++        var isActiveMember = await _dbContext.CompanyMemberships
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId &&
++                           x.Status == CompanyMembershipStatus.Active &&
++                           ((x.User != null && x.User.Email == email) || x.InvitedEmail == email), cancellationToken);
+ 
+         if (isActiveMember)
+         {
+             throw BuildValidationException("Email", "The invited email is already an active company member.");
+         }
++    }
++
++    private Task<CompanyMembership?> FindMembershipByInvitationTargetAsync(Guid companyId, string email, CancellationToken cancellationToken)
++    {
++        return _dbContext.CompanyMemberships
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId &&
++                                       (x.InvitedEmail == email || (x.User != null && x.User.Email == email)),
++                cancellationToken);
+     }
+@@ -531,8 +578,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             membership.Id,
+             membership.CompanyId,
+             membership.Company.Name,
+-            membership.UserId,
+-            membership.User.Email,
+-            membership.User.DisplayName,
++            membership.UserId,
++            membership.User?.Email ?? membership.InvitedEmail ?? string.Empty,
++            membership.User?.DisplayName,
+             membership.Role,
+             membership.Status,
+             membership.CreatedUtc,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index ad782bb..5241fe9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -157,6 +157,7 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<
+             .HasConversion(status => status.ToStorageValue(), value => CompanyMembershipStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
++        builder.Property(x => x.InvitedEmail).HasMaxLength(256);
+         builder.Property(x => x.PermissionsJson);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+@@ -164,8 +165,9 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<
+-        builder.HasIndex(x => new { x.CompanyId, x.UserId }).IsUnique();
+-        builder.HasIndex(x => new { x.UserId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId }).HasFilter("\"UserId\" IS NOT NULL").IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.InvitedEmail }).HasFilter("\"InvitedEmail\" IS NOT NULL").IsUnique();
++        builder.HasIndex(x => new { x.UserId, x.Status }).HasFilter("\"UserId\" IS NOT NULL");
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany(x => x.Memberships)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300007_AddPendingInvitedMemberships.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300007_AddPendingInvitedMemberships.cs
+new file mode 100644
+index 0000000..e2bc1d1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300007_AddPendingInvitedMemberships.cs
+@@ -0,0 +1,93 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddPendingInvitedMemberships : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropForeignKey(
++            name: "FK_company_memberships_users_UserId",
++            table: "company_memberships");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_memberships_CompanyId_UserId",
++            table: "company_memberships");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_memberships_UserId_Status",
++            table: "company_memberships");
++
++        migrationBuilder.AddColumn<string>(
++            name: "InvitedEmail",
++            table: "company_memberships",
++            type: "character varying(256)",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.AlterColumn<Guid>(
++            name: "UserId",
++            table: "company_memberships",
++            type: "uuid",
++            nullable: true,
++            oldClrType: typeof(Guid),
++            oldType: "uuid");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_memberships_CompanyId_InvitedEmail",
++            table: "company_memberships",
++            columns: new[] { "CompanyId", "InvitedEmail" },
++            unique: true,
++            filter: "\"InvitedEmail\" IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_memberships_CompanyId_UserId",
++            table: "company_memberships",
++            columns: new[] { "CompanyId", "UserId" },
++            unique: true,
++            filter: "\"UserId\" IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_memberships_UserId_Status",
++            table: "company_memberships",
++            columns: new[] { "UserId", "Status" },
++            filter: "\"UserId\" IS NOT NULL");
++
++        migrationBuilder.AddForeignKey(
++            name: "FK_company_memberships_users_UserId",
++            table: "company_memberships",
++            column: "UserId",
++            principalTable: "users",
++            principalColumn: "Id",
++            onDelete: ReferentialAction.Cascade);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropForeignKey(
++            name: "FK_company_memberships_users_UserId",
++            table: "company_memberships");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_memberships_CompanyId_InvitedEmail",
++            table: "company_memberships");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_memberships_CompanyId_UserId",
++            table: "company_memberships");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_memberships_UserId_Status",
++            table: "company_memberships");
++
++        migrationBuilder.DropColumn(
++            name: "InvitedEmail",
++            table: "company_memberships");
++
++        migrationBuilder.AlterColumn<Guid>(
++            name: "UserId",
++            table: "company_memberships",
++            type: "uuid",
++            nullable: false,
++            oldClrType: typeof(Guid),
++            oldType: "uuid",
++            oldNullable: true);
++
++        migrationBuilder.CreateIndex(name: "IX_company_memberships_CompanyId_UserId", table: "company_memberships", columns: new[] { "CompanyId", "UserId" }, unique: true);
++        migrationBuilder.CreateIndex(name: "IX_company_memberships_UserId_Status", table: "company_memberships", columns: new[] { "UserId", "Status" });
++        migrationBuilder.AddForeignKey(name: "FK_company_memberships_users_UserId", table: "company_memberships", column: "UserId", principalTable: "users", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+index 9fc5c4a..f875cf5 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -16,7 +16,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         _factory = factory;
+     }
+ 
+     [Fact]
+-    public async Task InviteUser_creates_pending_invitation_and_outbox_messages()
++    public async Task InviteUser_creates_pending_invitation_membership_and_outbox_messages()
+     {
+         var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
+ 
+@@ -46,6 +46,14 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+             x.Email == "teammate@example.com" &&
+             x.Status == CompanyInvitationStatus.Pending));
+ 
++        var membership = await dbContext.CompanyMemberships.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.InvitedEmail == "teammate@example.com");
++
++        Assert.Equal(CompanyMembershipRole.Manager, membership.Role);
++        Assert.Equal(CompanyMembershipStatus.Pending, membership.Status);
++        Assert.Null(membership.UserId);
++
+         Assert.True(await dbContext.CompanyOutboxMessages.AnyAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Topic == "company.invitation.delivery_requested"));
+@@ -91,6 +99,14 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitation);
+ 
++        Guid pendingMembershipId;
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            pendingMembershipId = (await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == seed.CompanyId && x.InvitedEmail == "invitee@example.com")).Id;
++        }
++
+         using var inviteeClient = CreateAuthenticatedClient("invitee", "invitee@example.com", "Invitee");
+         var acceptResponse = await inviteeClient.PostAsJsonAsync(
+             "/api/invitations/accept",
+@@ -108,12 +124,14 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
+         var inviteeUser = await dbContext.Users.SingleAsync(x => x.Email == "invitee@example.com");
+-        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == seed.CompanyId && x.UserId == inviteeUser.Id);
++        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.Id == pendingMembershipId);
+         var storedInvitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "invitee@example.com");
+ 
+         Assert.Equal(CompanyMembershipStatus.Active, membership.Status);
+         Assert.Equal(CompanyMembershipRole.Employee, membership.Role);
++        Assert.Equal(inviteeUser.Id, membership.UserId);
+         Assert.Equal(CompanyInvitationStatus.Accepted, storedInvitation.Status);
+         Assert.Equal(inviteeUser.Id, storedInvitation.AcceptedByUserId);
+     }
+@@ -136,6 +154,16 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         Assert.Equal(HttpStatusCode.OK, revokeResponse.StatusCode);
+ 
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var membership = await dbContext.CompanyMemberships.SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.InvitedEmail == "revoked@example.com");
++
++            Assert.Equal(CompanyMembershipStatus.Revoked, membership.Status);
++        }
++
+         using var inviteeClient = CreateAuthenticatedClient("revoked", "revoked@example.com", "Revoked");
+         var acceptResponse = await inviteeClient.PostAsJsonAsync(
+             "/api/invitations/accept",
+@@ -214,6 +242,15 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.Equal(CompanyMembershipRole.Manager, storedInvitation.Role);
+         Assert.Equal(CompanyInvitationStatus.Pending, storedInvitation.Status);
+ 
++        Assert.Equal(1, await dbContext.CompanyMemberships.CountAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.InvitedEmail == "pending@example.com"));
++
++        var storedMembership = await dbContext.CompanyMemberships.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.InvitedEmail == "pending@example.com");
++        Assert.Equal(CompanyMembershipRole.Manager, storedMembership.Role);
++        Assert.Equal(CompanyMembershipStatus.Pending, storedMembership.Status);
++
+         Assert.Equal(2, await dbContext.CompanyOutboxMessages.CountAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Topic == "company.invitation.delivery_requested"));
+END_OF_PATCH

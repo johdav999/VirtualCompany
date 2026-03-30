@@ -29,11 +29,6 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
 
     public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken)
     {
-        if (_companyContextAccessor.Membership is not null)
-        {
-            return _companyContextAccessor.Membership;
-        }
-
         if (_companyContextAccessor.CompanyId is not Guid companyId)
         {
             return null;
@@ -44,21 +39,24 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
 
     public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        if (_companyContextAccessor.Membership is not null &&
-            _companyContextAccessor.Membership.CompanyId == companyId)
-        {
-            return _companyContextAccessor.Membership;
-        }
-
         if (_currentUserAccessor.UserId is not Guid userId)
         {
+            if (_companyContextAccessor.CompanyId == companyId)
+            {
+                _companyContextAccessor.SetCompanyContext(null);
+            }
+
             return null;
         }
 
+        // Human tenant membership role is resolved from the current persisted membership so role
+        // changes affect human authorization only and are not reused as agent capability grants.
+        // changes take effect on the next authorization check without trusting stale request state.
         var membership = await _dbContext.CompanyMemberships.AsNoTracking()
             .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
             .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId, x.Company.Name, x.Role, x.Status))
-            .SingleOrDefaultAsync(cancellationToken);
+            .SingleOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
 
         if (_companyContextAccessor.CompanyId == companyId)
         {

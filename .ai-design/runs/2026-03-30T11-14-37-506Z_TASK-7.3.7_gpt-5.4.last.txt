@@ -1,0 +1,821 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index 50d3e58..766fc5d 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -220,7 +220,7 @@ public sealed class CompanyMembership
+         CompanyMembershipRole role,
+         CompanyMembershipStatus status,
+-        string? permissionsJson = null,
++        string? membershipAccessConfigurationJson = null,
+         string? invitedEmail = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -252,7 +252,7 @@ public sealed class CompanyMembership
+         InvitedEmail = status == CompanyMembershipStatus.Active ? null : normalizedInvitedEmail;
+         Role = role;
+         Status = status;
+-        PermissionsJson = string.IsNullOrWhiteSpace(permissionsJson) ? null : permissionsJson.Trim();
++        MembershipAccessConfigurationJson = string.IsNullOrWhiteSpace(membershipAccessConfigurationJson) ? null : membershipAccessConfigurationJson.Trim();
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -263,7 +263,10 @@ public sealed class CompanyMembership
+     public string? InvitedEmail { get; private set; }
+     public CompanyMembershipRole Role { get; private set; }
+     public CompanyMembershipStatus Status { get; private set; }
+-    public string? PermissionsJson { get; private set; }
++    // Membership access configuration is tenant-scoped human authorization metadata.
++    // It must never be interpreted as agent execution policy or agent tool permissions.
++    public string? MembershipAccessConfigurationJson { get; private set; }
++
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+diff --git a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+index 0b85245..3215c1f 100644
+--- a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
++++ b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+@@ -34,7 +34,7 @@ public sealed record ResolvedCompanyMembershipContext(
+     Guid MembershipId,
+     Guid CompanyId,
+     Guid UserId,
+     string CompanyName,
+-    CompanyMembershipRole Role,
++    CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status);
+ 
+ public interface ICurrentUserAccessor
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 57fd334..bd99b08 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ using System.Collections.ObjectModel;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -14,19 +15,19 @@ public sealed record CurrentUserDto(
+ public sealed record CompanyMembershipDto(
+     Guid MembershipId,
+     Guid CompanyId,
+     string CompanyName,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status);
+ 
+ public sealed record ResolvedCompanyContextDto(
+     Guid MembershipId,
+     Guid CompanyId,
+     string CompanyName,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status);
+ 
+ public sealed record CurrentUserContextDto(
+     CurrentUserDto User,
+     IReadOnlyList<CompanyMembershipDto> Memberships,
+     ResolvedCompanyContextDto? ActiveCompany,
+     bool CompanySelectionRequired);
+ 
+ public sealed record CompanyAccessDto(
+     Guid CompanyId,
+     string CompanyName,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status);
+diff --git a/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs b/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
+index 81e940f..f10a9d5 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyMembershipAdministrationContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json.Serialization;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Companies;
+@@ -10,7 +11,7 @@ public sealed record CompanyMemberDirectoryEntryDto(
+     Guid CompanyId,
+     string CompanyName,
+     Guid? UserId,
+     string Email,
+     string? DisplayName,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status,
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+@@ -19,7 +20,7 @@ public sealed record CompanyInvitationDto(
+     Guid InvitationId,
+     Guid CompanyId,
+     string Email,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyInvitationStatus Status,
+     Guid InvitedByUserId,
+     Guid? AcceptedByUserId,
+@@ -30,18 +31,18 @@ public sealed record CompanyInvitationDeliveryDto(
+     CompanyInvitationDto Invitation,
+     string AcceptanceToken,
+     bool IsReinvite);
+ 
+ public sealed record InviteUserToCompanyRequest(
+     string Email,
+-    CompanyMembershipRole Role);
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole);
+ 
+ public sealed record ChangeCompanyMembershipRoleRequest(
+-    CompanyMembershipRole Role);
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole);
+ 
+ public sealed record AcceptCompanyInvitationRequest(
+     string Token);
+ 
+ public sealed record AcceptCompanyInvitationResultDto(
+     Guid CompanyId,
+     string CompanyName,
+     Guid MembershipId,
+-    CompanyMembershipRole Role,
++    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
+     CompanyMembershipStatus Status);
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+index e48f2bd..d65ef91 100644
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+@@ -7,13 +7,16 @@ public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
+ {
+ }
+ 
+-public sealed class CompanyRoleRequirement : IAuthorizationRequirement
++public sealed class CompanyMembershipRoleRequirement : IAuthorizationRequirement
+ {
+-    public CompanyRoleRequirement(params CompanyMembershipRole[] allowedRoles)
++    public CompanyMembershipRoleRequirement(params CompanyMembershipRole[] allowedMembershipRoles)
+     {
+-        AllowedRoles = allowedRoles.ToHashSet();
++        AllowedMembershipRoles = allowedMembershipRoles.ToHashSet();
+     }
+ 
+-    public IReadOnlySet<CompanyMembershipRole> AllowedRoles { get; }
++    // These roles govern human company access only.
++    // Agent execution permissions belong to dedicated agent policy components.
++    public IReadOnlySet<CompanyMembershipRole> AllowedMembershipRoles { get; }
+ }
+ 
+ public sealed class CompanyMembershipAuthorizationHandler
+@@ -52,7 +55,7 @@ public sealed class CompanyMembershipResourceAuthorizationHandler
+ }
+ 
+-public sealed class CompanyRoleAuthorizationHandler
+-    : AuthorizationHandler<CompanyRoleRequirement>
++public sealed class CompanyMembershipRoleAuthorizationHandler
++    : AuthorizationHandler<CompanyMembershipRoleRequirement>
+ {
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+-    public CompanyRoleAuthorizationHandler(
++    public CompanyMembershipRoleAuthorizationHandler(
+         ICompanyMembershipContextResolver companyMembershipContextResolver)
+     {
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -60,13 +63,13 @@ public sealed class CompanyRoleAuthorizationHandler
+ 
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+-        CompanyRoleRequirement requirement)
++        CompanyMembershipRoleRequirement requirement)
+     {
+         var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
+-        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
++        if (companyContext is not null && requirement.AllowedMembershipRoles.Contains(companyContext.MembershipRole))
+         {
+             context.Succeed(requirement);
+         }
+     }
+ }
+ 
+-public sealed class CompanyRoleResourceAuthorizationHandler
+-    : AuthorizationHandler<CompanyRoleRequirement, Guid>
++public sealed class CompanyMembershipRoleResourceAuthorizationHandler
++    : AuthorizationHandler<CompanyMembershipRoleRequirement, Guid>
+ {
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+-    public CompanyRoleResourceAuthorizationHandler(
++    public CompanyMembershipRoleResourceAuthorizationHandler(
+         ICompanyMembershipContextResolver companyMembershipContextResolver)
+     {
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -74,13 +77,13 @@ public sealed class CompanyRoleResourceAuthorizationHandler
+ 
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+-        CompanyRoleRequirement requirement,
++        CompanyMembershipRoleRequirement requirement,
+         Guid companyId)
+     {
+         var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
+-        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
++        if (companyContext is not null && requirement.AllowedMembershipRoles.Contains(companyContext.MembershipRole))
+         {
+             context.Succeed(requirement);
+         }
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+index 10d13ba..5e02ab4 100644
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+@@ -17,14 +17,16 @@ public static class CompanyAuthorizationServiceCollectionExtensions
+             options.AddPolicy(CompanyPolicies.CompanyMember, policy =>
+                 policy.RequireAuthenticatedUser()
+                     .AddRequirements(new CompanyMembershipRequirement()));
+ 
++            // Company membership policies authorize human users inside a tenant.
++            // They must stay separate from any future agent tool or execution policy.
+             options.AddPolicy(CompanyPolicies.CompanyManager, policy =>
+                 policy.RequireAuthenticatedUser()
+-                    .AddRequirements(new CompanyRoleRequirement(
++                    .AddRequirements(new CompanyMembershipRoleRequirement(
+                         CompanyMembershipRole.Owner,
+                         CompanyMembershipRole.Admin,
+                         CompanyMembershipRole.Manager)));
+ 
+             options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
+                 policy.RequireAuthenticatedUser()
+-                    .AddRequirements(new CompanyRoleRequirement(
++                    .AddRequirements(new CompanyMembershipRoleRequirement(
+                         CompanyMembershipRole.Owner,
+                         CompanyMembershipRole.Admin)));
+         });
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+index 449d08e..4635cb8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -78,7 +78,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAd
+     public async Task<CompanyInvitationDeliveryDto> InviteUserAsync(Guid companyId, InviteUserToCompanyRequest request, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+-        var requestedRole = ValidateRequestedRole(request.Role);
++        var requestedRole = ValidateRequestedRole(request.MembershipRole);
+         var email = NormalizeEmail(request.Email);
+ 
+         if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken).ConfigureAwait(false))
+@@ -255,7 +255,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAd
+     public async Task<CompanyMemberDirectoryEntryDto> ChangeMembershipRoleAsync(Guid companyId, Guid membershipId, ChangeCompanyMembershipRoleRequest request, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+-        var requestedRole = ValidateRequestedRole(request.Role);
++        var requestedRole = ValidateRequestedRole(request.MembershipRole);
+         var correlationId = CreateCorrelationId();
+ 
+         var membership = await _dbContext.CompanyMemberships
+@@ -300,7 +300,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAd
+                 companyId,
+                 correlationId,
+                 userId = membership.UserId,
+                 previousRole,
+-                newRole = request.Role,
++                newRole = request.MembershipRole,
+                 changedByUserId = companyContext.UserId
+             });
+ 
+@@ -409,8 +409,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAd
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null ||
+-            (membership.Role != CompanyMembershipRole.Owner && membership.Role != CompanyMembershipRole.Admin))
++            (membership.MembershipRole != CompanyMembershipRole.Owner && membership.MembershipRole != CompanyMembershipRole.Admin))
+         {
+             throw new UnauthorizedAccessException("Only owner and admin memberships can manage company invitations and roles.");
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 2939f1f..e929323 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -218,7 +218,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNot
+     }
+     private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
+-        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++        new(membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+ 
+     private sealed record DashboardEntryProjection(
+         Guid CompanyId,
+@@ -232,8 +232,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNot
+     }
+ 
+     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
+-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+ 
+     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
+-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 8f43c4f..e44f511 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -167,7 +167,9 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<C
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.InvitedEmail).HasMaxLength(256);
+-        builder.Property(x => x.PermissionsJson);
++        builder.Property(x => x.MembershipAccessConfigurationJson)
++            .HasColumnName("permissions_json");
++
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+index 7dc3d31..f1f664c 100644
+--- a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+@@ -43,7 +43,8 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContextR
+             return null;
+         }
+ 
+-        // Tenant membership role is resolved from the current persisted membership so role
++        // Human tenant membership role is resolved from the current persisted membership so role
++        // changes affect human authorization only and are not reused as agent capability grants.
+         // changes take effect on the next authorization check without trusting stale request state.
+         var membership = await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 3fdc617..2894940 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -31,7 +31,7 @@ else if (CompanyId is null)
+                         {
+                             <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
+                                 <strong>@membership.CompanyName</strong>
+-                                <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
++                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                             </a>
+                         }
+                     </div>
+@@ -72,7 +72,7 @@ else
+                 <p class="text-body-secondary mb-0">
+                     @(companyAccess is null
+                         ? "Use onboarding to create or resume a workspace."
+-                        : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
++                        : $"Role: {companyAccess.MembershipRole} | Access: {companyAccess.Status}")
+                 </p>
+ 
+                 @if (showStarterGuidance)
+diff --git a/src/VirtualCompany.Web/Pages/Home.razor b/src/VirtualCompany.Web/Pages/Home.razor
+index 543ecfe..b5b079c 100644
+--- a/src/VirtualCompany.Web/Pages/Home.razor
++++ b/src/VirtualCompany.Web/Pages/Home.razor
+@@ -42,7 +42,7 @@ else
+                             {
+                                 <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
+                                     <strong>@membership.CompanyName</strong>
+-                                    <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
++                                    <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                                 </a>
+                             }
+                         </div>
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 86d194a..13f4bd7 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -360,7 +360,7 @@ public sealed class OnboardingApiClient
+                     {
+                         MembershipId = _completed.MembershipId,
+                         CompanyId = _completed.CompanyId,
+                         CompanyName = _completed.CompanyName,
+-                        Role = "owner",
++                        MembershipRole = "owner",
+                         Status = "active"
+                     });
+ 
+@@ -368,7 +368,7 @@ public sealed class OnboardingApiClient
+                     {
+                         MembershipId = _completed.MembershipId,
+                         CompanyId = _completed.CompanyId,
+                         CompanyName = _completed.CompanyName,
+-                        Role = "owner",
++                        MembershipRole = "owner",
+                         Status = "active"
+                     };
+                 }
+@@ -568,7 +568,7 @@ public sealed class OnboardingApiClient
+                 {
+                     CompanyId = companyId,
+                     CompanyName = _completed.CompanyName,
+-                    Role = "owner",
++                    MembershipRole = "owner",
+                     Status = "active"
+                 };
+             }
+@@ -833,7 +833,7 @@ public sealed class CreateCompanyResultViewModel
+ {
+     public Guid CompanyId { get; set; }
+     public string CompanyName { get; set; } = string.Empty;
+     public string DashboardPath { get; set; } = string.Empty;
+@@ -848,7 +848,7 @@ public sealed class CompanyAccessViewModel
+ {
+     public Guid CompanyId { get; set; }
+     public string CompanyName { get; set; } = string.Empty;
+-    public string Role { get; set; } = string.Empty;
++    public string MembershipRole { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+ }
+@@ -878,7 +878,7 @@ public sealed class CompanyMembershipViewModel
+     public Guid MembershipId { get; set; }
+     public Guid CompanyId { get; set; }
+     public string CompanyName { get; set; } = string.Empty;
+-    public string Role { get; set; } = string.Empty;
++    public string MembershipRole { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+ }
+@@ -888,7 +888,7 @@ public sealed class ResolvedCompanyContextViewModel
+     public Guid MembershipId { get; set; }
+     public Guid CompanyId { get; set; }
+     public string CompanyName { get; set; } = string.Empty;
+-    public string Role { get; set; } = string.Empty;
++    public string MembershipRole { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+index ee31cc8..73d09d0 100644
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -97,7 +97,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Single(response!.Memberships);
+         Assert.False(response.CompanySelectionRequired);
+         Assert.NotNull(response.ActiveCompany);
+         Assert.Equal(ids.CompanyAId, response.ActiveCompany!.CompanyId);
+-        Assert.Equal("manager", response.ActiveCompany.Role);
++        Assert.Equal("manager", response.ActiveCompany.MembershipRole);
+         Assert.Equal("active", response.ActiveCompany.Status);
+     }
+@@ -128,7 +128,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.NotNull(response);
+         Assert.NotNull(response!.ActiveCompany);
+         Assert.Equal(ids.CompanyBId, response.ActiveCompany!.CompanyId);
+-        Assert.Equal("employee", response.ActiveCompany.Role);
++        Assert.Equal("employee", response.ActiveCompany.MembershipRole);
+         Assert.False(response.CompanySelectionRequired);
+     }
+@@ -142,9 +142,9 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         var memberships = await client.GetFromJsonAsync<List<MembershipResponse>>("/api/auth/memberships");
+ 
+         Assert.NotNull(memberships);
+         Assert.Equal(3, memberships!.Count);
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Role == "admin" && x.Status == "active");
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyBId && x.Role == "employee" && x.Status == "active");
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Role == "employee" && x.Status == "pending");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.MembershipRole == "admin" && x.Status == "active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyBId && x.MembershipRole == "employee" && x.Status == "active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.MembershipRole == "employee" && x.Status == "pending");
+     }
+@@ -163,7 +163,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(ids.CompanyBId.ToString(), payload.HeaderValue);
+         Assert.Equal(ids.CompanyBId, payload.ActiveCompany.CompanyId);
+-        Assert.Equal("employee", payload.ActiveCompany.Role);
++        Assert.Equal("employee", payload.ActiveCompany.MembershipRole);
+         Assert.Equal("active", payload.ActiveCompany.Status);
+     }
+@@ -283,6 +283,28 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider("Active"));
+     }
+ 
++    [Fact]
++    public async Task Company_admin_policy_ignores_membership_access_configuration_that_looks_like_agent_permissions()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "agent-like@example.com", "Agent Like", "dev-header", "agent-like"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Employee,
++                CompanyMembershipStatus.Active,
++                membershipAccessConfigurationJson: """{"agentToolPermissions":["execute_all","read_all"]}"""));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("agent-like", "agent-like@example.com", "Agent Like");
++        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/companies/{companyId}/access/admin")).StatusCode);
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, string? provider = null)
+     {
+         var client = _factory.CreateClient();
+@@ -357,7 +379,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         public Guid MembershipId { get; set; }
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+-        public string Role { get; set; } = string.Empty;
++        public string MembershipRole { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
+@@ -379,7 +401,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         public Guid MembershipId { get; set; }
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+-        public string Role { get; set; } = string.Empty;
++        public string MembershipRole { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+index 4c01d93..63dcd10 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -29,14 +29,14 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "teammate@example.com", Role = "manager" });
++            new { Email = "teammate@example.com", MembershipRole = "manager" });
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+         var payload = await response.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(payload);
+         Assert.Equal("teammate@example.com", payload!.Invitation.Email);
+-        Assert.Equal("manager", payload.Invitation.Role);
++        Assert.Equal("manager", payload.Invitation.MembershipRole);
+         Assert.Equal("pending", payload.Invitation.Status);
+         Assert.False(payload.IsReinvite);
+         Assert.False(string.IsNullOrWhiteSpace(payload.AcceptanceToken));
+@@ -76,7 +76,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("employee", "employee@example.com", "Employee");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "teammate@example.com", Role = "employee" });
++            new { Email = "teammate@example.com", MembershipRole = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+@@ -89,7 +89,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("admin", "admin@example.com", "Admin");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "manager@example.com", Role = "manager" });
++            new { Email = "manager@example.com", MembershipRole = "manager" });
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+@@ -111,7 +111,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = $"{roleValue}@example.com", Role = roleValue });
++            new { Email = $"{roleValue}@example.com", MembershipRole = roleValue });
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+@@ -119,7 +119,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.NotNull(payload);
+-        Assert.Equal(roleValue, payload!.Invitation.Role);
++        Assert.Equal(roleValue, payload!.Invitation.MembershipRole);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -135,7 +135,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "invitee@example.com", Role = "employee" });
++            new { Email = "invitee@example.com", MembershipRole = "employee" });
+ 
+         var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitation);
+@@ -166,7 +166,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         var accepted = await acceptResponse.Content.ReadFromJsonAsync<AcceptInvitationResponse>();
+         Assert.NotNull(accepted);
+         Assert.Equal(seed.CompanyId, accepted!.CompanyId);
+-        Assert.Equal("employee", accepted.Role);
++        Assert.Equal("employee", accepted.MembershipRole);
+         Assert.Equal("active", accepted.Status);
+ 
+         using var scope = _factory.Services.CreateScope();
+@@ -187,7 +187,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "revoked@example.com", Role = "employee" });
++            new { Email = "revoked@example.com", MembershipRole = "employee" });
+ 
+         var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitation);
+@@ -223,7 +223,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "dispatch@example.com", Role = "employee" });
++            new { Email = "dispatch@example.com", MembershipRole = "employee" });
+ 
+         var invitationPayload = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitationPayload);
+@@ -260,7 +260,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "retry@example.com", Role = "employee" });
++            new { Email = "retry@example.com", MembershipRole = "employee" });
+ 
+         using (var firstScope = _factory.Services.CreateScope())
+         {
+@@ -313,7 +313,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "skip@example.com", Role = "employee" });
++            new { Email = "skip@example.com", MembershipRole = "employee" });
+ 
+         var invitationPayload = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitationPayload);
+@@ -389,7 +389,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+             seed.EmployeeMembershipId,
+             new ChangeCompanyMembershipRoleRequest(CompanyMembershipRole.Admin),
+             CancellationToken.None);
+ 
+-        Assert.Equal(CompanyMembershipRole.Admin, changedMembership.Role);
++        Assert.Equal(CompanyMembershipRole.Admin, changedMembership.MembershipRole);
+ 
+         var afterResult = await employeeScope.AuthorizationService.AuthorizeAsync(
+             employeeScope.Principal,
+@@ -432,7 +432,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+             seed.EmployeeMembershipId,
+             new ChangeCompanyMembershipRoleRequest(CompanyMembershipRole.Employee),
+             CancellationToken.None);
+ 
+-        Assert.Equal(CompanyMembershipRole.Employee, changedMembership.Role);
++        Assert.Equal(CompanyMembershipRole.Employee, changedMembership.MembershipRole);
+ 
+         var afterResult = await employeeScope.AuthorizationService.AuthorizeAsync(
+             employeeScope.Principal,
+@@ -458,7 +458,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+         var payload = await response.Content.ReadFromJsonAsync<CompanyMemberDirectoryEntryResponse>();
+         Assert.NotNull(payload);
+-        Assert.Equal(roleValue, payload!.Role);
++        Assert.Equal(roleValue, payload!.MembershipRole);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -466,11 +466,38 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.Equal(expectedRole, membership.Role);
+ 
+         var membershipsResponse = await client.GetFromJsonAsync<List<CompanyMemberDirectoryEntryResponse>>(
+             $"/api/companies/{seed.CompanyId}/memberships");
+-        Assert.Contains(membershipsResponse!, x => x.MembershipId == seed.EmployeeMembershipId && x.Role == roleValue);
++        Assert.Contains(membershipsResponse!, x => x.MembershipId == seed.EmployeeMembershipId && x.MembershipRole == roleValue);
+     }
+ 
++    [Fact]
++    public async Task ChangeMembershipRole_does_not_mutate_membership_access_configuration_json()
++    {
++        var companyId = Guid.NewGuid();
++        var ownerUserId = Guid.NewGuid();
++        var employeeUserId = Guid.NewGuid();
++        var employeeMembershipId = Guid.NewGuid();
++        const string membershipAccessConfigurationJson = """{"humanApprovalRouting":{"defaultApproverRole":"finance_approver"}}""";
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(ownerUserId, "owner@example.com", "Owner", "dev-header", "owner"),
++                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
++
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(employeeMembershipId, companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active, membershipAccessConfigurationJson: membershipAccessConfigurationJson));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var response = await client.PatchAsJsonAsync($"/api/companies/{companyId}/memberships/{employeeMembershipId}/role", new { MembershipRole = "admin" });
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.Id == employeeMembershipId);
++        Assert.Equal(CompanyMembershipRole.Admin, membership.Role);
++        Assert.Equal(membershipAccessConfigurationJson, membership.MembershipAccessConfigurationJson);
++    }
++
+     [Fact]
+     public async Task ReinviteUser_updates_existing_pending_invitation_and_membership_role()
+     {
+@@ -478,7 +505,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var firstResponse = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "pending@example.com", Role = "employee" });
++            new { Email = "pending@example.com", MembershipRole = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+         var firstPayload = await firstResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+@@ -486,14 +513,14 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         var secondResponse = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "pending@example.com", Role = "manager" });
++            new { Email = "pending@example.com", MembershipRole = "manager" });
+ 
+         Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+         var secondPayload = await secondResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(secondPayload);
+         Assert.True(secondPayload!.IsReinvite);
+         Assert.Equal(firstPayload!.Invitation.InvitationId, secondPayload.Invitation.InvitationId);
+-        Assert.Equal("manager", secondPayload.Invitation.Role);
++        Assert.Equal("manager", secondPayload.Invitation.MembershipRole);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -542,7 +569,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "idempotent@example.com", Role = "employee" });
++            new { Email = "idempotent@example.com", MembershipRole = "employee" });
+ 
+         using (var firstProcessingScope = _factory.Services.CreateScope())
+         {
+@@ -585,7 +612,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var firstResponse = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "resend@example.com", Role = "employee" });
++            new { Email = "resend@example.com", MembershipRole = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+         var firstPayload = await firstResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+@@ -621,7 +648,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "revoked-resend@example.com", Role = "employee" });
++            new { Email = "revoked-resend@example.com", MembershipRole = "employee" });
+ 
+         var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitation);
+@@ -647,7 +674,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var invitationResponse = await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "revoke-twice@example.com", Role = "employee" });
++            new { Email = "revoke-twice@example.com", MembershipRole = "employee" });
+ 
+         var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+         Assert.NotNull(invitation);
+@@ -680,7 +707,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+-            new { Email = "member@example.com", Role = "employee" });
++            new { Email = "member@example.com", MembershipRole = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+@@ -697,7 +724,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.OtherCompanyId}/invitations",
+-            new { Email = "cross-company@example.com", Role = "employee" });
++            new { Email = "cross-company@example.com", MembershipRole = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+@@ -805,7 +832,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         public Guid InvitationId { get; set; }
+         public Guid CompanyId { get; set; }
+         public string Email { get; set; } = string.Empty;
+-        public string Role { get; set; } = string.Empty;
++        public string MembershipRole { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+         public Guid InvitedByUserId { get; set; }
+         public Guid? AcceptedByUserId { get; set; }
+@@ -822,7 +849,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+         public Guid? UserId { get; set; }
+         public string Email { get; set; } = string.Empty;
+         public string? DisplayName { get; set; }
+-        public string Role { get; set; } = string.Empty;
++        public string MembershipRole { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
+@@ -838,7 +865,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+         public Guid MembershipId { get; set; }
+-        public string Role { get; set; } = string.Empty;
++        public string MembershipRole { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
+ }
+END_OF_PATCH

@@ -16,14 +16,14 @@ public sealed record CompanyMembershipDto(
     Guid MembershipId,
     Guid CompanyId,
     string CompanyName,
-    CompanyMembershipRole Role,
+    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status);
 
 public sealed record ResolvedCompanyContextDto(
     Guid MembershipId,
     Guid CompanyId,
     string CompanyName,
-    CompanyMembershipRole Role,
+    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status);
 
 public sealed record CurrentUserContextDto(
@@ -35,7 +35,7 @@ public sealed record CurrentUserContextDto(
 public sealed record CompanyAccessDto(
     Guid CompanyId,
     string CompanyName,
-    CompanyMembershipRole Role,
+    [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status);
 
 public sealed record CompanyDashboardEntryDto(

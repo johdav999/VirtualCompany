@@ -26,6 +26,11 @@ public static class DependencyInjection
         services.AddDbContext<VirtualCompanyDbContext>(options =>
             options.UseNpgsql(connectionString));
 
+        services.AddOptions<CompanyOutboxDispatcherOptions>()
+            .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+
+        services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+
         services.AddHttpContextAccessor();
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
@@ -33,8 +38,13 @@ public static class DependencyInjection
         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
         services.AddScoped<IExternalUserIdentityResolver, ExternalUserIdentityResolver>();
         services.AddScoped<CompanyQueryService>();
+        services.AddScoped<ICompanyOutboxEnqueuer, CompanyOutboxEnqueuer>();
+        services.AddScoped<ICompanyOutboxProcessor, CompanyOutboxProcessor>();
+        services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
+        services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+        services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();

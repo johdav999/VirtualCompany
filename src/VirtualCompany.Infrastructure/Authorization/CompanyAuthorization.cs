@@ -8,14 +8,16 @@ public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
 {
 }
 
-public sealed class CompanyRoleRequirement : IAuthorizationRequirement
+public sealed class CompanyMembershipRoleRequirement : IAuthorizationRequirement
 {
-    public CompanyRoleRequirement(params CompanyMembershipRole[] allowedRoles)
+    public CompanyMembershipRoleRequirement(params CompanyMembershipRole[] allowedMembershipRoles)
     {
-        AllowedRoles = allowedRoles.ToHashSet();
+        AllowedMembershipRoles = allowedMembershipRoles.ToHashSet();
     }
 
-    public IReadOnlySet<CompanyMembershipRole> AllowedRoles { get; }
+    // These roles govern human company access only.
+    // Agent execution permissions belong to dedicated agent policy components.
+    public IReadOnlySet<CompanyMembershipRole> AllowedMembershipRoles { get; }
 }
 
 public sealed class CompanyMembershipAuthorizationHandler
@@ -65,12 +67,12 @@ public sealed class CompanyMembershipResourceAuthorizationHandler
     }
 }
 
-public sealed class CompanyRoleAuthorizationHandler
-    : AuthorizationHandler<CompanyRoleRequirement>
+public sealed class CompanyMembershipRoleAuthorizationHandler
+    : AuthorizationHandler<CompanyMembershipRoleRequirement>
 {
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
-    public CompanyRoleAuthorizationHandler(
+    public CompanyMembershipRoleAuthorizationHandler(
         ICompanyMembershipContextResolver companyMembershipContextResolver)
     {
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -78,22 +80,22 @@ public sealed class CompanyRoleAuthorizationHandler
 
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
-        CompanyRoleRequirement requirement)
+        CompanyMembershipRoleRequirement requirement)
     {
         var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
-        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
+        if (companyContext is not null && requirement.AllowedMembershipRoles.Contains(companyContext.MembershipRole))
         {
             context.Succeed(requirement);
         }
     }
 }
 
-public sealed class CompanyRoleResourceAuthorizationHandler
-    : AuthorizationHandler<CompanyRoleRequirement, Guid>
+public sealed class CompanyMembershipRoleResourceAuthorizationHandler
+    : AuthorizationHandler<CompanyMembershipRoleRequirement, Guid>
 {
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
-    public CompanyRoleResourceAuthorizationHandler(
+    public CompanyMembershipRoleResourceAuthorizationHandler(
         ICompanyMembershipContextResolver companyMembershipContextResolver)
     {
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -101,11 +103,11 @@ public sealed class CompanyRoleResourceAuthorizationHandler
 
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
-        CompanyRoleRequirement requirement,
+        CompanyMembershipRoleRequirement requirement,
         Guid companyId)
     {
         var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
-        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
+        if (companyContext is not null && requirement.AllowedMembershipRoles.Contains(companyContext.MembershipRole))
         {
             context.Succeed(requirement);
         }

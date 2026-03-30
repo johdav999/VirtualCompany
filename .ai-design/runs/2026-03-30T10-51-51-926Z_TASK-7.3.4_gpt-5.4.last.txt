@@ -1,0 +1,275 @@
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+index cdc61fd..f05e364 100644
+--- a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+@@ -25,11 +25,6 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
+ 
+     public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken)
+     {
+-        if (_companyContextAccessor.Membership is not null)
+-        {
+-            return _companyContextAccessor.Membership;
+-        }
+-
+         if (_companyContextAccessor.CompanyId is not Guid companyId)
+         {
+             return null;
+@@ -39,20 +34,21 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
+ 
+     public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+-        if (_companyContextAccessor.Membership is not null &&
+-            _companyContextAccessor.Membership.CompanyId == companyId)
+-        {
+-            return _companyContextAccessor.Membership;
+-        }
+-
+         if (_currentUserAccessor.UserId is not Guid userId)
+         {
++            if (_companyContextAccessor.CompanyId == companyId)
++            {
++                _companyContextAccessor.SetCompanyContext(null);
++            }
++
+             return null;
+         }
+ 
++        // Tenant membership role is resolved from the current persisted membership so role
++        // changes take effect on the next authorization check without trusting stale request state.
+         var membership = await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
+             .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId, x.Company.Name, x.Role, x.Status))
+-            .SingleOrDefaultAsync(cancellationToken);
++            .SingleOrDefaultAsync(cancellationToken)
++            .ConfigureAwait(false);
+ 
+         if (_companyContextAccessor.CompanyId == companyId)
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+index 5e78a55..4743180 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -1,9 +1,15 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Security.Claims;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+@@ -211,21 +217,54 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+     }
+ 
+     [Fact]
+-    public async Task Role_change_is_reflected_in_subsequent_authorization_checks()
++    public async Task Role_upgrade_is_reflected_in_subsequent_authorization_checks()
+     {
+         var seed = await SeedRoleChangeScenarioAsync();
+ 
+-        using var employeeClient = CreateAuthenticatedClient("employee", "employee@example.com", "Employee");
+-        var beforeResponse = await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/access/admin");
+-        Assert.Equal(HttpStatusCode.Forbidden, beforeResponse.StatusCode);
++        using var employeeScope = CreateAuthorizationCheckContext(
++            seed.CompanyId,
++            seed.EmployeeUserId,
++            "employee",
++            "employee@example.com",
++            "Employee");
+ 
+-        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+-        var changeResponse = await ownerClient.PatchAsJsonAsync(
+-            $"/api/companies/{seed.CompanyId}/memberships/{seed.EmployeeMembershipId}/role",
+-            new { Role = "admin" });
++        var beforeResult = await employeeScope.AuthorizationService.AuthorizeAsync(
++            employeeScope.Principal,
++            resource: null,
++            CompanyPolicies.CompanyOwnerOrAdmin);
+ 
+-        Assert.Equal(HttpStatusCode.OK, changeResponse.StatusCode);
++        Assert.False(beforeResult.Succeeded);
+ 
+-        var afterResponse = await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/access/admin");
+-        Assert.Equal(HttpStatusCode.OK, afterResponse.StatusCode);
++        using var ownerScope = CreateAuthorizationCheckContext(
++            seed.CompanyId,
++            seed.OwnerUserId,
++            "owner",
++            "owner@example.com",
++            "Owner");
++
++        var membershipAdministrationService = ownerScope.Scope.ServiceProvider.GetRequiredService<ICompanyMembershipAdministrationService>();
++        var changedMembership = await membershipAdministrationService.ChangeMembershipRoleAsync(
++            seed.CompanyId,
++            seed.EmployeeMembershipId,
++            new ChangeCompanyMembershipRoleRequest(CompanyMembershipRole.Admin),
++            CancellationToken.None);
++
++        Assert.Equal(CompanyMembershipRole.Admin, changedMembership.Role);
++
++        var afterResult = await employeeScope.AuthorizationService.AuthorizeAsync(
++            employeeScope.Principal,
++            resource: null,
++            CompanyPolicies.CompanyOwnerOrAdmin);
++
++        Assert.True(afterResult.Succeeded);
++    }
++
++    [Fact]
++    public async Task Role_downgrade_is_reflected_in_subsequent_authorization_checks()
++    {
++        var seed = await SeedRoleChangeScenarioAsync(CompanyMembershipRole.Admin);
++
++        using var employeeScope = CreateAuthorizationCheckContext(
++            seed.CompanyId,
++            seed.EmployeeUserId,
++            "employee",
++            "employee@example.com",
++            "Employee");
++
++        var beforeResult = await employeeScope.AuthorizationService.AuthorizeAsync(
++            employeeScope.Principal,
++            resource: null,
++            CompanyPolicies.CompanyOwnerOrAdmin);
++
++        Assert.True(beforeResult.Succeeded);
++
++        using var ownerScope = CreateAuthorizationCheckContext(
++            seed.CompanyId,
++            seed.OwnerUserId,
++            "owner",
++            "owner@example.com",
++            "Owner");
++
++        var membershipAdministrationService = ownerScope.Scope.ServiceProvider.GetRequiredService<ICompanyMembershipAdministrationService>();
++        var changedMembership = await membershipAdministrationService.ChangeMembershipRoleAsync(
++            seed.CompanyId,
++            seed.EmployeeMembershipId,
++            new ChangeCompanyMembershipRoleRequest(CompanyMembershipRole.Employee),
++            CancellationToken.None);
++
++        Assert.Equal(CompanyMembershipRole.Employee, changedMembership.Role);
++
++        var afterResult = await employeeScope.AuthorizationService.AuthorizeAsync(
++            employeeScope.Principal,
++            resource: null,
++            CompanyPolicies.CompanyOwnerOrAdmin);
++
++        Assert.False(afterResult.Succeeded);
+     }
+ 
+     [Theory]
+@@ -391,6 +430,44 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         return client;
+     }
++
++    private AuthorizationCheckContext CreateAuthorizationCheckContext(
++        Guid companyId,
++        Guid userId,
++        string subject,
++        string email,
++        string displayName)
++    {
++        var scope = _factory.Services.CreateScope();
++        var principal = CreateAuthenticatedPrincipal(userId, subject, email, displayName);
++        var httpContextAccessor = scope.ServiceProvider.GetRequiredService<IHttpContextAccessor>();
++        httpContextAccessor.HttpContext = new DefaultHttpContext
++        {
++            RequestServices = scope.ServiceProvider,
++            User = principal
++        };
++
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(companyId);
++
++        var authorizationService = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
++        return new AuthorizationCheckContext(scope, principal, authorizationService);
++    }
++
++    private static ClaimsPrincipal CreateAuthenticatedPrincipal(
++        Guid userId,
++        string subject,
++        string email,
++        string displayName)
++    {
++        var identity = new ClaimsIdentity(
++        [
++            new Claim(CurrentUserClaimTypes.UserId, userId.ToString()),
++            new Claim(CurrentUserClaimTypes.AuthProvider, "dev-header"),
++            new Claim(CurrentUserClaimTypes.AuthSubject, subject),
++            new Claim(ClaimTypes.NameIdentifier, subject),
++            new Claim(ClaimTypes.Email, email),
++            new Claim(ClaimTypes.Name, displayName)
++        ], DevHeaderAuthenticationDefaults.Scheme);
++
++        return new ClaimsPrincipal(identity);
++    }
+ 
+     private async Task<SingleMembershipSeed> SeedSingleMembershipAsync(string subject, string email, CompanyMembershipRole role)
+     {
+@@ -420,7 +497,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         return new SingleMembershipSeed(companyId, userId);
+     }
+ 
+-    private async Task<RoleChangeSeed> SeedRoleChangeScenarioAsync()
++    private async Task<RoleChangeSeed> SeedRoleChangeScenarioAsync(CompanyMembershipRole employeeRole = CompanyMembershipRole.Employee)
+     {
+         var companyId = Guid.NewGuid();
+         var ownerUserId = Guid.NewGuid();
+@@ -438,13 +515,13 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+-                new CompanyMembership(employeeMembershipId, companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++                new CompanyMembership(employeeMembershipId, companyId, employeeUserId, employeeRole, CompanyMembershipStatus.Active));
+ 
+             return Task.CompletedTask;
+         });
+ 
+-        return new RoleChangeSeed(companyId, employeeMembershipId);
++        return new RoleChangeSeed(companyId, ownerUserId, employeeUserId, employeeMembershipId);
+     }
+ 
+     private async Task<MembershipAdministrationSeed> SeedMembershipAdministrationScenarioAsync()
+@@ -492,7 +569,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+     }
+ 
+     private sealed record SingleMembershipSeed(Guid CompanyId, Guid UserId);
+-    private sealed record RoleChangeSeed(Guid CompanyId, Guid EmployeeMembershipId);
++    private sealed record RoleChangeSeed(Guid CompanyId, Guid OwnerUserId, Guid EmployeeUserId, Guid EmployeeMembershipId);
+     private sealed record MembershipAdministrationSeed(Guid CompanyId);
+     private sealed record CrossCompanySeed(Guid OwnedCompanyId, Guid OtherCompanyId);
+ 
+@@ -533,4 +610,20 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         public string Role { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
++
++    private sealed class AuthorizationCheckContext : IDisposable
++    {
++        public AuthorizationCheckContext(
++            IServiceScope scope,
++            ClaimsPrincipal principal,
++            IAuthorizationService authorizationService)
++        {
++            Scope = scope;
++            Principal = principal;
++            AuthorizationService = authorizationService;
++        }
++
++        public IServiceScope Scope { get; }
++        public ClaimsPrincipal Principal { get; }
++        public IAuthorizationService AuthorizationService { get; }
++        public void Dispose() => Scope.Dispose();
++    }
+ }
+END_OF_PATCH

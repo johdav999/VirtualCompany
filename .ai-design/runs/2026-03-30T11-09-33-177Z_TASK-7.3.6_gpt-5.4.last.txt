@@ -1,0 +1,697 @@
+diff --git a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+@@ -1,409 +1,389 @@
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Domain.Entities;
+ 
+ public sealed class CompanyInvitation : ICompanyOwnedEntity
+ {
+     private CompanyInvitation()
+     {
+     }
+ 
+     public CompanyInvitation(
+         Guid id,
+         Guid companyId,
+         string email,
+         CompanyMembershipRole role,
+         Guid invitedByUserId,
+         string tokenHash,
+         DateTime expiresAtUtc)
+     {
+         if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
+         if (invitedByUserId == Guid.Empty)
+         {
+             throw new ArgumentException("InvitedByUserId is required.", nameof(invitedByUserId));
+         }
+ 
+         CompanyMembershipRoles.EnsureSupported(role, nameof(role));
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         Email = NormalizeEmail(email);
+         Role = role;
+         Status = CompanyInvitationStatus.Pending;
+         InvitedByUserId = invitedByUserId;
+         TokenHash = NormalizeRequired(tokenHash, nameof(tokenHash), 128);
+         ExpiresAtUtc = EnsureFuture(expiresAtUtc, nameof(expiresAtUtc));
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+         DeliveryStatus = CompanyInvitationDeliveryStatus.Pending;
+         LastSentUtc = CreatedUtc;
+     }
+ 
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+     public string Email { get; private set; } = null!;
+     public CompanyMembershipRole Role { get; private set; }
+     public CompanyInvitationStatus Status { get; private set; }
+     public Guid InvitedByUserId { get; private set; }
+     public Guid? AcceptedByUserId { get; private set; }
+     public string TokenHash { get; private set; } = null!;
+     public DateTime ExpiresAtUtc { get; private set; }
+     public DateTime? LastSentUtc { get; private set; }
+     public CompanyInvitationDeliveryStatus DeliveryStatus { get; private set; }
+     public DateTime? LastDeliveryAttemptUtc { get; private set; }
+     public DateTime? DeliveredUtc { get; private set; }
+     public string? DeliveryError { get; private set; }
+     public string? LastDeliveryCorrelationId { get; private set; }
+     public string? LastDeliveredTokenHash { get; private set; }
+     public DateTime? AcceptedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public User InvitedByUser { get; private set; } = null!;
+     public User? AcceptedByUser { get; private set; }
+ 
+     public void SyncExpiration(DateTime utcNow)
+     {
+         if (Status == CompanyInvitationStatus.Pending && ExpiresAtUtc <= utcNow)
+         {
+             Status = CompanyInvitationStatus.Expired;
+             if (!HasDeliveredCurrentToken())
+             {
+                 DeliveryStatus = CompanyInvitationDeliveryStatus.Skipped;
+                 DeliveryError = "Invitation expired before delivery.";
+             }
+ 
+             UpdatedUtc = utcNow;
+         }
+     }
+ 
+     public void Resend(string tokenHash, DateTime expiresAtUtc, CompanyMembershipRole role, Guid invitedByUserId)
+     {
+         if (Status == CompanyInvitationStatus.Accepted)
+         {
+             throw new InvalidOperationException("Accepted invitations cannot be resent.");
+         }
+ 
+-        TokenHash = NormalizeRequired(tokenHash, nameof(tokenHash), 128);
+         if (invitedByUserId == Guid.Empty)
+         {
+             throw new ArgumentException("InvitedByUserId is required.", nameof(invitedByUserId));
+         }
+ 
+         CompanyMembershipRoles.EnsureSupported(role, nameof(role));
+ 
++        TokenHash = NormalizeRequired(tokenHash, nameof(tokenHash), 128);
+         ExpiresAtUtc = EnsureFuture(expiresAtUtc, nameof(expiresAtUtc));
+         Role = role;
+         Status = CompanyInvitationStatus.Pending;
+         InvitedByUserId = invitedByUserId;
+         LastSentUtc = DateTime.UtcNow;
+@@ -427,16 +407,13 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
+         UpdatedUtc = utcNow;
+     }
+ 
+     public void Accept(Guid acceptedByUserId)
+-
+-
+-
+     {
+         if (acceptedByUserId == Guid.Empty)
+         {
+             throw new ArgumentException("AcceptedByUserId is required.", nameof(acceptedByUserId));
+         }
+@@ -523,16 +500,13 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+@@ -552,23 +526,6 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
+ 
+         return trimmed;
+     }
+-
+-
+-
+-    private static string? NormalizeOptional(string? value, string name, int maxLength)
+-    {
+-        if (string.IsNullOrWhiteSpace(value))
+-        {
+-            return null;
+-        }
+-
+-        var trimmed = value.Trim();
+-        if (trimmed.Length > maxLength)
+-        {
+-            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+-        }
+-
+-        return trimmed;
+-    }
+ 
+     private static DateTime EnsureFuture(DateTime value, string name)
+     {
+         if (value <= DateTime.UtcNow)
+@@ -582,11 +539,9 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
+ }
+ 
+ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+ {
+     private CompanyOutboxMessage()
+-
+     {
+     }
+ 
+     public CompanyOutboxMessage(Guid id, Guid companyId, string topic, string payloadJson, string? correlationId = null, DateTime? availableUtc = null)
+     {
+@@ -654,10 +609,6 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         ClaimedUtc = null;
+         ClaimToken = null;
+     }
+ 
+-
+-
+     public void MarkProcessed()
+     {
+         ProcessedUtc = DateTime.UtcNow;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -1,616 +1,592 @@
+ using System.Diagnostics;
++using System.Linq.Expressions;
+ using System.Net.Mail;
+ using System.Security.Cryptography;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Companies;
+@@ -23,13 +24,14 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+     public CompanyMembershipAdministrationService(
+         VirtualCompanyDbContext dbContext,
+         ICurrentUserAccessor currentUserAccessor,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         ICompanyOutboxEnqueuer outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _currentUserAccessor = currentUserAccessor;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
++        _outboxEnqueuer = outboxEnqueuer;
+     }
+ 
+     public async Task<IReadOnlyList<CompanyMemberDirectoryEntryDto>> GetMembershipsAsync(Guid companyId, CancellationToken cancellationToken)
+-
+     {
+         await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+ 
+         return await _dbContext.CompanyMemberships
+             .AsNoTracking()
+@@ -63,7 +65,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+     public async Task<IReadOnlyList<CompanyInvitationDto>> GetInvitationsAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+ 
+-        if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken))
++        if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken).ConfigureAwait(false))
+         {
+             await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+@@ -80,22 +82,31 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+         var requestedRole = ValidateRequestedRole(request.Role);
+         var email = NormalizeEmail(request.Email);
+ 
+-        var correlationId = CreateCorrelationId();
+-        await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken);
+-        var existingPendingInvitation = await _dbContext.CompanyInvitations
+-            .SingleOrDefaultAsync(
++        if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken).ConfigureAwait(false))
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        var existingPendingInvitations = await _dbContext.CompanyInvitations
++            .Where(
+                 x => x.CompanyId == companyId &&
+                      x.Email == email &&
+                      x.Status == CompanyInvitationStatus.Pending &&
+                      x.ExpiresAtUtc > DateTime.UtcNow,
+-                cancellationToken);
++                cancellationToken)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .ThenByDescending(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
+ 
++        var existingPendingInvitation = existingPendingInvitations.FirstOrDefault();
+         var membership = await EnsurePendingMembershipAsync(companyId, email, requestedRole, cancellationToken);
+-
+         var token = GenerateInvitationToken();
+         var expiresAtUtc = DateTime.UtcNow.AddDays(InvitationLifetimeDays);
++        var correlationId = CreateCorrelationId();
++
++        foreach (var duplicateInvitation in existingPendingInvitations.Skip(1))
++        {
++            duplicateInvitation.Cancel();
++        }
+ 
+         if (existingPendingInvitation is null)
+         {
+             var invitation = new CompanyInvitation(
+                 Guid.NewGuid(),
+@@ -107,24 +118,12 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+                 expiresAtUtc);
+ 
+             _dbContext.CompanyInvitations.Add(invitation);
+ 
+-            EnqueueOutbox(companyId, "company.invitation.delivery_requested", new
+-            {
+-                invitationId = invitation.Id,
+-                companyId,
+-                companyName = companyContext.CompanyName,
+-                email,
+-                role = invitation.Role,
+-                acceptanceToken = token,
+-                expiresAtUtc = invitation.ExpiresAtUtc,
+-                invitedByUserId = companyContext.UserId,
+-                correlationId
+-            }),
+-            correlationId);
+-
++            EnqueueInvitationDeliveryRequested(invitation, companyContext.CompanyName, token, correlationId);
+             _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationCreated, new
+             {
+                 invitationId = invitation.Id,
+                 companyId,
+                 correlationId,
+                 membershipId = membership.Id,
+                 email,
+@@ -137,31 +136,16 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+             return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, false);
+         }
+ 
+         existingPendingInvitation.Resend(CompanyInvitationTokenHasher.ComputeHash(token), expiresAtUtc, requestedRole, companyContext.UserId);
+-        membership.RefreshInvitation(requestedRole, email);
+-
+-        _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationCreated, new
+-        {
+-            invitationId = existingPendingInvitation.Id,
+-            companyId,
+-            correlationId,
+-            membershipId = membership.Id,
+-            email,
+-            role = existingPendingInvitation.Role,
+-            invitedByUserId = companyContext.UserId
+-        });
+-
+-        _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationDeliveryRequested, new CompanyInvitationDeliveryRequestedMessage(
+-        {
+-            invitationId = existingPendingInvitation.Id,
+-            companyId,
+-            companyName = companyContext.CompanyName,
+-            email = existingPendingInvitation.Email,
+-            role = existingPendingInvitation.Role,
+-            acceptanceToken = token,
+-            expiresAtUtc = existingPendingInvitation.ExpiresAtUtc,
+-            invitedByUserId = companyContext.UserId,
+-            correlationId
+-        }),
+-        correlationId);
++        EnqueueInvitationDeliveryRequested(existingPendingInvitation, companyContext.CompanyName, token, correlationId);
+ 
+         _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationResent, new
+         {
+             invitationId = existingPendingInvitation.Id,
+             companyId,
+@@ -177,47 +161,38 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+ 
+     public async Task<CompanyInvitationDeliveryDto> ReinviteUserAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+-        await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken);
+-        var correlationId = CreateCorrelationId();
++        if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken).ConfigureAwait(false))
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
+ 
+         var invitation = await _dbContext.CompanyInvitations
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == invitationId, cancellationToken);
+ 
+         if (invitation is null)
+         {
+             throw new KeyNotFoundException("Invitation not found.");
+         }
+ 
+-        if (invitation.Status == CompanyInvitationStatus.Accepted)
++        if (invitation.Status != CompanyInvitationStatus.Pending)
+         {
+-            throw BuildValidationException("InvitationId", "Accepted invitations cannot be resent.");
++            var message = invitation.Status switch
++            {
++                CompanyInvitationStatus.Accepted => "Accepted invitations cannot be resent.",
++                CompanyInvitationStatus.Revoked => "Revoked invitations cannot be resent.",
++                CompanyInvitationStatus.Expired => "Expired invitations cannot be resent.",
++                CompanyInvitationStatus.Cancelled => "Cancelled invitations cannot be resent.",
++                _ => "Only outstanding invitations can be resent."
++            };
++
++            throw BuildValidationException("InvitationId", message);
+         }
+ 
+         await EnsurePendingMembershipAsync(companyId, invitation.Email, invitation.Role, cancellationToken);
+ 
+         var token = GenerateInvitationToken();
+         invitation.Resend(CompanyInvitationTokenHasher.ComputeHash(token), DateTime.UtcNow.AddDays(InvitationLifetimeDays), invitation.Role, companyContext.UserId);
+-
+-        _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationDeliveryRequested, new CompanyInvitationDeliveryRequestedMessage(
+-        {
+-            invitationId = invitation.Id,
+-            companyId,
+-            companyName = companyContext.CompanyName,
+-            email = invitation.Email,
+-            role = invitation.Role,
+-            acceptanceToken = token,
+-            expiresAtUtc = invitation.ExpiresAtUtc,
+-            invitedByUserId = companyContext.UserId,
+-            correlationId
+-        }),
+-        correlationId);
+-
+-        _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationResent, new
+-        {
+-            invitationId = invitation.Id,
+-            companyId,
+-            correlationId,
+-            email = invitation.Email,
+-            role = invitation.Role,
+-            resentByUserId = companyContext.UserId
+-        });
++        var correlationId = CreateCorrelationId();
++        EnqueueInvitationDeliveryRequested(invitation, companyContext.CompanyName, token, correlationId);
++        EnqueueInvitationResent(invitation, companyId, companyContext.UserId, correlationId);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, true);
+@@ -225,7 +200,10 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+ 
+     public async Task<CompanyInvitationDto> RevokeInvitationAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken)
+     {
+         var companyContext = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
+-        await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken);
++        if (await SynchronizeExpiredInvitationsAsync(companyId, cancellationToken).ConfigureAwait(false))
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
+         var correlationId = CreateCorrelationId();
+ 
+         var invitation = await _dbContext.CompanyInvitations
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == invitationId, cancellationToken);
+@@ -236,20 +214,31 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+             throw new KeyNotFoundException("Invitation not found.");
+         }
+ 
+-        if (invitation.Status == CompanyInvitationStatus.Accepted)
++        if (invitation.Status == CompanyInvitationStatus.Revoked)
++        {
++            return ToInvitationDto(invitation);
++        }
++
++        if (invitation.Status != CompanyInvitationStatus.Pending)
+         {
+-            throw BuildValidationException("InvitationId", "Accepted invitations cannot be revoked.");
++            var message = invitation.Status switch
++            {
++                CompanyInvitationStatus.Accepted => "Accepted invitations cannot be revoked.",
++                CompanyInvitationStatus.Expired => "Expired invitations cannot be revoked.",
++                CompanyInvitationStatus.Cancelled => "Cancelled invitations cannot be revoked.",
++                _ => "Only outstanding invitations can be revoked."
++            };
++
++            throw BuildValidationException("InvitationId", message);
+         }
+ 
+         invitation.Revoke();
+-
+         var membership = await FindMembershipByInvitationTargetAsync(companyId, invitation.Email, cancellationToken);
+         if (membership is not null && membership.Status == CompanyMembershipStatus.Pending)
+         {
+             membership.UpdateStatus(CompanyMembershipStatus.Revoked);
+         }
+ 
+         _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationRevoked, new
+         {
+             invitationId = invitation.Id,
+@@ -439,6 +428,36 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+         return membership;
+     }
+ 
++    private void EnqueueInvitationDeliveryRequested(
++        CompanyInvitation invitation,
++        string companyName,
++        string acceptanceToken,
++        string correlationId)
++    {
++        _outboxEnqueuer.Enqueue(
++            invitation.CompanyId,
++            CompanyOutboxTopics.InvitationDeliveryRequested,
++            new CompanyInvitationDeliveryRequestedMessage(
++                invitation.Id,
++                invitation.CompanyId,
++                companyName,
++                invitation.Email,
++                invitation.Role,
++                acceptanceToken,
++                invitation.ExpiresAtUtc,
++                invitation.InvitedByUserId,
++                correlationId),
++            correlationId);
++    }
++
++    private void EnqueueInvitationResent(CompanyInvitation invitation, Guid companyId, Guid resentByUserId, string correlationId)
++    {
++        _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationResent, new
++        {
++            invitationId = invitation.Id,
++            companyId,
++            correlationId,
++            email = invitation.Email,
++            role = invitation.Role,
++            resentByUserId
++        });
++    }
++
+     private async Task EnsureInvitableAsync(Guid companyId, string email, CancellationToken cancellationToken)
+     {
+         var isActiveMember = await _dbContext.CompanyMemberships
+@@ -502,7 +521,6 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+         return invitations.Count > 0;
+     }
+ 
+     private static void EnsureAcceptableInvitation(CompanyInvitation invitation)
+     {
+         if (invitation.Status == CompanyInvitationStatus.Pending)
+@@ -521,7 +539,6 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+         throw BuildValidationException("Token", message);
+     }
+ 
+-
+     private Guid RequireCurrentUserId() =>
+         _currentUserAccessor.UserId
+         ?? throw new UnauthorizedAccessException("An authenticated user is required.");
+@@ -565,12 +582,14 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipAdministrationService
+             .Replace('/', '_');
+     }
+ 
+     private static string CreateCorrelationId() =>
+         Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+-    private static Func<CompanyInvitation, CompanyInvitationDto> ToInvitationDtoExpression() =>
++
++    private static Expression<Func<CompanyInvitation, CompanyInvitationDto>> ToInvitationDtoExpression() =>
+         x => new CompanyInvitationDto(
+             x.Id,
+             x.CompanyId,
+             x.Email,
+             x.Role,
+             x.Status,
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -534,65 +534,133 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+             x.Topic == "company.invitation.resent"));
+     }
+ 
+     [Fact]
+     public async Task OutboxProcessor_does_not_send_duplicate_delivery_for_current_token()
+     {
+         var sender = ResetInvitationSender();
+         var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
+ 
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         await ownerClient.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+             new { Email = "idempotent@example.com", Role = "employee" });
+ 
+         using (var firstProcessingScope = _factory.Services.CreateScope())
+         {
+             var processor = firstProcessingScope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+             await processor.DispatchPendingAsync(CancellationToken.None);
+         }
+ 
+         Guid duplicateMessageId;
+         using (var duplicateScope = _factory.Services.CreateScope())
+         {
+             var dbContext = duplicateScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+             var originalDeliveryMessage = await dbContext.CompanyOutboxMessages.AsNoTracking().SingleAsync(x =>
+                 x.CompanyId == seed.CompanyId &&
+                 x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
+ 
+             duplicateMessageId = Guid.NewGuid();
+             dbContext.CompanyOutboxMessages.Add(new CompanyOutboxMessage(
+                 duplicateMessageId,
+                 seed.CompanyId,
+                 CompanyOutboxTopics.InvitationDeliveryRequested,
+                 originalDeliveryMessage.PayloadJson,
+                 originalDeliveryMessage.CorrelationId));
+             await dbContext.SaveChangesAsync();
+         }
+ 
+         using (var secondProcessingScope = _factory.Services.CreateScope())
+         {
+             var processor = secondProcessingScope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+             await processor.DispatchPendingAsync(CancellationToken.None);
+         }
+ 
+         using var assertionScope = _factory.Services.CreateScope();
+         var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         var invitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "idempotent@example.com");
+         var duplicateMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == duplicateMessageId);
+ 
++        Assert.Equal(CompanyInvitationDeliveryStatus.Delivered, invitation.DeliveryStatus);
++        Assert.NotNull(duplicateMessage.ProcessedUtc);
++        Assert.Equal(1, sender.AttemptCount);
++        Assert.Single(sender.Sent);
++    }
++
++    [Fact]
++    public async Task ReinviteUser_resends_existing_pending_invitation_with_new_token()
++    {
++        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
++
++        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var firstResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/invitations",
++            new { Email = "resend@example.com", Role = "employee" });
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++        var firstPayload = await firstResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
++        Assert.NotNull(firstPayload);
++
++        var secondResponse = await client.PostAsync(
++            $"/api/companies/{seed.CompanyId}/invitations/{firstPayload!.Invitation.InvitationId}/resend",
++            content: null);
++
++        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
++
++        var secondPayload = await secondResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
++        Assert.NotNull(secondPayload);
++        Assert.True(secondPayload!.IsReinvite);
++        Assert.Equal(firstPayload.Invitation.InvitationId, secondPayload.Invitation.InvitationId);
++        Assert.NotEqual(firstPayload.AcceptanceToken, secondPayload.AcceptanceToken);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var invitation = await dbContext.CompanyInvitations.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Email == "resend@example.com");
++
++        Assert.Equal(CompanyInvitationStatus.Pending, invitation.Status);
++        Assert.Equal(2, await dbContext.CompanyOutboxMessages.CountAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested));
++        Assert.True(await dbContext.CompanyOutboxMessages.AnyAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Topic == CompanyOutboxTopics.InvitationResent));
++    }
++
+     [Fact]
+-    public async Task InviteUser_rejects_existing_active_membership_for_same_company()
++    public async Task ReinviteUser_rejects_revoked_invitation()
+     {
+-        var seed = await SeedMembershipAdministrationScenarioAsync();
++        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
+ 
+-        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+-        Assert.Equal(CompanyInvitationDeliveryStatus.Delivered, invitation.DeliveryStatus);
+-        Assert.NotNull(duplicateMessage.ProcessedUtc);
+-        Assert.Equal(1, sender.AttemptCount);
+-        Assert.Single(sender.Sent);
+-        var response = await client.PostAsJsonAsync(
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var invitationResponse = await ownerClient.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/invitations",
++            new { Email = "revoked-resend@example.com", Role = "employee" });
++
++        var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
++        Assert.NotNull(invitation);
++
++        var revokeResponse = await ownerClient.PostAsync(
++            $"/api/companies/{seed.CompanyId}/invitations/{invitation!.Invitation.InvitationId}/revoke",
++            content: null);
++
++        Assert.Equal(HttpStatusCode.OK, revokeResponse.StatusCode);
++
++        var reinviteResponse = await ownerClient.PostAsync(
++            $"/api/companies/{seed.CompanyId}/invitations/{invitation.Invitation.InvitationId}/resend",
++            content: null);
++
++        Assert.Equal(HttpStatusCode.BadRequest, reinviteResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task RevokeInvitation_is_idempotent_for_already_revoked_invitation()
++    {
++        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
++
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var invitationResponse = await ownerClient.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/invitations",
++            new { Email = "revoke-twice@example.com", Role = "employee" });
++
++        var invitation = await invitationResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
++        Assert.NotNull(invitation);
++
++        var firstRevokeResponse = await ownerClient.PostAsync(
++            $"/api/companies/{seed.CompanyId}/invitations/{invitation!.Invitation.InvitationId}/revoke",
++            content: null);
++        var secondRevokeResponse = await ownerClient.PostAsync(
++            $"/api/companies/{seed.CompanyId}/invitations/{invitation.Invitation.InvitationId}/revoke",
++            content: null);
++
++        Assert.Equal(HttpStatusCode.OK, firstRevokeResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondRevokeResponse.StatusCode);
++
++        var revokedInvitation = await secondRevokeResponse.Content.ReadFromJsonAsync<InvitationResponse>();
++        Assert.NotNull(revokedInvitation);
++        Assert.Equal("revoked", revokedInvitation!.Status);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.Equal(1, await dbContext.CompanyOutboxMessages.CountAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Topic == CompanyOutboxTopics.InvitationRevoked));
++    }
++
++    [Fact]
++    public async Task InviteUser_rejects_existing_active_membership_for_same_company()
++    {
++        var seed = await SeedMembershipAdministrationScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+             new { Email = "member@example.com", Role = "employee" });
+ 
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+END_OF_PATCH
