@@ -1,0 +1,676 @@
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+@@ -0,0 +1,219 @@
++using System.IO;
++using System.Net.Sockets;
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Infrastructure.Observability;
++
++namespace VirtualCompany.Infrastructure.BackgroundJobs;
++
++public enum BackgroundJobFailureClassification
++{
++    Transient = 0,
++    Permanent = 1
++}
++
++public enum BackgroundJobExecutionOutcome
++{
++    Succeeded = 0,
++    RetryScheduled = 1,
++    PermanentFailure = 2,
++    RetryExhausted = 3
++}
++
++public class PermanentBackgroundJobException : Exception
++{
++    public PermanentBackgroundJobException(string message)
++        : base(message)
++    {
++    }
++
++    public PermanentBackgroundJobException(string message, Exception innerException)
++        : base(message, innerException)
++    {
++    }
++}
++
++public sealed class BackgroundJobExecutionContext
++{
++    public BackgroundJobExecutionContext(
++        string jobName,
++        int attempt,
++        int maxAttempts,
++        Guid? companyId = null,
++        string? correlationId = null)
++    {
++        if (string.IsNullOrWhiteSpace(jobName))
++        {
++            throw new ArgumentException("JobName is required.", nameof(jobName));
++        }
++
++        if (attempt <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(attempt), "Attempt must be greater than zero.");
++        }
++
++        if (maxAttempts <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(maxAttempts), "MaxAttempts must be greater than zero.");
++        }
++
++        JobName = jobName.Trim();
++        Attempt = attempt;
++        MaxAttempts = maxAttempts;
++        CompanyId = companyId;
++        CorrelationId = string.IsNullOrWhiteSpace(correlationId) ? null : correlationId.Trim();
++    }
++
++    public string JobName { get; }
++    public int Attempt { get; }
++    public int MaxAttempts { get; }
++    public Guid? CompanyId { get; }
++    public string? CorrelationId { get; }
++}
++
++public sealed record BackgroundJobExecutionResult(
++    BackgroundJobExecutionOutcome Outcome,
++    string CorrelationId,
++    string? ErrorMessage,
++    string? ExceptionType,
++    TimeSpan? RetryDelay)
++{
++    public static BackgroundJobExecutionResult Success(string correlationId) =>
++        new(BackgroundJobExecutionOutcome.Succeeded, correlationId, null, null, null);
++
++    public static BackgroundJobExecutionResult RetryScheduled(string correlationId, string errorMessage, string exceptionType, TimeSpan retryDelay) =>
++        new(BackgroundJobExecutionOutcome.RetryScheduled, correlationId, errorMessage, exceptionType, retryDelay);
++
++    public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string errorMessage, string exceptionType) =>
++        new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, errorMessage, exceptionType, null);
++
++    public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string errorMessage, string exceptionType) =>
++        new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, errorMessage, exceptionType, null);
++}
++
++public interface IBackgroundJobFailureClassifier
++{
++    BackgroundJobFailureClassification Classify(Exception exception);
++}
++
++public interface IBackgroundJobExecutor
++{
++    Task<BackgroundJobExecutionResult> ExecuteAsync(
++        BackgroundJobExecutionContext context,
++        Func<CancellationToken, Task> handler,
++        TimeSpan retryDelay,
++        CancellationToken cancellationToken);
++}
++
++public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailureClassifier
++{
++    public BackgroundJobFailureClassification Classify(Exception exception)
++    {
++        foreach (var current in Enumerate(exception))
++        {
++            if (current is PermanentBackgroundJobException or ArgumentException or JsonException or NotSupportedException)
++            {
++                return BackgroundJobFailureClassification.Permanent;
++            }
++
++            if (current is TimeoutException or HttpRequestException or IOException or SocketException or DbUpdateException)
++            {
++                return BackgroundJobFailureClassification.Transient;
++            }
++        }
++
++        return BackgroundJobFailureClassification.Transient;
++    }
++
++    private static IEnumerable<Exception> Enumerate(Exception exception)
++    {
++        if (exception is AggregateException aggregateException)
++        {
++            foreach (var innerException in aggregateException.Flatten().InnerExceptions)
++            {
++                foreach (var nestedException in Enumerate(innerException))
++                {
++                    yield return nestedException;
++                }
++            }
++
++            yield break;
++        }
++
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            yield return current;
++        }
++    }
++}
++
++public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
++{
++    private readonly ILogger<BackgroundJobExecutor> _logger;
++    private readonly IBackgroundJobFailureClassifier _failureClassifier;
++
++    public BackgroundJobExecutor(
++        ILogger<BackgroundJobExecutor> logger,
++        IBackgroundJobFailureClassifier failureClassifier)
++    {
++        _logger = logger;
++        _failureClassifier = failureClassifier;
++    }
++
++    public async Task<BackgroundJobExecutionResult> ExecuteAsync(
++        BackgroundJobExecutionContext context,
++        Func<CancellationToken, Task> handler,
++        TimeSpan retryDelay,
++        CancellationToken cancellationToken)
++    {
++        var effectiveCorrelationId = string.IsNullOrWhiteSpace(context.CorrelationId)
++            ? Guid.NewGuid().ToString("N")
++            : context.CorrelationId;
++        var normalizedRetryDelay = retryDelay < TimeSpan.Zero ? TimeSpan.Zero : retryDelay;
++
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForBackgroundJob(
++            context.JobName,
++            context.Attempt,
++            context.MaxAttempts,
++            effectiveCorrelationId,
++            context.CompanyId));
++
++        try
++        {
++            await handler(cancellationToken);
++
++            if (context.Attempt > 1)
++            {
++                _logger.LogInformation(
++                    "Background job {JobName} succeeded on attempt {Attempt} of {MaxAttempts}.",
++                    context.JobName,
++                    context.Attempt,
++                    context.MaxAttempts);
++            }
++
++            return BackgroundJobExecutionResult.Success(effectiveCorrelationId);
++        }
++        catch (OperationCanceledException)
++        {
++            throw;
++        }
++        catch (Exception ex)
++        {
++            var errorMessage = TrimError(ex.Message);
++            var exceptionType = ex.GetType().FullName ?? ex.GetType().Name;
++            var classification = _failureClassifier.Classify(ex);
++
++            if (classification == BackgroundJobFailureClassification.Permanent)
++            {
++                _logger.LogError(
++                    ex,
++                    "Background job {JobName} failed permanently on attempt {Attempt} of {MaxAttempts}. ExceptionType: {ExceptionType}.",
++                    context.JobName,
++                    context.Attempt,
++                    context.MaxAttempts,
++                    exceptionType);
++                return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType);
++            }
++
++            if (context.Attempt >= context.MaxAttempts)
++            {
++                _logger.LogError(
++                    ex,
++                    "Background job {JobName} exhausted retries on attempt {Attempt} of {MaxAttempts}. ExceptionType: {ExceptionType}.",
++                    context.JobName,
++                    context.Attempt,
++                    context.MaxAttempts,
++                    exceptionType);
++                return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType);
++            }
++
++            _logger.LogWarning(
++                ex,
++                "Background job {JobName} failed with a retryable error on attempt {Attempt} of {MaxAttempts}. Retrying in {RetryDelaySeconds} seconds. ExceptionType: {ExceptionType}.",
++                context.JobName,
++                context.Attempt,
++                context.MaxAttempts,
++                normalizedRetryDelay.TotalSeconds,
++                exceptionType);
++            return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay);
++        }
++    }
++
++    private static string TrimError(string? errorMessage) =>
++        string.IsNullOrWhiteSpace(errorMessage) ? "Unhandled background job failure." : errorMessage.Trim()[..Math.Min(errorMessage.Trim().Length, 2000)];
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -53,7 +54,7 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+     }
+ }
+ 
+-internal sealed class CompanyOutboxPermanentException : Exception
++internal sealed class CompanyOutboxPermanentException : PermanentBackgroundJobException
+ {
+     public CompanyOutboxPermanentException(string message)
+         : base(message)
+@@ -73,6 +74,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+ 
+     public CompanyOutboxProcessor(
+@@ -80,10 +82,12 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+         IOptions<CompanyOutboxDispatcherOptions> options,
++        IBackgroundJobExecutor backgroundJobExecutor,
+         ILogger<CompanyOutboxProcessor> logger)
+     {
+         _dbContext = dbContext;
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+         _options = options;
++        _backgroundJobExecutor = backgroundJobExecutor;
+         _logger = logger;
+     }
+ 
+@@ -95,45 +99,34 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         {
+             using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(message.Id, message.CompanyId, message.CorrelationId ?? message.ClaimToken));
+ 
+-            try
++            var attempt = message.AttemptCount + 1;
++            var execution = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    $"company-outbox:{message.Topic}",
++                    attempt,
++                    MaxAttempts,
++                    message.CompanyId,
++                    message.CorrelationId ?? message.ClaimToken),
++                innerCancellationToken => DispatchAsync(message, innerCancellationToken),
++                GetRetryDelay(attempt),
++                cancellationToken);
++
++            switch (execution.Outcome)
+             {
+-                await DispatchAsync(message, cancellationToken);
+-                message.MarkProcessed();
+-                await _dbContext.SaveChangesAsync(cancellationToken);
+-                handledCount++;
+-            }
+-            catch (CompanyOutboxPermanentException ex)
+-            {
+-                _logger.LogError(ex, "Company outbox message {OutboxMessageId} failed permanently.", message.Id);
+-                message.MarkDiscarded(ex.Message);
+-                await _dbContext.SaveChangesAsync(cancellationToken);
+-                handledCount++;
+-            }
+-            catch (Exception ex)
+-            {
+-                var nextAttempt = message.AttemptCount + 1;
+-                var error = TrimError(ex.Message);
+-
+-                if (nextAttempt >= MaxAttempts)
+-                {
+-                    _logger.LogError(
+-                        ex,
+-                        "Company outbox message {OutboxMessageId} exhausted {MaxAttempts} attempts and will be discarded.",
+-                        message.Id,
+-                        MaxAttempts);
+-                    message.MarkDiscarded(error);
++                case BackgroundJobExecutionOutcome.Succeeded:
++                    message.MarkProcessed();
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
+-                }
+-                else
+-                {
+-                    var retryAtUtc = DateTime.UtcNow.Add(RetryDelay);
+-                    _logger.LogWarning(
+-                        ex,
+-                        "Company outbox message {OutboxMessageId} failed on attempt {AttemptCount} of {MaxAttempts}. Retrying at {RetryAtUtc}.",
+-                        message.Id,
+-                        nextAttempt,
+-                        MaxAttempts,
+-                        retryAtUtc);
+-                    message.ScheduleRetry(retryAtUtc, error);
++                    break;
++                case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.RetryExhausted:
++                    message.MarkDiscarded(ResolveFailureMessage(execution));
++                    await _dbContext.SaveChangesAsync(cancellationToken);
++                    handledCount++;
++                    break;
++                case BackgroundJobExecutionOutcome.RetryScheduled:
++                    message.ScheduleRetry(
++                        DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero),
++                        ResolveFailureMessage(execution));
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+-                }
++                    break;
+             }
+         }
+ 
+@@ -142,7 +135,20 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+     private int BatchSize => Math.Max(1, _options.Value.BatchSize);
+     private int MaxAttempts => Math.Max(1, _options.Value.MaxAttempts);
+-    private TimeSpan RetryDelay => TimeSpan.FromSeconds(Math.Max(0, _options.Value.RetryDelaySeconds));
++
++    private TimeSpan GetRetryDelay(int attempt)
++    {
++        var baseDelaySeconds = Math.Max(0, _options.Value.RetryDelaySeconds);
++        if (baseDelaySeconds == 0)
++        {
++            return TimeSpan.Zero;
++        }
++
++        var multiplier = Math.Pow(2d, Math.Max(0, attempt - 1));
++        var delaySeconds = Math.Min(baseDelaySeconds * multiplier, TimeSpan.FromMinutes(15).TotalSeconds);
++        return TimeSpan.FromSeconds(delaySeconds);
++    }
++
++    private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) => string.IsNullOrWhiteSpace(execution.ErrorMessage) ? "Unhandled company outbox processing failure." : execution.ErrorMessage;
+     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.Value.ClaimTimeoutSeconds));
+ 
+     private async Task<IReadOnlyList<CompanyOutboxMessage>> ClaimBatchAsync(CancellationToken cancellationToken)
+@@ -197,18 +203,6 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         }
+     }
+ 
+-    private static string TrimError(string? error)
+-    {
+-        if (string.IsNullOrWhiteSpace(error))
+-        {
+-            return "Unhandled company outbox processing failure.";
+-        }
+-
+-        var trimmed = error.Trim();
+-        return trimmed.Length > 2000 ? trimmed[..2000] : trimmed;
+-    }
+-
+-    private static JsonSerializerOptions CreateSerializerOptions()
+     private static JsonSerializerOptions CreateSerializerOptions()
+     {
+         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+@@ -388,10 +382,14 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundService
+ 
+         _logger.LogInformation(
+-            "Company outbox dispatcher started with batch size {BatchSize} and poll interval {PollIntervalSeconds} seconds.",
++            "Company outbox dispatcher started with batch size {BatchSize}, poll interval {PollIntervalSeconds} seconds, max attempts {MaxAttempts}, and retry base delay {RetryDelaySeconds} seconds.",
+             batchSize,
+-            pollInterval.TotalSeconds);
++            pollInterval.TotalSeconds,
++            Math.Max(1, _options.Value.MaxAttempts),
++            Math.Max(0, _options.Value.RetryDelaySeconds));
+ 
+         while (!stoppingToken.IsCancellationRequested)
+         {
+             var executionCorrelationId = Guid.NewGuid().ToString("N");
+             using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(executionCorrelationId));
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Companies;
+@@ -33,6 +34,8 @@ public static class DependencyInjection
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
+ 
++        services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
++        services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+--- a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+@@ -67,6 +67,24 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+         var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
+         {
+             ["CorrelationId"] = correlationId
++        };
++
++        if (companyId.HasValue)
++        {
++            properties["CompanyId"] = companyId.Value;
++        }
++
++        return properties;
++    }
++
++    public static IReadOnlyDictionary<string, object?> ForBackgroundJob(string jobName, int attempt, int maxAttempts, string correlationId, Guid? companyId = null)
++    {
++        var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
++        {
++            ["JobName"] = jobName,
++            ["Attempt"] = attempt,
++            ["MaxAttempts"] = maxAttempts,
++            ["CorrelationId"] = correlationId
+         };
+ 
+         if (companyId.HasValue)
+diff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+@@ -0,0 +1,142 @@
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using Xunit;
++using Xunit.Sdk;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BackgroundJobExecutorTests
++{
++    [Fact]
++    public async Task ExecuteAsync_schedules_retry_for_transient_failure_and_enriches_scope()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++        var companyId = Guid.NewGuid();
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("company-outbox:delivery", 1, 3, companyId, "corr-123"),
++            _ => throw new TimeoutException("Temporary timeout."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.RetryScheduled, result.Outcome);
++        Assert.Equal("corr-123", result.CorrelationId);
++        Assert.Equal("System.TimeoutException", result.ExceptionType);
++        Assert.Equal(TimeSpan.FromSeconds(5), result.RetryDelay);
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Warning, entry.LogLevel);
++        Assert.Equal("company-outbox:delivery", AssertScopeValue(entry.Scope, "JobName"));
++        Assert.Equal(1, AssertScopeValue(entry.Scope, "Attempt"));
++        Assert.Equal(3, AssertScopeValue(entry.Scope, "MaxAttempts"));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal("corr-123", AssertScopeValue(entry.Scope, "CorrelationId"));
++    }
++
++    [Fact]
++    public async Task ExecuteAsync_marks_permanent_failure_without_retry()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("company-outbox:unsupported-topic", 1, 3, correlationId: "corr-permanent"),
++            _ => throw new PermanentBackgroundJobException("Unsupported payload."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
++        Assert.Equal("Unsupported payload.", result.ErrorMessage);
++        Assert.Equal("System.TimeoutException", Assert.NotEqual("System.TimeoutException", result.ExceptionType));
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Error, entry.LogLevel);
++        Assert.Equal("company-outbox:unsupported-topic", AssertScopeValue(entry.Scope, "JobName"));
++        Assert.Equal("corr-permanent", AssertScopeValue(entry.Scope, "CorrelationId"));
++    }
++
++    [Fact]
++    public async Task ExecuteAsync_marks_retry_exhausted_when_transient_failure_reaches_max_attempts()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("company-outbox:delivery", 3, 3, correlationId: "corr-exhausted"),
++            _ => throw new TimeoutException("Still timing out."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.RetryExhausted, result.Outcome);
++        Assert.Equal("System.TimeoutException", result.ExceptionType);
++        Assert.Null(result.RetryDelay);
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Error, entry.LogLevel);
++        Assert.Equal(3, AssertScopeValue(entry.Scope, "Attempt"));
++        Assert.Equal(3, AssertScopeValue(entry.Scope, "MaxAttempts"));
++    }
++
++    [Fact]
++    public async Task ExecuteAsync_logs_success_after_retry_and_generates_correlation_when_missing()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++        var companyId = Guid.NewGuid();
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("company-outbox:delivery", 2, 3, companyId),
++            _ => Task.CompletedTask,
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.Succeeded, result.Outcome);
++        Assert.False(string.IsNullOrWhiteSpace(result.CorrelationId));
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Information, entry.LogLevel);
++        Assert.Equal("company-outbox:delivery", AssertScopeValue(entry.Scope, "JobName"));
++        Assert.Equal(2, AssertScopeValue(entry.Scope, "Attempt"));
++        Assert.Equal(3, AssertScopeValue(entry.Scope, "MaxAttempts"));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal(result.CorrelationId, AssertScopeValue(entry.Scope, "CorrelationId"));
++    }
++
++    [Fact]
++    public async Task ExecuteAsync_does_not_swallow_cancellation()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++        using var cancellationTokenSource = new CancellationTokenSource();
++        cancellationTokenSource.Cancel();
++
++        await Assert.ThrowsAsync<OperationCanceledException>(() => executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("company-outbox:delivery", 1, 3),
++            _ => Task.FromCanceled(cancellationTokenSource.Token),
++            TimeSpan.Zero,
++            cancellationTokenSource.Token));
++
++        Assert.Empty(logger.Entries);
++    }
++
++    private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
++        scope.TryGetValue(key, out var value)
++            ? value
++            : throw new XunitException($"Expected scope value '{key}'.");
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -269,7 +269,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+         await ownerClient.PostAsJsonAsync(
+-            $"/api/companies/{seed.CompanyId}/invitations",
++            $"/api/companies/{seed.CompanyId}/invitations",
+             new { Email = "idempotent@example.com", MembershipRole = "employee" });
+ 
+         using (var firstScope = _factory.Services.CreateScope())
+@@ -281,7 +281,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         using (var firstAssertionScope = _factory.Services.CreateScope())
+         {
+             var dbContext = firstAssertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+-            var invitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "retry@example.com");
++            var invitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "idempotent@example.com");
+             var deliveryMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x =>
+                 x.CompanyId == seed.CompanyId &&
+                 x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
+@@ -302,7 +302,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+ 
+         using var secondAssertionScope = _factory.Services.CreateScope();
+         var secondDbContext = secondAssertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+-        var deliveredInvitation = await secondDbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "retry@example.com");
++        var deliveredInvitation = await secondDbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "idempotent@example.com");
+         var processedMessage = await secondDbContext.CompanyOutboxMessages.SingleAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
+@@ -485,26 +485,29 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.AddRange(
+                 new User(ownerUserId, "owner@example.com", "Owner", "dev-header", "owner"),
+                 new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
+ 
+             dbContext.Companies.Add(new Company(companyId, "Company A"));
+             dbContext.CompanyMemberships.AddRange(
+-            new { Email = "pending@example.com", MembershipRole = "manager" });
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(employeeMembershipId, companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active, membershipAccessConfigurationJson: membershipAccessConfigurationJson));
++            return Task.CompletedTask;
++        });
+ 
+-        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+-        var secondPayload = await secondResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
+-        Assert.NotNull(secondPayload);
+-        Assert.True(secondPayload!.IsReinvite);
+-        Assert.Equal(firstPayload!.Invitation.InvitationId, secondPayload.Invitation.InvitationId);
+-        Assert.Equal("manager", secondPayload.Invitation.MembershipRole);
++        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var response = await client.PatchAsJsonAsync(
++            $"/api/companies/{companyId}/memberships/{employeeMembershipId}/role",
++            new { MembershipRole = "admin" });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.Id == employeeMembershipId);
+         Assert.Equal(CompanyMembershipRole.Admin, membership.Role);
+         Assert.Equal(membershipAccessConfigurationJson, membership.MembershipAccessConfigurationJson);
+     }
+ 
+-    }
+-
+     [Fact]
+     public async Task InviteUser_reinvites_existing_pending_invitation_instead_of_creating_duplicate()
+     {
+END_OF_PATCH

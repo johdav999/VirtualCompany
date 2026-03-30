@@ -1,0 +1,1103 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Observability;
+ 
+ var builder = WebApplication.CreateBuilder(args);
+ const string DevelopmentCorsPolicy = "DevelopmentWebClient";
+@@ -31,9 +32,11 @@ builder.Services.AddCors(options =>
+ 
+ builder.Services.AddEndpointsApiExplorer();
+ builder.Services.AddSwaggerGen();
+ builder.Services.AddProblemDetails();
++builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+ builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
+ builder.Services.AddCompanyAuthorization();
++builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
+ 
+ var app = builder.Build();
+@@ -43,12 +46,15 @@ if (app.Environment.IsDevelopment())
+ }
+ 
+ app.UseExceptionHandler();
++app.UseMiddleware<CorrelationIdMiddleware>();
+ app.UseHttpsRedirection();
+ app.UseRouting();
++app.UseRateLimiter();
+ app.UseCors(DevelopmentCorsPolicy);
+ app.UseAuthentication();
+ app.UseMiddleware<CompanyContextResolutionMiddleware>();
++app.UseMiddleware<TenantLoggingScopeMiddleware>();
+ app.UseAuthorization();
+ 
+ using (var scope = app.Services.CreateScope())
+@@ -68,6 +74,7 @@ using (var scope = app.Services.CreateScope())
+     await templateSeeder.SeedAsync();
+ }
+ 
++app.MapVirtualCompanyHealthEndpoints();
+ app.MapControllers();
+ 
+ app.Run();
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -1,12 +1,36 @@
+ {
+   "ConnectionStrings": {
+     "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres"
+   },
++  "Observability": {
++    "CorrelationId": {
++      "HeaderName": "X-Correlation-ID"
++    },
++    "Health": {
++      "Path": "/health",
++      "LivenessPath": "/health/live",
++      "ReadinessPath": "/health/ready"
++    },
++    "RateLimiting": {
++      "Enabled": true,
++      "Chat": {
++        "PermitLimit": 30,
++        "WindowSeconds": 60,
++        "QueueLimit": 0
++      },
++      "Tasks": {
++        "PermitLimit": 30,
++        "WindowSeconds": 60,
++        "QueueLimit": 0
++      }
++    },
++    "Redis": {
++      "ConnectionString": ""
++    },
++    "ObjectStorage": {
++      "Enabled": false,
++      "ServiceUri": "",
++      "HealthPath": "/"
++    }
++  },
+   "Logging": {
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+@@ -14,4 +38,4 @@
+   },
+   "AllowedHosts": "*"
+ }
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -1,12 +1,36 @@
+ {
+   "ConnectionStrings": {
+     "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres"
+   },
++  "Observability": {
++    "CorrelationId": {
++      "HeaderName": "X-Correlation-ID"
++    },
++    "Health": {
++      "Path": "/health",
++      "LivenessPath": "/health/live",
++      "ReadinessPath": "/health/ready"
++    },
++    "RateLimiting": {
++      "Enabled": false,
++      "Chat": {
++        "PermitLimit": 120,
++        "WindowSeconds": 60,
++        "QueueLimit": 0
++      },
++      "Tasks": {
++        "PermitLimit": 120,
++        "WindowSeconds": 60,
++        "QueueLimit": 0
++      }
++    },
++    "Redis": {
++      "ConnectionString": ""
++    },
++    "ObjectStorage": {
++      "Enabled": false,
++      "ServiceUri": "",
++      "HealthPath": "/"
++    }
++  },
+   "Logging": {
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+@@ -14,5 +38,4 @@
+   },
+   "AllowedHosts": "*"
+ }
+-}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 7777777..8888888 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -9,6 +9,7 @@ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure;
+@@ -29,6 +30,7 @@ public static class DependencyInjection
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
++        services.AddVirtualCompanyObservability(configuration);
+ 
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+index 9999999..aaaaaaa 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -8,6 +8,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Observability;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+@@ -20,16 +21,19 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public CompanyMembershipAdministrationService(
+         VirtualCompanyDbContext dbContext,
+         ICurrentUserAccessor currentUserAccessor,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        ICompanyOutboxEnqueuer outboxEnqueuer)
++        ICompanyOutboxEnqueuer outboxEnqueuer,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _dbContext = dbContext;
+         _currentUserAccessor = currentUserAccessor;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _outboxEnqueuer = outboxEnqueuer;
++        _correlationContextAccessor = correlationContextAccessor;
+     }
+@@ -580,8 +584,10 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             .Replace('+', '-')
+             .Replace('/', '_');
+     }
+ 
+-    private static string CreateCorrelationId() =>
+-        Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
++    private string CreateCorrelationId() =>
++        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
++            : _correlationContextAccessor.CorrelationId!;
+ 
+     private static Expression<Func<CompanyInvitation, CompanyInvitationDto>> ToInvitationDtoExpression() =>
+         x => new CompanyInvitationDto(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index bbbbbbb..ccccccc 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -117,19 +117,26 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             {
+                 var nextAttempt = message.AttemptCount + 1;
+                 var error = TrimError(ex.Message);
+-
+-                _logger.LogWarning(ex, "Company outbox message {OutboxMessageId} failed on attempt {AttemptCount}.", message.Id, nextAttempt);
+ 
+                 if (nextAttempt >= MaxAttempts)
+                 {
++                    _logger.LogError(
++                        ex,
++                        "Company outbox message {OutboxMessageId} exhausted {MaxAttempts} attempts and will be discarded.",
++                        message.Id,
++                        MaxAttempts);
+                     message.MarkDiscarded(error);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
+                 }
+                 else
+                 {
+-                    message.ScheduleRetry(DateTime.UtcNow.Add(RetryDelay), error);
++                    var retryAtUtc = DateTime.UtcNow.Add(RetryDelay);
++                    _logger.LogWarning(
++                        ex,
++                        "Company outbox message {OutboxMessageId} failed on attempt {AttemptCount} of {MaxAttempts}. Retrying at {RetryAtUtc}.",
++                        message.Id,
++                        nextAttempt,
++                        MaxAttempts,
++                        retryAtUtc);
++                    message.ScheduleRetry(retryAtUtc, error);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                 }
+             }
+@@ -381,7 +388,11 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+         var pollInterval = TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollIntervalSeconds));
+         var batchSize = Math.Max(1, _options.Value.BatchSize);
+ 
+-        _logger.LogInformation("Company outbox dispatcher started.");
++        _logger.LogInformation(
++            "Company outbox dispatcher started with batch size {BatchSize} and poll interval {PollIntervalSeconds} seconds.",
++            batchSize,
++            pollInterval.TotalSeconds);
+ 
+         while (!stoppingToken.IsCancellationRequested)
+         {
+@@ -390,6 +401,11 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+                 using var scope = _serviceScopeFactory.CreateScope();
+                 var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+                 var handledCount = await processor.DispatchPendingAsync(stoppingToken);
++                if (handledCount > 0)
++                {
++                    _logger.LogInformation("Company outbox dispatcher processed {HandledCount} message(s) in the current cycle.", handledCount);
++                }
++
+ 
+                 if (handledCount < batchSize)
+                 {
+@@ -403,6 +419,8 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+                 await Task.Delay(pollInterval, stoppingToken);
+             }
+         }
++
++        _logger.LogInformation("Company outbox dispatcher stopped.");
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs b/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs
+new file mode 100644
+index 0000000..ddddddd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs
+@@ -0,0 +1,62 @@
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++public sealed class CorrelationIdMiddleware : IMiddleware
++{
++    public const string HttpContextItemKey = "VirtualCompany.CorrelationId";
++    private const int MaxCorrelationIdLength = 128;
++
++    private readonly IOptions<ObservabilityOptions> _options;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly ILogger<CorrelationIdMiddleware> _logger;
++
++    public CorrelationIdMiddleware(
++        IOptions<ObservabilityOptions> options,
++        ICorrelationContextAccessor correlationContextAccessor,
++        ILogger<CorrelationIdMiddleware> logger)
++    {
++        _options = options;
++        _correlationContextAccessor = correlationContextAccessor;
++        _logger = logger;
++    }
++
++    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
++    {
++        var headerName = GetHeaderName();
++        var correlationId = ResolveCorrelationId(context, headerName);
++
++        _correlationContextAccessor.CorrelationId = correlationId;
++        context.Items[HttpContextItemKey] = correlationId;
++        context.TraceIdentifier = correlationId;
++        context.Response.Headers[headerName] = correlationId;
++
++        using var scope = _logger.BeginScope(new Dictionary<string, object?>
++        {
++            ["CorrelationId"] = correlationId
++        });
++
++        await next(context);
++    }
++
++    public static string? GetCorrelationId(HttpContext context)
++    {
++        if (context.Items.TryGetValue(HttpContextItemKey, out var value) && value is string correlationId)
++        {
++            return correlationId;
++        }
++
++        return null;
++    }
++
++    private string GetHeaderName() =>
++        string.IsNullOrWhiteSpace(_options.Value.CorrelationId.HeaderName)
++            ? "X-Correlation-ID"
++            : _options.Value.CorrelationId.HeaderName.Trim();
++
++    private static string ResolveCorrelationId(HttpContext context, string headerName)
++    {
++        var incomingValue = context.Request.Headers[headerName].FirstOrDefault()?.Trim();
++        if (string.IsNullOrWhiteSpace(incomingValue))
++        {
++            return Guid.NewGuid().ToString("N");
++        }
++
++        return incomingValue.Length > MaxCorrelationIdLength ? incomingValue[..MaxCorrelationIdLength] : incomingValue;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs b/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs
+new file mode 100644
+index 0000000..eeeeeee
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs
+@@ -0,0 +1,172 @@
++using System.Net.Http;
++using System.Net.Sockets;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Diagnostics.HealthChecks;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++public sealed class ApplicationHealthCheck : IHealthCheck
++{
++    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
++        Task.FromResult(HealthCheckResult.Healthy("Application process is running."));
++}
++
++public sealed class DatabaseHealthCheck : IHealthCheck
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public DatabaseHealthCheck(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
++    {
++        try
++        {
++            if (!_dbContext.Database.IsRelational())
++            {
++                return HealthCheckResult.Healthy("Database health check is using a non-relational provider.");
++            }
++
++            var canConnect = await _dbContext.Database.CanConnectAsync(cancellationToken);
++            return canConnect
++                ? HealthCheckResult.Healthy("PostgreSQL connection succeeded.")
++                : HealthCheckResult.Unhealthy("PostgreSQL connection failed.");
++        }
++        catch (Exception ex)
++        {
++            return HealthCheckResult.Unhealthy("PostgreSQL health check failed.", ex);
++        }
++    }
++}
++
++public sealed class RedisTcpHealthCheck : IHealthCheck
++{
++    private readonly IOptions<ObservabilityOptions> _options;
++
++    public RedisTcpHealthCheck(IOptions<ObservabilityOptions> options)
++    {
++        _options = options;
++    }
++
++    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
++    {
++        var settings = _options.Value.Redis;
++        if (string.IsNullOrWhiteSpace(settings.ConnectionString))
++        {
++            return HealthCheckResult.Healthy("Redis health check is not configured.");
++        }
++
++        if (!TryParseEndpoint(settings.ConnectionString, out var host, out var port))
++        {
++            return HealthCheckResult.Unhealthy("Redis connection string could not be parsed.");
++        }
++
++        try
++        {
++            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
++            timeoutSource.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, settings.ConnectTimeoutSeconds)));
++            using var client = new TcpClient();
++            await client.ConnectAsync(host, port, timeoutSource.Token);
++            return HealthCheckResult.Healthy($"Redis endpoint {host}:{port} is reachable.");
++        }
++        catch (Exception ex)
++        {
++            return HealthCheckResult.Unhealthy("Redis connectivity check failed.", ex);
++        }
++    }
++
++    private static bool TryParseEndpoint(string connectionString, out string host, out int port)
++    {
++        host = string.Empty;
++        port = 6379;
++
++        var endpointToken = connectionString
++            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .FirstOrDefault(part => !part.Contains('='));
++
++        if (string.IsNullOrWhiteSpace(endpointToken))
++        {
++            return false;
++        }
++
++        if (Uri.TryCreate(endpointToken, UriKind.Absolute, out var uri))
++        {
++            host = uri.Host;
++            port = uri.Port > 0 ? uri.Port : 6379;
++            return !string.IsNullOrWhiteSpace(host);
++        }
++
++        var hostParts = endpointToken.Split(':', StringSplitOptions.TrimEntries);
++        if (hostParts.Length == 1)
++        {
++            host = hostParts[0];
++            return !string.IsNullOrWhiteSpace(host);
++        }
++
++        if (hostParts.Length == 2 && int.TryParse(hostParts[1], out var parsedPort))
++        {
++            host = hostParts[0];
++            port = parsedPort;
++            return !string.IsNullOrWhiteSpace(host);
++        }
++
++        return false;
++    }
++}
++
++public sealed class ObjectStorageHealthCheck : IHealthCheck
++{
++    private readonly IOptions<ObservabilityOptions> _options;
++    private readonly IHttpClientFactory _httpClientFactory;
++
++    public ObjectStorageHealthCheck(IOptions<ObservabilityOptions> options, IHttpClientFactory httpClientFactory)
++    {
++        _options = options;
++        _httpClientFactory = httpClientFactory;
++    }
++
++    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
++    {
++        var settings = _options.Value.ObjectStorage;
++        if (!settings.Enabled || string.IsNullOrWhiteSpace(settings.ServiceUri))
++        {
++            return HealthCheckResult.Healthy("Object storage health check is not configured.");
++        }
++
++        if (!Uri.TryCreate(settings.ServiceUri, UriKind.Absolute, out var serviceUri))
++        {
++            return HealthCheckResult.Unhealthy("Object storage service URI is invalid.");
++        }
++
++        var probeUri = string.IsNullOrWhiteSpace(settings.HealthPath)
++            ? serviceUri
++            : new Uri(serviceUri, settings.HealthPath);
++
++        try
++        {
++            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
++            timeoutSource.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, settings.TimeoutSeconds)));
++
++            var client = _httpClientFactory.CreateClient(nameof(ObjectStorageHealthCheck));
++            using var headRequest = new HttpRequestMessage(HttpMethod.Head, probeUri);
++            using var headResponse = await client.SendAsync(headRequest, timeoutSource.Token);
++
++            if (headResponse.IsSuccessStatusCode)
++            {
++                return HealthCheckResult.Healthy($"Object storage probe succeeded against {probeUri}.");
++            }
++
++            if (headResponse.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed)
++            {
++                using var getResponse = await client.GetAsync(probeUri, timeoutSource.Token);
++                return getResponse.IsSuccessStatusCode
++                    ? HealthCheckResult.Healthy($"Object storage probe succeeded against {probeUri}.")
++                    : HealthCheckResult.Unhealthy($"Object storage probe returned {(int)getResponse.StatusCode}.");
++            }
++
++            return HealthCheckResult.Unhealthy($"Object storage probe returned {(int)headResponse.StatusCode}.");
++        }
++        catch (Exception ex)
++        {
++            return HealthCheckResult.Unhealthy("Object storage connectivity check failed.", ex);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+new file mode 100644
+index 0000000..fffffff
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+@@ -0,0 +1,66 @@
++using Microsoft.AspNetCore.Diagnostics;
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++public sealed class GlobalExceptionHandler : IExceptionHandler
++{
++    private readonly ILogger<GlobalExceptionHandler> _logger;
++    private readonly IOptions<ObservabilityOptions> _options;
++
++    public GlobalExceptionHandler(
++        ILogger<GlobalExceptionHandler> logger,
++        IOptions<ObservabilityOptions> options)
++    {
++        _logger = logger;
++        _options = options;
++    }
++
++    public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
++    {
++        if (httpContext.Response.HasStarted)
++        {
++            return false;
++        }
++
++        var correlationId = CorrelationIdMiddleware.GetCorrelationId(httpContext) ?? httpContext.TraceIdentifier;
++        var (statusCode, title, detail) = MapException(exception);
++
++        using var scope = _logger.BeginScope(new Dictionary<string, object?>
++        {
++            ["CorrelationId"] = correlationId
++        });
++
++        if (statusCode >= StatusCodes.Status500InternalServerError)
++        {
++            _logger.LogError(exception, "Unhandled exception for request {Method} {Path}.", httpContext.Request.Method, httpContext.Request.Path);
++        }
++        else
++        {
++            _logger.LogWarning(exception, "Request {Method} {Path} failed with status code {StatusCode}.", httpContext.Request.Method, httpContext.Request.Path, statusCode);
++        }
++
++        var problemDetails = new ProblemDetails
++        {
++            Status = statusCode,
++            Title = title,
++            Detail = detail,
++            Type = $"https://httpstatuses.com/{statusCode}"
++        };
++        problemDetails.Extensions["correlationId"] = correlationId;
++
++        httpContext.Response.StatusCode = statusCode;
++        httpContext.Response.Headers[_options.Value.CorrelationId.HeaderName] = correlationId;
++        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
++
++        return true;
++    }
++
++    private static (int StatusCode, string Title, string Detail) MapException(Exception exception) =>
++        exception switch
++        {
++            UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden", "The request could not be authorized for the current company context."),
++            KeyNotFoundException => (StatusCodes.Status404NotFound, "Not Found", "The requested resource was not found."),
++            _ => (StatusCodes.Status500InternalServerError, "Unexpected error", "An unexpected error occurred.")
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ObservabilityOptions.cs b/src/VirtualCompany.Infrastructure/Observability/ObservabilityOptions.cs
+new file mode 100644
+index 0000000..1212121
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/ObservabilityOptions.cs
+@@ -0,0 +1,44 @@
++namespace VirtualCompany.Infrastructure.Observability;
++
++public sealed class ObservabilityOptions
++{
++    public const string SectionName = "Observability";
++
++    public CorrelationIdOptions CorrelationId { get; set; } = new();
++    public HealthEndpointOptions Health { get; set; } = new();
++    public RateLimitingOptions RateLimiting { get; set; } = new();
++    public RedisHealthOptions Redis { get; set; } = new();
++    public ObjectStorageHealthOptions ObjectStorage { get; set; } = new();
++}
++
++public sealed class CorrelationIdOptions
++{
++    public string HeaderName { get; set; } = "X-Correlation-ID";
++}
++
++public sealed class HealthEndpointOptions
++{
++    public string Path { get; set; } = "/health";
++    public string LivenessPath { get; set; } = "/health/live";
++    public string ReadinessPath { get; set; } = "/health/ready";
++}
++
++public sealed class RateLimitingOptions
++{
++    public bool Enabled { get; set; } = true;
++    public RateLimitPolicyOptions Chat { get; set; } = new();
++    public RateLimitPolicyOptions Tasks { get; set; } = new();
++}
++
++public sealed class RateLimitPolicyOptions
++{
++    public int PermitLimit { get; set; } = 30;
++    public int WindowSeconds { get; set; } = 60;
++    public int QueueLimit { get; set; } = 0;
++}
++
++public sealed class RedisHealthOptions
++{
++    public string? ConnectionString { get; set; }
++    public int ConnectTimeoutSeconds { get; set; } = 2;
++}
++
++public sealed class ObjectStorageHealthOptions
++{
++    public bool Enabled { get; set; }
++    public string? ServiceUri { get; set; }
++    public string HealthPath { get; set; } = "/";
++    public int TimeoutSeconds { get; set; } = 2;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/RequestCorrelationContextAccessor.cs b/src/VirtualCompany.Infrastructure/Observability/RequestCorrelationContextAccessor.cs
+new file mode 100644
+index 0000000..2323232
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/RequestCorrelationContextAccessor.cs
+@@ -0,0 +1,10 @@
++namespace VirtualCompany.Infrastructure.Observability;
++
++public interface ICorrelationContextAccessor
++{
++    string? CorrelationId { get; set; }
++}
++
++public sealed class RequestCorrelationContextAccessor : ICorrelationContextAccessor
++{
++    public string? CorrelationId { get; set; }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+new file mode 100644
+index 0000000..3434343
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+@@ -0,0 +1,142 @@
++using System.Text.Json;
++using System.Threading.RateLimiting;
++using Microsoft.AspNetCore.Builder;
++using Microsoft.AspNetCore.Diagnostics.HealthChecks;
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using Microsoft.AspNetCore.RateLimiting;
++using Microsoft.Extensions.Configuration;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Diagnostics.HealthChecks;
++using Microsoft.Extensions.Options;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++public static class ServiceCollectionExtensions
++{
++    public static IServiceCollection AddVirtualCompanyObservability(this IServiceCollection services, IConfiguration configuration)
++    {
++        services.AddOptions<ObservabilityOptions>()
++            .Bind(configuration.GetSection(ObservabilityOptions.SectionName));
++
++        services.AddHttpClient();
++        services.AddScoped<ICorrelationContextAccessor, RequestCorrelationContextAccessor>();
++        services.AddScoped<CorrelationIdMiddleware>();
++        services.AddScoped<TenantLoggingScopeMiddleware>();
++
++        services.AddHealthChecks()
++            .AddCheck<ApplicationHealthCheck>("application", tags: ["live", "ready"])
++            .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["ready"])
++            .AddCheck<RedisTcpHealthCheck>("redis", tags: ["ready"])
++            .AddCheck<ObjectStorageHealthCheck>("object-storage", tags: ["ready"]);
++
++        return services;
++    }
++
++    public static IServiceCollection AddVirtualCompanyRateLimiting(this IServiceCollection services, IConfiguration configuration)
++    {
++        var settings = configuration.GetSection(ObservabilityOptions.SectionName).Get<ObservabilityOptions>() ?? new ObservabilityOptions();
++
++        services.AddRateLimiter(options =>
++        {
++            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
++            options.OnRejected = static async (context, cancellationToken) =>
++            {
++                var observabilityOptions = context.HttpContext.RequestServices.GetRequiredService<IOptions<ObservabilityOptions>>().Value;
++                var correlationId = CorrelationIdMiddleware.GetCorrelationId(context.HttpContext) ?? context.HttpContext.TraceIdentifier;
++                var problemDetails = new ProblemDetails
++                {
++                    Status = StatusCodes.Status429TooManyRequests,
++                    Title = "Too many requests",
++                    Detail = "The request was throttled by a platform rate limiting policy."
++                };
++                problemDetails.Extensions["correlationId"] = correlationId;
++
++                context.HttpContext.Response.Headers[observabilityOptions.CorrelationId.HeaderName] = correlationId;
++                await context.HttpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
++            };
++
++            if (!settings.RateLimiting.Enabled)
++            {
++                options.AddPolicy(PlatformRateLimitPolicyNames.Chat, static _ => RateLimitPartition.GetNoLimiter("chat"));
++                options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, static _ => RateLimitPartition.GetNoLimiter("tasks"));
++                return;
++            }
++
++            options.AddFixedWindowLimiter(PlatformRateLimitPolicyNames.Chat, limiterOptions => ApplyRateLimit(limiterOptions, settings.RateLimiting.Chat));
++            options.AddFixedWindowLimiter(PlatformRateLimitPolicyNames.Tasks, limiterOptions => ApplyRateLimit(limiterOptions, settings.RateLimiting.Tasks));
++        });
++
++        return services;
++    }
++
++    public static IEndpointRouteBuilder MapVirtualCompanyHealthEndpoints(this IEndpointRouteBuilder endpoints)
++    {
++        var settings = endpoints.ServiceProvider.GetRequiredService<IOptions<ObservabilityOptions>>().Value.Health;
++
++        endpoints.MapHealthChecks(settings.Path, CreateHealthCheckOptions());
++        endpoints.MapHealthChecks(settings.LivenessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("live")));
++        endpoints.MapHealthChecks(settings.ReadinessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("ready")));
++
++        return endpoints;
++    }
++
++    private static void ApplyRateLimit(FixedWindowRateLimiterOptions options, RateLimitPolicyOptions settings)
++    {
++        options.PermitLimit = Math.Max(1, settings.PermitLimit);
++        options.Window = TimeSpan.FromSeconds(Math.Max(1, settings.WindowSeconds));
++        options.QueueLimit = Math.Max(0, settings.QueueLimit);
++        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
++        options.AutoReplenishment = true;
++    }
++
++    private static HealthCheckOptions CreateHealthCheckOptions(Func<HealthCheckRegistration, bool>? predicate = null) =>
++        new()
++        {
++            Predicate = predicate,
++            ResponseWriter = WriteHealthResponseAsync
++        };
++
++    private static Task WriteHealthResponseAsync(HttpContext context, HealthReport report)
++    {
++        context.Response.ContentType = "application/json";
++
++        var payload = new
++        {
++            status = report.Status.ToString(),
++            totalDuration = report.TotalDuration.ToString(),
++            results = report.Entries.ToDictionary(
++                entry => entry.Key,
++                entry => new
++                {
++                    status = entry.Value.Status.ToString(),
++                    description = entry.Value.Description,
++                    duration = entry.Value.Duration.ToString()
++                })
++        };
++
++        return context.Response.WriteAsync(JsonSerializer.Serialize(payload));
++    }
++}
++
++public static class PlatformRateLimitPolicyNames
++{
++    public const string Chat = "chat";
++    public const string Tasks = "tasks";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/TenantLoggingScopeMiddleware.cs b/src/VirtualCompany.Infrastructure/Observability/TenantLoggingScopeMiddleware.cs
+new file mode 100644
+index 0000000..4545454
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/TenantLoggingScopeMiddleware.cs
+@@ -0,0 +1,61 @@
++using System.Collections;
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++public sealed class TenantLoggingScopeMiddleware : IMiddleware
++{
++    private readonly ILogger<TenantLoggingScopeMiddleware> _logger;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++
++    public TenantLoggingScopeMiddleware(
++        ILogger<TenantLoggingScopeMiddleware> logger,
++        ICompanyContextAccessor companyContextAccessor,
++        ICurrentUserAccessor currentUserAccessor)
++    {
++        _logger = logger;
++        _companyContextAccessor = companyContextAccessor;
++        _currentUserAccessor = currentUserAccessor;
++    }
++
++    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
++    {
++        using var scope = _logger.BeginScope(new TenantLogScope(_companyContextAccessor, _currentUserAccessor));
++        await next(context);
++    }
++
++    private sealed class TenantLogScope : IEnumerable<KeyValuePair<string, object?>>
++    {
++        private readonly ICompanyContextAccessor _companyContextAccessor;
++        private readonly ICurrentUserAccessor _currentUserAccessor;
++
++        public TenantLogScope(ICompanyContextAccessor companyContextAccessor, ICurrentUserAccessor currentUserAccessor)
++        {
++            _companyContextAccessor = companyContextAccessor;
++            _currentUserAccessor = currentUserAccessor;
++        }
++
++        public IEnumerator<KeyValuePair<string, object?>> GetEnumerator()
++        {
++            if (_companyContextAccessor.CompanyId.HasValue)
++            {
++                yield return new KeyValuePair<string, object?>("CompanyId", _companyContextAccessor.CompanyId);
++            }
++
++            var userId = _companyContextAccessor.UserId ?? _currentUserAccessor.UserId;
++            if (userId.HasValue)
++            {
++                yield return new KeyValuePair<string, object?>("UserId", userId);
++            }
++
++            if (_companyContextAccessor.Membership is not null)
++            {
++                yield return new KeyValuePair<string, object?>("CompanyMembershipId", _companyContextAccessor.Membership.MembershipId);
++                yield return new KeyValuePair<string, object?>("CompanyMembershipRole", _companyContextAccessor.Membership.MembershipRole.ToString());
++            }
++        }
++
++        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs b/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs
+new file mode 100644
+index 0000000..5656565
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs
+@@ -0,0 +1,51 @@
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Observability;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CorrelationIdMiddlewareTests
++{
++    [Fact]
++    public async Task InvokeAsync_generates_correlation_id_when_request_header_is_missing()
++    {
++        var accessor = new RequestCorrelationContextAccessor();
++        var middleware = new CorrelationIdMiddleware(
++            Options.Create(new ObservabilityOptions()),
++            accessor,
++            NullLogger<CorrelationIdMiddleware>.Instance);
++        var context = new DefaultHttpContext();
++
++        await middleware.InvokeAsync(context, _ => Task.CompletedTask);
++
++        Assert.False(string.IsNullOrWhiteSpace(accessor.CorrelationId));
++        Assert.Equal(accessor.CorrelationId, context.Response.Headers["X-Correlation-ID"].ToString());
++        Assert.Equal(accessor.CorrelationId, CorrelationIdMiddleware.GetCorrelationId(context));
++    }
++
++    [Fact]
++    public async Task InvokeAsync_uses_incoming_correlation_id_when_present()
++    {
++        const string correlationId = "incoming-correlation-id";
++        var accessor = new RequestCorrelationContextAccessor();
++        var middleware = new CorrelationIdMiddleware(
++            Options.Create(new ObservabilityOptions()),
++            accessor,
++            NullLogger<CorrelationIdMiddleware>.Instance);
++        var context = new DefaultHttpContext();
++        context.Request.Headers["X-Correlation-ID"] = correlationId;
++
++        await middleware.InvokeAsync(context, _ => Task.CompletedTask);
++
++        Assert.Equal(correlationId, accessor.CorrelationId);
++        Assert.Equal(correlationId, context.Response.Headers["X-Correlation-ID"].ToString());
++        Assert.Equal(correlationId, context.TraceIdentifier);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+new file mode 100644
+index 0000000..6767676
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+@@ -0,0 +1,37 @@
++using System.Text;
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Observability;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GlobalExceptionHandlerTests
++{
++    [Fact]
++    public async Task TryHandleAsync_returns_safe_problem_details_with_correlation_id()
++    {
++        var handler = new GlobalExceptionHandler(
++            NullLogger<GlobalExceptionHandler>.Instance,
++            Options.Create(new ObservabilityOptions()));
++        var context = new DefaultHttpContext();
++        context.Response.Body = new MemoryStream();
++        context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-123";
++
++        var handled = await handler.TryHandleAsync(
++            context,
++            new InvalidOperationException("sensitive database failure"),
++            CancellationToken.None);
++
++        Assert.True(handled);
++        Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
++        Assert.Equal("corr-123", context.Response.Headers["X-Correlation-ID"].ToString());
++
++        context.Response.Body.Position = 0;
++        using var reader = new StreamReader(context.Response.Body, Encoding.UTF8);
++        var payload = await reader.ReadToEndAsync();
++
++        Assert.Contains("\"title\":\"Unexpected error\"", payload);
++        Assert.Contains("\"correlationId\":\"corr-123\"", payload);
++        Assert.DoesNotContain("sensitive database failure", payload);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs
+new file mode 100644
+index 0000000..7878787
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs
+@@ -0,0 +1,51 @@
++using System.Text.Json;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class HealthEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public HealthEndpointsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Theory]
++    [InlineData("/health")]
++    [InlineData("/health/live")]
++    [InlineData("/health/ready")]
++    public async Task Health_endpoints_return_machine_readable_payloads(string path)
++    {
++        using var client = _factory.CreateClient();
++        var response = await client.GetAsync(path);
++
++        response.EnsureSuccessStatusCode();
++        Assert.True(response.Headers.Contains("X-Correlation-ID"));
++
++        await using var stream = await response.Content.ReadAsStreamAsync();
++        using var payload = await JsonDocument.ParseAsync(stream);
++
++        Assert.True(payload.RootElement.TryGetProperty("status", out var status));
++        Assert.False(string.IsNullOrWhiteSpace(status.GetString()));
++        Assert.True(payload.RootElement.TryGetProperty("results", out _));
++    }
++
++    [Fact]
++    public async Task Readiness_endpoint_reports_expected_dependency_checks()
++    {
++        using var client = _factory.CreateClient();
++        var response = await client.GetAsync("/health/ready");
++
++        response.EnsureSuccessStatusCode();
++
++        await using var stream = await response.Content.ReadAsStreamAsync();
++        using var payload = await JsonDocument.ParseAsync(stream);
++        var results = payload.RootElement.GetProperty("results");
++
++        Assert.True(results.TryGetProperty("postgresql", out _));
++        Assert.True(results.TryGetProperty("redis", out _));
++        Assert.True(results.TryGetProperty("object-storage", out _));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 8989898..9090909 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -19,7 +20,10 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
+             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+             {
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
+-                [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0"
++                [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
++                [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
++                [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
++                [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
+             });
+         });
+ 
+diff --git a/README.md b/README.md
+index a1a1a1a..b2b2b2b 100644
+--- a/README.md
++++ b/README.md
+@@ -108,6 +108,28 @@ Tenant-owned API requests resolve company context from:
+ 
+ If both are supplied and do not match, the API returns `400 Bad Request`.
+ 
++## Observability
++
++Health endpoints:
++
++- `GET /health`
++- `GET /health/live`
++- `GET /health/ready`
++
++Request correlation:
++
++- The API accepts `X-Correlation-ID` on incoming requests.
++- When absent, the API generates a correlation ID and returns it in the response header.
++- Technical logs and safe error responses include the same correlation ID for support workflows.
++
++Configuration:
++
++- `Observability:Redis:ConnectionString` enables the Redis readiness check.
++- `Observability:ObjectStorage:*` enables an object-storage probe without coupling the API to a specific provider yet.
++- `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.
++
++Logging boundary:
++
++- Technical operational logs stay in the application logging pipeline.
++- Future business audit events remain a separate concern and are not implemented by this baseline.
++
+ ## Tenant-Aware Endpoints
+ 
+ Authenticated endpoints:
+END_OF_PATCH

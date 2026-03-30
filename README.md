@@ -107,6 +107,33 @@ Tenant-owned API requests resolve company context from:
 
 If both are supplied and do not match, the API returns `400 Bad Request`.
 
+## Observability
+
+Health endpoints:
+
+- `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
+
+Request correlation:
+
+- The API accepts `X-Correlation-ID` on incoming requests.
+- When absent, the API generates a correlation ID and returns it in the response header.
+- Technical logs and safe error responses include the same correlation ID for support workflows.
+
+Configuration:
+
+- `Observability:Redis:ConnectionString` enables the Redis readiness check.
+- `Observability:ObjectStorage:*` enables an object-storage probe without coupling the API to a specific provider yet.
+- `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.
+
+Logging boundary:
+- Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.
+- Business audit events are persisted separately in the `audit_events` store through the dedicated `IAuditEventWriter` application abstraction.
+- Do not treat `ILogger` output as business history or compliance evidence.
+- When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.
+- The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.
+
 ## Tenant-Aware Endpoints
 
 Authenticated endpoints:

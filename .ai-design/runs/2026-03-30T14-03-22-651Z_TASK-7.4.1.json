@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.4.1",
+  "promptPath": ".ai-design/prompts/TASK-7.4.1.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T14:03:22.651Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T14-03-22-651Z_TASK-7.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T14-03-22-651Z_TASK-7.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T14:06:06.275Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "out _));\n+\n+        var results = payload.RootElement.GetProperty(\"results\");\n+        Assert.True(results.TryGetProperty(\"application\", out _));\n+        Assert.Equal(1, results.EnumerateObject().Count());\n+        Assert.False(results.TryGetProperty(\"postgresql\", out _));\n+        Assert.False(results.TryGetProperty(\"redis\", out _));\n+        Assert.False(results.TryGetProperty(\"object-storage\", out _));\n     }\n \n-    [Fact]\n-    public async Task Readiness_endpoint_reports_expected_dependency_checks()\n+    [Theory]\n+    [InlineData(\"/health\")]\n+    [InlineData(\"/health/ready\")]\n+    public async Task Readiness_endpoints_report_expected_dependency_checks(string path)\n     {\n         using var client = _factory.CreateClient();\n-        var response = await client.GetAsync(\"/health/ready\");\n+        var response = await client.GetAsync(path);\n \n         response.EnsureSuccessStatusCode();\n+        Assert.True(response.Headers.Contains(\"X-Correlation-ID\"));\n+        Assert.StartsWith(\"application/json\", response.Content.Headers.ContentType?.MediaType, StringComparison.OrdinalIgnoreCase);\n \n         await using var stream = await response.Content.ReadAsStreamAsync();\n         using var payload = await JsonDocument.ParseAsync(stream);\n+\n+        Assert.True(payload.RootElement.TryGetProperty(\"status\", out var status));\n+        Assert.False(string.IsNullOrWhiteSpace(status.GetString()));\n+\n         var results = payload.RootElement.GetProperty(\"results\");\n \n         Assert.True(results.TryGetProperty(\"postgresql\", out _));\n         Assert.True(results.TryGetProperty(\"redis\", out _));\n         Assert.True(results.TryGetProperty(\"object-storage\", out _));\n+        Assert.False(results.TryGetProperty(\"application\", out _));\n+\n+        foreach (var result in results.EnumerateObject())\n+        {\n+            Assert.True(result.Value.TryGetProperty(\"status\", out _));\n+            Assert.True(result.Value.TryGetProperty(\"duration\", out _));\n+        }\n     }\n }\nEND_OF_PATCH\n",
+  "stderrTail": " var results = payload.RootElement.GetProperty(\"results\");\n+        Assert.True(results.TryGetProperty(\"application\", out _));\n+        Assert.Equal(1, results.EnumerateObject().Count());\n+        Assert.False(results.TryGetProperty(\"postgresql\", out _));\n+        Assert.False(results.TryGetProperty(\"redis\", out _));\n+        Assert.False(results.TryGetProperty(\"object-storage\", out _));\n     }\n \n-    [Fact]\n-    public async Task Readiness_endpoint_reports_expected_dependency_checks()\n+    [Theory]\n+    [InlineData(\"/health\")]\n+    [InlineData(\"/health/ready\")]\n+    public async Task Readiness_endpoints_report_expected_dependency_checks(string path)\n     {\n         using var client = _factory.CreateClient();\n-        var response = await client.GetAsync(\"/health/ready\");\n+        var response = await client.GetAsync(path);\n \n         response.EnsureSuccessStatusCode();\n+        Assert.True(response.Headers.Contains(\"X-Correlation-ID\"));\n+        Assert.StartsWith(\"application/json\", response.Content.Headers.ContentType?.MediaType, StringComparison.OrdinalIgnoreCase);\n \n         await using var stream = await response.Content.ReadAsStreamAsync();\n         using var payload = await JsonDocument.ParseAsync(stream);\n+\n+        Assert.True(payload.RootElement.TryGetProperty(\"status\", out var status));\n+        Assert.False(string.IsNullOrWhiteSpace(status.GetString()));\n+\n         var results = payload.RootElement.GetProperty(\"results\");\n \n         Assert.True(results.TryGetProperty(\"postgresql\", out _));\n         Assert.True(results.TryGetProperty(\"redis\", out _));\n         Assert.True(results.TryGetProperty(\"object-storage\", out _));\n+        Assert.False(results.TryGetProperty(\"application\", out _));\n+\n+        foreach (var result in results.EnumerateObject())\n+        {\n+            Assert.True(result.Value.TryGetProperty(\"status\", out _));\n+            Assert.True(result.Value.TryGetProperty(\"duration\", out _));\n+        }\n     }\n }\nEND_OF_PATCH\ntokens used\n44,846\n",
+  "verbosityMode": "normal"
+}

@@ -4,11 +4,13 @@ using System.Net.Mail;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Infrastructure.Observability;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -20,17 +22,23 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+    private readonly IAuditEventWriter _auditEventWriter;
 
     public CompanyMembershipAdministrationService(
         VirtualCompanyDbContext dbContext,
         ICurrentUserAccessor currentUserAccessor,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
-        ICompanyOutboxEnqueuer outboxEnqueuer)
+        ICompanyOutboxEnqueuer outboxEnqueuer,
+        ICorrelationContextAccessor correlationContextAccessor,
+        IAuditEventWriter auditEventWriter)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _outboxEnqueuer = outboxEnqueuer;
+        _correlationContextAccessor = correlationContextAccessor;
+        _auditEventWriter = auditEventWriter;
     }
 
     public async Task<IReadOnlyList<CompanyMemberDirectoryEntryDto>> GetMembershipsAsync(Guid companyId, CancellationToken cancellationToken)
@@ -133,6 +141,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 invitedByUserId = companyContext.UserId
             });
 
+            await WriteAuditEventAsync(
+                companyId,
+                companyContext.UserId,
+                AuditEventActions.CompanyInvitationCreated,
+                AuditTargetTypes.CompanyInvitation,
+                invitation.Id,
+                correlationId,
+                cancellationToken,
+                dataSources: ["company_membership_administration", "http_request"],
+                metadata: CreateAuditMetadata(("email", email), ("membershipRole", invitation.Role.ToStorageValue())));
+
             await _dbContext.SaveChangesAsync(cancellationToken);
             return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, false);
         }
@@ -149,6 +168,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             role = existingPendingInvitation.Role,
             resentByUserId = companyContext.UserId
         });
+
+        await WriteAuditEventAsync(
+            companyId,
+            companyContext.UserId,
+            AuditEventActions.CompanyInvitationResent,
+            AuditTargetTypes.CompanyInvitation,
+            existingPendingInvitation.Id,
+            correlationId,
+            cancellationToken,
+            dataSources: ["company_membership_administration", "http_request"],
+            metadata: CreateAuditMetadata(("email", existingPendingInvitation.Email), ("membershipRole", existingPendingInvitation.Role.ToStorageValue())));
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new CompanyInvitationDeliveryDto(ToInvitationDto(existingPendingInvitation), token, true);
@@ -191,6 +221,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
         var correlationId = CreateCorrelationId();
         EnqueueInvitationDeliveryRequested(invitation, companyContext.CompanyName, token, correlationId);
         EnqueueInvitationResent(invitation, companyId, companyContext.UserId, correlationId);
+
+        await WriteAuditEventAsync(
+            companyId,
+            companyContext.UserId,
+            AuditEventActions.CompanyInvitationResent,
+            AuditTargetTypes.CompanyInvitation,
+            invitation.Id,
+            correlationId,
+            cancellationToken,
+            dataSources: ["company_membership_administration", "http_request"],
+            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue())));
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, true);
@@ -248,6 +289,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             revokedByUserId = companyContext.UserId
         });
 
+        await WriteAuditEventAsync(
+            companyId,
+            companyContext.UserId,
+            AuditEventActions.CompanyInvitationRevoked,
+            AuditTargetTypes.CompanyInvitation,
+            invitation.Id,
+            correlationId,
+            cancellationToken,
+            dataSources: ["company_membership_administration", "http_request"],
+            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue())));
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         return ToInvitationDto(invitation);
     }
@@ -303,6 +355,18 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 newRole = request.MembershipRole,
                 changedByUserId = companyContext.UserId
             });
+
+            await WriteAuditEventAsync(
+                companyId,
+                companyContext.UserId,
+                AuditEventActions.CompanyMembershipRoleChanged,
+                AuditTargetTypes.CompanyMembership,
+                membership.Id,
+                correlationId,
+                cancellationToken,
+                rationaleSummary: "Administrative role change approved inside the company membership boundary.",
+                dataSources: ["company_membership_administration", "http_request"],
+                metadata: CreateAuditMetadata(("previousRole", previousRole.ToStorageValue()), ("newRole", requestedRole.ToStorageValue()), ("userId", membership.UserId?.ToString("N"))));
 
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -394,6 +458,18 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             email = invitation.Email,
             role = invitation.Role
         });
+
+        await WriteAuditEventAsync(
+            invitation.CompanyId,
+            userId,
+            AuditEventActions.CompanyInvitationAccepted,
+            AuditTargetTypes.CompanyInvitation,
+            invitation.Id,
+            correlationId,
+            cancellationToken,
+            rationaleSummary: "Invitation token redeemed by the invited user.",
+            dataSources: ["http_request", "invitation_token"],
+            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue()), ("membershipId", membership.Id.ToString("N"))));
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new AcceptCompanyInvitationResultDto(
@@ -580,8 +656,47 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             .Replace('/', '_');
     }
 
-    private static string CreateCorrelationId() =>
-        Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+    private string CreateCorrelationId() =>
+        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
+            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+            : _correlationContextAccessor.CorrelationId!;
+
+    private Task WriteAuditEventAsync(
+        Guid companyId,
+        Guid? actorId,
+        string action,
+        string targetType,
+        Guid targetId,
+        string correlationId,
+        CancellationToken cancellationToken,
+        string? rationaleSummary = null,
+        IReadOnlyCollection<string>? dataSources = null,
+        IReadOnlyDictionary<string, string?>? metadata = null) =>
+        _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                companyId,
+                AuditActorTypes.User,
+                actorId,
+                action,
+                targetType,
+                targetId.ToString("N"),
+                AuditEventOutcomes.Succeeded,
+                rationaleSummary,
+                dataSources,
+                metadata,
+                correlationId),
+            cancellationToken);
+
+    private static IReadOnlyDictionary<string, string?> CreateAuditMetadata(params (string Key, string? Value)[] values)
+    {
+        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in values)
+        {
+            metadata[key] = value;
+        }
+
+        return metadata;
+    }
 
     private static Expression<Func<CompanyInvitation, CompanyInvitationDto>> ToInvitationDtoExpression() =>
         x => new CompanyInvitationDto(

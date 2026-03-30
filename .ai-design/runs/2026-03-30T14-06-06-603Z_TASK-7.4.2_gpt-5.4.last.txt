@@ -1,0 +1,530 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 88c3708..e39e789 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -39,13 +39,12 @@ if (app.Environment.IsDevelopment())
+     app.UseSwaggerUI();
+ }
+ 
++app.UseMiddleware<CorrelationIdMiddleware>();
+ app.UseExceptionHandler();
+-app.UseMiddleware<CorrelationIdMiddleware>();
+ app.UseHttpsRedirection();
+ app.UseRouting();
+ app.UseRateLimiter();
+ app.UseCors(DevelopmentCorsPolicy);
+ app.UseAuthentication();
+ app.UseMiddleware<CompanyContextResolutionMiddleware>();
+-app.UseMiddleware<TenantLoggingScopeMiddleware>();
+ app.UseAuthorization();
+ 
+ using (var scope = app.Services.CreateScope())
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index a570313..eb572b7 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -34,6 +34,7 @@
+     }
+   },
+   "Logging": {
++    "IncludeScopes": true,
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index a81ea4d..66f40e0 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -34,6 +34,7 @@
+     }
+   },
+   "Logging": {
++    "IncludeScopes": true,
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 205c2f1..4e02f88 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -94,11 +94,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+         foreach (var message in claimedMessages)
+         {
+-            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+-            {
+-                ["OutboxMessageId"] = message.Id,
+-                ["CompanyId"] = message.CompanyId,
+-                ["CorrelationId"] = message.CorrelationId ?? message.ClaimToken
+-            });
++            using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(message.Id, message.CompanyId, message.CorrelationId ?? message.ClaimToken));
+ 
+             try
+             {
+@@ -399,6 +395,9 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+ 
+         while (!stoppingToken.IsCancellationRequested)
+         {
++            var executionCorrelationId = Guid.NewGuid().ToString("N");
++            using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(executionCorrelationId));
++
+             try
+             {
+                 using var scope = _serviceScopeFactory.CreateScope();
+diff --git a/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs b/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs
+index b2e3032..9e0ee87 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/CorrelationIdMiddleware.cs
+@@ -1,8 +1,10 @@
++using System.Text;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
+ 
+ namespace VirtualCompany.Infrastructure.Observability;
+ 
+ public sealed class CorrelationIdMiddleware : IMiddleware
+@@ -12,18 +14,24 @@ public sealed class CorrelationIdMiddleware : IMiddleware
+     private readonly IOptions<ObservabilityOptions> _options;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly ILogger<CorrelationIdMiddleware> _logger;
+ 
+     public CorrelationIdMiddleware(
+         IOptions<ObservabilityOptions> options,
+         ICorrelationContextAccessor correlationContextAccessor,
++        ICompanyContextAccessor companyContextAccessor,
++        ICurrentUserAccessor currentUserAccessor,
+         ILogger<CorrelationIdMiddleware> logger)
+     {
+         _options = options;
+         _correlationContextAccessor = correlationContextAccessor;
++        _companyContextAccessor = companyContextAccessor;
++        _currentUserAccessor = currentUserAccessor;
+         _logger = logger;
+     }
+ 
+     public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+     {
+@@ -34,10 +42,7 @@ public sealed class CorrelationIdMiddleware : IMiddleware
+         context.TraceIdentifier = correlationId;
+         context.Response.Headers[headerName] = correlationId;
+ 
+-        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+-        {
+-            ["CorrelationId"] = correlationId
+-        });
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForRequest(_correlationContextAccessor, _companyContextAccessor, _currentUserAccessor));
+ 
+         await next(context);
+     }
+@@ -59,10 +64,31 @@ public sealed class CorrelationIdMiddleware : IMiddleware
+ 
+     private static string ResolveCorrelationId(HttpContext context, string headerName)
+     {
+-        var incomingValue = context.Request.Headers[headerName].FirstOrDefault()?.Trim();
+-        if (string.IsNullOrWhiteSpace(incomingValue))
++        var incomingValue = context.Request.Headers[headerName].FirstOrDefault();
++        var sanitizedValue = SanitizeIncomingCorrelationId(incomingValue);
++        if (string.IsNullOrWhiteSpace(sanitizedValue))
+         {
+             return Guid.NewGuid().ToString("N");
+         }
+ 
+-        return incomingValue.Length > MaxCorrelationIdLength ? incomingValue[..MaxCorrelationIdLength] : incomingValue;
++        return sanitizedValue;
++    }
++
++    private static string? SanitizeIncomingCorrelationId(string? incomingValue)
++    {
++        if (string.IsNullOrWhiteSpace(incomingValue))
++        {
++            return null;
++        }
++
++        var builder = new StringBuilder(Math.Min(incomingValue.Length, MaxCorrelationIdLength));
++
++        foreach (var character in incomingValue.Trim())
++        {
++            if (char.IsLetterOrDigit(character) || character is '-' or '_' or '.')
++            {
++                builder.Append(character);
++            }
++        }
++
++        return builder.Length == 0 ? null : builder.ToString();
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+new file mode 100644
+index 0000000..bc51e17
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+@@ -0,0 +1,90 @@
++using System.Collections;
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, object?>>
++{
++    private readonly Func<string?> _getCorrelationId;
++    private readonly Func<Guid?> _getCompanyId;
++    private readonly Func<Guid?> _getUserId;
++    private readonly Func<ResolvedCompanyMembershipContext?> _getMembership;
++
++    private ExecutionLogScope(
++        Func<string?> getCorrelationId,
++        Func<Guid?> getCompanyId,
++        Func<Guid?> getUserId,
++        Func<ResolvedCompanyMembershipContext?> getMembership)
++    {
++        _getCorrelationId = getCorrelationId;
++        _getCompanyId = getCompanyId;
++        _getUserId = getUserId;
++        _getMembership = getMembership;
++    }
++
++    public static ExecutionLogScope ForRequest(
++        ICorrelationContextAccessor correlationContextAccessor,
++        ICompanyContextAccessor companyContextAccessor,
++        ICurrentUserAccessor currentUserAccessor) =>
++        new(
++            () => correlationContextAccessor.CorrelationId,
++            () => companyContextAccessor.CompanyId,
++            () => companyContextAccessor.UserId ?? currentUserAccessor.UserId,
++            () => companyContextAccessor.Membership);
++
++    public static ExecutionLogScope ForHttpContext(HttpContext context)
++    {
++        var companyContextAccessor = context.RequestServices.GetService<ICompanyContextAccessor>();
++        var currentUserAccessor = context.RequestServices.GetService<ICurrentUserAccessor>();
++
++        return new(
++            () => CorrelationIdMiddleware.GetCorrelationId(context) ?? context.TraceIdentifier,
++            () => companyContextAccessor?.CompanyId,
++            () => companyContextAccessor?.UserId ?? currentUserAccessor?.UserId,
++            () => companyContextAccessor?.Membership);
++    }
++
++    public static IReadOnlyDictionary<string, object?> ForBackground(string correlationId, Guid? companyId = null)
++    {
++        var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
++        {
++            ["CorrelationId"] = correlationId
++        };
++
++        if (companyId.HasValue)
++        {
++            properties["CompanyId"] = companyId.Value;
++        }
++
++        return properties;
++    }
++
++    public static IReadOnlyDictionary<string, object?> ForOutboxMessage(Guid outboxMessageId, Guid companyId, string? correlationId)
++    {
++        var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
++        {
++            ["OutboxMessageId"] = outboxMessageId,
++            ["CompanyId"] = companyId
++        };
++
++        if (!string.IsNullOrWhiteSpace(correlationId))
++        {
++            properties["CorrelationId"] = correlationId;
++        }
++
++        return properties;
++    }
++
++    public IEnumerator<KeyValuePair<string, object?>> GetEnumerator()
++    {
++        var correlationId = _getCorrelationId();
++        if (!string.IsNullOrWhiteSpace(correlationId)) yield return new KeyValuePair<string, object?>("CorrelationId", correlationId);
++
++        var companyId = _getCompanyId();
++        if (companyId.HasValue) yield return new KeyValuePair<string, object?>("CompanyId", companyId.Value);
++
++        var userId = _getUserId();
++        if (userId.HasValue) yield return new KeyValuePair<string, object?>("UserId", userId.Value);
++
++        var membership = _getMembership();
++        if (membership is not null) yield return new KeyValuePair<string, object?>("CompanyMembershipId", membership.MembershipId);
++        if (membership is not null) yield return new KeyValuePair<string, object?>("CompanyMembershipRole", membership.MembershipRole.ToString());
++    }
++
++    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+index f3145d4..04e3358 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+@@ -29,10 +29,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
+         var correlationId = CorrelationIdMiddleware.GetCorrelationId(httpContext) ?? httpContext.TraceIdentifier;
+         var (statusCode, title, detail) = MapException(exception);
+ 
+-        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+-        {
+-            ["CorrelationId"] = correlationId
+-        });
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForHttpContext(httpContext));
+ 
+         if (statusCode >= StatusCodes.Status500InternalServerError)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+index 3fafc4d..8f37655 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+@@ -22,7 +22,6 @@ public static class ServiceCollectionExtensions
+ 
+         services.AddHttpClient();
+         services.AddScoped<ICorrelationContextAccessor, RequestCorrelationContextAccessor>();
+         services.AddScoped<CorrelationIdMiddleware>();
+-        services.AddScoped<TenantLoggingScopeMiddleware>();
+ 
+         services.AddHealthChecks()
+             .AddCheck<ApplicationHealthCheck>("application", tags: ["live"])
+diff --git a/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs b/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs
+index 8b64394..56e8520 100644
+--- a/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CorrelationIdMiddlewareTests.cs
+@@ -1,8 +1,9 @@
+ using Microsoft.AspNetCore.Http;
+-using Microsoft.Extensions.Logging.Abstractions;
+ using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Observability;
+ using Xunit;
++using Xunit.Sdk;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -14,6 +15,8 @@ public sealed class CorrelationIdMiddlewareTests
+         var middleware = new CorrelationIdMiddleware(
+             Options.Create(new ObservabilityOptions()),
+             accessor,
+-            NullLogger<CorrelationIdMiddleware>.Instance);
++            new RequestCompanyContextAccessor(),
++            new TestCurrentUserAccessor(),
++            new ScopeCapturingLogger<CorrelationIdMiddleware>());
+         var context = new DefaultHttpContext();
+ 
+         await middleware.InvokeAsync(context, _ => Task.CompletedTask);
+@@ -31,7 +34,53 @@ public sealed class CorrelationIdMiddlewareTests
+         var middleware = new CorrelationIdMiddleware(
+             Options.Create(new ObservabilityOptions()),
+             accessor,
+-            NullLogger<CorrelationIdMiddleware>.Instance);
++            new RequestCompanyContextAccessor(),
++            new TestCurrentUserAccessor(),
++            new ScopeCapturingLogger<CorrelationIdMiddleware>());
+         var context = new DefaultHttpContext();
+         context.Request.Headers["X-Correlation-ID"] = correlationId;
+ 
+@@ -41,4 +90,47 @@ public sealed class CorrelationIdMiddlewareTests
+         Assert.Equal(correlationId, context.Response.Headers["X-Correlation-ID"].ToString());
+         Assert.Equal(correlationId, context.TraceIdentifier);
+     }
++
++    [Fact]
++    public async Task InvokeAsync_enriches_logs_with_company_context_when_it_becomes_available()
++    {
++        var correlationAccessor = new RequestCorrelationContextAccessor();
++        var companyContextAccessor = new RequestCompanyContextAccessor();
++        var currentUserAccessor = new TestCurrentUserAccessor { UserId = Guid.NewGuid() };
++        var logger = new ScopeCapturingLogger<CorrelationIdMiddleware>();
++        var middleware = new CorrelationIdMiddleware(
++            Options.Create(new ObservabilityOptions()),
++            correlationAccessor,
++            companyContextAccessor,
++            currentUserAccessor,
++            logger);
++        var context = new DefaultHttpContext();
++        var companyId = Guid.NewGuid();
++
++        await middleware.InvokeAsync(context, _ =>
++        {
++            companyContextAccessor.SetCompanyId(companyId);
++            logger.LogInformation("Tenant-aware log entry.");
++            return Task.CompletedTask;
++        });
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(correlationAccessor.CorrelationId, AssertScopeValue(entry.Scope, "CorrelationId"));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal(currentUserAccessor.UserId, AssertScopeValue(entry.Scope, "UserId"));
++    }
++
++    [Fact]
++    public async Task InvokeAsync_omits_company_context_when_execution_scope_is_not_tenant_aware()
++    {
++        var logger = new ScopeCapturingLogger<CorrelationIdMiddleware>();
++        var middleware = new CorrelationIdMiddleware(
++            Options.Create(new ObservabilityOptions()),
++            new RequestCorrelationContextAccessor(),
++            new RequestCompanyContextAccessor(),
++            new TestCurrentUserAccessor(),
++            logger);
++
++        await middleware.InvokeAsync(new DefaultHttpContext(), _ =>
++        {
++            logger.LogInformation("Non-tenant log entry.");
++            return Task.CompletedTask;
++        });
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.True(entry.Scope.ContainsKey("CorrelationId"));
++        Assert.False(entry.Scope.ContainsKey("CompanyId"));
++    }
++
++    private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
++        scope.TryGetValue(key, out var value) ? value : throw new XunitException($"Expected scope value '{key}'.");
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+index 8868fb6..838378a 100644
+--- a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+@@ -1,9 +1,12 @@
+ using System.Text;
+ using Microsoft.AspNetCore.Http;
+-using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.Options;
++using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Observability;
+ using Xunit;
++using Xunit.Sdk;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -11,12 +14,21 @@ public sealed class GlobalExceptionHandlerTests
+ {
+     [Fact]
+     public async Task TryHandleAsync_returns_safe_problem_details_with_correlation_id()
+     {
++        var logger = new ScopeCapturingLogger<GlobalExceptionHandler>();
+         var handler = new GlobalExceptionHandler(
+-            NullLogger<GlobalExceptionHandler>.Instance,
++            logger,
+             Options.Create(new ObservabilityOptions()));
+         var context = new DefaultHttpContext();
+         context.Response.Body = new MemoryStream();
+         context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-123";
++        var companyContextAccessor = new RequestCompanyContextAccessor();
++        var companyId = Guid.NewGuid();
++        companyContextAccessor.SetCompanyId(companyId);
++        context.RequestServices = new ServiceCollection()
++            .AddSingleton<VirtualCompany.Application.Auth.ICompanyContextAccessor>(companyContextAccessor)
++            .AddSingleton<VirtualCompany.Application.Auth.ICurrentUserAccessor>(new TestCurrentUserAccessor())
++            .BuildServiceProvider();
+ 
+         var handled = await handler.TryHandleAsync(
+             context,
+@@ -33,5 +45,9 @@ public sealed class GlobalExceptionHandlerTests
+ 
+         Assert.Contains("\"title\":\"Unexpected error\"", payload);
+         Assert.Contains("\"correlationId\":\"corr-123\"", payload);
+         Assert.DoesNotContain("sensitive database failure", payload);
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal("corr-123", AssertScopeValue(entry.Scope, "CorrelationId"));
++        Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
+     }
++
++    private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
++        scope.TryGetValue(key, out var value) ? value : throw new XunitException($"Expected scope value '{key}'.");
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ObservabilityTestDoubles.cs b/tests/VirtualCompany.Api.Tests/ObservabilityTestDoubles.cs
+new file mode 100644
+index 0000000..7c8d76a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ObservabilityTestDoubles.cs
+@@ -0,0 +1,75 @@
++using System.Security.Claims;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++
++namespace VirtualCompany.Api.Tests;
++
++internal sealed class TestCurrentUserAccessor : ICurrentUserAccessor
++{
++    public ClaimsPrincipal Principal { get; init; } = new(new ClaimsIdentity());
++    public bool IsAuthenticated => Principal.Identity?.IsAuthenticated == true;
++    public Guid? UserId { get; init; }
++    public AuthenticatedUserIdentity Current => new(IsAuthenticated, UserId, null);
++}
++
++internal sealed class ScopeCapturingLogger<T> : ILogger<T>
++{
++    private readonly List<object> _activeScopes = [];
++
++    public IList<CapturedLogEntry> Entries { get; } = [];
++
++    public IDisposable BeginScope<TState>(TState state)
++        where TState : notnull
++    {
++        _activeScopes.Add(state);
++        return new ScopeHandle(_activeScopes);
++    }
++
++    public bool IsEnabled(LogLevel logLevel) => true;
++
++    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
++    {
++        Entries.Add(new CapturedLogEntry(logLevel, formatter(state, exception), FlattenScopes(), exception));
++    }
++
++    private IReadOnlyDictionary<string, object?> FlattenScopes()
++    {
++        var flattened = new Dictionary<string, object?>(StringComparer.Ordinal);
++
++        foreach (var scope in _activeScopes)
++        {
++            if (scope is not IEnumerable<KeyValuePair<string, object?>> scopeValues)
++            {
++                continue;
++            }
++
++            foreach (var scopeValue in scopeValues)
++            {
++                flattened[scopeValue.Key] = scopeValue.Value;
++            }
++        }
++
++        return flattened;
++    }
++
++    internal sealed record CapturedLogEntry(
++        LogLevel LogLevel,
++        string Message,
++        IReadOnlyDictionary<string, object?> Scope,
++        Exception? Exception);
++
++    private sealed class ScopeHandle : IDisposable
++    {
++        private readonly List<object> _activeScopes;
++        private bool _disposed;
++
++        public ScopeHandle(List<object> activeScopes)
++        {
++            _activeScopes = activeScopes;
++        }
++
++        public void Dispose()
++        {
++            if (_disposed)
++            {
++                return;
++            }
++
++            _disposed = true;
++            _activeScopes.RemoveAt(_activeScopes.Count - 1);
++        }
++    }
++}
+END_OF_PATCH

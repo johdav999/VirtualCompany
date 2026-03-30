@@ -21,6 +21,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();

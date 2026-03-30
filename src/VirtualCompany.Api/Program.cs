@@ -6,6 +6,7 @@ using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Infrastructure.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 const string DevelopmentCorsPolicy = "DevelopmentWebClient";
@@ -32,8 +33,10 @@ builder.Services.AddCors(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
 builder.Services.AddCompanyAuthorization();
+builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
 
 var app = builder.Build();
 
@@ -43,9 +46,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseExceptionHandler();
 app.UseHttpsRedirection();
 app.UseRouting();
+app.UseRateLimiter();
 app.UseCors(DevelopmentCorsPolicy);
 app.UseAuthentication();
 app.UseMiddleware<CompanyContextResolutionMiddleware>();
@@ -68,6 +73,7 @@ using (var scope = app.Services.CreateScope())
     await templateSeeder.SeedAsync();
 }
 
+app.MapVirtualCompanyHealthEndpoints();
 app.MapControllers();
 
 app.Run();

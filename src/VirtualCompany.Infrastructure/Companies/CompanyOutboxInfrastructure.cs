@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -53,7 +54,7 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
     }
 }
 
-internal sealed class CompanyOutboxPermanentException : Exception
+internal sealed class CompanyOutboxPermanentException : PermanentBackgroundJobException
 {
     public CompanyOutboxPermanentException(string message)
         : base(message)
@@ -73,17 +74,20 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly ILogger<CompanyOutboxProcessor> _logger;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
         IOptions<CompanyOutboxDispatcherOptions> options,
+        IBackgroundJobExecutor backgroundJobExecutor,
         ILogger<CompanyOutboxProcessor> logger)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
         _options = options;
+        _backgroundJobExecutor = backgroundJobExecutor;
         _logger = logger;
     }
 
@@ -94,45 +98,39 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         foreach (var message in claimedMessages)
         {
-            using var scope = _logger.BeginScope(new Dictionary<string, object?>
-            {
-                ["OutboxMessageId"] = message.Id,
-                ["CompanyId"] = message.CompanyId,
-                ["CorrelationId"] = message.CorrelationId ?? message.ClaimToken
-            });
+            using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(message.Id, message.CompanyId, message.CorrelationId ?? message.ClaimToken));
 
-            try
-            {
-                await DispatchAsync(message, cancellationToken);
-                message.MarkProcessed();
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                handledCount++;
-            }
-            catch (CompanyOutboxPermanentException ex)
-            {
-                _logger.LogError(ex, "Company outbox message {OutboxMessageId} failed permanently.", message.Id);
-                message.MarkDiscarded(ex.Message);
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                handledCount++;
-            }
-            catch (Exception ex)
-            {
-                var nextAttempt = message.AttemptCount + 1;
-                var error = TrimError(ex.Message);
+            var attempt = message.AttemptCount + 1;
+            var execution = await _backgroundJobExecutor.ExecuteAsync(
+                new BackgroundJobExecutionContext(
+                    $"company-outbox:{message.Topic}",
+                    attempt,
+                    MaxAttempts,
+                    message.CompanyId,
+                    message.CorrelationId ?? message.ClaimToken),
+                innerCancellationToken => DispatchAsync(message, innerCancellationToken),
+                GetRetryDelay(attempt),
+                cancellationToken);
 
-                _logger.LogWarning(ex, "Company outbox message {OutboxMessageId} failed on attempt {AttemptCount}.", message.Id, nextAttempt);
-
-                if (nextAttempt >= MaxAttempts)
-                {
-                    message.MarkDiscarded(error);
+            switch (execution.Outcome)
+            {
+                case BackgroundJobExecutionOutcome.Succeeded:
+                    message.MarkProcessed();
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
-                }
-                else
-                {
-                    message.ScheduleRetry(DateTime.UtcNow.Add(RetryDelay), error);
+                    break;
+                case BackgroundJobExecutionOutcome.PermanentFailure:
+                case BackgroundJobExecutionOutcome.RetryExhausted:
+                    message.MarkDiscarded(ResolveFailureMessage(execution));
                     await _dbContext.SaveChangesAsync(cancellationToken);
-                }
+                    handledCount++;
+                    break;
+                case BackgroundJobExecutionOutcome.RetryScheduled:
+                    message.ScheduleRetry(
+                        DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero),
+                        ResolveFailureMessage(execution));
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    break;
             }
         }
 
@@ -141,7 +139,21 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
     private int BatchSize => Math.Max(1, _options.Value.BatchSize);
     private int MaxAttempts => Math.Max(1, _options.Value.MaxAttempts);
-    private TimeSpan RetryDelay => TimeSpan.FromSeconds(Math.Max(0, _options.Value.RetryDelaySeconds));
+
+    private TimeSpan GetRetryDelay(int attempt)
+    {
+        var baseDelaySeconds = Math.Max(0, _options.Value.RetryDelaySeconds);
+        if (baseDelaySeconds == 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var multiplier = Math.Pow(2d, Math.Max(0, attempt - 1));
+        var delaySeconds = Math.Min(baseDelaySeconds * multiplier, TimeSpan.FromMinutes(15).TotalSeconds);
+        return TimeSpan.FromSeconds(delaySeconds);
+    }
+
+    private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) => string.IsNullOrWhiteSpace(execution.ErrorMessage) ? "Unhandled company outbox processing failure." : execution.ErrorMessage;
     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.Value.ClaimTimeoutSeconds));
 
     private async Task<IReadOnlyList<CompanyOutboxMessage>> ClaimBatchAsync(CancellationToken cancellationToken)
@@ -214,30 +226,6 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             default:
                 throw new CompanyOutboxPermanentException($"Unsupported company outbox topic '{message.Topic}'.");
         }
-    }
-
-    private static T Deserialize<T>(CompanyOutboxMessage message)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<T>(message.PayloadJson, SerializerOptions)
-                ?? throw new CompanyOutboxPermanentException($"Company outbox payload for topic '{message.Topic}' was empty.");
-        }
-        catch (JsonException ex)
-        {
-            throw new CompanyOutboxPermanentException($"Could not deserialize company outbox payload for topic '{message.Topic}': {ex.Message}");
-        }
-    }
-
-    private static string TrimError(string? error)
-    {
-        if (string.IsNullOrWhiteSpace(error))
-        {
-            return "Unhandled company outbox processing failure.";
-        }
-
-        var trimmed = error.Trim();
-        return trimmed.Length > 2000 ? trimmed[..2000] : trimmed;
     }
 
     private static JsonSerializerOptions CreateSerializerOptions()
@@ -381,15 +369,28 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
         var pollInterval = TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollIntervalSeconds));
         var batchSize = Math.Max(1, _options.Value.BatchSize);
 
-        _logger.LogInformation("Company outbox dispatcher started.");
+        _logger.LogInformation(
+            "Company outbox dispatcher started with batch size {BatchSize}, poll interval {PollIntervalSeconds} seconds, max attempts {MaxAttempts}, and retry base delay {RetryDelaySeconds} seconds.",
+            batchSize,
+            pollInterval.TotalSeconds,
+            Math.Max(1, _options.Value.MaxAttempts),
+            Math.Max(0, _options.Value.RetryDelaySeconds));
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var executionCorrelationId = Guid.NewGuid().ToString("N");
+            using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(executionCorrelationId));
+
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
                 var handledCount = await processor.DispatchPendingAsync(stoppingToken);
+                if (handledCount > 0)
+                {
+                    _logger.LogInformation("Company outbox dispatcher processed {HandledCount} message(s) in the current cycle.", handledCount);
+                }
+
 
                 if (handledCount < batchSize)
                 {
@@ -406,5 +407,7 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
                 await Task.Delay(pollInterval, stoppingToken);
             }
         }
+
+        _logger.LogInformation("Company outbox dispatcher stopped.");
     }
 }

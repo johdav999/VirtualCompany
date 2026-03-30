@@ -31,6 +31,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
 
         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+        client.DefaultRequestHeaders.Add("X-Correlation-ID", "audit-invite-correlation");
         var response = await client.PostAsJsonAsync(
             $"/api/companies/{seed.CompanyId}/invitations",
             new { Email = "teammate@example.com", MembershipRole = "manager" });
@@ -75,6 +76,17 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Equal(0, deliveryOutbox.AttemptCount);
         Assert.Null(deliveryOutbox.ProcessedUtc);
         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.CorrelationId));
+
+        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == "company.invitation.created");
+
+        Assert.Equal("user", auditEvent.ActorType);
+        Assert.Equal("company_invitation", auditEvent.TargetType);
+        Assert.Equal("succeeded", auditEvent.Outcome);
+        Assert.Equal("audit-invite-correlation", auditEvent.CorrelationId);
+        Assert.Equal("teammate@example.com", auditEvent.Metadata["email"]);
+        Assert.Equal("manager", auditEvent.Metadata["membershipRole"]);
     }
 
     [Fact]
@@ -256,6 +268,8 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Null(invitation.DeliveryError);
         Assert.NotNull(deliveryMessage.ProcessedUtc);
         Assert.Single(sender.Sent);
+        Assert.Equal(1, await dbContext.AuditEvents.CountAsync(x => x.CompanyId == seed.CompanyId));
+        Assert.Equal("company.invitation.created", (await dbContext.AuditEvents.SingleAsync(x => x.CompanyId == seed.CompanyId)).Action);
         Assert.Equal(invitationPayload!.AcceptanceToken, sender.Sent.Single().AcceptanceToken);
     }
 
@@ -281,7 +295,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         using (var firstAssertionScope = _factory.Services.CreateScope())
         {
             var dbContext = firstAssertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-            var invitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "retry@example.com");
+            var invitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "idempotent@example.com");
             var deliveryMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
@@ -303,7 +317,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
 
         using var secondAssertionScope = _factory.Services.CreateScope();
         var secondDbContext = secondAssertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        var deliveredInvitation = await secondDbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "retry@example.com");
+        var deliveredInvitation = await secondDbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "idempotent@example.com");
         var processedMessage = await secondDbContext.CompanyOutboxMessages.SingleAsync(x =>
             x.CompanyId == seed.CompanyId &&
             x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
@@ -490,22 +504,23 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
 
             dbContext.Companies.Add(new Company(companyId, "Company A"));
             dbContext.CompanyMemberships.AddRange(
-            new { Email = "pending@example.com", MembershipRole = "manager" });
+                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                new CompanyMembership(employeeMembershipId, companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active, membershipAccessConfigurationJson: membershipAccessConfigurationJson));
+            return Task.CompletedTask;
+        });
 
-        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
-        var secondPayload = await secondResponse.Content.ReadFromJsonAsync<InvitationDeliveryResponse>();
-        Assert.NotNull(secondPayload);
-        Assert.True(secondPayload!.IsReinvite);
-        Assert.Equal(firstPayload!.Invitation.InvitationId, secondPayload.Invitation.InvitationId);
-        Assert.Equal("manager", secondPayload.Invitation.MembershipRole);
+        using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+        var response = await client.PatchAsJsonAsync(
+            $"/api/companies/{companyId}/memberships/{employeeMembershipId}/role",
+            new { MembershipRole = "admin" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.Id == employeeMembershipId);
         Assert.Equal(CompanyMembershipRole.Admin, membership.Role);
         Assert.Equal(membershipAccessConfigurationJson, membership.MembershipAccessConfigurationJson);
-    }
-
     }
 
     [Fact]

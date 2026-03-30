@@ -1,0 +1,497 @@
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+--- a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+@@ -7,18 +7,27 @@ namespace VirtualCompany.Infrastructure.Observability;
+ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, object?>>
+ {
+     private readonly Func<string?> _getCorrelationId;
++    private readonly Func<string?> _getTraceId;
+     private readonly Func<Guid?> _getCompanyId;
+     private readonly Func<Guid?> _getUserId;
+     private readonly Func<ResolvedCompanyMembershipContext?> _getMembership;
++    private readonly Func<string?> _getRequestMethod;
++    private readonly Func<string?> _getRequestPath;
+ 
+     private ExecutionLogScope(
+         Func<string?> getCorrelationId,
++        Func<string?> getTraceId,
+         Func<Guid?> getCompanyId,
+         Func<Guid?> getUserId,
+-        Func<ResolvedCompanyMembershipContext?> getMembership)
++        Func<ResolvedCompanyMembershipContext?> getMembership,
++        Func<string?> getRequestMethod,
++        Func<string?> getRequestPath)
+     {
+         _getCorrelationId = getCorrelationId;
++        _getTraceId = getTraceId;
+         _getCompanyId = getCompanyId;
+         _getUserId = getUserId;
+         _getMembership = getMembership;
++        _getRequestMethod = getRequestMethod;
++        _getRequestPath = getRequestPath;
+     }
+ 
+     public static ExecutionLogScope ForRequest(
+@@ -27,9 +36,12 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+         ICurrentUserAccessor currentUserAccessor) =>
+         new(
+             () => correlationContextAccessor.CorrelationId,
++            () => null,
+             () => companyContextAccessor.CompanyId,
+             () => companyContextAccessor.UserId ?? currentUserAccessor.UserId,
+-            () => companyContextAccessor.Membership);
++            () => companyContextAccessor.Membership,
++            () => null,
++            () => null);
+ 
+     public static ExecutionLogScope ForHttpContext(HttpContext context)
+     {
+@@ -38,9 +50,12 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+ 
+         return new(
+             () => CorrelationIdMiddleware.GetCorrelationId(context) ?? context.TraceIdentifier,
++            () => context.TraceIdentifier,
+             () => companyContextAccessor?.CompanyId,
+             () => companyContextAccessor?.UserId ?? currentUserAccessor?.UserId,
+-            () => companyContextAccessor?.Membership);
++            () => companyContextAccessor?.Membership,
++            () => context.Request.Method,
++            () => context.Request.Path.HasValue ? context.Request.Path.Value : null);
+     }
+ 
+     public static IReadOnlyDictionary<string, object?> ForBackground(string correlationId, Guid? companyId = null)
+@@ -76,6 +91,9 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+     {
+         var correlationId = _getCorrelationId();
+         if (!string.IsNullOrWhiteSpace(correlationId)) yield return new KeyValuePair<string, object?>("CorrelationId", correlationId);
++        
++        var traceId = _getTraceId();
++        if (!string.IsNullOrWhiteSpace(traceId)) yield return new KeyValuePair<string, object?>("TraceId", traceId);
+ 
+         var companyId = _getCompanyId();
+         if (companyId.HasValue) yield return new KeyValuePair<string, object?>("CompanyId", companyId.Value);
+@@ -83,6 +101,12 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+         var userId = _getUserId();
+         if (userId.HasValue) yield return new KeyValuePair<string, object?>("UserId", userId.Value);
+ 
++        var requestMethod = _getRequestMethod();
++        if (!string.IsNullOrWhiteSpace(requestMethod)) yield return new KeyValuePair<string, object?>("RequestMethod", requestMethod);
++
++        var requestPath = _getRequestPath();
++        if (!string.IsNullOrWhiteSpace(requestPath)) yield return new KeyValuePair<string, object?>("RequestPath", requestPath);
++
+         var membership = _getMembership();
+         if (membership is not null) yield return new KeyValuePair<string, object?>("CompanyMembershipId", membership.MembershipId);
+         if (membership is not null) yield return new KeyValuePair<string, object?>("CompanyMembershipRole", membership.MembershipRole.ToString());
+diff --git a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+--- a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+@@ -1,8 +1,10 @@
+ using Microsoft.AspNetCore.Diagnostics;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
++using System.Text.Json;
++using VirtualCompany.Application.Companies;
+ 
+ namespace VirtualCompany.Infrastructure.Observability;
+ 
+@@ -10,6 +12,8 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
+ {
+     private readonly ILogger<GlobalExceptionHandler> _logger;
+     private readonly IOptions<ObservabilityOptions> _options;
++    private const string ProblemDetailsContentType = "application/problem+json";
++    private const string UnexpectedErrorDetail = "The server encountered an unexpected error. Use the provided identifiers when contacting support.";
+ 
+     public GlobalExceptionHandler(
+         ILogger<GlobalExceptionHandler> logger,
+@@ -25,35 +29,93 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
+         }
+ 
+         var correlationId = CorrelationIdMiddleware.GetCorrelationId(httpContext) ?? httpContext.TraceIdentifier;
+-        var (statusCode, title, detail) = MapException(exception);
++        var traceId = httpContext.TraceIdentifier;
++        var mappedException = MapException(exception);
+ 
+         using var scope = _logger.BeginScope(ExecutionLogScope.ForHttpContext(httpContext));
+ 
+-        if (statusCode >= StatusCodes.Status500InternalServerError)
++        if (mappedException.StatusCode >= StatusCodes.Status500InternalServerError)
+         {
+-            _logger.LogError(exception, "Unhandled exception for request {Method} {Path}.", httpContext.Request.Method, httpContext.Request.Path);
++            _logger.LogError(
++                exception,
++                "Unhandled exception {ExceptionType} for HTTP {Method} {Path}. TraceId: {TraceId}.",
++                exception.GetType().FullName ?? exception.GetType().Name,
++                httpContext.Request.Method,
++                httpContext.Request.Path,
++                traceId);
+         }
+         else
+         {
+-            _logger.LogWarning(exception, "Request {Method} {Path} failed with status code {StatusCode}.", httpContext.Request.Method, httpContext.Request.Path, statusCode);
++            _logger.LogWarning(
++                exception,
++                "Mapped exception {ExceptionType} for HTTP {Method} {Path} to status code {StatusCode}. TraceId: {TraceId}.",
++                exception.GetType().FullName ?? exception.GetType().Name,
++                httpContext.Request.Method,
++                httpContext.Request.Path,
++                mappedException.StatusCode,
++                traceId);
+         }
+ 
+-        var problemDetails = new ProblemDetails
+-        {
+-            Status = statusCode,
+-            Title = title,
+-            Detail = detail,
+-            Type = $"https://httpstatuses.com/{statusCode}"
+-        };
++        var problemDetails = CreateProblemDetails(httpContext, mappedException, correlationId, traceId);
+         problemDetails.Extensions["correlationId"] = correlationId;
++        problemDetails.Extensions["traceId"] = traceId;
+ 
+-        httpContext.Response.StatusCode = statusCode;
++        httpContext.Response.StatusCode = mappedException.StatusCode;
+         httpContext.Response.Headers[_options.Value.CorrelationId.HeaderName] = correlationId;
+-        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
++        await httpContext.Response.WriteAsJsonAsync(
++            problemDetails,
++            options: null,
++            contentType: ProblemDetailsContentType,
++            cancellationToken: cancellationToken);
+ 
+         return true;
+     }
+ 
+-    private static (int StatusCode, string Title, string Detail) MapException(Exception exception) =>
++    private static ProblemDetails CreateProblemDetails(
++        HttpContext httpContext,
++        ExceptionHandlingResult mappedException,
++        string correlationId,
++        string traceId)
++    {
++        ProblemDetails problemDetails = mappedException.Errors is null
++            ? new ProblemDetails()
++            : new ValidationProblemDetails(mappedException.Errors);
++
++        problemDetails.Status = mappedException.StatusCode;
++        problemDetails.Title = mappedException.Title;
++        problemDetails.Detail = mappedException.Detail;
++        problemDetails.Type = $"https://httpstatuses.com/{mappedException.StatusCode}";
++        problemDetails.Instance = httpContext.Request.Path.HasValue ? httpContext.Request.Path.Value : null;
++        problemDetails.Extensions["correlationId"] = correlationId;
++        problemDetails.Extensions["traceId"] = traceId;
++
++        return problemDetails;
++    }
++
++    private static ExceptionHandlingResult MapException(Exception exception) =>
+         exception switch
+         {
+-            UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "Forbidden", "The request could not be authorized for the current company context."),
+-            KeyNotFoundException => (StatusCodes.Status404NotFound, "Not Found", "The requested resource was not found."),
+-            _ => (StatusCodes.Status500InternalServerError, "Unexpected error", "An unexpected error occurred.")
++            CompanyOnboardingValidationException validationException => ValidationFailure(validationException.Errors),
++            CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),
++            UnauthorizedAccessException => new ExceptionHandlingResult(
++                StatusCodes.Status403Forbidden,
++                "Forbidden",
++                "The request could not be authorized for the current company context."),
++            KeyNotFoundException => new ExceptionHandlingResult(
++                StatusCodes.Status404NotFound,
++                "Not Found",
++                "The requested resource was not found."),
++            ArgumentException => new ExceptionHandlingResult(
++                StatusCodes.Status400BadRequest,
++                "Invalid request",
++                "The request payload or parameters were invalid."),
++            JsonException => new ExceptionHandlingResult(
++                StatusCodes.Status400BadRequest,
++                "Invalid request",
++                "The request payload or parameters were invalid."),
++            _ => new ExceptionHandlingResult(
++                StatusCodes.Status500InternalServerError,
++                "An unexpected error occurred.",
++                UnexpectedErrorDetail)
+         };
++
++    private static ExceptionHandlingResult ValidationFailure(IReadOnlyDictionary<string, string[]> errors) =>
++        new(
++            StatusCodes.Status400BadRequest,
++            "Validation failed",
++            "One or more validation errors occurred.",
++            new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++
++    private sealed record ExceptionHandlingResult(int StatusCode, string Title, string Detail, IDictionary<string, string[]>? Errors = null);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+--- a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlerTests.cs
+@@ -1,4 +1,5 @@
+ using System.Text;
++using System.Text.Json;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.Options;
+@@ -10,7 +11,7 @@ namespace VirtualCompany.Api.Tests;
+ public sealed class GlobalExceptionHandlerTests
+ {
+     [Fact]
+-    public async Task TryHandleAsync_returns_safe_problem_details_with_correlation_id()
++    public async Task TryHandleAsync_returns_safe_problem_details_with_trace_and_correlation_ids()
+     {
+         var logger = new ScopeCapturingLogger<GlobalExceptionHandler>();
+         var handler = new GlobalExceptionHandler(
+@@ -18,6 +19,9 @@ public sealed class GlobalExceptionHandlerTests
+             Options.Create(new ObservabilityOptions()));
+         var context = new DefaultHttpContext();
+         context.Response.Body = new MemoryStream();
++        context.Request.Method = HttpMethods.Post;
++        context.Request.Path = "/api/test/failure";
++        context.TraceIdentifier = "trace-123";
+         context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-123";
+         var companyContextAccessor = new RequestCompanyContextAccessor();
+         var companyId = Guid.NewGuid();
+@@ -34,7 +38,7 @@ public sealed class GlobalExceptionHandlerTests
+             new InvalidOperationException("sensitive database failure"),
+             CancellationToken.None);
+ 
+-        Assert.True(handled);
++        Assert.True(handled);
+         Assert.Equal(StatusCodes.Status500InternalServerError, context.Response.StatusCode);
+         Assert.Equal("corr-123", context.Response.Headers["X-Correlation-ID"].ToString());
+ 
+@@ -42,15 +46,81 @@ public sealed class GlobalExceptionHandlerTests
+         using var reader = new StreamReader(context.Response.Body, Encoding.UTF8);
+         var payload = await reader.ReadToEndAsync();
+ 
+-        Assert.Contains("\"title\":\"Unexpected error\"", payload);
+-        Assert.Contains("\"correlationId\":\"corr-123\"", payload);
++        using var json = JsonDocument.Parse(payload);
++        Assert.Equal(500, json.RootElement.GetProperty("status").GetInt32());
++        Assert.Equal("An unexpected error occurred.", json.RootElement.GetProperty("title").GetString());
++        Assert.Equal("/api/test/failure", json.RootElement.GetProperty("instance").GetString());
++        Assert.Equal("corr-123", json.RootElement.GetProperty("correlationId").GetString());
++        Assert.Equal("trace-123", json.RootElement.GetProperty("traceId").GetString());
++        Assert.StartsWith("application/problem+json", context.Response.ContentType, StringComparison.OrdinalIgnoreCase);
+         Assert.DoesNotContain("sensitive database failure", payload);
+ 
+         var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Error, entry.LogLevel);
++        Assert.Contains(nameof(InvalidOperationException), entry.Message);
+         Assert.Equal("corr-123", AssertScopeValue(entry.Scope, "CorrelationId"));
++        Assert.Equal("trace-123", AssertScopeValue(entry.Scope, "TraceId"));
+         Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
++        Assert.Equal("POST", AssertScopeValue(entry.Scope, "RequestMethod"));
++        Assert.Equal("/api/test/failure", AssertScopeValue(entry.Scope, "RequestPath"));
++    }
++
++    [Fact]
++    public async Task TryHandleAsync_maps_key_not_found_to_safe_not_found_problem_details()
++    {
++        var logger = new ScopeCapturingLogger<GlobalExceptionHandler>();
++        var handler = new GlobalExceptionHandler(
++            logger,
++            Options.Create(new ObservabilityOptions()));
++        var context = new DefaultHttpContext();
++        context.Response.Body = new MemoryStream();
++        context.Request.Method = HttpMethods.Get;
++        context.Request.Path = "/api/test/missing";
++        context.TraceIdentifier = "trace-404";
++        context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-404";
++
++        var handled = await handler.TryHandleAsync(
++            context,
++            new KeyNotFoundException("sensitive missing record"),
++            CancellationToken.None);
++
++        Assert.True(handled);
++        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
++
++        context.Response.Body.Position = 0;
++        using var reader = new StreamReader(context.Response.Body, Encoding.UTF8);
++        var payload = await reader.ReadToEndAsync();
++
++        using var json = JsonDocument.Parse(payload);
++        Assert.Equal(404, json.RootElement.GetProperty("status").GetInt32());
++        Assert.Equal("Not Found", json.RootElement.GetProperty("title").GetString());
++        Assert.Equal("corr-404", json.RootElement.GetProperty("correlationId").GetString());
++        Assert.Equal("trace-404", json.RootElement.GetProperty("traceId").GetString());
++        Assert.DoesNotContain("sensitive missing record", payload);
++
++        var entry = Assert.Single(logger.Entries);
++        Assert.Equal(LogLevel.Warning, entry.LogLevel);
++    }
++
++    [Fact]
++    public async Task TryHandleAsync_maps_validation_exceptions_to_validation_problem_details()
++    {
++        var logger = new ScopeCapturingLogger<GlobalExceptionHandler>();
++        var handler = new GlobalExceptionHandler(
++            logger,
++            Options.Create(new ObservabilityOptions()));
++        var context = new DefaultHttpContext();
++        context.Response.Body = new MemoryStream();
++        context.TraceIdentifier = "trace-validation";
++        context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-validation";
++
++        var handled = await handler.TryHandleAsync(
++            context,
++            new VirtualCompany.Application.Companies.CompanyMembershipAdministrationValidationException(new Dictionary<string, string[]>
++            {
++                ["email"] = ["Email is required."]
++            }),
++            CancellationToken.None);
++
++        Assert.True(handled);
++        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
++
++        context.Response.Body.Position = 0;
++        using var json = JsonDocument.Parse(await new StreamReader(context.Response.Body, Encoding.UTF8).ReadToEndAsync());
++        Assert.Equal("Validation failed", json.RootElement.GetProperty("title").GetString());
++        Assert.Equal("Email is required.", json.RootElement.GetProperty("errors").GetProperty("email")[0].GetString());
+     }
+ 
+     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -9,7 +9,7 @@ using VirtualCompany.Infrastructure.Observability;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+-public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
++public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ {
+     protected override void ConfigureWebHost(IWebHostBuilder builder)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs
+@@ -0,0 +1,170 @@
++using System.Net;
++using System.Text.Json;
++using Microsoft.AspNetCore.Hosting;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.DependencyInjection.Extensions;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GlobalExceptionHandlingIntegrationTests
++{
++    [Fact]
++    public async Task Unhandled_exception_returns_safe_problem_details_response()
++    {
++        using var factory = new ThrowingCurrentUserCompanyFactory(
++            () => new InvalidOperationException("sensitive database failure"));
++        using var client = CreateAuthenticatedClient(factory);
++
++        var response = await client.GetAsync("/api/auth/me");
++
++        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
++        Assert.StartsWith("application/problem+json", response.Content.Headers.ContentType?.ToString(), StringComparison.OrdinalIgnoreCase);
++
++        var payload = await response.Content.ReadAsStringAsync();
++        using var json = JsonDocument.Parse(payload);
++
++        Assert.Equal(500, json.RootElement.GetProperty("status").GetInt32());
++        Assert.Equal("An unexpected error occurred.", json.RootElement.GetProperty("title").GetString());
++        Assert.Equal("/api/auth/me", json.RootElement.GetProperty("instance").GetString());
++        Assert.DoesNotContain("sensitive database failure", payload);
++
++        var correlationId = Assert.Single(response.Headers.GetValues("X-Correlation-ID"));
++        Assert.Equal(correlationId, json.RootElement.GetProperty("correlationId").GetString());
++        Assert.False(string.IsNullOrWhiteSpace(json.RootElement.GetProperty("traceId").GetString()));
++    }
++
++    [Fact]
++    public async Task Known_exception_returns_mapped_problem_details_response()
++    {
++        using var factory = new ThrowingCurrentUserCompanyFactory(
++            () => new KeyNotFoundException("sensitive missing record"));
++        using var client = CreateAuthenticatedClient(factory);
++
++        var response = await client.GetAsync("/api/auth/me");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++        Assert.StartsWith("application/problem+json", response.Content.Headers.ContentType?.ToString(), StringComparison.OrdinalIgnoreCase);
++
++        var payload = await response.Content.ReadAsStringAsync();
++        using var json = JsonDocument.Parse(payload);
++
++        Assert.Equal(404, json.RootElement.GetProperty("status").GetInt32());
++        Assert.Equal("Not Found", json.RootElement.GetProperty("title").GetString());
++        Assert.Equal("/api/auth/me", json.RootElement.GetProperty("instance").GetString());
++        Assert.DoesNotContain("sensitive missing record", payload);
++        Assert.False(string.IsNullOrWhiteSpace(json.RootElement.GetProperty("traceId").GetString()));
++    }
++
++    private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory)
++    {
++        var client = factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "exception-user");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "exception.user@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Exception User");
++        return client;
++    }
++
++    private sealed class ThrowingCurrentUserCompanyFactory : TestWebApplicationFactory
++    {
++        private readonly Func<Exception> _exceptionFactory;
++
++        public ThrowingCurrentUserCompanyFactory(Func<Exception> exceptionFactory)
++        {
++            _exceptionFactory = exceptionFactory;
++        }
++
++        protected override void ConfigureWebHost(IWebHostBuilder builder)
++        {
++            base.ConfigureWebHost(builder);
++
++            builder.ConfigureServices(services =>
++            {
++                services.RemoveAll<ICurrentUserCompanyService>();
++                services.AddScoped<ICurrentUserCompanyService>(_ =>
++                    new ThrowingCurrentUserCompanyService(_exceptionFactory));
++            });
++        }
++    }
++
++    private sealed class ThrowingCurrentUserCompanyService : ICurrentUserCompanyService
++    {
++        private readonly Func<Exception> _exceptionFactory;
++
++        public ThrowingCurrentUserCompanyService(Func<Exception> exceptionFactory)
++        {
++            _exceptionFactory = exceptionFactory;
++        }
++
++        public Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken) =>
++            Task.FromException<CurrentUserDto?>(_exceptionFactory());
++
++        public Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken) =>
++            Task.FromException<CurrentUserContextDto?>(_exceptionFactory());
++
++        public Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken) =>
++            Task.FromException<IReadOnlyList<CompanyMembershipDto>>(_exceptionFactory());
++
++        public Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken) =>
++            Task.FromException<ResolvedCompanyContextDto?>(_exceptionFactory());
++
++        public Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken) =>
++            Task.FromException<CompanyAccessDto?>(_exceptionFactory());
++
++        public Task<CompanyDashboardEntryDto?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken) =>
++            Task.FromException<CompanyDashboardEntryDto?>(_exceptionFactory());
++
++        public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken) =>
++            Task.FromException<bool>(_exceptionFactory());
++    }
++}
+END_OF_PATCH

@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-ST-104",
+  "promptPath": ".ai-design/prompts/TASK-ST-104.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T13:34:49.123Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T13-34-49-123Z_TASK-ST-104_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T13-34-49-123Z_TASK-ST-104.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T14:03:22.484Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ny.Api.Tests;\n@@ -19,7 +20,10 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>\n             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>\n             {\n                 [$\"{CompanyOutboxDispatcherOptions.SectionName}:Enabled\"] = \"false\",\n-                [$\"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds\"] = \"0\"\n+                [$\"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds\"] = \"0\",\n+                [$\"{ObservabilityOptions.SectionName}:RateLimiting:Enabled\"] = \"false\",\n+                [$\"{ObservabilityOptions.SectionName}:Redis:ConnectionString\"] = \"\",\n+                [$\"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled\"] = \"false\"\n             });\n         });\n \ndiff --git a/README.md b/README.md\nindex a1a1a1a..b2b2b2b 100644\n--- a/README.md\n+++ b/README.md\n@@ -108,6 +108,28 @@ Tenant-owned API requests resolve company context from:\n \n If both are supplied and do not match, the API returns `400 Bad Request`.\n \n+## Observability\n+\n+Health endpoints:\n+\n+- `GET /health`\n+- `GET /health/live`\n+- `GET /health/ready`\n+\n+Request correlation:\n+\n+- The API accepts `X-Correlation-ID` on incoming requests.\n+- When absent, the API generates a correlation ID and returns it in the response header.\n+- Technical logs and safe error responses include the same correlation ID for support workflows.\n+\n+Configuration:\n+\n+- `Observability:Redis:ConnectionString` enables the Redis readiness check.\n+- `Observability:ObjectStorage:*` enables an object-storage probe without coupling the API to a specific provider yet.\n+- `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.\n+\n+Logging boundary:\n+\n+- Technical operational logs stay in the application logging pipeline.\n+- Future business audit events remain a separate concern and are not implemented by this baseline.\n+\n ## Tenant-Aware Endpoints\n \n Authenticated endpoints:\nEND_OF_PATCH\n",
+  "stderrTail": ",7 +20,10 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>\n             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>\n             {\n                 [$\"{CompanyOutboxDispatcherOptions.SectionName}:Enabled\"] = \"false\",\n-                [$\"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds\"] = \"0\"\n+                [$\"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds\"] = \"0\",\n+                [$\"{ObservabilityOptions.SectionName}:RateLimiting:Enabled\"] = \"false\",\n+                [$\"{ObservabilityOptions.SectionName}:Redis:ConnectionString\"] = \"\",\n+                [$\"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled\"] = \"false\"\n             });\n         });\n \ndiff --git a/README.md b/README.md\nindex a1a1a1a..b2b2b2b 100644\n--- a/README.md\n+++ b/README.md\n@@ -108,6 +108,28 @@ Tenant-owned API requests resolve company context from:\n \n If both are supplied and do not match, the API returns `400 Bad Request`.\n \n+## Observability\n+\n+Health endpoints:\n+\n+- `GET /health`\n+- `GET /health/live`\n+- `GET /health/ready`\n+\n+Request correlation:\n+\n+- The API accepts `X-Correlation-ID` on incoming requests.\n+- When absent, the API generates a correlation ID and returns it in the response header.\n+- Technical logs and safe error responses include the same correlation ID for support workflows.\n+\n+Configuration:\n+\n+- `Observability:Redis:ConnectionString` enables the Redis readiness check.\n+- `Observability:ObjectStorage:*` enables an object-storage probe without coupling the API to a specific provider yet.\n+- `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.\n+\n+Logging boundary:\n+\n+- Technical operational logs stay in the application logging pipeline.\n+- Future business audit events remain a separate concern and are not implemented by this baseline.\n+\n ## Tenant-Aware Endpoints\n \n Authenticated endpoints:\nEND_OF_PATCH\ntokens used\n168,748\n",
+  "verbosityMode": "normal"
+}

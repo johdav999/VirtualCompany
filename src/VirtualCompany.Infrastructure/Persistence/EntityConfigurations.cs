@@ -272,6 +272,41 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
     }
 }
 
+internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent>
+{
+    public void Configure(EntityTypeBuilder<AuditEvent> builder)
+    {
+        builder.ToTable("audit_events");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.ActorType).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Action).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.TargetType).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.TargetId).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.Outcome).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.RationaleSummary).HasMaxLength(512);
+        builder.Property(x => x.CorrelationId).HasMaxLength(128);
+        builder.Property(x => x.OccurredUtc).IsRequired();
+        builder.Property(x => x.DataSources)
+            .HasColumnName("data_sources_json")
+            .HasJsonbConversion<List<string>>()
+            .HasDefaultValueSql("'[]'::jsonb")
+            .IsRequired();
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonbConversion<Dictionary<string, string?>>()
+            .HasDefaultValueSql("'{}'::jsonb")
+            .IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
 internal sealed class CompanyOwnedNoteConfiguration : IEntityTypeConfiguration<CompanyOwnedNote>
 {
     public void Configure(EntityTypeBuilder<CompanyOwnedNote> builder)

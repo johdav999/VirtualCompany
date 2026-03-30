@@ -4,11 +4,15 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Infrastructure.Auditing;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure;
@@ -30,7 +34,10 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+        services.AddVirtualCompanyObservability(configuration);
 
+        services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+        services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
         services.AddHttpContextAccessor();
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
@@ -42,6 +49,7 @@ public static class DependencyInjection
         services.AddScoped<ICompanyOutboxProcessor, CompanyOutboxProcessor>();
         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
+        services.AddScoped<IAuditEventWriter, AuditEventWriter>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();

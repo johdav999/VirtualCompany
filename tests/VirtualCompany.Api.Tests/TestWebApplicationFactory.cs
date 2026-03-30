@@ -7,11 +7,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
+public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -20,7 +21,10 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
-                [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0"
+                [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+                [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
+                [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
             });
         });
 

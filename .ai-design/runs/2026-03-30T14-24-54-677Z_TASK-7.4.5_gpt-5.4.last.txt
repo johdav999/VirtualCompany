@@ -1,0 +1,645 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -129,8 +129,11 @@ Configuration:
+ - `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.
+ 
+ Logging boundary:
+-
+-- Technical operational logs stay in the application logging pipeline.
+-- Future business audit events remain a separate concern and are not implemented by this baseline.
++- Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.
++- Business audit events are persisted separately in the `audit_events` store through the dedicated `IAuditEventWriter` application abstraction.
++- Do not treat `ILogger` output as business history or compliance evidence.
++- When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.
++- The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.
+ 
+ ## Tenant-Aware Endpoints
+ 
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -0,0 +1,38 @@
++namespace VirtualCompany.Application.Auditing;
++
++public sealed record AuditEventWriteRequest(
++    Guid CompanyId,
++    string ActorType,
++    Guid? ActorId,
++    string Action,
++    string TargetType,
++    string TargetId,
++    string Outcome,
++    string? RationaleSummary = null,
++    IReadOnlyCollection<string>? DataSources = null,
++    IReadOnlyDictionary<string, string?>? Metadata = null,
++    string? CorrelationId = null,
++    DateTime? OccurredUtc = null);
++
++// Business audit history is an explicit application concern.
++// Technical diagnostics belong on ILogger and must not be inferred from audit records.
++public interface IAuditEventWriter
++{
++    Task WriteAsync(AuditEventWriteRequest auditEvent, CancellationToken cancellationToken);
++}
++
++public static class AuditActorTypes
++{
++    public const string User = "user";
++}
++
++public static class AuditTargetTypes
++{
++    public const string CompanyInvitation = "company_invitation";
++    public const string CompanyMembership = "company_membership";
++}
++
++public static class AuditEventOutcomes
++{
++    public const string Succeeded = "succeeded";
++}
++
++public static class AuditEventActions
++{
++    public const string CompanyInvitationCreated = "company.invitation.created";
++    public const string CompanyInvitationResent = "company.invitation.resent";
++    public const string CompanyInvitationRevoked = "company.invitation.revoked";
++    public const string CompanyInvitationAccepted = "company.invitation.accepted";
++    public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/AuditEvent.cs b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+@@ -0,0 +1,137 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class AuditEvent : ICompanyOwnedEntity
++{
++    private AuditEvent()
++    {
++    }
++
++    public AuditEvent(
++        Guid id,
++        Guid companyId,
++        string actorType,
++        Guid? actorId,
++        string action,
++        string targetType,
++        string targetId,
++        string outcome,
++        string? rationaleSummary = null,
++        IEnumerable<string>? dataSources = null,
++        IReadOnlyDictionary<string, string?>? metadata = null,
++        string? correlationId = null,
++        DateTime? occurredUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (actorId.HasValue && actorId.Value == Guid.Empty)
++        {
++            throw new ArgumentException("ActorId cannot be empty.", nameof(actorId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ActorType = NormalizeRequired(actorType, nameof(actorType), 64);
++        ActorId = actorId;
++        Action = NormalizeRequired(action, nameof(action), 128);
++        TargetType = NormalizeRequired(targetType, nameof(targetType), 128);
++        TargetId = NormalizeRequired(targetId, nameof(targetId), 128);
++        Outcome = NormalizeRequired(outcome, nameof(outcome), 64);
++        RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), 512);
++        DataSources = NormalizeDataSources(dataSources);
++        Metadata = NormalizeMetadata(metadata);
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        OccurredUtc = occurredUtc ?? DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ActorType { get; private set; } = null!;
++    public Guid? ActorId { get; private set; }
++    public string Action { get; private set; } = null!;
++    public string TargetType { get; private set; } = null!;
++    public string TargetId { get; private set; } = null!;
++    public string Outcome { get; private set; } = null!;
++    public string? RationaleSummary { get; private set; }
++    public List<string> DataSources { get; private set; } = [];
++    public Dictionary<string, string?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? CorrelationId { get; private set; }
++    public DateTime OccurredUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static List<string> NormalizeDataSources(IEnumerable<string>? dataSources)
++    {
++        if (dataSources is null)
++        {
++            return [];
++        }
++
++        var normalized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        foreach (var dataSource in dataSources)
++        {
++            if (string.IsNullOrWhiteSpace(dataSource))
++            {
++                continue;
++            }
++
++            normalized.Add(NormalizeRequired(dataSource, nameof(dataSources), 64));
++        }
++
++        return normalized.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
++    }
++
++    private static Dictionary<string, string?> NormalizeMetadata(IReadOnlyDictionary<string, string?>? metadata)
++    {
++        var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++        if (metadata is null)
++        {
++            return normalized;
++        }
++
++        foreach (var pair in metadata)
++        {
++            if (string.IsNullOrWhiteSpace(pair.Key))
++            {
++                continue;
++            }
++
++            normalized[NormalizeRequired(pair.Key, nameof(metadata), 100)] =
++                NormalizeOptional(pair.Value, nameof(metadata), 512);
++        }
++
++        return normalized;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+@@ -0,0 +1,34 @@
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Auditing;
++
++public sealed class AuditEventWriter : IAuditEventWriter
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public AuditEventWriter(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public Task WriteAsync(AuditEventWriteRequest auditEvent, CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(auditEvent);
++
++        _dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            auditEvent.CompanyId,
++            auditEvent.ActorType,
++            auditEvent.ActorId,
++            auditEvent.Action,
++            auditEvent.TargetType,
++            auditEvent.TargetId,
++            auditEvent.Outcome,
++            auditEvent.RationaleSummary,
++            auditEvent.DataSources,
++            auditEvent.Metadata,
++            auditEvent.CorrelationId,
++            auditEvent.OccurredUtc));
++        return Task.CompletedTask;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMembershipAdministrationService.cs
+@@ -4,6 +4,7 @@ using System.Net.Mail;
+ using System.Security.Cryptography;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -20,6 +21,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly IAuditEventWriter _auditEventWriter;
+ 
+     public CompanyMembershipAdministrationService(
+         VirtualCompanyDbContext dbContext,
+@@ -27,13 +29,15 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         ICompanyOutboxEnqueuer outboxEnqueuer,
+-        ICorrelationContextAccessor correlationContextAccessor)
++        ICorrelationContextAccessor correlationContextAccessor,
++        IAuditEventWriter auditEventWriter)
+     {
+         _dbContext = dbContext;
+         _currentUserAccessor = currentUserAccessor;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _outboxEnqueuer = outboxEnqueuer;
+         _correlationContextAccessor = correlationContextAccessor;
++        _auditEventWriter = auditEventWriter;
+     }
+ 
+     public async Task<IReadOnlyList<CompanyMemberDirectoryEntryDto>> GetMembershipsAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -122,6 +126,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+                 invitedByUserId = companyContext.UserId
+             });
+ 
++            await WriteAuditEventAsync(
++                companyId,
++                companyContext.UserId,
++                AuditEventActions.CompanyInvitationCreated,
++                AuditTargetTypes.CompanyInvitation,
++                invitation.Id,
++                correlationId,
++                cancellationToken,
++                dataSources: ["company_membership_administration", "http_request"],
++                metadata: CreateAuditMetadata(("email", email), ("membershipRole", invitation.Role.ToStorageValue())));
++
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, false);
+         }
+@@ -136,6 +151,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             resentByUserId = companyContext.UserId
+         });
+ 
++        await WriteAuditEventAsync(
++            companyId,
++            companyContext.UserId,
++            AuditEventActions.CompanyInvitationResent,
++            AuditTargetTypes.CompanyInvitation,
++            existingPendingInvitation.Id,
++            correlationId,
++            cancellationToken,
++            dataSources: ["company_membership_administration", "http_request"],
++            metadata: CreateAuditMetadata(("email", existingPendingInvitation.Email), ("membershipRole", existingPendingInvitation.Role.ToStorageValue())));
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return new CompanyInvitationDeliveryDto(ToInvitationDto(existingPendingInvitation), token, true);
+     }
+@@ -177,6 +203,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+         EnqueueInvitationDeliveryRequested(invitation, companyContext.CompanyName, token, correlationId);
+         EnqueueInvitationResent(invitation, companyId, companyContext.UserId, correlationId);
+ 
++        await WriteAuditEventAsync(
++            companyId,
++            companyContext.UserId,
++            AuditEventActions.CompanyInvitationResent,
++            AuditTargetTypes.CompanyInvitation,
++            invitation.Id,
++            correlationId,
++            cancellationToken,
++            dataSources: ["company_membership_administration", "http_request"],
++            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue())));
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return new CompanyInvitationDeliveryDto(ToInvitationDto(invitation), token, true);
+     }
+@@ -221,6 +258,17 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             revokedByUserId = companyContext.UserId
+         });
+ 
++        await WriteAuditEventAsync(
++            companyId,
++            companyContext.UserId,
++            AuditEventActions.CompanyInvitationRevoked,
++            AuditTargetTypes.CompanyInvitation,
++            invitation.Id,
++            correlationId,
++            cancellationToken,
++            dataSources: ["company_membership_administration", "http_request"],
++            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue())));
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToInvitationDto(invitation);
+     }
+@@ -272,6 +320,18 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+                 changedByUserId = companyContext.UserId
+             });
+ 
++            await WriteAuditEventAsync(
++                companyId,
++                companyContext.UserId,
++                AuditEventActions.CompanyMembershipRoleChanged,
++                AuditTargetTypes.CompanyMembership,
++                membership.Id,
++                correlationId,
++                cancellationToken,
++                rationaleSummary: "Administrative role change approved inside the company membership boundary.",
++                dataSources: ["company_membership_administration", "http_request"],
++                metadata: CreateAuditMetadata(("previousRole", previousRole.ToStorageValue()), ("newRole", requestedRole.ToStorageValue()), ("userId", membership.UserId?.ToString("N"))));
++
+             await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+ 
+@@ -349,6 +409,18 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+             role = invitation.Role
+         });
+ 
++        await WriteAuditEventAsync(
++            invitation.CompanyId,
++            userId,
++            AuditEventActions.CompanyInvitationAccepted,
++            AuditTargetTypes.CompanyInvitation,
++            invitation.Id,
++            correlationId,
++            cancellationToken,
++            rationaleSummary: "Invitation token redeemed by the invited user.",
++            dataSources: ["http_request", "invitation_token"],
++            metadata: CreateAuditMetadata(("email", invitation.Email), ("membershipRole", invitation.Role.ToStorageValue()), ("membershipId", membership.Id.ToString("N"))));
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return new AcceptCompanyInvitationResultDto(
+             invitation.CompanyId,
+@@ -496,6 +568,38 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
+         string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
+             ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+             : _correlationContextAccessor.CorrelationId!;
++
++    private Task WriteAuditEventAsync(
++        Guid companyId,
++        Guid? actorId,
++        string action,
++        string targetType,
++        Guid targetId,
++        string correlationId,
++        CancellationToken cancellationToken,
++        string? rationaleSummary = null,
++        IReadOnlyCollection<string>? dataSources = null,
++        IReadOnlyDictionary<string, string?>? metadata = null) =>
++        _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                actorId,
++                action,
++                targetType,
++                targetId.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                rationaleSummary,
++                dataSources,
++                metadata,
++                correlationId),
++            cancellationToken);
++
++    private static IReadOnlyDictionary<string, string?> CreateAuditMetadata(params (string Key, string? Value)[] values)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in values)
++        {
++            metadata[key] = value;
++        }
++
++        return metadata;
++    }
+ 
+     private static Expression<Func<CompanyInvitation, CompanyInvitationDto>> ToInvitationDtoExpression() =>
+         x => new CompanyInvitationDto(
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Authentication;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Authorization;
+@@ -39,6 +41,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyOutboxProcessor, CompanyOutboxProcessor>();
+         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
+         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
++        services.AddScoped<IAuditEventWriter, AuditEventWriter>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -251,6 +251,34 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
+     }
+ }
+ 
++internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent>
++{
++    public void Configure(EntityTypeBuilder<AuditEvent> builder)
++    {
++        builder.ToTable("audit_events");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.ActorType).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Action).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.TargetType).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.TargetId).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.Outcome).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.RationaleSummary).HasMaxLength(512);
++        builder.Property(x => x.CorrelationId).HasMaxLength(128);
++        builder.Property(x => x.OccurredUtc).IsRequired();
++        builder.Property(x => x.DataSources)
++            .HasColumnName("data_sources_json")
++            .HasJsonbConversion<List<string>>()
++            .HasDefaultValueSql("'[]'::jsonb")
++            .IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonbConversion<Dictionary<string, string?>>()
++            .HasDefaultValueSql("'{}'::jsonb")
++            .IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class CompanyOwnedNoteConfiguration : IEntityTypeConfiguration<CompanyOwnedNote>
+ {
+     public void Configure(EntityTypeBuilder<CompanyOwnedNote> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300009_AddBusinessAuditEvents.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300009_AddBusinessAuditEvents.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300009_AddBusinessAuditEvents.cs
+@@ -0,0 +1,104 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddBusinessAuditEvents : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "audit_events",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
++                ActorType = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
++                ActorId = table.Column<Guid>(type: "uuid", nullable: true),
++                Action = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
++                TargetType = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
++                TargetId = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
++                Outcome = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
++                RationaleSummary = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
++                DataSources = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'[]'::jsonb"),
++                Metadata = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'{}'::jsonb"),
++                CorrelationId = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
++                OccurredUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_audit_events", x => x.Id);
++                table.ForeignKey(
++                    name: "FK_audit_events_companies_CompanyId",
++                    column: x => x.CompanyId,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "OccurredUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_TargetType_TargetId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "TargetType", "TargetId", "OccurredUtc" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "audit_events");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -18,6 +18,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
+     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
++    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -24,6 +24,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
+ 
+         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        client.DefaultRequestHeaders.Add("X-Correlation-ID", "audit-invite-correlation");
+         var response = await client.PostAsJsonAsync(
+             $"/api/companies/{seed.CompanyId}/invitations",
+             new { Email = "teammate@example.com", MembershipRole = "manager" });
+@@ -67,6 +68,16 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.Equal(0, deliveryOutbox.AttemptCount);
+         Assert.Null(deliveryOutbox.ProcessedUtc);
+         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.CorrelationId));
++
++        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == "company.invitation.created");
++
++        Assert.Equal("user", auditEvent.ActorType);
++        Assert.Equal("company_invitation", auditEvent.TargetType);
++        Assert.Equal("succeeded", auditEvent.Outcome);
++        Assert.Equal("audit-invite-correlation", auditEvent.CorrelationId);
++        Assert.Equal("teammate@example.com", auditEvent.Metadata["email"]);
++        Assert.Equal("manager", auditEvent.Metadata["membershipRole"]);
+     }
+@@ -228,6 +239,10 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
+         Assert.Null(invitation.DeliveryError);
+         Assert.NotNull(deliveryMessage.ProcessedUtc);
+         Assert.Single(sender.Sent);
++        Assert.Equal(1, await dbContext.AuditEvents.CountAsync(x => x.CompanyId == seed.CompanyId));
++        Assert.Equal("company.invitation.created", (await dbContext.AuditEvents.SingleAsync(x => x.CompanyId == seed.CompanyId)).Action);
+         Assert.Equal(invitationPayload!.AcceptanceToken, sender.Sent.Single().AcceptanceToken);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GlobalExceptionHandlingIntegrationTests.cs
+@@ -2,10 +2,12 @@ using System.Net;
+ using System.Text.Json;
+ using Microsoft.AspNetCore.Hosting;
+ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
++using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -31,6 +33,10 @@ public sealed class GlobalExceptionHandlingIntegrationTests
+         var correlationId = Assert.Single(response.Headers.GetValues("X-Correlation-ID"));
+         Assert.Equal(correlationId, json.RootElement.GetProperty("correlationId").GetString());
+         Assert.False(string.IsNullOrWhiteSpace(json.RootElement.GetProperty("traceId").GetString()));
++
++        using var scope = factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.Empty(await dbContext.AuditEvents.ToListAsync());
+     }
+ 
+     [Fact]
+END_OF_PATCH

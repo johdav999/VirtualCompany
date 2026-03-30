@@ -252,6 +252,7 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
 
         return trimmed;
     }
+}
 
     private static string? NormalizeOptional(string? value, string name, int maxLength)
     {

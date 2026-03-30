@@ -1,0 +1,272 @@
+diff --git a/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs b/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs
+index 7d2f2f1..e9a1f9a 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/DependencyHealthChecks.cs
+@@ -1,5 +1,6 @@
+ using System.Net.Http;
+ using System.Net.Sockets;
++using System.Text;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Diagnostics.HealthChecks;
+ using Microsoft.Extensions.Options;
+@@ -67,8 +68,20 @@ public sealed class RedisTcpHealthCheck : IHealthCheck
+         try
+         {
+             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+-            timeoutSource.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, settings.ConnectTimeoutSeconds)));
++            timeoutSource.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.ConnectTimeoutSeconds, 1, 10)));
+             using var client = new TcpClient();
++
+             await client.ConnectAsync(host, port, timeoutSource.Token);
+-            return HealthCheckResult.Healthy($"Redis endpoint {host}:{port} is reachable.");
++
++            await using var stream = client.GetStream();
++            var pingCommand = Encoding.ASCII.GetBytes("*1\r\n$4\r\nPING\r\n");
++
++            await stream.WriteAsync(pingCommand, timeoutSource.Token);
++            await stream.FlushAsync(timeoutSource.Token);
++
++            var buffer = new byte[32];
++            var bytesRead = await stream.ReadAsync(buffer, timeoutSource.Token);
++            var response = bytesRead > 0 ? Encoding.ASCII.GetString(buffer, 0, bytesRead) : string.Empty;
++
++            return response.StartsWith("+PONG", StringComparison.OrdinalIgnoreCase)
++                ? HealthCheckResult.Healthy($"Redis endpoint {host}:{port} responded to PING.")
++                : HealthCheckResult.Unhealthy("Redis endpoint did not return a valid PING response.");
+         }
+         catch (Exception ex)
+         {
+@@ -154,7 +167,7 @@ public sealed class ObjectStorageHealthCheck : IHealthCheck
+ 
+             var client = _httpClientFactory.CreateClient(nameof(ObjectStorageHealthCheck));
+             using var headRequest = new HttpRequestMessage(HttpMethod.Head, probeUri);
+-            using var headResponse = await client.SendAsync(headRequest, timeoutSource.Token);
++            using var headResponse = await client.SendAsync(headRequest, HttpCompletionOption.ResponseHeadersRead, timeoutSource.Token);
+ 
+             if (headResponse.IsSuccessStatusCode)
+             {
+@@ -163,7 +176,8 @@ public sealed class ObjectStorageHealthCheck : IHealthCheck
+ 
+             if (headResponse.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed)
+             {
+-                using var getResponse = await client.GetAsync(probeUri, timeoutSource.Token);
++                using var getRequest = new HttpRequestMessage(HttpMethod.Get, probeUri);
++                using var getResponse = await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, timeoutSource.Token);
+                 return getResponse.IsSuccessStatusCode
+                     ? HealthCheckResult.Healthy($"Object storage probe succeeded against {probeUri}.")
+                     : HealthCheckResult.Unhealthy($"Object storage probe returned {(int)getResponse.StatusCode}.");
+diff --git a/src/VirtualCompany.Infrastructure/Observability/HealthCheckResponseWriter.cs b/src/VirtualCompany.Infrastructure/Observability/HealthCheckResponseWriter.cs
+new file mode 100644
+index 0000000..9856cd8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Observability/HealthCheckResponseWriter.cs
+@@ -0,0 +1,51 @@
++using System.Text.Json;
++using System.Text.Json.Serialization;
++using Microsoft.AspNetCore.Http;
++using Microsoft.Extensions.Diagnostics.HealthChecks;
++
++namespace VirtualCompany.Infrastructure.Observability;
++
++internal static class HealthCheckResponseWriter
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
++    {
++        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
++    };
++
++    public static Task WriteAsync(HttpContext context, HealthReport report)
++    {
++        var payload = new HealthReportResponse(
++            report.Status.ToString(),
++            report.TotalDuration,
++            report.Entries.ToDictionary(
++                entry => entry.Key,
++                entry => new HealthReportEntryResponse(
++                    entry.Value.Status.ToString(),
++                    entry.Value.Description,
++                    entry.Value.Duration,
++                    entry.Value.Data.Count == 0
++                        ? null
++                        : entry.Value.Data.ToDictionary(data => data.Key, data => SanitizeValue(data.Value)))));
++
++        return context.Response.WriteAsJsonAsync(payload, SerializerOptions, contentType: "application/json");
++    }
++
++    private static object? SanitizeValue(object? value) => value switch
++    {
++        null => null,
++        string => value,
++        bool => value,
++        byte => value,
++        sbyte => value,
++        short => value,
++        ushort => value,
++        int => value,
++        uint => value,
++        long => value,
++        ulong => value,
++        float => value,
++        double => value,
++        decimal => value,
++        TimeSpan timeSpan => timeSpan.ToString(),
++        Uri uri => uri.ToString(),
++        Enum enumValue => enumValue.ToString(),
++        _ => value.ToString()
++    };
++
++    private sealed record HealthReportResponse(string Status, TimeSpan TotalDuration, IReadOnlyDictionary<string, HealthReportEntryResponse> Results);
++    private sealed record HealthReportEntryResponse(string Status, string? Description, TimeSpan Duration, IReadOnlyDictionary<string, object?>? Data);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+index cbf432b..917d46a 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/ServiceCollectionExtensions.cs
+@@ -1,4 +1,4 @@
+-using System.Text.Json;
++using System.Net;
+ using System.Threading.RateLimiting;
+ using Microsoft.AspNetCore.Builder;
+ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+@@ -23,7 +23,7 @@ public static class ServiceCollectionExtensions
+         services.AddScoped<TenantLoggingScopeMiddleware>();
+ 
+         services.AddHealthChecks()
+-            .AddCheck<ApplicationHealthCheck>("application", tags: ["live", "ready"])
++            .AddCheck<ApplicationHealthCheck>("application", tags: ["live"])
+             .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["ready"])
+             .AddCheck<RedisTcpHealthCheck>("redis", tags: ["ready"])
+             .AddCheck<ObjectStorageHealthCheck>("object-storage", tags: ["ready"]);
+@@ -64,9 +64,16 @@ public static class ServiceCollectionExtensions
+     {
+         var settings = endpoints.ServiceProvider.GetRequiredService<IOptions<ObservabilityOptions>>().Value.Health;
+ 
+-        endpoints.MapHealthChecks(settings.Path, CreateHealthCheckOptions());
+-        endpoints.MapHealthChecks(settings.LivenessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("live")));
+-        endpoints.MapHealthChecks(settings.ReadinessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("ready")));
++        endpoints.MapHealthChecks(settings.Path, CreateHealthCheckOptions(registration => registration.Tags.Contains("ready")))
++            .AllowAnonymous()
++            .WithName("health");
++        endpoints.MapHealthChecks(settings.LivenessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("live")))
++            .AllowAnonymous()
++            .WithName("health-live");
++        endpoints.MapHealthChecks(settings.ReadinessPath, CreateHealthCheckOptions(registration => registration.Tags.Contains("ready")))
++            .AllowAnonymous()
++            .WithName("health-ready");
+ 
+         return endpoints;
+     }
+@@ -84,26 +91,15 @@ public static class ServiceCollectionExtensions
+     private static HealthCheckOptions CreateHealthCheckOptions(Func<HealthCheckRegistration, bool>? predicate = null) =>
+         new()
+         {
++            AllowCachingResponses = false,
+             Predicate = predicate,
+-            ResponseWriter = WriteHealthResponseAsync
++            ResponseWriter = HealthCheckResponseWriter.WriteAsync,
++            ResultStatusCodes =
++            {
++                [HealthStatus.Healthy] = StatusCodes.Status200OK,
++                [HealthStatus.Degraded] = StatusCodes.Status503ServiceUnavailable,
++                [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
++            }
+         };
+-
+-    private static Task WriteHealthResponseAsync(HttpContext context, HealthReport report)
+-    {
+-        context.Response.ContentType = "application/json";
+-
+-        var payload = new
+-        {
+-            status = report.Status.ToString(),
+-            totalDuration = report.TotalDuration.ToString(),
+-            results = report.Entries.ToDictionary(
+-                entry => entry.Key,
+-                entry => new
+-                {
+-                    status = entry.Value.Status.ToString(),
+-                    description = entry.Value.Description,
+-                    duration = entry.Value.Duration.ToString()
+-                })
+-        };
+-
+-        return context.Response.WriteAsync(JsonSerializer.Serialize(payload));
+-    }
+ }
+ 
+ public static class PlatformRateLimitPolicyNames
+diff --git a/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs
+index 2fb4f29..df82274 100644
+--- a/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/HealthEndpointsIntegrationTests.cs
+@@ -12,34 +12,54 @@ public sealed class HealthEndpointsIntegrationTests : IClassFixture<TestWebAppli
+         _factory = factory;
+     }
+ 
+-    [Theory]
+-    [InlineData("/health")]
+-    [InlineData("/health/live")]
+-    [InlineData("/health/ready")]
+-    public async Task Health_endpoints_return_machine_readable_payloads(string path)
++    [Fact]
++    public async Task Liveness_endpoint_reports_only_application_process_health()
+     {
+         using var client = _factory.CreateClient();
+-        var response = await client.GetAsync(path);
++        var response = await client.GetAsync("/health/live");
+ 
+         response.EnsureSuccessStatusCode();
+         Assert.True(response.Headers.Contains("X-Correlation-ID"));
++        Assert.StartsWith("application/json", response.Content.Headers.ContentType?.MediaType, StringComparison.OrdinalIgnoreCase);
+ 
+         await using var stream = await response.Content.ReadAsStreamAsync();
+         using var payload = await JsonDocument.ParseAsync(stream);
+ 
+         Assert.True(payload.RootElement.TryGetProperty("status", out var status));
+         Assert.False(string.IsNullOrWhiteSpace(status.GetString()));
+-        Assert.True(payload.RootElement.TryGetProperty("results", out _));
++
++        var results = payload.RootElement.GetProperty("results");
++        Assert.True(results.TryGetProperty("application", out _));
++        Assert.Equal(1, results.EnumerateObject().Count());
++        Assert.False(results.TryGetProperty("postgresql", out _));
++        Assert.False(results.TryGetProperty("redis", out _));
++        Assert.False(results.TryGetProperty("object-storage", out _));
+     }
+ 
+-    [Fact]
+-    public async Task Readiness_endpoint_reports_expected_dependency_checks()
++    [Theory]
++    [InlineData("/health")]
++    [InlineData("/health/ready")]
++    public async Task Readiness_endpoints_report_expected_dependency_checks(string path)
+     {
+         using var client = _factory.CreateClient();
+-        var response = await client.GetAsync("/health/ready");
++        var response = await client.GetAsync(path);
+ 
+         response.EnsureSuccessStatusCode();
++        Assert.True(response.Headers.Contains("X-Correlation-ID"));
++        Assert.StartsWith("application/json", response.Content.Headers.ContentType?.MediaType, StringComparison.OrdinalIgnoreCase);
+ 
+         await using var stream = await response.Content.ReadAsStreamAsync();
+         using var payload = await JsonDocument.ParseAsync(stream);
++
++        Assert.True(payload.RootElement.TryGetProperty("status", out var status));
++        Assert.False(string.IsNullOrWhiteSpace(status.GetString()));
++
+         var results = payload.RootElement.GetProperty("results");
+ 
+         Assert.True(results.TryGetProperty("postgresql", out _));
+         Assert.True(results.TryGetProperty("redis", out _));
+         Assert.True(results.TryGetProperty("object-storage", out _));
++        Assert.False(results.TryGetProperty("application", out _));
++
++        foreach (var result in results.EnumerateObject())
++        {
++            Assert.True(result.Value.TryGetProperty("status", out _));
++            Assert.True(result.Value.TryGetProperty("duration", out _));
++        }
+     }
+ }
+END_OF_PATCH
