@@ -8,8 +8,8 @@ public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory
     public VirtualCompanyDbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
-        optionsBuilder.UseSqlServer(
-            "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True");
+        optionsBuilder.UseNpgsql(
+            "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres");
 
         return new VirtualCompanyDbContext(optionsBuilder.Options);
     }

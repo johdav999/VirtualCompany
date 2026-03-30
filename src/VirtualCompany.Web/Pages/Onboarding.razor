@@ -1,0 +1,741 @@
+@page "/onboarding"
+@using System.Text.Json
+@inject OnboardingApiClient ApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Create Company Workspace</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Create company workspace</h1>
+        <p class="text-body-secondary mb-0">Loading saved setup progress...</p>
+    </section>
+}
+else
+{
+    <section class="py-4">
+        <div class="dashboard-shell">
+            <div class="wizard-panel">
+                <div class="wizard-card">
+                    <h1>Create company workspace</h1>
+                    <p class="text-body-secondary">Blazor web is the primary onboarding surface for company workspace creation. Set up the company profile, save progress between sessions, and resume the same company setup later.</p>
+
+                    @if (!string.IsNullOrWhiteSpace(statusMessage))
+                    {
+                        <div class="alert alert-info mt-3">@statusMessage</div>
+                    }
+
+                    @if (currentUser?.ActiveCompany is not null && !model.CompanyId.HasValue && !showCompletedState)
+                    {
+                        <div class="alert alert-secondary mt-3 mb-0">
+                            You already have an active company context for <strong>@currentUser.ActiveCompany.CompanyName</strong>.
+                            Use this web wizard to create another workspace or <a href="@($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}")">return to the dashboard</a>.
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        <div class="alert alert-danger mt-3">@errorMessage</div>
+                    }
+
+                    @if (showCompletedState)
+                    {
+                        <div class="mt-4">
+                            <h2 class="h5">Workspace already completed</h2>
+                            <p class="text-body-secondary">This company setup is complete. You can open the dashboard or start a fresh workspace setup without reopening the finished session.</p>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <button type="button" class="btn btn-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">Open dashboard</button>
+                                <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">Start another workspace</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <ol class="wizard-steps mt-4">
+                            @for (var wizardStep = 1; wizardStep <= StepCount; wizardStep++)
+                            {
+                                <li class="wizard-step @GetStepClass(wizardStep)">
+                                    <span>@wizardStep</span>
+                                    <div>
+                                        <strong>@GetStepTitle(wizardStep)</strong>
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+
+                        @if (currentStep == 1)
+                        {
+                            <div class="row g-3 mt-1">
+                                <div class="col-12">
+                                    <label class="form-label">Starting template</label>
+                                    <select class="form-select" value="@model.SelectedTemplateId" @onchange="OnTemplateChanged">
+                                        <option value="">No template</option>
+                                        @foreach (var template in templates)
+                                        {
+                                            <option value="@template.TemplateId">@template.Name</option>
+                                        }
+                                    </select>
+                                    <div class="form-text">Optional. Use an existing template to prefill industry and locale defaults.</div>
+                                    @RenderError(nameof(model.SelectedTemplateId))
+                                </div>
+
+                                <div class="col-12">
+                                    <label class="form-label">Company name</label>
+                                    <input class="form-control" @bind="model.Name" @bind:after="ClearMessages" />
+                                    @RenderError(nameof(model.Name))
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">Industry</label>
+                                    <input class="form-control" value="@model.Industry" @onchange="OnIndustryChangedAsync" />
+                                    @RenderError(nameof(model.Industry))
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">Business type</label>
+                                    <input class="form-control" value="@model.BusinessType" @onchange="OnBusinessTypeChangedAsync" />
+                                    @RenderError(nameof(model.BusinessType))
+                                </div>
+
+                                <div class="col-12">
+                                    @if (recommendedTemplate is not null && SelectedTemplate is null)
+                                    {
+                                        <div class="alert alert-secondary mb-0">
+                                            Recommended defaults will use <strong>@recommendedTemplate.Name</strong> based on the current @DescribeRecommendationMatch(recommendedTemplate.MatchKind).
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        else if (currentStep == 2)
+                        {
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-6">
+                                    <label class="form-label">Timezone</label>
+                                    <input class="form-control" value="@model.Timezone" @oninput="OnTimezoneChanged" />
+                                    @RenderError(nameof(model.Timezone))
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">Currency</label>
+                                    <input class="form-control" value="@model.Currency" @oninput="OnCurrencyChanged" />
+                                    @RenderError(nameof(model.Currency))
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">Language</label>
+                                    <input class="form-control" value="@model.Language" @oninput="OnLanguageChanged" />
+                                    @RenderError(nameof(model.Language))
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">Compliance region</label>
+                                    <input class="form-control" value="@model.ComplianceRegion" @oninput="OnComplianceRegionChanged" />
+                                    @RenderError(nameof(model.ComplianceRegion))
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="mt-4">
+                                <h2 class="h5">Review setup</h2>
+                                <dl class="row mb-0">
+                                    <dt class="col-sm-4">Company</dt>
+                                    <dd class="col-sm-8">@model.Name</dd>
+                                    <dt class="col-sm-4">Industry</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.Industry)</dd>
+                                    <dt class="col-sm-4">Business type</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.BusinessType)</dd>
+                                    <dt class="col-sm-4">Timezone</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.Timezone)</dd>
+                                    <dt class="col-sm-4">Currency</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.Currency)</dd>
+                                    <dt class="col-sm-4">Language</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.Language)</dd>
+                                    <dt class="col-sm-4">Compliance</dt>
+                                    <dd class="col-sm-8">@DisplayValue(model.ComplianceRegion)</dd>
+                                </dl>
+                            </div>
+                        }
+
+                        <div class="d-flex gap-2 mt-4 flex-wrap">
+                            @if (currentStep > 1)
+                            {
+                                <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="GoBack">Back</button>
+                            }
+
+                            <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="SaveAndExitAsync">
+                                @(isSubmitting ? "Saving..." : "Save and exit")
+                            </button>
+
+                            @if (model.CompanyId.HasValue)
+                            {
+                                <button type="button" class="btn btn-outline-danger" disabled="@isSubmitting" @onclick="DiscardAsync">Discard saved setup</button>
+                            }
+
+                            @if (currentStep < StepCount)
+                            {
+                                <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="ContinueAsync">
+                                    @(isSubmitting ? "Saving..." : "Continue")
+                                </button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="CompleteAsync">
+                                    @(isSubmitting ? "Completing setup..." : "Complete workspace setup")
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <aside class="wizard-panel">
+                <div class="wizard-card wizard-card--compact">
+                    <h2 class="h5">Workspace outcome</h2>
+                    <p class="text-body-secondary mb-2">Signed-in user becomes the initial <strong>owner</strong> membership.</p>
+                    <p class="text-body-secondary mb-0">Saved progress is restored for the same authenticated user and company setup session.</p>
+                </div>
+                <div class="wizard-card wizard-card--compact mt-3">
+                    <h2 class="h5">Resume state</h2>
+                    <p class="text-body-secondary mb-2">Session status: @DisplaySessionStatus()</p>
+                    <p class="text-body-secondary mb-2">Draft company id: @(model.CompanyId?.ToString() ?? "No active draft")</p>
+                    <p class="text-body-secondary mb-0">Last saved: @(lastSavedLabel ?? "No saved setup yet")</p>
+                </div>
+                <div class="wizard-card wizard-card--compact mt-3">
+                    <h2 class="h5">Starter guidance</h2>
+                    <ul class="mb-0">
+                        @foreach (var item in Guidance)
+                        {
+                            <li>@item</li>
+                        }
+                    </ul>
+                </div>
+            </aside>
+        </div>
+    </section>
+}
+
+@code {
+    private const int StepCount = 3;
+    private static readonly string[] DefaultGuidance =
+    [
+        "Invite teammates after the workspace is live.",
+        "Assign one owner for each core workflow.",
+        "Upload company policies and documents as workspace knowledge."
+    ];
+
+    private readonly Dictionary<string, string> validationErrors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly OnboardingFormModel model = new();
+    private readonly HashSet<string> manuallyEditedFields = new(StringComparer.OrdinalIgnoreCase);
+    private CurrentUserContextViewModel? currentUser;
+    private List<OnboardingTemplateViewModel> templates = [];
+    private OnboardingTemplateRecommendationViewModel? recommendedTemplate;
+    private bool isLoading = true;
+    private bool isSubmitting;
+    private string? statusMessage;
+    private string? errorMessage;
+    private string sessionStatus = "not_started";
+
+    private int currentStep = 1;
+    private List<string> savedGuidance = [];
+    private string? completedDashboardPath;
+    private string? lastSavedLabel;
+
+    private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
+    private IReadOnlyList<string> Guidance => SelectedTemplate?.StarterGuidance?.Count > 0
+        ? SelectedTemplate.StarterGuidance
+        : recommendedTemplate?.StarterGuidance?.Count > 0
+            ? recommendedTemplate.StarterGuidance
+        : savedGuidance.Count > 0
+            ? savedGuidance
+        : DefaultGuidance;
+    private bool showCompletedState => string.Equals(sessionStatus, "completed", StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            currentUser = await ApiClient.GetCurrentUserContextAsync();
+            templates = (await ApiClient.GetTemplatesAsync()).ToList();
+            var progress = await ApiClient.GetProgressAsync();
+
+            if (progress is null)
+            {
+                return;
+            }
+
+            ApplyProgress(progress);
+            await RefreshRecommendationsAsync(applyDefaults: false);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task ContinueAsync()
+    {
+        if (!ValidateStep(currentStep))
+        {
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            ClearMessages();
+            var progress = await PersistProgressAsync(Math.Min(StepCount, currentStep + 1));
+            ApplyProgress(progress);
+            statusMessage = "Setup progress saved.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            ApplyApiErrors(ex.Errors);
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task SaveAndExitAsync()
+    {
+        if (!ValidateDraftForSave())
+        {
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            ClearMessages();
+            var progress = await PersistProgressAsync(currentStep);
+            ApplyProgress(progress);
+            statusMessage = "Setup saved. You can resume later from the same step.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            ApplyApiErrors(ex.Errors);
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task CompleteAsync()
+    {
+        if (!ValidateAllSteps())
+        {
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            ClearMessages();
+
+            if (!model.CompanyId.HasValue)
+            {
+                var progress = await PersistProgressAsync(StepCount);
+                ApplyProgress(progress);
+            }
+
+            var result = await ApiClient.CompleteAsync(new CompleteOnboardingRequest
+            {
+                CompanyId = model.CompanyId!.Value,
+                Name = model.Name,
+                Industry = model.Industry,
+                BusinessType = model.BusinessType,
+                Timezone = model.Timezone,
+                Currency = model.Currency,
+                Language = model.Language,
+                ComplianceRegion = model.ComplianceRegion,
+                SelectedTemplateId = GetEffectiveTemplateId()
+            });
+
+            completedDashboardPath = result.DashboardPath;
+            sessionStatus = "completed";
+            savedGuidance = result.StarterGuidance;
+            Navigation.NavigateTo(result.DashboardPath, replace: true);
+            statusMessage = "Workspace setup is complete.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            ApplyApiErrors(ex.Errors);
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task DiscardAsync()
+    {
+        if (!model.CompanyId.HasValue)
+        {
+            StartAnotherWorkspace();
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            ClearMessages();
+            var progress = await ApiClient.AbandonAsync(model.CompanyId.Value);
+            ApplyProgress(progress, startFresh: true);
+            statusMessage = "Saved setup was discarded. You can start again with the restored values.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            ApplyApiErrors(ex.Errors);
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private void GoBack()
+    {
+        if (currentStep > 1)
+        {
+            currentStep--;
+            ClearMessages();
+        }
+    }
+
+    private void GoToDashboard()
+    {
+        if (!string.IsNullOrWhiteSpace(completedDashboardPath))
+        {
+            Navigation.NavigateTo(completedDashboardPath);
+        }
+    }
+
+    private void StartAnotherWorkspace()
+    {
+        model.CompanyId = null;
+        currentStep = 1;
+        sessionStatus = "not_started";
+        manuallyEditedFields.Clear();
+        completedDashboardPath = null;
+        lastSavedLabel = null;
+        ClearMessages();
+        statusMessage = "Starting a new workspace setup.";
+    }
+
+    private void OnTemplateChanged(ChangeEventArgs args)
+    {
+        model.SelectedTemplateId = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value?.ToString();
+        ApplySelectedTemplate();
+        ClearMessages();
+    }
+
+    private async Task OnIndustryChangedAsync(ChangeEventArgs args)
+    {
+        model.Industry = args.Value?.ToString() ?? string.Empty;
+        ClearMessages();
+        await RefreshRecommendationsAsync();
+    }
+
+    private async Task OnBusinessTypeChangedAsync(ChangeEventArgs args)
+    {
+        model.BusinessType = args.Value?.ToString() ?? string.Empty;
+        ClearMessages();
+        await RefreshRecommendationsAsync();
+    }
+
+    private void OnTimezoneChanged(ChangeEventArgs args) => SetManualField(nameof(model.Timezone), args.Value?.ToString(), value => model.Timezone = value);
+    private void OnCurrencyChanged(ChangeEventArgs args) => SetManualField(nameof(model.Currency), args.Value?.ToString(), value => model.Currency = value);
+    private void OnLanguageChanged(ChangeEventArgs args) => SetManualField(nameof(model.Language), args.Value?.ToString(), value => model.Language = value);
+    private void OnComplianceRegionChanged(ChangeEventArgs args) => SetManualField(nameof(model.ComplianceRegion), args.Value?.ToString(), value => model.ComplianceRegion = value);
+
+    private void SetManualField(string fieldName, string? value, Action<string> assign)
+    {
+        manuallyEditedFields.Add(fieldName);
+        assign(value ?? string.Empty);
+        ClearMessages();
+    }
+
+    private async Task RefreshRecommendationsAsync(bool applyDefaults = true)
+    {
+        if (string.IsNullOrWhiteSpace(model.Industry) && string.IsNullOrWhiteSpace(model.BusinessType))
+        {
+            recommendedTemplate = null;
+            return;
+        }
+
+        try
+        {
+            recommendedTemplate = await ApiClient.GetRecommendedDefaultsAsync(model.Industry, model.BusinessType);
+            if (applyDefaults)
+            {
+                ApplyRecommendedDefaults();
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            recommendedTemplate = null;
+            errorMessage = ex.Message;
+        }
+    }
+
+    private void ApplyRecommendedDefaults()
+    {
+        if (recommendedTemplate is null || recommendedTemplate.Defaults.Count == 0)
+        {
+            return;
+        }
+
+        ApplyTemplateDefaults(recommendedTemplate.Defaults);
+    }
+
+    private void ApplyRecommendedField(string fieldName, string? value, Action<string> assign)
+    {
+        if (string.IsNullOrWhiteSpace(value) || manuallyEditedFields.Contains(fieldName))
+        {
+            return;
+        }
+
+        assign(value);
+    }
+
+    private void ApplySelectedTemplate()
+    {
+        var selectedTemplate = SelectedTemplate;
+        if (selectedTemplate is null)
+        {
+            return;
+        }
+
+        ApplyTemplateDefaults(selectedTemplate.Defaults);
+        model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? selectedTemplate.Industry ?? string.Empty : model.Industry;
+        model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? selectedTemplate.BusinessType ?? string.Empty : model.BusinessType;
+    }
+
+    private void ApplyProgress(OnboardingProgressViewModel progress, bool startFresh = false)
+    {
+        model.CompanyId = startFresh || !progress.CanResume ? null : progress.CompanyId;
+        model.Name = progress.Name;
+        model.Industry = progress.Industry;
+        model.BusinessType = progress.BusinessType;
+        model.Timezone = progress.Timezone;
+        model.Currency = progress.Currency;
+        model.Language = progress.Language;
+        model.ComplianceRegion = progress.ComplianceRegion;
+        model.SelectedTemplateId = progress.SelectedTemplateId;
+        MarkExistingDefaultsAsManual();
+        savedGuidance = progress.StarterGuidance;
+        completedDashboardPath = progress.DashboardPath;
+        sessionStatus = progress.Status;
+        lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
+
+        if (progress.CanResume && !startFresh)
+        {
+            currentStep = Math.Clamp(progress.CurrentStep, 1, StepCount);
+            statusMessage = "Saved company setup restored.";
+            return;
+        }
+
+        if (string.Equals(progress.Status, "completed", StringComparison.OrdinalIgnoreCase) && !startFresh)
+        {
+            currentStep = StepCount;
+            statusMessage = "This company setup is already complete.";
+            return;
+        }
+
+        currentStep = 1;
+    }
+
+    private void MarkExistingDefaultsAsManual()
+    {
+        manuallyEditedFields.Clear();
+        MarkManualIfSet(nameof(model.Timezone), model.Timezone);
+        MarkManualIfSet(nameof(model.Currency), model.Currency);
+        MarkManualIfSet(nameof(model.Language), model.Language);
+        MarkManualIfSet(nameof(model.ComplianceRegion), model.ComplianceRegion);
+    }
+
+    private void MarkManualIfSet(string fieldName, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            manuallyEditedFields.Add(fieldName);
+        }
+    }
+
+    private async Task<OnboardingProgressViewModel> PersistProgressAsync(int step)
+    {
+        var request = new SaveOnboardingRequest
+        {
+            CompanyId = model.CompanyId,
+            Name = model.Name,
+            Industry = model.Industry,
+            BusinessType = model.BusinessType,
+            Timezone = model.Timezone,
+            Currency = model.Currency,
+            Language = model.Language,
+            ComplianceRegion = model.ComplianceRegion,
+            CurrentStep = step,
+            SelectedTemplateId = GetEffectiveTemplateId()
+        };
+
+        return model.CompanyId.HasValue
+            ? await ApiClient.SaveProgressAsync(request)
+            : await ApiClient.CreateWorkspaceAsync(request);
+    }
+
+    private void ApplyTemplateDefaults(IReadOnlyDictionary<string, JsonElement> defaults)
+    {
+        ApplyRecommendedField(nameof(model.Timezone), GetTemplateDefault(defaults, "timezone"), value => model.Timezone = value);
+        ApplyRecommendedField(nameof(model.Currency), GetTemplateDefault(defaults, "currency"), value => model.Currency = value);
+        ApplyRecommendedField(nameof(model.Language), GetTemplateDefault(defaults, "language"), value => model.Language = value);
+        ApplyRecommendedField(nameof(model.ComplianceRegion), GetTemplateDefault(defaults, "complianceRegion"), value => model.ComplianceRegion = value);
+    }
+
+    private static string? GetTemplateDefault(IReadOnlyDictionary<string, JsonElement> defaults, string key)
+    {
+        if (!defaults.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Null => null,
+            JsonValueKind.Undefined => null,
+            _ => value.ToString()
+        };
+    }
+
+    private bool ValidateDraftForSave()
+    {
+        validationErrors.Clear();
+
+        if (string.IsNullOrWhiteSpace(model.Name))
+        {
+            validationErrors[nameof(model.Name)] = "Company name is required to save setup progress.";
+        }
+
+        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before saving." : null;
+        return validationErrors.Count == 0;
+    }
+
+    private bool ValidateStep(int step)
+    {
+        validationErrors.Clear();
+
+        if (step >= 1)
+        {
+            if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = "Company name is required.";
+            if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = "Industry is required.";
+            if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = "Business type is required.";
+        }
+
+        if (step >= 2 || currentStep >= 2)
+        {
+            if (string.IsNullOrWhiteSpace(model.Timezone)) validationErrors[nameof(model.Timezone)] = "Timezone is required.";
+            if (string.IsNullOrWhiteSpace(model.Currency)) validationErrors[nameof(model.Currency)] = "Currency is required.";
+            if (string.IsNullOrWhiteSpace(model.Language)) validationErrors[nameof(model.Language)] = "Language is required.";
+            if (string.IsNullOrWhiteSpace(model.ComplianceRegion)) validationErrors[nameof(model.ComplianceRegion)] = "Compliance region is required.";
+        }
+
+        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before continuing." : null;
+        return validationErrors.Count == 0;
+    }
+
+    private bool ValidateAllSteps() => ValidateStep(StepCount);
+
+    private void ClearMessages()
+    {
+        statusMessage = null;
+        errorMessage = null;
+    }
+
+    private void ApplyApiErrors(IReadOnlyDictionary<string, string[]> errors)
+    {
+        validationErrors.Clear();
+        foreach (var error in errors)
+        {
+            validationErrors[error.Key] = error.Value.FirstOrDefault() ?? "Invalid value.";
+        }
+    }
+
+    private string GetStepClass(int wizardStep)
+    {
+        if (wizardStep == currentStep)
+        {
+            return "is-active";
+        }
+
+        return wizardStep < currentStep ? "is-complete" : string.Empty;
+    }
+
+    private static string GetStepTitle(int wizardStep) =>
+        wizardStep switch
+        {
+            1 => "Company profile",
+            2 => "Workspace defaults",
+            3 => "Review and complete",
+            _ => "Setup"
+        };
+
+    private static string DescribeRecommendationMatch(string matchKind) =>
+        matchKind switch
+        {
+            "industry_business_type" => "industry and business type",
+            "business_type" => "business type",
+            _ => "industry"
+        };
+    private string DisplaySessionStatus() =>
+        sessionStatus switch
+        {
+            "in_progress" => "In progress",
+            "completed" => "Completed",
+            "abandoned" => "Discarded",
+            _ => "Not started"
+        };
+
+    private static string DisplayValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Not set" : value;
+
+    private string? GetEffectiveTemplateId() =>
+        !string.IsNullOrWhiteSpace(model.SelectedTemplateId)
+            ? model.SelectedTemplateId
+            : recommendedTemplate?.TemplateId;
+    private RenderFragment RenderError(string field) => builder =>
+    {
+        if (validationErrors.TryGetValue(field, out var message))
+        {
+            builder.OpenElement(0, "div");
+            builder.AddAttribute(1, "class", "validation-message");
+            builder.AddContent(2, message);
+            builder.CloseElement();
+        }
+    };
+
+    private sealed class OnboardingFormModel
+    {
+        public Guid? CompanyId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Industry { get; set; } = string.Empty;
+        public string BusinessType { get; set; } = string.Empty;
+        public string Timezone { get; set; } = string.Empty;
+        public string Currency { get; set; } = string.Empty;
+        public string Language { get; set; } = string.Empty;
+        public string ComplianceRegion { get; set; } = string.Empty;
+        public string? SelectedTemplateId { get; set; }
+    }
+}

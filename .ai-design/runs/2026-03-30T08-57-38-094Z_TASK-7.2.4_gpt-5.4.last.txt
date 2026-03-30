@@ -1,0 +1,561 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 38d7c3f..7d9a511 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -34,6 +34,13 @@ public sealed record CompanyAccessDto(
+     string CompanyName,
+     CompanyMembershipRole Role,
+     CompanyMembershipStatus Status);
++
++public sealed record CompanyDashboardEntryDto(
++    Guid CompanyId,
++    string CompanyName,
++    bool ShowStarterGuidance,
++    DateTime? OnboardingCompletedUtc,
++    IReadOnlyList<string> StarterGuidance);
+ 
+ public sealed record CompanySelectionDto(
+     Guid CompanyId,
+@@ -163,6 +170,7 @@ public interface ICurrentUserCompanyService
+     Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken);
+     Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<CompanyDashboardEntryDto?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken);
+ }
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/CompaniesController.cs b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+index 56ee0c8..9ad28f9 100644
+--- a/src/VirtualCompany.Api/Controllers/CompaniesController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+@@ -46,6 +46,18 @@ public sealed class CompaniesController : ControllerBase
+         return Ok(access);
+     }
+ 
++    [HttpGet("dashboard-entry")]
++    public async Task<ActionResult<CompanyDashboardEntryDto>> GetDashboardEntryAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var dashboardEntry = await _companyService.GetDashboardEntryAsync(companyId, cancellationToken);
++        if (dashboardEntry is null)
++        {
++            return Forbid();
++        }
++
++        return Ok(dashboardEntry);
++    }
+     [HttpGet("notes/{noteId:guid}")]
+     public async Task<ActionResult<CompanyNoteDto>> GetNoteAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+index 771d477..7bc7a4f 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -94,7 +94,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             CompanyMembershipStatus.Active));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+-        return new CreateCompanyResultDto(company.Id, company.Name, $"/dashboard?companyId={company.Id}", guidance);
++        return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
+     }
+ 
+     public Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken)
+@@ -326,7 +326,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ 
+         if (company.OnboardingStatus == CompanyOnboardingStatus.Completed)
+         {
+-            return new CompleteCompanyOnboardingResultDto(company.Id, company.Name, $"/dashboard?companyId={company.Id}", ResolveGuidance(company.OnboardingTemplateId));
++            return new CompleteCompanyOnboardingResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), ResolveGuidance(company.OnboardingTemplateId));
+         }
+ 
+         EnsureSessionIsMutable(company);
+@@ -366,7 +366,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         return new CompleteCompanyOnboardingResultDto(
+             company.Id,
+             company.Name,
+-            $"/dashboard?companyId={company.Id}",
++            BuildDashboardPath(company.Id, includeStarterGuidance: true),
+             guidance);
+     }
+ 
+@@ -576,12 +576,16 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             company.OnboardingCompletedUtc,
+             company.OnboardingAbandonedUtc,
+             company.OnboardingStatus == CompanyOnboardingStatus.Completed
+-                ? $"/dashboard?companyId={company.Id}"
++                ? BuildDashboardPath(company.Id)
+                 : null,
+             guidance);
+     }
+ 
+     private IReadOnlyList<string> ResolveGuidance(string? templateId)
++    {
++        var template = FindTemplate(templateId);
++        return template?.StarterGuidance?.Count > 0 ? template.StarterGuidance : DefaultStarterGuidance;
++    }
++    private static string BuildDashboardPath(Guid companyId, bool includeStarterGuidance = false)
+     {
+-        var template = FindTemplate(templateId);
+-        return template?.StarterGuidance?.Count > 0 ? template.StarterGuidance : DefaultStarterGuidance;
++        return includeStarterGuidance ? $"/dashboard?companyId={companyId}&welcome=onboarding" : $"/dashboard?companyId={companyId}";
+     }
+ 
+     private static void ValidateDraft(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 8538b50..7140651 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Companies;
+@@ -7,6 +8,14 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNoteService
+ {
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly string[] DefaultStarterGuidance =
++    [
++        "Invite teammates who need access to payroll, finance, or operations.",
++        "Hire your first agents and assign one owner for each workflow.",
++        "Upload company knowledge so the workspace can answer questions accurately.",
++        "Connect the first systems your team depends on before expanding automation."
++    ];
++
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+@@ -102,6 +111,41 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             .Select(x => new CompanyAccessDto(
+                 x.CompanyId,
+                 x.Company.Name,
++                x.Role,
++                x.Status))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    public async Task<CompanyDashboardEntryDto?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        var dashboardEntry = await _dbContext.CompanyMemberships.AsNoTracking()
++            .Where(x => x.UserId == userId &&
++                        x.CompanyId == companyId &&
++                        x.Status == CompanyMembershipStatus.Active)
++            .Select(x => new DashboardEntryProjection(
++                x.CompanyId,
++                x.Company.Name,
++                x.Company.OnboardingStatus,
++                x.Company.OnboardingCompletedUtc,
++                x.Company.OnboardingStateJson,
++                x.Company.Notes.Any()))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (dashboardEntry is null)
++        {
++            return null;
++        }
++
++        var starterGuidance = ResolveStarterGuidance(dashboardEntry.OnboardingStateJson);
++        return new CompanyDashboardEntryDto(
++            dashboardEntry.CompanyId,
++            dashboardEntry.CompanyName,
++            dashboardEntry.OnboardingStatus == CompanyOnboardingStatus.Completed && !dashboardEntry.HasKnowledgeArtifacts,
++            dashboardEntry.OnboardingCompletedUtc,
++            starterGuidance);
++    }
++
++    public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return Task.FromResult(false);
++        }
++
++        if (GetRequestCompanyContext(companyId) is not null)
++        {
++            return Task.FromResult(true);
++        }
++
++        return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
++            x.UserId == userId &&
++            x.CompanyId == companyId &&
++            x.Status == CompanyMembershipStatus.Active,
++            cancellationToken);
++    }
+-                x.Role,
+-                x.Status))
+-            .SingleOrDefaultAsync(cancellationToken);
+-    }
+-
+-    public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
+-    {
+-        if (_currentUserAccessor.UserId is not Guid userId)
+-        {
+-            return Task.FromResult(false);
+-        }
+-
+-        if (GetRequestCompanyContext(companyId) is not null)
+-        {
+-            return Task.FromResult(true);
+-        }
+-
+-        return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+-            x.UserId == userId &&
+-            x.CompanyId == companyId &&
+-            x.Status == CompanyMembershipStatus.Active,
+-            cancellationToken);
+-    }
+ 
+     public async Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken)
+     {
+@@ -176,6 +220,16 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         return activeMemberships.Count == 1 ? ToResolvedCompanyContext(activeMemberships[0]) : null;
+     }
+     private ResolvedCompanyMembershipContext? GetRequestCompanyContext(Guid companyId)
++    {
++        var requestContext = _companyContextAccessor.Membership;
++        return requestContext is not null && requestContext.CompanyId == companyId
++            ? requestContext
++            : null;
++    }
++
++    private static IReadOnlyList<string> ResolveStarterGuidance(string? onboardingStateJson)
++    {
++        var state = string.IsNullOrWhiteSpace(onboardingStateJson)
++            ? null
++            : JsonSerializer.Deserialize<OnboardingStateDocument>(onboardingStateJson, SerializerOptions);
++
++        return state?.StarterGuidance is { Count: > 0 } guidance ? guidance : DefaultStarterGuidance;
++    }
++    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
++        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++
++    private sealed record DashboardEntryProjection(
++        Guid CompanyId,
++        string CompanyName,
++        CompanyOnboardingStatus OnboardingStatus,
++        DateTime? OnboardingCompletedUtc,
++        string? OnboardingStateJson,
++        bool HasKnowledgeArtifacts);
++
++    private sealed class OnboardingStateDocument
+     {
+-        var requestContext = _companyContextAccessor.Membership;
+-        return requestContext is not null && requestContext.CompanyId == companyId
+-            ? requestContext
+-            : null;
++        public List<string> StarterGuidance { get; set; } = [];
+     }
+ 
+     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
+@@ -184,7 +238,4 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+ 
+     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
+         new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+-
+-    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
+-        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 47489b9..0985d57 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -3,28 +3,69 @@
+ @using Microsoft.AspNetCore.Components
+ 
+ <PageTitle>Dashboard</PageTitle>
+-
+ <section class="py-4 dashboard-hero">
+     <div class="dashboard-shell">
+-        <div class="wizard-card">
++        <div class="wizard-card dashboard-summary">
+             <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
+-            <p class="lead mb-2">Your company workspace is ready for the next setup actions.</p>
++            <p class="lead mb-2">
++                @(showStarterGuidance
++                    ? "Your company workspace is live. Start with the next recommended actions below."
++                    : "Your company workspace is ready for the next setup actions.")
++            </p>
+             <p class="text-body-secondary mb-0">
+                 @(companyAccess is null
+                     ? "Use onboarding to create or resume a workspace."
+                     : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
+             </p>
++
++            @if (showStarterGuidance)
++            {
++                <div class="dashboard-welcome mt-4">
++                    <span class="dashboard-kicker">Onboarding complete</span>
++                    <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
++                    <p class="text-body-secondary mb-0">
++                        @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
++                            ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
++                            : "Workspace setup finished successfully. These actions keep the new company context moving.")
++                    </p>
++                    <ul class="dashboard-checklist mt-4 mb-0">
++                        @foreach (var item in StarterGuidance)
++                        {
++                            <li>@item</li>
++                        }
++                    </ul>
++                    <div class="dashboard-actions mt-4">
++                        <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
++                        <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
++                    </div>
++                </div>
++            }
+         </div>
+ 
+         <div class="wizard-card wizard-card--compact">
+-            <h2 class="h5">Starter guidance</h2>
+-            <ul class="mb-0">
+-                <li>Invite teammates who need workspace access.</li>
+-                <li>Hire first agents for support, finance, and operations.</li>
+-                <li>Upload company knowledge to give the workspace useful context.</li>
+-                <li>Return to onboarding if you need to adjust setup defaults.</li>
+-            </ul>
++            <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
++            @if (showStarterGuidance)
++            {
++                <ul class="mb-0">
++                    <li>Invite teammates who need access to the new workspace.</li>
++                    <li>Upload the first company notes or documents to move beyond the starter state.</li>
++                    <li>Reopen onboarding only if workspace defaults need to change.</li>
++                </ul>
++            }
++            else
++            {
++                <ul class="mb-0">
++                    <li>Use onboarding to create or resume a workspace if no company is selected.</li>
++                    <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
++                    <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
++                </ul>
++            }
+         </div>
+     </div>
+ </section>
+@@ -33,14 +74,31 @@
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "welcome")]
++    public string? Welcome { get; set; }
++
+     private CompanyAccessViewModel? companyAccess;
++    private CompanyDashboardEntryViewModel? dashboardEntry;
++    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
++    private IReadOnlyList<string> StarterGuidance => dashboardEntry?.StarterGuidance?.Count > 0
++        ? dashboardEntry.StarterGuidance
++        : Array.Empty<string>();
++    private bool showStarterGuidance =>
++        companyAccess is not null &&
++        dashboardEntry?.ShowStarterGuidance == true &&
++        IsWelcomeEntry();
+ 
+     protected override async Task OnParametersSetAsync()
+     {
++        companyAccess = null;
++        dashboardEntry = null;
++
+         if (CompanyId is Guid companyId)
+         {
+             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
++            dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
+         }
+     }
++
++    private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+index 1e3631d..9dd5b33 100644
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -344,6 +344,7 @@ else
+             completedDashboardPath = result.DashboardPath;
+             sessionStatus = "completed";
+             savedGuidance = result.StarterGuidance;
++            Navigation.NavigateTo(result.DashboardPath, replace: true);
+             statusMessage = "Workspace setup is complete.";
+         }
+         catch (OnboardingApiException ex)
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 3bce92f..3862b6e 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -97,6 +97,17 @@ public sealed class OnboardingApiClient
+         return await response.Content.ReadFromJsonAsync<CompanyAccessViewModel>(SerializerOptions, cancellationToken);
+     }
+ 
++    public async Task<CompanyDashboardEntryViewModel?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _httpClient.GetAsync($"api/companies/{companyId}/dashboard-entry", cancellationToken);
++        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden ||
++            response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
++        {
++            return null;
++        }
++
++        response.EnsureSuccessStatusCode();
++        return await response.Content.ReadFromJsonAsync<CompanyDashboardEntryViewModel>(SerializerOptions, cancellationToken);
++    }
+     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
+     {
+         using var request = new HttpRequestMessage(method, uri)
+@@ -312,3 +323,12 @@ public sealed class CompanyAccessViewModel
+     public string Role { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+ }
++
++public sealed class CompanyDashboardEntryViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public bool ShowStarterGuidance { get; set; }
++    public DateTime? OnboardingCompletedUtc { get; set; }
++    public List<string> StarterGuidance { get; set; } = [];
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index e1ad52e..b05de60 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -203,6 +203,42 @@ code {
+     .dashboard-shell {
+         grid-template-columns: 1fr;
+     }
++
++    .dashboard-actions {
++        flex-direction: column;
++    }
+ 
+     .wizard-steps {
+         grid-template-columns: repeat(2, minmax(0, 1fr));
+@@ -213,3 +249,39 @@ code {
+         grid-template-columns: 1fr;
+     }
+ }
++
++.dashboard-summary {
++    min-width: 0;
++}
++
++.dashboard-welcome {
++    border-top: 1px solid rgba(15, 23, 42, 0.08);
++    padding-top: 1.5rem;
++}
++
++.dashboard-kicker {
++    color: #1d4ed8;
++    display: inline-block;
++    font-size: 0.8rem;
++    font-weight: 700;
++    letter-spacing: 0.08em;
++    text-transform: uppercase;
++}
++
++.dashboard-checklist {
++    display: grid;
++    gap: 0.75rem;
++    padding-left: 1.25rem;
++}
++
++.dashboard-checklist li {
++    padding-left: 0.15rem;
++}
++
++.dashboard-actions {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.75rem;
++}
++
++.dashboard-actions .btn {
++    min-width: 14rem;
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+index 915f1fb..836c22e 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -100,6 +100,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.Equal("Northwind Ops", company.Name);
+         Assert.Equal("Technology", company.Industry);
+         Assert.Equal("Software Company", company.BusinessType);
++        Assert.Contains("&welcome=onboarding", payload.DashboardPath);
+         Assert.Single(memberships);
+         Assert.Equal(CompanyMembershipRole.Owner, membership.Role);
+         Assert.Equal(CompanyMembershipStatus.Active, membership.Status);
+@@ -263,6 +264,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         var result = await completeResponse.Content.ReadFromJsonAsync<CompleteResponse>();
+         Assert.NotNull(result);
+         Assert.Contains("/dashboard?companyId=", result!.DashboardPath);
++        Assert.Contains("&welcome=onboarding", result.DashboardPath);
+ 
+         using (var scope = _factory.Services.CreateScope())
+         {
+@@ -278,6 +280,42 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.False(progressAfterComplete.CanResume);
+     }
+ 
++    [Fact]
++    public async Task DashboardEntry_returns_starter_guidance_for_newly_completed_workspace()
++    {
++        using var client = CreateAuthenticatedClient("dashboard-entry-user", "dashboard-entry@example.com", "Dashboard Entry User");
++        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Starter Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 3,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(created);
++
++        var completeResponse = await client.PostAsJsonAsync("/api/onboarding/complete", new
++        {
++            CompanyId = created!.CompanyId,
++            Name = "Starter Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
++
++        var dashboardEntry = await client.GetFromJsonAsync<DashboardEntryResponse>($"/api/companies/{created.CompanyId}/dashboard-entry");
++        Assert.NotNull(dashboardEntry);
++        Assert.True(dashboardEntry!.ShowStarterGuidance);
++        Assert.NotEmpty(dashboardEntry.StarterGuidance);
++    }
+     [Fact]
+     public async Task Progress_is_scoped_to_creator()
+     {
+@@ -432,4 +470,12 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public string DashboardPath { get; set; } = string.Empty;
+         public List<string> StarterGuidance { get; set; } = [];
+     }
++
++    private sealed class DashboardEntryResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++        public bool ShowStarterGuidance { get; set; }
++        public DateTime? OnboardingCompletedUtc { get; set; }
++        public List<string> StarterGuidance { get; set; } = [];
++    }
+ }
+END_OF_PATCH

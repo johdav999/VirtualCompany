@@ -1,0 +1,2195 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index 8b2d48d..4d4575c 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -72,43 +72,101 @@ public sealed class Company
+ {
+     private Company()
+     {
+     }
+ 
+     public Company(Guid id, string name)
+     {
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         Name = NormalizeRequired(name, nameof(name), 200);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+ 
+     public Guid Id { get; private set; }
+     public string Name { get; private set; } = null!;
++    public string? Industry { get; private set; }
++    public string? BusinessType { get; private set; }
++    public string? Timezone { get; private set; }
++    public string? Currency { get; private set; }
++    public string? Language { get; private set; }
++    public string? ComplianceRegion { get; private set; }
++    public string? OnboardingStateJson { get; private set; }
++    public int? OnboardingCurrentStep { get; private set; }
++    public string? OnboardingTemplateId { get; private set; }
++    public DateTime? OnboardingLastSavedUtc { get; private set; }
++    public DateTime? OnboardingCompletedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
+     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
+ 
+     public void Rename(string name)
+     {
+         Name = NormalizeRequired(name, nameof(name), 200);
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public void UpdateWorkspaceProfile(
++        string name,
++        string? industry,
++        string? businessType,
++        string? timezone,
++        string? currency,
++        string? language,
++        string? complianceRegion)
++    {
++        Name = NormalizeRequired(name, nameof(name), 200);
++        Industry = NormalizeOptional(industry, nameof(industry), 100);
++        BusinessType = NormalizeOptional(businessType, nameof(businessType), 100);
++        Timezone = NormalizeOptional(timezone, nameof(timezone), 100);
++        Currency = NormalizeOptional(currency, nameof(currency), 16);
++        Language = NormalizeOptional(language, nameof(language), 16);
++        ComplianceRegion = NormalizeOptional(complianceRegion, nameof(complianceRegion), 50);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SaveOnboardingProgress(int currentStep, string? templateId, string onboardingStateJson)
++    {
++        if (currentStep < 1)
++        {
++            throw new ArgumentOutOfRangeException(nameof(currentStep), "Current onboarding step must be greater than zero.");
++        }
++
++        OnboardingCurrentStep = currentStep;
++        OnboardingTemplateId = NormalizeOptional(templateId, nameof(templateId), 100);
++        OnboardingStateJson = string.IsNullOrWhiteSpace(onboardingStateJson) ? null : onboardingStateJson.Trim();
++        OnboardingLastSavedUtc = DateTime.UtcNow;
++        UpdatedUtc = OnboardingLastSavedUtc.Value;
++    }
++
++    public void CompleteOnboarding(int currentStep, string? templateId, string onboardingStateJson)
++    {
++        SaveOnboardingProgress(currentStep, templateId, onboardingStateJson);
++        OnboardingCompletedUtc ??= DateTime.UtcNow;
++        UpdatedUtc = OnboardingCompletedUtc.Value;
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+         {
+             throw new ArgumentException($"{name} is required.", name);
+         }
+ 
+         var trimmed = value.Trim();
+         if (trimmed.Length > maxLength)
+         {
+             throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+         }
+ 
+         return trimmed;
+     }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
+ }
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 68b4074..3616dcc 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -1,59 +1,133 @@
++using System.Collections.ObjectModel;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Companies;
+ 
+ public sealed record CurrentUserDto(
+     Guid Id,
+@@ -41,19 +42,93 @@ public sealed record CompanySelectionDto(
+     string HeaderValue,
+     ResolvedCompanyContextDto ActiveCompany);
+ 
+ public sealed record CompanyNoteDto(Guid Id, Guid CompanyId, string Title, string Content);
+ 
++public sealed record OnboardingTemplateDefaultsDto(
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion);
++
++public sealed record OnboardingTemplateDto(
++    string TemplateId,
++    string Name,
++    string Industry,
++    string BusinessType,
++    string Description,
++    OnboardingTemplateDefaultsDto Defaults,
++    IReadOnlyList<string> StarterGuidance);
++
++public sealed record CompanyOnboardingProgressDto(
++    Guid? CompanyId,
++    string Name,
++    string Industry,
++    string BusinessType,
++    string Timezone,
++    string Currency,
++    string Language,
++    string ComplianceRegion,
++    int CurrentStep,
++    string? SelectedTemplateId,
++    bool IsCompleted,
++    DateTime? LastSavedUtc,
++    IReadOnlyList<string> StarterGuidance);
++
++public sealed record CreateCompanyWorkspaceRequest(
++    string Name,
++    string Industry,
++    string BusinessType,
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion,
++    int CurrentStep,
++    string? SelectedTemplateId);
++
++public sealed record SaveCompanyOnboardingProgressRequest(
++    Guid? CompanyId,
++    string Name,
++    string Industry,
++    string BusinessType,
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion,
++    int CurrentStep,
++    string? SelectedTemplateId);
++
++public sealed record CompleteCompanyOnboardingRequest(
++    Guid CompanyId,
++    string Name,
++    string Industry,
++    string BusinessType,
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion,
++    string? SelectedTemplateId);
++
++public sealed record CompleteCompanyOnboardingResultDto(
++    Guid CompanyId,
++    string CompanyName,
++    string DashboardPath,
++    IReadOnlyList<string> StarterGuidance);
++
++public sealed class CompanyOnboardingValidationException : Exception
++{
++    public CompanyOnboardingValidationException(IDictionary<string, string[]> errors)
++        : base("Company onboarding validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
+ public interface ICurrentUserCompanyService
+ {
+     Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken);
+     Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken);
+@@ -63,7 +138,16 @@ public interface ICurrentUserCompanyService
+ }
+ 
+ public interface ICompanyNoteService
+ {
+     Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken);
+ }
++
++public interface ICompanyOnboardingService
++{
++    Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken);
++    Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken);
++    Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(CreateCompanyWorkspaceRequest request, CancellationToken cancellationToken);
++    Task<CompanyOnboardingProgressDto> SaveProgressAsync(SaveCompanyOnboardingProgressRequest request, CancellationToken cancellationToken);
++    Task<CompleteCompanyOnboardingResultDto> CompleteOnboardingAsync(CompleteCompanyOnboardingRequest request, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index a0e9ef9..4e39048 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -26,6 +26,9 @@ public static class DependencyInjection
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+             options.UseSqlServer(connectionString));
+ 
++        services.AddOptions<OnboardingTemplateCatalogOptions>()
++            .Bind(configuration.GetSection(OnboardingTemplateCatalogOptions.SectionName));
++
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
+@@ -35,9 +38,11 @@ public static class DependencyInjection
+         services.AddScoped<CompanyQueryService>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
++        services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
+         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
+         services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 65dcbc5..02c5a5f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -20,6 +20,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<Company> Companies => Set<Company>();
+     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
++    public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 4488045..6ccf5f8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -33,8 +33,19 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Industry).HasMaxLength(100);
++        builder.Property(x => x.BusinessType).HasMaxLength(100);
++        builder.Property(x => x.Timezone).HasMaxLength(100);
++        builder.Property(x => x.Currency).HasMaxLength(16);
++        builder.Property(x => x.Language).HasMaxLength(16);
++        builder.Property(x => x.ComplianceRegion).HasMaxLength(50);
++        builder.Property(x => x.OnboardingStateJson);
++        builder.Property(x => x.OnboardingCurrentStep);
++        builder.Property(x => x.OnboardingTemplateId).HasMaxLength(100);
++        builder.Property(x => x.OnboardingLastSavedUtc);
++        builder.Property(x => x.OnboardingCompletedUtc);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => x.OnboardingCompletedUtc);
+ 
+         builder.HasMany(x => x.Memberships)
+             .WithOne(x => x.Company)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+new file mode 100644
+index 0000000..9bccce1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -0,0 +1,385 @@
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyOnboardingService : ICompanyOnboardingService
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly IOptions<OnboardingTemplateCatalogOptions> _templateOptions;
++
++    public CompanyOnboardingService(
++        VirtualCompanyDbContext dbContext,
++        ICurrentUserAccessor currentUserAccessor,
++        IOptions<OnboardingTemplateCatalogOptions> templateOptions)
++    {
++        _dbContext = dbContext;
++        _currentUserAccessor = currentUserAccessor;
++        _templateOptions = templateOptions;
++    }
++
++    public Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken)
++    {
++        IReadOnlyList<OnboardingTemplateDto> templates = _templateOptions.Value.Templates
++            .Select(ToDto)
++            .OrderBy(x => x.Name)
++            .ToList();
++
++        return Task.FromResult(templates);
++    }
++
++    public async Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
++        return company is null ? null : MapProgress(company);
++    }
++
++    public async Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(
++        CreateCompanyWorkspaceRequest request,
++        CancellationToken cancellationToken)
++    {
++        var userId = RequireCurrentUserId();
++        ValidateDraft(request.Name, request.Industry, request.BusinessType, request.Timezone, request.Currency, request.Language, request.ComplianceRegion, request.CurrentStep);
++
++        var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
++        if (company is null)
++        {
++            company = new Company(Guid.NewGuid(), request.Name);
++            _dbContext.Companies.Add(company);
++            _dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                company.Id,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++        }
++
++        var resolvedTemplate = FindTemplate(request.SelectedTemplateId);
++        var merged = MergeValues(
++            company,
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            resolvedTemplate);
++
++        company.UpdateWorkspaceProfile(
++            merged.Name,
++            merged.Industry,
++            merged.BusinessType,
++            merged.Timezone,
++            merged.Currency,
++            merged.Language,
++            merged.ComplianceRegion);
++
++        company.SaveOnboardingProgress(
++            Math.Max(1, request.CurrentStep),
++            request.SelectedTemplateId,
++            SerializeState(merged, request.SelectedTemplateId, Math.Max(1, request.CurrentStep), false, ResolveGuidance(request.SelectedTemplateId)));
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapProgress(company);
++    }
++
++    public async Task<CompanyOnboardingProgressDto> SaveProgressAsync(
++        SaveCompanyOnboardingProgressRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (request.CompanyId is null)
++        {
++            return await CreateWorkspaceAsync(
++                new CreateCompanyWorkspaceRequest(
++                    request.Name,
++                    request.Industry,
++                    request.BusinessType,
++                    request.Timezone,
++                    request.Currency,
++                    request.Language,
++                    request.ComplianceRegion,
++                    request.CurrentStep,
++                    request.SelectedTemplateId),
++                cancellationToken);
++        }
++
++        var userId = RequireCurrentUserId();
++        var company = await GetOwnedCompanyAsync(userId, request.CompanyId.Value, cancellationToken);
++        if (company is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot update this company onboarding flow.");
++        }
++
++        ValidateDraft(request.Name, request.Industry, request.BusinessType, request.Timezone, request.Currency, request.Language, request.ComplianceRegion, request.CurrentStep);
++
++        var resolvedTemplate = FindTemplate(request.SelectedTemplateId ?? company.OnboardingTemplateId);
++        var merged = MergeValues(
++            company,
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            resolvedTemplate);
++
++        company.UpdateWorkspaceProfile(
++            merged.Name,
++            merged.Industry,
++            merged.BusinessType,
++            merged.Timezone,
++            merged.Currency,
++            merged.Language,
++            merged.ComplianceRegion);
++
++        company.SaveOnboardingProgress(
++            Math.Max(1, request.CurrentStep),
++            request.SelectedTemplateId ?? company.OnboardingTemplateId,
++            SerializeState(
++                merged,
++                request.SelectedTemplateId ?? company.OnboardingTemplateId,
++                Math.Max(1, request.CurrentStep),
++                false,
++                ResolveGuidance(request.SelectedTemplateId ?? company.OnboardingTemplateId)));
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapProgress(company);
++    }
++
++    public async Task<CompleteCompanyOnboardingResultDto> CompleteOnboardingAsync(
++        CompleteCompanyOnboardingRequest request,
++        CancellationToken cancellationToken)
++    {
++        var userId = RequireCurrentUserId();
++        var company = await GetOwnedCompanyAsync(userId, request.CompanyId, cancellationToken);
++        if (company is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot complete this company onboarding flow.");
++        }
++
++        var selectedTemplateId = request.SelectedTemplateId ?? company.OnboardingTemplateId;
++        var resolvedTemplate = FindTemplate(selectedTemplateId);
++        var merged = MergeValues(
++            company,
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            resolvedTemplate);
++
++        ValidateCompletion(merged);
++
++        company.UpdateWorkspaceProfile(
++            merged.Name,
++            merged.Industry,
++            merged.BusinessType,
++            merged.Timezone,
++            merged.Currency,
++            merged.Language,
++            merged.ComplianceRegion);
++
++        var guidance = ResolveGuidance(selectedTemplateId);
++        company.CompleteOnboarding(
++            4,
++            selectedTemplateId,
++            SerializeState(merged, selectedTemplateId, 4, true, guidance));
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new CompleteCompanyOnboardingResultDto(
++            company.Id,
++            company.Name,
++            $"/dashboard?companyId={company.Id}",
++            guidance);
++    }
++
++    private async Task<Company?> GetLatestOwnedDraftAsync(Guid userId, CancellationToken cancellationToken)
++    {
++        return await _dbContext.Companies
++            .Where(x => x.OnboardingCompletedUtc == null)
++            .Where(x => x.Memberships.Any(m =>
++                m.UserId == userId &&
++                m.Role == CompanyMembershipRole.Owner &&
++                m.Status == CompanyMembershipStatus.Active))
++            .OrderByDescending(x => x.OnboardingLastSavedUtc ?? x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++    }
++
++    private async Task<Company?> GetOwnedCompanyAsync(Guid userId, Guid companyId, CancellationToken cancellationToken)
++    {
++        return await _dbContext.Companies
++            .Where(x => x.Id == companyId)
++            .Where(x => x.Memberships.Any(m =>
++                m.UserId == userId &&
++                m.Role == CompanyMembershipRole.Owner &&
++                m.Status == CompanyMembershipStatus.Active))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    private Guid RequireCurrentUserId()
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            throw new UnauthorizedAccessException("An authenticated user is required.");
++        }
++
++        return userId;
++    }
++
++    private static OnboardingTemplateDto ToDto(OnboardingTemplateDefinition definition) =>
++        new(
++            definition.TemplateId,
++            definition.Name,
++            definition.Industry,
++            definition.BusinessType,
++            definition.Description,
++            new OnboardingTemplateDefaultsDto(
++                definition.Defaults.Timezone,
++                definition.Defaults.Currency,
++                definition.Defaults.Language,
++                definition.Defaults.ComplianceRegion),
++            definition.StarterGuidance);
++
++    private OnboardingTemplateDefinition? FindTemplate(string? templateId)
++    {
++        if (string.IsNullOrWhiteSpace(templateId))
++        {
++            return null;
++        }
++
++        return _templateOptions.Value.Templates.FirstOrDefault(x =>
++            string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase));
++    }
++
++    private static MergedOnboardingValues MergeValues(
++        Company company,
++        string name,
++        string industry,
++        string businessType,
++        string? timezone,
++        string? currency,
++        string? language,
++        string? complianceRegion,
++        OnboardingTemplateDefinition? template) =>
++        new(
++            NormalizeRequired(name),
++            FirstNonEmpty(industry, company.Industry, template?.Industry),
++            FirstNonEmpty(businessType, company.BusinessType, template?.BusinessType),
++            FirstNonEmpty(timezone, company.Timezone, template?.Defaults.Timezone),
++            FirstNonEmpty(currency, company.Currency, template?.Defaults.Currency),
++            FirstNonEmpty(language, company.Language, template?.Defaults.Language),
++            FirstNonEmpty(complianceRegion, company.ComplianceRegion, template?.Defaults.ComplianceRegion));
++
++    private static string SerializeState(
++        MergedOnboardingValues values,
++        string? templateId,
++        int currentStep,
++        bool isCompleted,
++        IReadOnlyList<string> starterGuidance)
++    {
++        return JsonSerializer.Serialize(new OnboardingStateDocument
++        {
++            CurrentStep = currentStep,
++            SelectedTemplateId = templateId,
++            IsCompleted = isCompleted,
++            Name = values.Name,
++            Industry = values.Industry,
++            BusinessType = values.BusinessType,
++            Timezone = values.Timezone,
++            Currency = values.Currency,
++            Language = values.Language,
++            ComplianceRegion = values.ComplianceRegion,
++            StarterGuidance = starterGuidance.ToList()
++        }, SerializerOptions);
++    }
++
++    private CompanyOnboardingProgressDto MapProgress(Company company)
++    {
++        var state = string.IsNullOrWhiteSpace(company.OnboardingStateJson)
++            ? null
++            : JsonSerializer.Deserialize<OnboardingStateDocument>(company.OnboardingStateJson, SerializerOptions);
++
++        var selectedTemplateId = company.OnboardingTemplateId ?? state?.SelectedTemplateId;
++        var guidance = state?.StarterGuidance?.Count > 0
++            ? state.StarterGuidance
++            : ResolveGuidance(selectedTemplateId);
++
++        return new CompanyOnboardingProgressDto(
++            company.Id,
++            company.Name,
++            company.Industry ?? string.Empty,
++            company.BusinessType ?? string.Empty,
++            company.Timezone ?? string.Empty,
++            company.Currency ?? string.Empty,
++            company.Language ?? string.Empty,
++            company.ComplianceRegion ?? string.Empty,
++            company.OnboardingCurrentStep ?? state?.CurrentStep ?? 1,
++            selectedTemplateId,
++            company.OnboardingCompletedUtc.HasValue,
++            company.OnboardingLastSavedUtc,
++            guidance);
++    }
++
++    private IReadOnlyList<string> ResolveGuidance(string? templateId)
++    {
++        var template = FindTemplate(templateId);
++        return template?.StarterGuidance?.Count > 0
++            ? template.StarterGuidance
++            : new[]
++            {
++                "Invite teammates who need access to payroll, finance, or operations.",
++                "Hire your first agents and assign one owner for each workflow.",
++                "Upload company knowledge so the workspace can answer questions accurately."
++            };
++    }
++
++    private static void ValidateDraft(
++        string name,
++        string industry,
++        string businessType,
++        string? timezone,
++        string? currency,
++        string? language,
++        string? complianceRegion,
++        int currentStep)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++
++        if (string.IsNullOrWhiteSpace(name)) errors["Name"] = ["Company name is required."];
++        if (string.IsNullOrWhiteSpace(industry)) errors["Industry"] = ["Industry is required."];
++        if (string.IsNullOrWhiteSpace(businessType)) errors["BusinessType"] = ["Business type is required."];
++
++        if (currentStep >= 2)
++        {
++            if (string.IsNullOrWhiteSpace(timezone)) errors["Timezone"] = ["Timezone is required."];
++            if (string.IsNullOrWhiteSpace(currency)) errors["Currency"] = ["Currency is required."];
++            if (string.IsNullOrWhiteSpace(language)) errors["Language"] = ["Language is required."];
++            if (string.IsNullOrWhiteSpace(complianceRegion)) errors["ComplianceRegion"] = ["Compliance region is required."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new CompanyOnboardingValidationException(errors);
++        }
++    }
++
++    private static void ValidateCompletion(MergedOnboardingValues values) =>
++        ValidateDraft(values.Name, values.Industry ?? string.Empty, values.BusinessType ?? string.Empty, values.Timezone, values.Currency, values.Language, values.ComplianceRegion, 4);
++
++    private static string NormalizeRequired(string value) => value.Trim();
++
++    private static string? FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
++
++    private sealed record MergedOnboardingValues(
++        string Name,
++        string? Industry,
++        string? BusinessType,
++        string? Timezone,
++        string? Currency,
++        string? Language,
++        string? ComplianceRegion);
++
++    private sealed class OnboardingStateDocument
++    {
++        public string Name { get; set; } = string.Empty;
++        public string? Industry { get; set; }
++        public string? BusinessType { get; set; }
++        public string? Timezone { get; set; }
++        public string? Currency { get; set; }
++        public string? Language { get; set; }
++        public string? ComplianceRegion { get; set; }
++        public int CurrentStep { get; set; }
++        public string? SelectedTemplateId { get; set; }
++        public bool IsCompleted { get; set; }
++        public List<string> StarterGuidance { get; set; } = [];
++    }
++}
++
++public sealed class OnboardingTemplateCatalogOptions
++{
++    public const string SectionName = "OnboardingTemplates";
++
++    public List<OnboardingTemplateDefinition> Templates { get; set; } = [];
++}
++
++public sealed class OnboardingTemplateDefinition
++{
++    public string TemplateId { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public OnboardingTemplateDefaultsDefinition Defaults { get; set; } = new();
++    public List<string> StarterGuidance { get; set; } = [];
++}
++
++public sealed class OnboardingTemplateDefaultsDefinition
++{
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/OnboardingController.cs b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+new file mode 100644
+index 0000000..4932a27
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+@@ -0,0 +1,110 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Companies;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/onboarding")]
++[Authorize(Policy = CompanyPolicies.AuthenticatedUser)]
++public sealed class OnboardingController : ControllerBase
++{
++    private readonly ICompanyOnboardingService _onboardingService;
++
++    public OnboardingController(ICompanyOnboardingService onboardingService)
++    {
++        _onboardingService = onboardingService;
++    }
++
++    [HttpGet("templates")]
++    public async Task<ActionResult<IReadOnlyList<OnboardingTemplateDto>>> GetTemplatesAsync(CancellationToken cancellationToken)
++    {
++        var templates = await _onboardingService.GetTemplatesAsync(cancellationToken);
++        return Ok(templates);
++    }
++
++    [HttpGet("progress")]
++    public async Task<ActionResult<CompanyOnboardingProgressDto?>> GetProgressAsync(CancellationToken cancellationToken)
++    {
++        var progress = await _onboardingService.GetProgressAsync(cancellationToken);
++        return Ok(progress);
++    }
++
++    [HttpPost("workspace")]
++    public async Task<ActionResult<CompanyOnboardingProgressDto>> CreateWorkspaceAsync(
++        [FromBody] CreateCompanyWorkspaceRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var progress = await _onboardingService.CreateWorkspaceAsync(request, cancellationToken);
++            return Ok(progress);
++        }
++        catch (CompanyOnboardingValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++    }
++
++    [HttpPut("progress")]
++    public async Task<ActionResult<CompanyOnboardingProgressDto>> SaveProgressAsync(
++        [FromBody] SaveCompanyOnboardingProgressRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var progress = await _onboardingService.SaveProgressAsync(request, cancellationToken);
++            return Ok(progress);
++        }
++        catch (CompanyOnboardingValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("complete")]
++    public async Task<ActionResult<CompleteCompanyOnboardingResultDto>> CompleteOnboardingAsync(
++        [FromBody] CompleteCompanyOnboardingRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _onboardingService.CompleteOnboardingAsync(request, cancellationToken);
++            return Ok(result);
++        }
++        catch (CompanyOnboardingValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 83bf66d..7efb100 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -8,5 +8,50 @@
+       "Microsoft.AspNetCore": "Warning"
+     }
+   },
++  "OnboardingTemplates": {
++    "Templates": [
++      {
++        "TemplateId": "professional-services-agency",
++        "Name": "Professional Services Agency",
++        "Industry": "Professional Services",
++        "BusinessType": "Agency",
++        "Description": "A template for service teams that need client delivery, approvals, and fast knowledge capture.",
++        "Defaults": {
++          "Timezone": "Europe/Stockholm",
++          "Currency": "SEK",
++          "Language": "sv-SE",
++          "ComplianceRegion": "EU"
++        },
++        "StarterGuidance": [
++          "Invite account leads and assign one owner for each client workflow.",
++          "Hire your first delivery and finance agents to cover recurring admin work.",
++          "Upload proposals, service agreements, and SOPs as company knowledge."
++        ]
++      },
++      {
++        "TemplateId": "saas-operations",
++        "Name": "SaaS Operations",
++        "Industry": "Technology",
++        "BusinessType": "Software Company",
++        "Description": "A template for product teams running support, subscriptions, and internal operations from one workspace.",
++        "Defaults": {
++          "Timezone": "America/New_York",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "US"
++        },
++        "StarterGuidance": [
++          "Invite operations, finance, and customer success teammates.",
++          "Hire your first support and revenue operations agents.",
++          "Upload pricing plans, renewal playbooks, and product documentation."
++        ]
++      },
++      {
++        "TemplateId": "healthcare-clinic",
++        "Name": "Healthcare Clinic",
++        "Industry": "Healthcare",
++        "BusinessType": "Clinic",
++        "Description": "A template for regulated teams that want a compliant default starting point.",
++        "Defaults": {
++          "Timezone": "America/Chicago",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "HIPAA"
++        },
++        "StarterGuidance": [
++          "Invite administrators and clinical operations leads before expanding access.",
++          "Hire intake and scheduling agents with clear ownership boundaries.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ]
++      }
++    ]
++  },
+   "AllowedHosts": "*"
+ }
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index c9fb12d..8ca576b 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -7,5 +7,49 @@
+       "Microsoft.AspNetCore": "Warning"
+     }
++  },
++  "OnboardingTemplates": {
++    "Templates": [
++      {
++        "TemplateId": "professional-services-agency",
++        "Name": "Professional Services Agency",
++        "Industry": "Professional Services",
++        "BusinessType": "Agency",
++        "Description": "A template for service teams that need client delivery, approvals, and fast knowledge capture.",
++        "Defaults": {
++          "Timezone": "Europe/Stockholm",
++          "Currency": "SEK",
++          "Language": "sv-SE",
++          "ComplianceRegion": "EU"
++        },
++        "StarterGuidance": [
++          "Invite account leads and assign one owner for each client workflow.",
++          "Hire your first delivery and finance agents to cover recurring admin work.",
++          "Upload proposals, service agreements, and SOPs as company knowledge."
++        ]
++      },
++      {
++        "TemplateId": "saas-operations",
++        "Name": "SaaS Operations",
++        "Industry": "Technology",
++        "BusinessType": "Software Company",
++        "Description": "A template for product teams running support, subscriptions, and internal operations from one workspace.",
++        "Defaults": {
++          "Timezone": "America/New_York",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "US"
++        },
++        "StarterGuidance": [
++          "Invite operations, finance, and customer success teammates.",
++          "Hire your first support and revenue operations agents.",
++          "Upload pricing plans, renewal playbooks, and product documentation."
++        ]
++      },
++      {
++        "TemplateId": "healthcare-clinic",
++        "Name": "Healthcare Clinic",
++        "Industry": "Healthcare",
++        "BusinessType": "Clinic",
++        "Description": "A template for regulated teams that want a compliant default starting point.",
++        "Defaults": {
++          "Timezone": "America/Chicago",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "HIPAA"
++        },
++        "StarterGuidance": [
++          "Invite administrators and clinical operations leads before expanding access.",
++          "Hire intake and scheduling agents with clear ownership boundaries.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ]
++      }
++    ]
+   }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs
+new file mode 100644
+index 0000000..02cf21f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs
+@@ -0,0 +1,106 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddCompanyOnboarding : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "BusinessType",
++            table: "companies",
++            type: "nvarchar(100)",
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "ComplianceRegion",
++            table: "companies",
++            type: "nvarchar(50)",
++            maxLength: 50,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "Currency",
++            table: "companies",
++            type: "nvarchar(16)",
++            maxLength: 16,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "Industry",
++            table: "companies",
++            type: "nvarchar(100)",
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "Language",
++            table: "companies",
++            type: "nvarchar(16)",
++            maxLength: 16,
++            nullable: true);
++
++        migrationBuilder.AddColumn<int>(
++            name: "OnboardingCurrentStep",
++            table: "companies",
++            type: "int",
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "OnboardingCompletedUtc",
++            table: "companies",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "OnboardingLastSavedUtc",
++            table: "companies",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "OnboardingStateJson",
++            table: "companies",
++            type: "nvarchar(max)",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "OnboardingTemplateId",
++            table: "companies",
++            type: "nvarchar(100)",
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "Timezone",
++            table: "companies",
++            type: "nvarchar(100)",
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_companies_OnboardingCompletedUtc",
++            table: "companies",
++            column: "OnboardingCompletedUtc");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(name: "IX_companies_OnboardingCompletedUtc", table: "companies");
++        migrationBuilder.DropColumn(name: "BusinessType", table: "companies");
++        migrationBuilder.DropColumn(name: "ComplianceRegion", table: "companies");
++        migrationBuilder.DropColumn(name: "Currency", table: "companies");
++        migrationBuilder.DropColumn(name: "Industry", table: "companies");
++        migrationBuilder.DropColumn(name: "Language", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingCurrentStep", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingCompletedUtc", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingLastSavedUtc", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingStateJson", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingTemplateId", table: "companies");
++        migrationBuilder.DropColumn(name: "Timezone", table: "companies");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 37c1409..5a86246 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -1,9 +1,14 @@
+ using Microsoft.AspNetCore.Components.Web;
+ using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
+ using VirtualCompany.Web;
++using VirtualCompany.Web.Services;
+ 
+ var builder = WebAssemblyHostBuilder.CreateDefault(args);
+ builder.RootComponents.Add<App>("#app");
+ builder.RootComponents.Add<HeadOutlet>("head::after");
++
++builder.Services.AddScoped(_ => new HttpClient
++{
++    BaseAddress = new Uri(builder.HostEnvironment.BaseAddress)
++});
++builder.Services.AddScoped<OnboardingApiClient>();
+ 
+ await builder.Build().RunAsync();
+diff --git a/src/VirtualCompany.Web/_Imports.razor b/src/VirtualCompany.Web/_Imports.razor
+index 7a03ef4..79b5560 100644
+--- a/src/VirtualCompany.Web/_Imports.razor
++++ b/src/VirtualCompany.Web/_Imports.razor
+@@ -1,4 +1,6 @@
+ @using Microsoft.AspNetCore.Components.Routing
++@using Microsoft.AspNetCore.Components.Forms
+ @using Microsoft.AspNetCore.Components.Web
+ @using VirtualCompany.Web
+ @using VirtualCompany.Web.Layout
++@using VirtualCompany.Web.Services
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 96b7f16..7d15880 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -16,6 +16,16 @@
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="onboarding">
++                <span class="bi bi-building-add" aria-hidden="true"></span> Onboarding
++            </NavLink>
++        </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="dashboard">
++                <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
++            </NavLink>
++        </div>
+     </nav>
+ </div>
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Home.razor b/src/VirtualCompany.Web/Pages/Home.razor
+index 15f7a4c..697914f 100644
+--- a/src/VirtualCompany.Web/Pages/Home.razor
++++ b/src/VirtualCompany.Web/Pages/Home.razor
+@@ -1,9 +1,24 @@
+ @page "/"
+ 
+ <PageTitle>Home</PageTitle>
+ 
+-<section class="py-4">
+-    <h1>Virtual Company</h1>
+-    <p class="lead mb-2">Project workspace is configured and ready for implementation.</p>
+-    <p class="text-body-secondary mb-0">Use this shell as the foundation for the web client.</p>
++<section class="py-4 dashboard-hero">
++    <div class="dashboard-shell">
++        <div>
++            <h1>Virtual Company</h1>
++            <p class="lead mb-3">Create a workspace, finish onboarding, and land in a starter dashboard built for the first company setup.</p>
++            <div class="d-flex gap-2 flex-wrap">
++                <a class="btn btn-primary" href="onboarding">Create workspace</a>
++                <a class="btn btn-outline-secondary" href="dashboard">Open dashboard</a>
++            </div>
++        </div>
++        <div class="wizard-card wizard-card--compact">
++            <h2 class="h5">First-run checklist</h2>
++            <ul class="mb-0 text-body-secondary">
++                <li>Create a company workspace.</li>
++                <li>Choose locale and compliance defaults.</li>
++                <li>Apply a template and save progress.</li>
++                <li>Complete onboarding and invite the team.</li>
++            </ul>
++        </div>
++    </div>
+ </section>
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+new file mode 100644
+index 0000000..baf7c00
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -0,0 +1,199 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class OnboardingApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++
++    public OnboardingApiClient(HttpClient httpClient)
++    {
++        _httpClient = httpClient;
++    }
++
++    public async Task<IReadOnlyList<OnboardingTemplateViewModel>> GetTemplatesAsync(CancellationToken cancellationToken = default)
++    {
++        return await _httpClient.GetFromJsonAsync<IReadOnlyList<OnboardingTemplateViewModel>>("api/onboarding/templates", cancellationToken)
++            ?? [];
++    }
++
++    public async Task<OnboardingProgressViewModel?> GetProgressAsync(CancellationToken cancellationToken = default)
++    {
++        return await _httpClient.GetFromJsonAsync<OnboardingProgressViewModel?>("api/onboarding/progress", cancellationToken);
++    }
++
++    public Task<OnboardingProgressViewModel> CreateWorkspaceAsync(SaveOnboardingRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<OnboardingProgressViewModel>(HttpMethod.Post, "api/onboarding/workspace", request.ToCreateRequest(), cancellationToken);
++
++    public Task<OnboardingProgressViewModel> SaveProgressAsync(SaveOnboardingRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<OnboardingProgressViewModel>(HttpMethod.Put, "api/onboarding/progress", request, cancellationToken);
++
++    public Task<CompleteOnboardingResultViewModel> CompleteAsync(CompleteOnboardingRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<CompleteOnboardingResultViewModel>(HttpMethod.Post, "api/onboarding/complete", request, cancellationToken);
++
++    public async Task<CompanyAccessViewModel?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        var response = await _httpClient.GetAsync($"api/companies/{companyId}/access", cancellationToken);
++        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden ||
++            response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
++        {
++            return null;
++        }
++
++        response.EnsureSuccessStatusCode();
++        return await response.Content.ReadFromJsonAsync<CompanyAccessViewModel>(SerializerOptions, cancellationToken);
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        using var request = new HttpRequestMessage(method, uri)
++        {
++            Content = JsonContent.Create(payload)
++        };
++
++        using var response = await _httpClient.SendAsync(request, cancellationToken);
++        if (response.IsSuccessStatusCode)
++        {
++            var result = await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++            if (result is null)
++            {
++                throw new InvalidOperationException("The server returned an empty response.");
++            }
++
++            return result;
++        }
++
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        if (problem?.Errors is { Count: > 0 })
++        {
++            throw new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
++        }
++
++        throw new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
++    }
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class OnboardingApiException : Exception
++{
++    public OnboardingApiException(string message)
++        : this(message, null)
++    {
++    }
++
++    public OnboardingApiException(string message, IReadOnlyDictionary<string, string[]>? errors)
++        : base(message)
++    {
++        Errors = errors ?? new Dictionary<string, string[]>();
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public sealed class OnboardingTemplateViewModel
++{
++    public string TemplateId { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public OnboardingTemplateDefaultsViewModel Defaults { get; set; } = new();
++    public List<string> StarterGuidance { get; set; } = [];
++}
++
++public sealed class OnboardingTemplateDefaultsViewModel
++{
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++}
++
++public sealed class OnboardingProgressViewModel
++{
++    public Guid? CompanyId { get; set; }
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string Timezone { get; set; } = string.Empty;
++    public string Currency { get; set; } = string.Empty;
++    public string Language { get; set; } = string.Empty;
++    public string ComplianceRegion { get; set; } = string.Empty;
++    public int CurrentStep { get; set; }
++    public string? SelectedTemplateId { get; set; }
++    public bool IsCompleted { get; set; }
++    public DateTime? LastSavedUtc { get; set; }
++    public List<string> StarterGuidance { get; set; } = [];
++}
++
++public sealed class SaveOnboardingRequest
++{
++    public Guid? CompanyId { get; set; }
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++    public int CurrentStep { get; set; }
++    public string? SelectedTemplateId { get; set; }
++
++    public CreateWorkspaceRequest ToCreateRequest() =>
++        new()
++        {
++            Name = Name,
++            Industry = Industry,
++            BusinessType = BusinessType,
++            Timezone = Timezone,
++            Currency = Currency,
++            Language = Language,
++            ComplianceRegion = ComplianceRegion,
++            CurrentStep = CurrentStep,
++            SelectedTemplateId = SelectedTemplateId
++        };
++}
++
++public sealed class CreateWorkspaceRequest
++{
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++    public int CurrentStep { get; set; }
++    public string? SelectedTemplateId { get; set; }
++}
++
++public sealed class CompleteOnboardingRequest
++{
++    public Guid CompanyId { get; set; }
++    public string Name { get; set; } = string.Empty;
++    public string Industry { get; set; } = string.Empty;
++    public string BusinessType { get; set; } = string.Empty;
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++    public string? SelectedTemplateId { get; set; }
++}
++
++public sealed class CompleteOnboardingResultViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string DashboardPath { get; set; } = string.Empty;
++    public List<string> StarterGuidance { get; set; } = [];
++}
++
++public sealed class CompanyAccessViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string Role { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+new file mode 100644
+index 0000000..f95f0f9
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -0,0 +1,340 @@
++@page "/onboarding"
++@inject OnboardingApiClient ApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Company Onboarding</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Company onboarding</h1>
++        <p class="text-body-secondary mb-0">Loading saved progress...</p>
++    </section>
++}
++else
++{
++    <section class="py-4">
++        <div class="dashboard-shell">
++            <div class="wizard-panel">
++                <div class="wizard-card">
++                    <h1>Company onboarding</h1>
++                    <p class="text-body-secondary">Create a workspace, apply a template, and save progress as you move through setup.</p>
++
++                    <div class="wizard-steps">
++                        @foreach (var step in steps)
++                        {
++                            <button type="button"
++                                    class="wizard-step @(CurrentStep == step.Number ? "is-active" : CurrentStep > step.Number ? "is-complete" : null)"
++                                    @onclick="() => GoToStep(step.Number)">
++                                <span>@step.Number</span>
++                                <strong>@step.Label</strong>
++                            </button>
++                        }
++                    </div>
++
++                    @if (!string.IsNullOrWhiteSpace(statusMessage))
++                    {
++                        <div class="alert alert-info mt-3">@statusMessage</div>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(errorMessage))
++                    {
++                        <div class="alert alert-danger mt-3">@errorMessage</div>
++                    }
++
++                    @if (CurrentStep == 1)
++                    {
++                        <div class="row g-3 mt-1">
++                            <div class="col-12">
++                                <label class="form-label">Company name</label>
++                                <input class="form-control" @bind="model.Name" />
++                                @RenderError(nameof(model.Name))
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label">Industry</label>
++                                <input class="form-control" @bind="model.Industry" />
++                                @RenderError(nameof(model.Industry))
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label">Business type</label>
++                                <input class="form-control" @bind="model.BusinessType" />
++                                @RenderError(nameof(model.BusinessType))
++                            </div>
++                        </div>
++                    }
++                    else if (CurrentStep == 2)
++                    {
++                        <div class="row g-3 mt-1">
++                            <div class="col-md-6">
++                                <label class="form-label">Timezone</label>
++                                <input class="form-control" @bind="model.Timezone" />
++                                @RenderError(nameof(model.Timezone))
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label">Currency</label>
++                                <input class="form-control" @bind="model.Currency" />
++                                @RenderError(nameof(model.Currency))
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label">Language</label>
++                                <input class="form-control" @bind="model.Language" />
++                                @RenderError(nameof(model.Language))
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label">Compliance region</label>
++                                <input class="form-control" @bind="model.ComplianceRegion" />
++                                @RenderError(nameof(model.ComplianceRegion))
++                            </div>
++                        </div>
++                    }
++                    else if (CurrentStep == 3)
++                    {
++                        <div class="template-grid mt-3">
++                            @foreach (var template in templates)
++                            {
++                                <button type="button"
++                                        class="template-card @(model.SelectedTemplateId == template.TemplateId ? "is-selected" : null)"
++                                        @onclick="() => SelectTemplate(template.TemplateId)">
++                                    <strong>@template.Name</strong>
++                                    <span>@template.Industry / @template.BusinessType</span>
++                                    <p class="mb-0">@template.Description</p>
++                                </button>
++                            }
++                        </div>
++
++                        @if (SelectedTemplate is not null)
++                        {
++                            <div class="wizard-card wizard-card--compact mt-3">
++                                <h2 class="h5 mb-2">Template guidance</h2>
++                                <ul class="mb-0">
++                                    @foreach (var item in SelectedTemplate.StarterGuidance)
++                                    {
++                                        <li>@item</li>
++                                    }
++                                </ul>
++                            </div>
++                        }
++                    }
++                    else
++                    {
++                        <div class="wizard-card wizard-card--compact mt-3">
++                            <h2 class="h5 mb-3">Review your setup</h2>
++                            <dl class="row mb-0">
++                                <dt class="col-sm-4">Workspace</dt>
++                                <dd class="col-sm-8">@model.Name</dd>
++                                <dt class="col-sm-4">Industry</dt>
++                                <dd class="col-sm-8">@model.Industry</dd>
++                                <dt class="col-sm-4">Business type</dt>
++                                <dd class="col-sm-8">@model.BusinessType</dd>
++                                <dt class="col-sm-4">Timezone</dt>
++                                <dd class="col-sm-8">@model.Timezone</dd>
++                                <dt class="col-sm-4">Currency</dt>
++                                <dd class="col-sm-8">@model.Currency</dd>
++                                <dt class="col-sm-4">Language</dt>
++                                <dd class="col-sm-8">@model.Language</dd>
++                                <dt class="col-sm-4">Compliance</dt>
++                                <dd class="col-sm-8">@model.ComplianceRegion</dd>
++                                <dt class="col-sm-4">Template</dt>
++                                <dd class="col-sm-8">@(SelectedTemplate?.Name ?? "No template selected")</dd>
++                            </dl>
++                        </div>
++                    }
++
++                    <div class="d-flex gap-2 mt-4 flex-wrap">
++                        @if (CurrentStep > 1)
++                        {
++                            <button type="button" class="btn btn-outline-secondary" @onclick="BackAsync">Back</button>
++                        }
++                        <button type="button" class="btn btn-outline-primary" @onclick="SaveDraftAsync">Save draft</button>
++                        @if (CurrentStep < 4)
++                        {
++                            <button type="button" class="btn btn-primary" @onclick="NextAsync">Next</button>
++                        }
++                        else
++                        {
++                            <button type="button" class="btn btn-primary" @onclick="CompleteAsync">Complete onboarding</button>
++                        }
++                    </div>
++                </div>
++            </div>
++
++            <aside class="wizard-panel">
++                <div class="wizard-card wizard-card--compact">
++                    <h2 class="h5">Saved progress</h2>
++                    <p class="text-body-secondary mb-2">Workspace id: @(model.CompanyId?.ToString() ?? "Not created yet")</p>
++                    <p class="text-body-secondary mb-0">Last saved: @(lastSavedLabel ?? "Not saved yet")</p>
++                </div>
++                <div class="wizard-card wizard-card--compact mt-3">
++                    <h2 class="h5">Starter guidance</h2>
++                    <ul class="mb-0">
++                        @foreach (var item in Guidance)
++                        {
++                            <li>@item</li>
++                        }
++                    </ul>
++                </div>
++            </aside>
++        </div>
++    </section>
++}
++
++@code {
++    private readonly StepDefinition[] steps =
++    [
++        new(1, "Basics"),
++        new(2, "Locale"),
++        new(3, "Template"),
++        new(4, "Confirm")
++    ];
++
++    private readonly Dictionary<string, string> validationErrors = new(StringComparer.OrdinalIgnoreCase);
++    private readonly OnboardingFormModel model = new();
++    private List<OnboardingTemplateViewModel> templates = [];
++    private bool isLoading = true;
++    private string? statusMessage;
++    private string? errorMessage;
++
++    private int CurrentStep { get; set; } = 1;
++    private string? lastSavedLabel;
++    private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
++    private IReadOnlyList<string> Guidance => SelectedTemplate?.StarterGuidance?.Count > 0
++        ? SelectedTemplate.StarterGuidance
++        : new[]
++        {
++            "Invite teammates after the workspace is live.",
++            "Hire your first agents around the team’s busiest workflows.",
++            "Upload core policies and documents as company knowledge."
++        };
++
++    protected override async Task OnInitializedAsync()
++    {
++        templates = (await ApiClient.GetTemplatesAsync()).ToList();
++        var progress = await ApiClient.GetProgressAsync();
++
++        if (progress is not null)
++        {
++            model.CompanyId = progress.CompanyId;
++            model.Name = progress.Name;
++            model.Industry = progress.Industry;
++            model.BusinessType = progress.BusinessType;
++            model.Timezone = progress.Timezone;
++            model.Currency = progress.Currency;
++            model.Language = progress.Language;
++            model.ComplianceRegion = progress.ComplianceRegion;
++            model.SelectedTemplateId = progress.SelectedTemplateId;
++            CurrentStep = Math.Clamp(progress.CurrentStep, 1, 4);
++            lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
++            statusMessage = "Saved onboarding progress restored.";
++        }
++
++        isLoading = false;
++    }
++
++    private async Task NextAsync()
++    {
++        if (!ValidateStep(CurrentStep))
++        {
++            return;
++        }
++
++        await PersistCurrentStepAsync(CurrentStep == 1 && model.CompanyId is null);
++        CurrentStep = Math.Min(4, CurrentStep + 1);
++        statusMessage = "Progress saved.";
++    }
++
++    private async Task BackAsync()
++    {
++        CurrentStep = Math.Max(1, CurrentStep - 1);
++        await Task.CompletedTask;
++    }
++
++    private async Task SaveDraftAsync()
++    {
++        if (!ValidateStep(CurrentStep))
++        {
++            return;
++        }
++
++        await PersistCurrentStepAsync(CurrentStep == 1 && model.CompanyId is null);
++        statusMessage = "Draft saved. You can leave and resume later.";
++    }
++
++    private async Task CompleteAsync()
++    {
++        if (!ValidateStep(4))
++        {
++            return;
++        }
++
++        try
++        {
++            errorMessage = null;
++            var result = await ApiClient.CompleteAsync(new CompleteOnboardingRequest
++            {
++                CompanyId = model.CompanyId ?? Guid.Empty,
++                Name = model.Name,
++                Industry = model.Industry,
++                BusinessType = model.BusinessType,
++                Timezone = model.Timezone,
++                Currency = model.Currency,
++                Language = model.Language,
++                ComplianceRegion = model.ComplianceRegion,
++                SelectedTemplateId = model.SelectedTemplateId
++            });
++
++            Navigation.NavigateTo(result.DashboardPath);
++        }
++        catch (OnboardingApiException ex)
++        {
++            ApplyApiErrors(ex.Errors);
++            errorMessage = ex.Message;
++        }
++    }
++
++    private void GoToStep(int step)
++    {
++        if (step <= CurrentStep)
++        {
++            CurrentStep = step;
++        }
++    }
++
++    private void SelectTemplate(string templateId)
++    {
++        model.SelectedTemplateId = templateId;
++        if (SelectedTemplate?.Defaults is not null)
++        {
++            model.Timezone = string.IsNullOrWhiteSpace(model.Timezone) ? SelectedTemplate.Defaults.Timezone ?? string.Empty : model.Timezone;
++            model.Currency = string.IsNullOrWhiteSpace(model.Currency) ? SelectedTemplate.Defaults.Currency ?? string.Empty : model.Currency;
++            model.Language = string.IsNullOrWhiteSpace(model.Language) ? SelectedTemplate.Defaults.Language ?? string.Empty : model.Language;
++            model.ComplianceRegion = string.IsNullOrWhiteSpace(model.ComplianceRegion) ? SelectedTemplate.Defaults.ComplianceRegion ?? string.Empty : model.ComplianceRegion;
++        }
++    }
++
++    private async Task PersistCurrentStepAsync(bool createWorkspace)
++    {
++        try
++        {
++            errorMessage = null;
++            validationErrors.Clear();
++
++            var request = new SaveOnboardingRequest
++            {
++                CompanyId = model.CompanyId,
++                Name = model.Name,
++                Industry = model.Industry,
++                BusinessType = model.BusinessType,
++                Timezone = model.Timezone,
++                Currency = model.Currency,
++                Language = model.Language,
++                ComplianceRegion = model.ComplianceRegion,
++                CurrentStep = CurrentStep,
++                SelectedTemplateId = model.SelectedTemplateId
++            };
++
++            var progress = createWorkspace
++                ? await ApiClient.CreateWorkspaceAsync(request)
++                : await ApiClient.SaveProgressAsync(request);
++
++            model.CompanyId = progress.CompanyId;
++            lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
++        }
++        catch (OnboardingApiException ex)
++        {
++            ApplyApiErrors(ex.Errors);
++            errorMessage = ex.Message;
++        }
++    }
++
++    private bool ValidateStep(int step)
++    {
++        validationErrors.Clear();
++        if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = "Company name is required.";
++        if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = "Industry is required.";
++        if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = "Business type is required.";
++
++        if (step >= 2)
++        {
++            if (string.IsNullOrWhiteSpace(model.Timezone)) validationErrors[nameof(model.Timezone)] = "Timezone is required.";
++            if (string.IsNullOrWhiteSpace(model.Currency)) validationErrors[nameof(model.Currency)] = "Currency is required.";
++            if (string.IsNullOrWhiteSpace(model.Language)) validationErrors[nameof(model.Language)] = "Language is required.";
++            if (string.IsNullOrWhiteSpace(model.ComplianceRegion)) validationErrors[nameof(model.ComplianceRegion)] = "Compliance region is required.";
++        }
++
++        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before continuing." : null;
++        return validationErrors.Count == 0;
++    }
++
++    private void ApplyApiErrors(IReadOnlyDictionary<string, string[]> errors)
++    {
++        foreach (var error in errors)
++        {
++            validationErrors[error.Key] = error.Value.FirstOrDefault() ?? "Invalid value.";
++        }
++    }
++
++    private RenderFragment RenderError(string field) => builder =>
++    {
++        if (validationErrors.TryGetValue(field, out var message))
++        {
++            builder.OpenElement(0, "div");
++            builder.AddAttribute(1, "class", "validation-message");
++            builder.AddContent(2, message);
++            builder.CloseElement();
++        }
++    };
++
++    private sealed record StepDefinition(int Number, string Label);
++
++    private sealed class OnboardingFormModel
++    {
++        public Guid? CompanyId { get; set; }
++        public string Name { get; set; } = string.Empty;
++        public string Industry { get; set; } = string.Empty;
++        public string BusinessType { get; set; } = string.Empty;
++        public string Timezone { get; set; } = string.Empty;
++        public string Currency { get; set; } = string.Empty;
++        public string Language { get; set; } = string.Empty;
++        public string ComplianceRegion { get; set; } = string.Empty;
++        public string? SelectedTemplateId { get; set; }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+new file mode 100644
+index 0000000..66ea270
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -0,0 +1,64 @@
++@page "/dashboard"
++@inject OnboardingApiClient ApiClient
++@using Microsoft.AspNetCore.Components
++
++<PageTitle>Dashboard</PageTitle>
++
++<section class="py-4 dashboard-hero">
++    <div class="dashboard-shell">
++        <div class="wizard-card">
++            <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
++            <p class="lead mb-2">Your company workspace is ready for the next setup actions.</p>
++            <p class="text-body-secondary mb-0">
++                @(companyAccess is null
++                    ? "Use onboarding to create or resume a workspace."
++                    : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
++            </p>
++        </div>
++
++        <div class="wizard-card wizard-card--compact">
++            <h2 class="h5">Starter guidance</h2>
++            <ul class="mb-0">
++                <li>Invite teammates who need workspace access.</li>
++                <li>Hire first agents for support, finance, and operations.</li>
++                <li>Upload company knowledge to give the workspace useful context.</li>
++                <li>Return to onboarding if you need to adjust setup defaults.</li>
++            </ul>
++        </div>
++    </div>
++</section>
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private CompanyAccessViewModel? companyAccess;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        if (CompanyId is Guid companyId)
++        {
++            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 1f7b480..9700629 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -112,3 +112,99 @@ code {
+ .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
+     text-align: start;
++}
++
++.dashboard-hero {
++    background:
++        radial-gradient(circle at top right, rgba(27, 110, 194, 0.12), transparent 35%),
++        linear-gradient(180deg, rgba(248, 250, 252, 1) 0%, rgba(241, 245, 249, 1) 100%);
++    border-radius: 1.5rem;
++    padding: 2rem;
++}
++
++.dashboard-shell {
++    display: grid;
++    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
++    gap: 1.25rem;
++}
++
++.wizard-panel {
++    min-width: 0;
++}
++
++.wizard-card {
++    background: #fff;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1.25rem;
++    box-shadow: 0 18px 38px rgba(15, 23, 42, 0.08);
++    padding: 1.5rem;
++}
++
++.wizard-card--compact {
++    padding: 1.25rem;
++}
++
++.wizard-steps {
++    display: grid;
++    grid-template-columns: repeat(4, minmax(0, 1fr));
++    gap: 0.75rem;
++    margin-top: 1.25rem;
++}
++
++.wizard-step {
++    align-items: start;
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    display: flex;
++    flex-direction: column;
++    gap: 0.35rem;
++    padding: 0.85rem;
++    text-align: left;
++}
++
++.wizard-step span {
++    background: #dbeafe;
++    border-radius: 999px;
++    display: inline-flex;
++    height: 1.75rem;
++    justify-content: center;
++    width: 1.75rem;
++}
++
++.wizard-step.is-active {
++    border-color: #1b6ec2;
++    background: #eff6ff;
++}
++
++.wizard-step.is-complete {
++    background: #ecfdf3;
++    border-color: #26b050;
++}
++
++.template-grid {
++    display: grid;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++    gap: 1rem;
++}
++
++.template-card {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    padding: 1rem;
++    text-align: left;
++}
++
++.template-card.is-selected {
++    border-color: #1b6ec2;
++    background: #eff6ff;
++}
++
++@media (max-width: 991.98px) {
++    .dashboard-shell {
++        grid-template-columns: 1fr;
++    }
++
++    .wizard-steps {
++        grid-template-columns: repeat(2, minmax(0, 1fr));
++    }
++}
++
++@media (max-width: 575.98px) {
++    .wizard-steps {
++        grid-template-columns: 1fr;
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+new file mode 100644
+index 0000000..68d6f95
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -0,0 +1,228 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public CompanyOnboardingIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task GetTemplates_returns_seeded_catalog()
++    {
++        using var client = CreateAuthenticatedClient("templates-user", "templates@example.com", "Templates User");
++        var templates = await client.GetFromJsonAsync<List<TemplateResponse>>("/api/onboarding/templates");
++
++        Assert.NotNull(templates);
++        Assert.NotEmpty(templates!);
++        Assert.Contains(templates, x => x.TemplateId == "professional-services-agency");
++    }
++
++    [Fact]
++    public async Task CreateWorkspace_creates_company_and_owner_membership()
++    {
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Northwind Ops",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 1,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(payload);
++        Assert.NotNull(payload!.CompanyId);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var company = await dbContext.Companies.SingleAsync(x => x.Id == payload.CompanyId!.Value);
++        var user = await dbContext.Users.SingleAsync(x => x.AuthSubject == "alice");
++        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == company.Id && x.UserId == user.Id);
++
++        Assert.Equal("Northwind Ops", company.Name);
++        Assert.Equal("Technology", company.Industry);
++        Assert.Equal("Software Company", company.BusinessType);
++        Assert.Equal(CompanyMembershipRole.Owner, membership.Role);
++        Assert.Equal(CompanyMembershipStatus.Active, membership.Status);
++    }
++
++    [Fact]
++    public async Task SaveProgress_and_resume_restore_latest_values()
++    {
++        using var client = CreateAuthenticatedClient("resume-user", "resume@example.com", "Resume User");
++        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Resume Co",
++            Industry = "Professional Services",
++            BusinessType = "Agency",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 1,
++            SelectedTemplateId = "professional-services-agency"
++        });
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(created);
++
++        var saveResponse = await client.PutAsJsonAsync("/api/onboarding/progress", new
++        {
++            CompanyId = created!.CompanyId,
++            Name = "Resume Co",
++            Industry = "Professional Services",
++            BusinessType = "Agency",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 3,
++            SelectedTemplateId = "professional-services-agency"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
++
++        var progress = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");
++        Assert.NotNull(progress);
++        Assert.Equal(3, progress!.CurrentStep);
++        Assert.Equal("professional-services-agency", progress.SelectedTemplateId);
++        Assert.Equal("Resume Co", progress.Name);
++    }
++
++    [Fact]
++    public async Task CompleteOnboarding_marks_company_complete_and_clears_resume_state()
++    {
++        using var client = CreateAuthenticatedClient("complete-user", "complete@example.com", "Complete User");
++        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Complete Co",
++            Industry = "Healthcare",
++            BusinessType = "Clinic",
++            Timezone = "America/Chicago",
++            Currency = "USD",
++            Language = "en-US",
++            ComplianceRegion = "HIPAA",
++            CurrentStep = 2,
++            SelectedTemplateId = "healthcare-clinic"
++        });
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(created);
++
++        var completeResponse = await client.PostAsJsonAsync("/api/onboarding/complete", new
++        {
++            CompanyId = created!.CompanyId,
++            Name = "Complete Co",
++            Industry = "Healthcare",
++            BusinessType = "Clinic",
++            Timezone = "America/Chicago",
++            Currency = "USD",
++            Language = "en-US",
++            ComplianceRegion = "HIPAA",
++            SelectedTemplateId = "healthcare-clinic"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
++        var result = await completeResponse.Content.ReadFromJsonAsync<CompleteResponse>();
++        Assert.NotNull(result);
++        Assert.Contains("/dashboard?companyId=", result!.DashboardPath);
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var company = await dbContext.Companies.SingleAsync(x => x.Id == created.CompanyId);
++            Assert.NotNull(company.OnboardingCompletedUtc);
++        }
++
++        var progressAfterComplete = await client.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
++        Assert.Null(progressAfterComplete);
++    }
++
++    [Fact]
++    public async Task Progress_is_scoped_to_creator()
++    {
++        using var aliceClient = CreateAuthenticatedClient("owner-user", "owner@example.com", "Owner User");
++        using var bobClient = CreateAuthenticatedClient("other-user", "other@example.com", "Other User");
++
++        var createResponse = await aliceClient.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Owner Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "America/New_York",
++            Currency = "USD",
++            Language = "en-US",
++            ComplianceRegion = "US",
++            CurrentStep = 1,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
++
++        var bobsProgress = await bobClient.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
++        Assert.Null(bobsProgress);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, string? provider = null)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        if (!string.IsNullOrWhiteSpace(provider))
++        {
++            client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.ProviderHeader, provider);
++        }
++
++        return client;
++    }
++
++    private sealed class TemplateResponse
++    {
++        public string TemplateId { get; set; } = string.Empty;
++        public string Name { get; set; } = string.Empty;
++    }
++
++    private sealed class ProgressResponse
++    {
++        public Guid? CompanyId { get; set; }
++        public string Name { get; set; } = string.Empty;
++        public string Industry { get; set; } = string.Empty;
++        public string BusinessType { get; set; } = string.Empty;
++        public string Timezone { get; set; } = string.Empty;
++        public string Currency { get; set; } = string.Empty;
++        public string Language { get; set; } = string.Empty;
++        public string ComplianceRegion { get; set; } = string.Empty;
++        public int CurrentStep { get; set; }
++        public string? SelectedTemplateId { get; set; }
++    }
++
++    private sealed class CompleteResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++        public string DashboardPath { get; set; } = string.Empty;
++        public List<string> StarterGuidance { get; set; } = [];
++    }
++}
+END_OF_PATCH

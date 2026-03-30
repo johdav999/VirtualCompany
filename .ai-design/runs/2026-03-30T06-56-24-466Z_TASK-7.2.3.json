@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.2.3",
+  "promptPath": ".ai-design/prompts/TASK-7.2.3.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T06:56:24.466Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T06-56-24-466Z_TASK-7.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T06-56-24-466Z_TASK-7.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T07:01:15.692Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "faults_falls_back_to_business_type_match()\n+    {\n+        using var client = CreateAuthenticatedClient(\"business-type-recommendation-user\", \"business-type-recommendation@example.com\", \"Business Type Recommendation User\");\n+        var recommendation = await client.GetFromJsonAsync<RecommendationResponse>(\"/api/onboarding/recommended-defaults?industry=Education&businessType=Clinic\");\n+\n+        Assert.NotNull(recommendation);\n+        Assert.Equal(\"clinic-default\", recommendation!.TemplateId);\n+        Assert.Equal(\"business_type\", recommendation.MatchKind);\n+        Assert.Equal(\"America/Denver\", recommendation.Defaults.Timezone);\n+    }\n+\n+    [Fact]\n+    public async Task RecommendedDefaults_returns_null_when_no_template_matches()\n+    {\n+        using var client = CreateAuthenticatedClient(\"no-match-user\", \"no-match@example.com\", \"No Match User\");\n+        var recommendation = await client.GetFromJsonAsync<RecommendationResponse?>(\"/api/onboarding/recommended-defaults?industry=Manufacturing&businessType=Distributor\");\n+\n+        Assert.Null(recommendation);\n+    }\n+\n     [Fact]\n     public async Task CreateCompany_creates_company_and_owner_membership()\n     {\n@@ -345,6 +388,21 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp\n         public string Name { get; set; } = string.Empty;\n     }\n \n+    private sealed class RecommendationResponse\n+    {\n+        public string TemplateId { get; set; } = string.Empty;\n+        public string MatchKind { get; set; } = string.Empty;\n+        public RecommendationDefaultsResponse Defaults { get; set; } = new();\n+    }\n+\n+    private sealed class RecommendationDefaultsResponse\n+    {\n+        public string? Timezone { get; set; }\n+        public string? Currency { get; set; }\n+        public string? Language { get; set; }\n+        public string? ComplianceRegion { get; set; }\n+    }\n+\n     private sealed class ProgressResponse\n     {\n         public Guid? CompanyId { get; set; }\nEND_OF_PATCH\n",
+  "stderrTail": "o_business_type_match()\n+    {\n+        using var client = CreateAuthenticatedClient(\"business-type-recommendation-user\", \"business-type-recommendation@example.com\", \"Business Type Recommendation User\");\n+        var recommendation = await client.GetFromJsonAsync<RecommendationResponse>(\"/api/onboarding/recommended-defaults?industry=Education&businessType=Clinic\");\n+\n+        Assert.NotNull(recommendation);\n+        Assert.Equal(\"clinic-default\", recommendation!.TemplateId);\n+        Assert.Equal(\"business_type\", recommendation.MatchKind);\n+        Assert.Equal(\"America/Denver\", recommendation.Defaults.Timezone);\n+    }\n+\n+    [Fact]\n+    public async Task RecommendedDefaults_returns_null_when_no_template_matches()\n+    {\n+        using var client = CreateAuthenticatedClient(\"no-match-user\", \"no-match@example.com\", \"No Match User\");\n+        var recommendation = await client.GetFromJsonAsync<RecommendationResponse?>(\"/api/onboarding/recommended-defaults?industry=Manufacturing&businessType=Distributor\");\n+\n+        Assert.Null(recommendation);\n+    }\n+\n     [Fact]\n     public async Task CreateCompany_creates_company_and_owner_membership()\n     {\n@@ -345,6 +388,21 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp\n         public string Name { get; set; } = string.Empty;\n     }\n \n+    private sealed class RecommendationResponse\n+    {\n+        public string TemplateId { get; set; } = string.Empty;\n+        public string MatchKind { get; set; } = string.Empty;\n+        public RecommendationDefaultsResponse Defaults { get; set; } = new();\n+    }\n+\n+    private sealed class RecommendationDefaultsResponse\n+    {\n+        public string? Timezone { get; set; }\n+        public string? Currency { get; set; }\n+        public string? Language { get; set; }\n+        public string? ComplianceRegion { get; set; }\n+    }\n+\n     private sealed class ProgressResponse\n     {\n         public Guid? CompanyId { get; set; }\nEND_OF_PATCH\ntokens used\n57,062\n",
+  "verbosityMode": "normal"
+}

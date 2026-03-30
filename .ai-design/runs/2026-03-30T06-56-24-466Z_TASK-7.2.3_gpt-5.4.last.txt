@@ -1,0 +1,761 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -60,6 +60,17 @@ public sealed record OnboardingTemplateDto(
+     OnboardingTemplateDefaultsDto Defaults,
+     IReadOnlyList<string> StarterGuidance);
+ 
++public sealed record GetOnboardingTemplateRecommendationRequest(
++    string? Industry,
++    string? BusinessType);
++
++public sealed record OnboardingTemplateRecommendationDto(
++    string TemplateId,
++    string Name,
++    string Description,
++    string MatchKind,
++    OnboardingTemplateDefaultsDto Defaults,
++    IReadOnlyList<string> StarterGuidance);
++
+ public sealed record CompanyOnboardingProgressDto(
+     Guid? CompanyId,
+     string Name,
+@@ -163,6 +174,7 @@ public interface ICompanyNoteService
+ public interface ICompanyOnboardingService
+ {
+     Task<CreateCompanyResultDto> CreateCompanyAsync(CreateCompanyCommand command, CancellationToken cancellationToken);
++    Task<OnboardingTemplateRecommendationDto?> GetRecommendedDefaultsAsync(GetOnboardingTemplateRecommendationRequest request, CancellationToken cancellationToken);
+     Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken);
+     Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken);
+     Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(CreateCompanyWorkspaceRequest request, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -88,6 +88,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         return Task.FromResult(templates);
+     }
+ 
++    public Task<OnboardingTemplateRecommendationDto?> GetRecommendedDefaultsAsync(
++        GetOnboardingTemplateRecommendationRequest request,
++        CancellationToken cancellationToken)
++    {
++        var recommendation = FindRecommendedTemplate(request.Industry, request.BusinessType);
++        if (recommendation is null)
++        {
++            return Task.FromResult<OnboardingTemplateRecommendationDto?>(null);
++        }
++
++        return Task.FromResult<OnboardingTemplateRecommendationDto?>(ToRecommendationDto(recommendation.Value.Template, recommendation.Value.MatchKind));
++    }
++
+     public async Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken)
+     {
+         if (_currentUserAccessor.UserId is not Guid userId)
+@@ -129,7 +141,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                 CompanyMembershipRole.Owner,
+                 CompanyMembershipStatus.Active));
+         }
+ 
+-        var resolvedTemplate = FindTemplate(request.SelectedTemplateId);
++        var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId);
++        var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+             company,
+             request.Name,
+@@ -185,7 +198,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             request.CurrentStep);
+ 
+-        var selectedTemplateId = request.SelectedTemplateId ?? company.OnboardingTemplateId;
++        var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+             company,
+@@ -317,7 +330,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ 
+         EnsureSessionIsMutable(company);
+ 
+-        var selectedTemplateId = request.SelectedTemplateId ?? company.OnboardingTemplateId;
++        var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+             company,
+@@ -415,6 +428,57 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                 definition.Defaults.ComplianceRegion),
+             definition.StarterGuidance);
+ 
++    private static OnboardingTemplateRecommendationDto ToRecommendationDto(
++        OnboardingTemplateDefinition definition,
++        string matchKind) =>
++        new(
++            definition.TemplateId,
++            definition.Name,
++            definition.Description,
++            matchKind,
++            new OnboardingTemplateDefaultsDto(
++                definition.Defaults.Timezone,
++                definition.Defaults.Currency,
++                definition.Defaults.Language,
++                definition.Defaults.ComplianceRegion),
++            definition.StarterGuidance);
++
++    private TemplateMatch? FindRecommendedTemplate(string? industry, string? businessType)
++    {
++        var normalizedIndustry = NormalizeOptional(industry);
++        var normalizedBusinessType = NormalizeOptional(businessType);
++        if (normalizedIndustry is null && normalizedBusinessType is null)
++        {
++            return null;
++        }
++
++        var templates = _templateOptions.Value.Templates;
++
++        var exactMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.Industry, normalizedIndustry) &&
++            MatchesValue(template.BusinessType, normalizedBusinessType) &&
++            !string.IsNullOrWhiteSpace(template.Industry) &&
++            !string.IsNullOrWhiteSpace(template.BusinessType));
++        if (exactMatch is not null)
++        {
++            return new TemplateMatch(exactMatch, "industry_business_type");
++        }
++
++        var industryOnlyMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.Industry, normalizedIndustry) &&
++            string.IsNullOrWhiteSpace(template.BusinessType));
++        if (industryOnlyMatch is not null)
++        {
++            return new TemplateMatch(industryOnlyMatch, "industry");
++        }
++
++        var businessTypeOnlyMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.BusinessType, normalizedBusinessType) &&
++            string.IsNullOrWhiteSpace(template.Industry));
++        if (businessTypeOnlyMatch is not null)
++        {
++            return new TemplateMatch(businessTypeOnlyMatch, "business_type");
++        }
++
++        return null;
++    }
++
+     private OnboardingTemplateDefinition? FindTemplate(string? templateId)
+     {
+         if (string.IsNullOrWhiteSpace(templateId))
+@@ -631,6 +695,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     private static string NormalizeRequired(string value) => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+     private static string? NormalizeOptional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+ 
++    private static bool MatchesValue(string? templateValue, string? inputValue) =>
++        !string.IsNullOrWhiteSpace(templateValue) &&
++        !string.IsNullOrWhiteSpace(inputValue) &&
++        string.Equals(templateValue.Trim(), inputValue.Trim(), StringComparison.OrdinalIgnoreCase);
+     private static string? FirstNonEmpty(params string?[] values) =>
+         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
+ 
+@@ -662,6 +730,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         public string? SelectedTemplateId { get; set; }
+         public bool IsCompleted { get; set; }
+         public List<string> StarterGuidance { get; set; } = [];
+     }
++
++    private sealed record TemplateMatch(OnboardingTemplateDefinition Template, string MatchKind);
+ }
+ 
+ public sealed class OnboardingTemplateCatalogOptions
+diff --git a/src/VirtualCompany.Api/Controllers/OnboardingController.cs b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+--- a/src/VirtualCompany.Api/Controllers/OnboardingController.cs
++++ b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+@@ -33,6 +33,18 @@ public sealed class OnboardingController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("recommended-defaults")]
++    public async Task<ActionResult<OnboardingTemplateRecommendationDto?>> GetRecommendedDefaultsAsync(
++        [FromQuery] string? industry,
++        [FromQuery] string? businessType,
++        CancellationToken cancellationToken)
++    {
++        var recommendation = await _onboardingService.GetRecommendedDefaultsAsync(
++            new GetOnboardingTemplateRecommendationRequest(industry, businessType),
++            cancellationToken);
++
++        return Ok(recommendation);
++    }
++
+     [HttpGet("templates")]
+     public async Task<ActionResult<IReadOnlyList<OnboardingTemplateDto>>> GetTemplatesAsync(CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -16,6 +16,31 @@ public sealed class OnboardingApiClient
+             ?? [];
+     }
+ 
++    public async Task<OnboardingTemplateRecommendationViewModel?> GetRecommendedDefaultsAsync(
++        string? industry,
++        string? businessType,
++        CancellationToken cancellationToken = default)
++    {
++        var query = new List<string>();
++        if (!string.IsNullOrWhiteSpace(industry))
++        {
++            query.Add($"industry={Uri.EscapeDataString(industry)}");
++        }
++
++        if (!string.IsNullOrWhiteSpace(businessType))
++        {
++            query.Add($"businessType={Uri.EscapeDataString(businessType)}");
++        }
++
++        var uri = query.Count == 0
++            ? "api/onboarding/recommended-defaults"
++            : $"api/onboarding/recommended-defaults?{string.Join("&", query)}";
++        using var response = await _httpClient.GetAsync(uri, cancellationToken);
++        if (response.IsSuccessStatusCode)
++        {
++            return await response.Content.ReadFromJsonAsync<OnboardingTemplateRecommendationViewModel?>(SerializerOptions, cancellationToken);
++        }
++
++        throw await CreateExceptionAsync(response, cancellationToken);
++    }
++
+     public async Task<OnboardingProgressViewModel?> GetProgressAsync(CancellationToken cancellationToken = default)
+     {
+         return await _httpClient.GetFromJsonAsync<OnboardingProgressViewModel?>("api/onboarding/progress", cancellationToken);
+@@ -66,13 +91,18 @@ public sealed class OnboardingApiClient
+             return result;
+         }
+ 
++        throw await CreateExceptionAsync(response, cancellationToken);
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
+         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+         if (problem?.Errors is { Count: > 0 })
+         {
+-            throw new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
++            return new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
+         }
+ 
+-        throw new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
++        return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
+     }
+ 
+     private sealed class ApiProblemResponse
+@@ -101,6 +131,16 @@ public sealed class OnboardingTemplateViewModel
+     public List<string> StarterGuidance { get; set; } = [];
+ }
+ 
++public sealed class OnboardingTemplateRecommendationViewModel
++{
++    public string TemplateId { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public string MatchKind { get; set; } = string.Empty;
++    public OnboardingTemplateDefaultsViewModel Defaults { get; set; } = new();
++    public List<string> StarterGuidance { get; set; } = [];
++}
++
+ public sealed class OnboardingTemplateDefaultsViewModel
+ {
+     public string? Timezone { get; set; }
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -76,13 +76,22 @@ else
+ 
+                                 <div class="col-md-6">
+                                     <label class="form-label">Industry</label>
+-                                    <input class="form-control" @bind="model.Industry" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.Industry" @onchange="OnIndustryChangedAsync" />
+                                     @RenderError(nameof(model.Industry))
+                                 </div>
+ 
+                                 <div class="col-md-6">
+                                     <label class="form-label">Business type</label>
+-                                    <input class="form-control" @bind="model.BusinessType" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.BusinessType" @onchange="OnBusinessTypeChangedAsync" />
+                                     @RenderError(nameof(model.BusinessType))
++                                </div>
++
++                                <div class="col-12">
++                                    @if (recommendedTemplate is not null && SelectedTemplate is null)
++                                    {
++                                        <div class="alert alert-secondary mb-0">
++                                            Recommended defaults will use <strong>@recommendedTemplate.Name</strong> based on the current @DescribeRecommendationMatch(recommendedTemplate.MatchKind).
++                                        </div>
++                                    }
+                                 </div>
+                             </div>
+                         }
+@@ -91,25 +100,25 @@ else
+                             <div class="row g-3 mt-1">
+                                 <div class="col-md-6">
+                                     <label class="form-label">Timezone</label>
+-                                    <input class="form-control" @bind="model.Timezone" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.Timezone" @oninput="OnTimezoneChanged" />
+                                     @RenderError(nameof(model.Timezone))
+                                 </div>
+ 
+                                 <div class="col-md-6">
+                                     <label class="form-label">Currency</label>
+-                                    <input class="form-control" @bind="model.Currency" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.Currency" @oninput="OnCurrencyChanged" />
+                                     @RenderError(nameof(model.Currency))
+                                 </div>
+ 
+                                 <div class="col-md-6">
+                                     <label class="form-label">Language</label>
+-                                    <input class="form-control" @bind="model.Language" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.Language" @oninput="OnLanguageChanged" />
+                                     @RenderError(nameof(model.Language))
+                                 </div>
+ 
+                                 <div class="col-md-6">
+                                     <label class="form-label">Compliance region</label>
+-                                    <input class="form-control" @bind="model.ComplianceRegion" @bind:after="ClearMessages" />
++                                    <input class="form-control" value="@model.ComplianceRegion" @oninput="OnComplianceRegionChanged" />
+                                     @RenderError(nameof(model.ComplianceRegion))
+                                 </div>
+                             </div>
+@@ -215,12 +224,15 @@ else
+ 
+     private readonly Dictionary<string, string> validationErrors = new(StringComparer.OrdinalIgnoreCase);
+     private readonly OnboardingFormModel model = new();
++    private readonly HashSet<string> manuallyEditedFields = new(StringComparer.OrdinalIgnoreCase);
+     private List<OnboardingTemplateViewModel> templates = [];
++    private OnboardingTemplateRecommendationViewModel? recommendedTemplate;
+     private bool isLoading = true;
+     private bool isSubmitting;
+     private string? statusMessage;
+     private string? errorMessage;
+     private string sessionStatus = "not_started";
++
+     private int currentStep = 1;
+     private List<string> savedGuidance = [];
+     private string? completedDashboardPath;
+@@ -228,6 +240,8 @@ else
+     private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
+     private IReadOnlyList<string> Guidance => SelectedTemplate?.StarterGuidance?.Count > 0
+         ? SelectedTemplate.StarterGuidance
++        : recommendedTemplate?.StarterGuidance?.Count > 0
++            ? recommendedTemplate.StarterGuidance
+         : savedGuidance.Count > 0
+             ? savedGuidance
+         : DefaultGuidance;
+@@ -242,6 +256,7 @@ else
+         }
+ 
+         ApplyProgress(progress);
++        await RefreshRecommendationsAsync(applyDefaults: false);
+         isLoading = false;
+     }
+ 
+@@ -306,6 +321,7 @@ else
+         model.CompanyId = null;
+         currentStep = 1;
+         sessionStatus = "not_started";
++        manuallyEditedFields.Clear();
+         completedDashboardPath = null;
+         lastSavedLabel = null;
+         ClearMessages();
+@@ -314,14 +330,100 @@ else
+ 
+     private void OnTemplateChanged(ChangeEventArgs args)
+     {
+-        model.SelectedTemplateId = args.Value?.ToString();
++        model.SelectedTemplateId = string.IsNullOrWhiteSpace(args.Value?.ToString()) ? null : args.Value?.ToString();
+         ApplySelectedTemplate();
+         ClearMessages();
+     }
+ 
++    private async Task OnIndustryChangedAsync(ChangeEventArgs args)
++    {
++        model.Industry = args.Value?.ToString() ?? string.Empty;
++        ClearMessages();
++        await RefreshRecommendationsAsync();
++    }
++
++    private async Task OnBusinessTypeChangedAsync(ChangeEventArgs args)
++    {
++        model.BusinessType = args.Value?.ToString() ?? string.Empty;
++        ClearMessages();
++        await RefreshRecommendationsAsync();
++    }
++
++    private void OnTimezoneChanged(ChangeEventArgs args) => SetManualField(nameof(model.Timezone), args.Value?.ToString(), value => model.Timezone = value);
++    private void OnCurrencyChanged(ChangeEventArgs args) => SetManualField(nameof(model.Currency), args.Value?.ToString(), value => model.Currency = value);
++    private void OnLanguageChanged(ChangeEventArgs args) => SetManualField(nameof(model.Language), args.Value?.ToString(), value => model.Language = value);
++    private void OnComplianceRegionChanged(ChangeEventArgs args) => SetManualField(nameof(model.ComplianceRegion), args.Value?.ToString(), value => model.ComplianceRegion = value);
++
++    private void SetManualField(string fieldName, string? value, Action<string> assign)
++    {
++        manuallyEditedFields.Add(fieldName);
++        assign(value ?? string.Empty);
++        ClearMessages();
++    }
++
++    private async Task RefreshRecommendationsAsync(bool applyDefaults = true)
++    {
++        if (string.IsNullOrWhiteSpace(model.Industry) && string.IsNullOrWhiteSpace(model.BusinessType))
++        {
++            recommendedTemplate = null;
++            return;
++        }
++
++        try
++        {
++            recommendedTemplate = await ApiClient.GetRecommendedDefaultsAsync(model.Industry, model.BusinessType);
++            if (applyDefaults)
++            {
++                ApplyRecommendedDefaults();
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            recommendedTemplate = null;
++            errorMessage = ex.Message;
++        }
++    }
++
++    private void ApplyRecommendedDefaults()
++    {
++        if (recommendedTemplate is null)
++        {
++            return;
++        }
++
++        ApplyRecommendedField(nameof(model.Timezone), recommendedTemplate.Defaults.Timezone, value => model.Timezone = value);
++        ApplyRecommendedField(nameof(model.Currency), recommendedTemplate.Defaults.Currency, value => model.Currency = value);
++        ApplyRecommendedField(nameof(model.Language), recommendedTemplate.Defaults.Language, value => model.Language = value);
++        ApplyRecommendedField(nameof(model.ComplianceRegion), recommendedTemplate.Defaults.ComplianceRegion, value => model.ComplianceRegion = value);
++    }
++
++    private void ApplyRecommendedField(string fieldName, string? value, Action<string> assign)
++    {
++        if (string.IsNullOrWhiteSpace(value) || manuallyEditedFields.Contains(fieldName))
++        {
++            return;
++        }
++
++        assign(value);
++    }
++
+     private void ApplySelectedTemplate()
+     {
+         if (SelectedTemplate is null)
++        {
++            return;
++        }
++
++        ApplyRecommendedField(nameof(model.Timezone), SelectedTemplate.Defaults.Timezone, value => model.Timezone = value);
++        ApplyRecommendedField(nameof(model.Currency), SelectedTemplate.Defaults.Currency, value => model.Currency = value);
++        ApplyRecommendedField(nameof(model.Language), SelectedTemplate.Defaults.Language, value => model.Language = value);
++        ApplyRecommendedField(nameof(model.ComplianceRegion), SelectedTemplate.Defaults.ComplianceRegion, value => model.ComplianceRegion = value);
++        model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? SelectedTemplate.Industry : model.Industry;
++        model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? SelectedTemplate.BusinessType : model.BusinessType;
++    }
++
++    private void ApplyProgress(OnboardingProgressViewModel progress, bool startFresh = false)
++    {
++        model.CompanyId = startFresh || !progress.CanResume ? null : progress.CompanyId;
++        model.Name = progress.Name;
++        model.Industry = progress.Industry;
++        model.BusinessType = progress.BusinessType;
++        model.Timezone = progress.Timezone;
++        model.Currency = progress.Currency;
++        model.Language = progress.Language;
++        model.ComplianceRegion = progress.ComplianceRegion;
++        model.SelectedTemplateId = progress.SelectedTemplateId;
++        MarkExistingDefaultsAsManual();
++        savedGuidance = progress.StarterGuidance;
++        completedDashboardPath = progress.DashboardPath;
++        sessionStatus = progress.Status;
++        lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
++
++        if (progress.CanResume && !startFresh)
+         {
+-            return;
++            currentStep = Math.Clamp(progress.CurrentStep, 1, StepCount);
++            statusMessage = "Saved company setup restored.";
++            return;
+         }
+ 
+-        model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? SelectedTemplate.Industry : model.Industry;
+-        model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? SelectedTemplate.BusinessType : model.BusinessType;
+-        model.Timezone = string.IsNullOrWhiteSpace(model.Timezone) ? SelectedTemplate.Defaults.Timezone ?? string.Empty : model.Timezone;
+-        model.Currency = string.IsNullOrWhiteSpace(model.Currency) ? SelectedTemplate.Defaults.Currency ?? string.Empty : model.Currency;
+-        model.Language = string.IsNullOrWhiteSpace(model.Language) ? SelectedTemplate.Defaults.Language ?? string.Empty : model.Language;
+-        model.ComplianceRegion = string.IsNullOrWhiteSpace(model.ComplianceRegion) ? SelectedTemplate.Defaults.ComplianceRegion ?? string.Empty : model.ComplianceRegion;
+-    }
+-
+-    private void ApplyProgress(OnboardingProgressViewModel progress, bool startFresh = false)
+-    {
+-        model.CompanyId = startFresh || !progress.CanResume ? null : progress.CompanyId;
+-        model.Name = progress.Name;
+-        model.Industry = progress.Industry;
+-        model.BusinessType = progress.BusinessType;
+-        model.Timezone = progress.Timezone;
+-        model.Currency = progress.Currency;
+-        model.Language = progress.Language;
+-        model.ComplianceRegion = progress.ComplianceRegion;
+-        model.SelectedTemplateId = progress.SelectedTemplateId;
+-        savedGuidance = progress.StarterGuidance;
+-        completedDashboardPath = progress.DashboardPath;
+-        sessionStatus = progress.Status;
+-        lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
+-
+-        if (progress.CanResume && !startFresh)
++        if (string.Equals(progress.Status, "completed", StringComparison.OrdinalIgnoreCase) && !startFresh)
+         {
+-            currentStep = Math.Clamp(progress.CurrentStep, 1, StepCount);
+-            statusMessage = "Saved company setup restored.";
++            currentStep = StepCount;
++            statusMessage = "This company setup is already complete.";
+             return;
+         }
+ 
+-        if (string.Equals(progress.Status, "completed", StringComparison.OrdinalIgnoreCase) && !startFresh)
+-        {
+-            currentStep = StepCount;
+-            statusMessage = "This company setup is already complete.";
+-            return;
+-        }
+-
+         currentStep = 1;
+     }
++
++    private void MarkExistingDefaultsAsManual()
++    {
++        manuallyEditedFields.Clear();
++        MarkManualIfSet(nameof(model.Timezone), model.Timezone);
++        MarkManualIfSet(nameof(model.Currency), model.Currency);
++        MarkManualIfSet(nameof(model.Language), model.Language);
++        MarkManualIfSet(nameof(model.ComplianceRegion), model.ComplianceRegion);
++    }
++
++    private void MarkManualIfSet(string fieldName, string? value)
++    {
++        if (!string.IsNullOrWhiteSpace(value))
++        {
++            manuallyEditedFields.Add(fieldName);
++        }
++    }
+@@ -340,7 +442,7 @@ else
+             Language = model.Language,
+             ComplianceRegion = model.ComplianceRegion,
+             CurrentStep = step,
+-            SelectedTemplateId = model.SelectedTemplateId
++            SelectedTemplateId = GetEffectiveTemplateId()
+         };
+ 
+         return model.CompanyId.HasValue
+@@ -441,6 +543,12 @@ else
+             _ => "Setup"
+         };
+ 
++    private static string DescribeRecommendationMatch(string matchKind) =>
++        matchKind switch
++        {
++            "industry_business_type" => "industry and business type",
++            "business_type" => "business type",
++            _ => "industry"
++        };
+     private string DisplaySessionStatus() =>
+         sessionStatus switch
+         {
+@@ -452,6 +560,10 @@ else
+     private static string DisplayValue(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? "Not set" : value;
+ 
++    private string? GetEffectiveTemplateId() =>
++        !string.IsNullOrWhiteSpace(model.SelectedTemplateId)
++            ? model.SelectedTemplateId
++            : recommendedTemplate?.TemplateId;
+     private RenderFragment RenderError(string field) => builder =>
+     {
+         if (validationErrors.TryGetValue(field, out var message))
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -272,7 +272,7 @@ else
+                 Currency = model.Currency,
+                 Language = model.Language,
+                 ComplianceRegion = model.ComplianceRegion,
+-                SelectedTemplateId = model.SelectedTemplateId
++                SelectedTemplateId = GetEffectiveTemplateId()
+             });
+ 
+             completedDashboardPath = result.DashboardPath;
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -57,6 +57,40 @@
+         "StarterGuidance": [
+           "Invite administrators and clinical operations leads before expanding access.",
+           "Hire intake and scheduling agents with clear ownership boundaries.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ]
++      },
++      {
++        "TemplateId": "technology-default",
++        "Name": "Technology Default",
++        "Industry": "Technology",
++        "BusinessType": "",
++        "Description": "Fallback defaults for technology companies before a more specific business type is chosen.",
++        "Defaults": {
++          "Timezone": "America/Los_Angeles",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "US"
++        },
++        "StarterGuidance": [
++          "Invite product, support, and finance stakeholders early.",
++          "Upload core product docs and operating procedures.",
++          "Choose a more specific business type later to tighten recommendations."
++        ]
++      },
++      {
++        "TemplateId": "clinic-default",
++        "Name": "Clinic Default",
++        "Industry": "",
++        "BusinessType": "Clinic",
++        "Description": "Fallback defaults for clinic operators when the industry is still undecided.",
++        "Defaults": {
++          "Timezone": "America/Denver",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "HIPAA"
++        },
++        "StarterGuidance": [
++          "Invite clinical administrators before broadening workspace access.",
++          "Upload approved intake and scheduling procedures.",
+           "Upload intake forms, SOPs, and approved policy documents."
+         ]
+       }
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -57,6 +57,40 @@
+         "StarterGuidance": [
+           "Invite administrators and clinical operations leads before expanding access.",
+           "Hire intake and scheduling agents with clear ownership boundaries.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ]
++      },
++      {
++        "TemplateId": "technology-default",
++        "Name": "Technology Default",
++        "Industry": "Technology",
++        "BusinessType": "",
++        "Description": "Fallback defaults for technology companies before a more specific business type is chosen.",
++        "Defaults": {
++          "Timezone": "America/Los_Angeles",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "US"
++        },
++        "StarterGuidance": [
++          "Invite product, support, and finance stakeholders early.",
++          "Upload core product docs and operating procedures.",
++          "Choose a more specific business type later to tighten recommendations."
++        ]
++      },
++      {
++        "TemplateId": "clinic-default",
++        "Name": "Clinic Default",
++        "Industry": "",
++        "BusinessType": "Clinic",
++        "Description": "Fallback defaults for clinic operators when the industry is still undecided.",
++        "Defaults": {
++          "Timezone": "America/Denver",
++          "Currency": "USD",
++          "Language": "en-US",
++          "ComplianceRegion": "HIPAA"
++        },
++        "StarterGuidance": [
++          "Invite clinical administrators before broadening workspace access.",
++          "Upload approved intake and scheduling procedures.",
+           "Upload intake forms, SOPs, and approved policy documents."
+         ]
+       }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -31,6 +31,49 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.Contains(templates, x => x.TemplateId == "professional-services-agency");
+     }
+ 
++    [Fact]
++    public async Task RecommendedDefaults_prefers_exact_match_over_fallbacks()
++    {
++        using var client = CreateAuthenticatedClient("recommendation-user", "recommendation@example.com", "Recommendation User");
++        var recommendation = await client.GetFromJsonAsync<RecommendationResponse>("/api/onboarding/recommended-defaults?industry=Technology&businessType=Software%20Company");
++
++        Assert.NotNull(recommendation);
++        Assert.Equal("saas-operations", recommendation!.TemplateId);
++        Assert.Equal("industry_business_type", recommendation.MatchKind);
++        Assert.Equal("America/New_York", recommendation.Defaults.Timezone);
++    }
++
++    [Fact]
++    public async Task RecommendedDefaults_falls_back_to_industry_match()
++    {
++        using var client = CreateAuthenticatedClient("industry-recommendation-user", "industry-recommendation@example.com", "Industry Recommendation User");
++        var recommendation = await client.GetFromJsonAsync<RecommendationResponse>("/api/onboarding/recommended-defaults?industry=Technology&businessType=Consultancy");
++
++        Assert.NotNull(recommendation);
++        Assert.Equal("technology-default", recommendation!.TemplateId);
++        Assert.Equal("industry", recommendation.MatchKind);
++        Assert.Equal("America/Los_Angeles", recommendation.Defaults.Timezone);
++    }
++
++    [Fact]
++    public async Task RecommendedDefaults_falls_back_to_business_type_match()
++    {
++        using var client = CreateAuthenticatedClient("business-type-recommendation-user", "business-type-recommendation@example.com", "Business Type Recommendation User");
++        var recommendation = await client.GetFromJsonAsync<RecommendationResponse>("/api/onboarding/recommended-defaults?industry=Education&businessType=Clinic");
++
++        Assert.NotNull(recommendation);
++        Assert.Equal("clinic-default", recommendation!.TemplateId);
++        Assert.Equal("business_type", recommendation.MatchKind);
++        Assert.Equal("America/Denver", recommendation.Defaults.Timezone);
++    }
++
++    [Fact]
++    public async Task RecommendedDefaults_returns_null_when_no_template_matches()
++    {
++        using var client = CreateAuthenticatedClient("no-match-user", "no-match@example.com", "No Match User");
++        var recommendation = await client.GetFromJsonAsync<RecommendationResponse?>("/api/onboarding/recommended-defaults?industry=Manufacturing&businessType=Distributor");
++
++        Assert.Null(recommendation);
++    }
++
+     [Fact]
+     public async Task CreateCompany_creates_company_and_owner_membership()
+     {
+@@ -345,6 +388,21 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public string Name { get; set; } = string.Empty;
+     }
+ 
++    private sealed class RecommendationResponse
++    {
++        public string TemplateId { get; set; } = string.Empty;
++        public string MatchKind { get; set; } = string.Empty;
++        public RecommendationDefaultsResponse Defaults { get; set; } = new();
++    }
++
++    private sealed class RecommendationDefaultsResponse
++    {
++        public string? Timezone { get; set; }
++        public string? Currency { get; set; }
++        public string? Language { get; set; }
++        public string? ComplianceRegion { get; set; }
++    }
++
+     private sealed class ProgressResponse
+     {
+         public Guid? CompanyId { get; set; }
+END_OF_PATCH

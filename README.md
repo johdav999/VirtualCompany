@@ -29,9 +29,9 @@ VirtualCompany/
     VirtualCompany.Api.Tests/
 ```
 
-## Local Database Setup (Docker SQL Server)
+## Local Database Setup (Docker PostgreSQL)
 
-This solution includes a Docker Compose setup for a local SQL Server instance that stays compatible with Azure SQL development.
+This solution includes a Docker Compose setup for a local PostgreSQL instance that matches the production JSONB persistence model used by onboarding.
 
 ### Prerequisite: Docker Desktop on Windows
 
@@ -68,20 +68,21 @@ docker compose down
 If startup fails:
 
 ```powershell
-docker logs virtualcompany-sql
+docker logs virtualcompany-postgres
 ```
 
 ### Connect to the database
 
-- Server: `localhost,1433`
-- Database: `VirtualCompanyDb`
-- User: `sa`
-- Password: `YourStrongPassword123!`
+- Host: `localhost`
+- Port: `5432`
+- Database: `virtualcompany`
+- User: `postgres`
+- Password: `postgres`
 
 ### Sample connection string
 
 ```text
-Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True
+Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres
 ```
 
 ## Local Development Authentication
@@ -129,6 +130,6 @@ Company-scoped endpoints:
 
 ## Notes
 
-- The SQL Server container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
-- Data is persisted in the named Docker volume `sqlserver-data`.
+- The PostgreSQL container uses the `postgres:17` image.
+- Data is persisted in the named Docker volume `postgres-data`.
 - The API applies EF Core migrations at startup when using a relational provider.

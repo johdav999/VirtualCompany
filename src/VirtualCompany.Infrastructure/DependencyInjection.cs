@@ -21,10 +21,10 @@ public static class DependencyInjection
     {
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
-            ?? "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True";
+            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres";
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
-            options.UseSqlServer(connectionString));
+            options.UseNpgsql(connectionString));
 
         services.AddHttpContextAccessor();
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
@@ -35,8 +35,11 @@ public static class DependencyInjection
         services.AddScoped<CompanyQueryService>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+        services.AddScoped<CompanySetupTemplateSeeder>();
+        services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
+        services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();

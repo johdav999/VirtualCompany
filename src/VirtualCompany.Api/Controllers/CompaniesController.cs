@@ -52,6 +52,19 @@ public sealed class CompaniesController : ControllerBase
         return Ok(access);
     }
 
+    [HttpGet("dashboard-entry")]
+    public async Task<ActionResult<CompanyDashboardEntryDto>> GetDashboardEntryAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        var dashboardEntry = await _companyService.GetDashboardEntryAsync(companyId, cancellationToken);
+        if (dashboardEntry is null)
+        {
+            return Forbid();
+        }
+
+        return Ok(dashboardEntry);
+    }
     [HttpGet("notes/{noteId:guid}")]
     public async Task<ActionResult<CompanyNoteDto>> GetNoteAsync(
         Guid companyId,

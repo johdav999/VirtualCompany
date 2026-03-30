@@ -20,6 +20,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+    public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+    public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 

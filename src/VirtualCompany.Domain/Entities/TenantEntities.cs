@@ -85,6 +85,21 @@ public sealed class Company
 
     public Guid Id { get; private set; }
     public string Name { get; private set; } = null!;
+    public string? Industry { get; private set; }
+    public string? BusinessType { get; private set; }
+    public string? Timezone { get; private set; }
+    public string? Currency { get; private set; }
+    public string? Language { get; private set; }
+    public string? ComplianceRegion { get; private set; }
+    public CompanyBranding Branding { get; private set; } = new();
+    public CompanySettings Settings { get; private set; } = new();
+    public string? OnboardingStateJson { get; private set; }
+    public int? OnboardingCurrentStep { get; private set; }
+    public string? OnboardingTemplateId { get; private set; }
+    public CompanyOnboardingStatus OnboardingStatus { get; private set; } = CompanyOnboardingStatus.NotStarted;
+    public DateTime? OnboardingLastSavedUtc { get; private set; }
+    public DateTime? OnboardingCompletedUtc { get; private set; }
+    public DateTime? OnboardingAbandonedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
@@ -96,11 +111,91 @@ public sealed class Company
         UpdatedUtc = DateTime.UtcNow;
     }
 
+    public void UpdateWorkspaceProfile(
+        string name,
+        string? industry,
+        string? businessType,
+        string? timezone,
+        string? currency,
+        string? language,
+        string? complianceRegion)
+    {
+        Name = NormalizeRequired(name, nameof(name), 200);
+        Industry = NormalizeOptional(industry, nameof(industry), 100);
+        BusinessType = NormalizeOptional(businessType, nameof(businessType), 100);
+        Timezone = NormalizeOptional(timezone, nameof(timezone), 100);
+        Currency = NormalizeOptional(currency, nameof(currency), 16);
+        Language = NormalizeOptional(language, nameof(language), 16);
+        ComplianceRegion = NormalizeOptional(complianceRegion, nameof(complianceRegion), 50);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void UpdateBrandingAndSettings(CompanyBranding? branding, CompanySettings? settings)
+    {
+        Branding = branding ?? new CompanyBranding();
+        Settings = settings ?? new CompanySettings();
+        Settings.Onboarding ??= new CompanyOnboardingSettings();
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void SaveOnboardingProgress(int currentStep, string? templateId, string onboardingStateJson)
+    {
+        if (currentStep < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(currentStep), "Current onboarding step must be greater than zero.");
+        }
+
+        OnboardingCurrentStep = currentStep;
+        OnboardingTemplateId = NormalizeOptional(templateId, nameof(templateId), 100);
+        OnboardingStateJson = string.IsNullOrWhiteSpace(onboardingStateJson) ? null : onboardingStateJson.Trim();
+        OnboardingLastSavedUtc = DateTime.UtcNow;
+        OnboardingStatus = CompanyOnboardingStatus.InProgress;
+        OnboardingAbandonedUtc = null;
+        UpdatedUtc = OnboardingLastSavedUtc.Value;
+    }
+
+    public void CompleteOnboarding(int currentStep, string? templateId, string onboardingStateJson)
+    {
+        SaveOnboardingProgress(currentStep, templateId, onboardingStateJson);
+        OnboardingCompletedUtc ??= DateTime.UtcNow;
+        OnboardingStatus = CompanyOnboardingStatus.Completed;
+        OnboardingAbandonedUtc = null;
+        UpdatedUtc = OnboardingCompletedUtc.Value;
+    }
+
+    public void AbandonOnboarding()
+    {
+        if (OnboardingStatus == CompanyOnboardingStatus.Completed)
+        {
+            throw new InvalidOperationException("Completed onboarding cannot be abandoned.");
+        }
+
+        OnboardingStatus = CompanyOnboardingStatus.Abandoned;
+        OnboardingAbandonedUtc = DateTime.UtcNow;
+        UpdatedUtc = OnboardingAbandonedUtc.Value;
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             throw new ArgumentException($"{name} is required.", name);
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > maxLength)
+        {
+            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+        }
+
+        return trimmed;
+    }
+
+    private static string? NormalizeOptional(string? value, string name, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
         }
 
         var trimmed = value.Trim();

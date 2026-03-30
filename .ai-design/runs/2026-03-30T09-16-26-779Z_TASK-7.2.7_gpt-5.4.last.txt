@@ -1,0 +1,1690 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -54,30 +54,30 @@ public sealed record CompanyNoteDto(Guid Id, Guid CompanyId, string Title, stri
+ 
+-public sealed record OnboardingTemplateDefaultsDto(
+-    string? Timezone,
+-    string? Currency,
+-    string? Language,
+-    string? ComplianceRegion);
+-
+ public sealed record OnboardingTemplateDto(
+     string TemplateId,
+     string Name,
+-    string Industry,
+-    string BusinessType,
+     string Description,
+-    OnboardingTemplateDefaultsDto Defaults,
++    string? Category,
++    string? Industry,
++    string? BusinessType,
++    int SortOrder,
++    IReadOnlyDictionary<string, JsonNode?> Defaults,
++    IReadOnlyDictionary<string, JsonNode?> Metadata,
+     IReadOnlyList<string> StarterGuidance);
+ 
+ public sealed record GetOnboardingTemplateRecommendationRequest(
+     string? Industry,
+     string? BusinessType);
+ 
+ public sealed record OnboardingTemplateRecommendationDto(
+     string TemplateId,
+     string Name,
+     string Description,
+     string MatchKind,
+-    OnboardingTemplateDefaultsDto Defaults,
+-    IReadOnlyList<string> StarterGuidance);
++    string? Category,
++    string? Industry,
++    string? BusinessType,
++    IReadOnlyDictionary<string, JsonNode?> Defaults,
++    IReadOnlyDictionary<string, JsonNode?> Metadata,
++    IReadOnlyList<string> StarterGuidance);
+ 
+ public sealed record CompanyBrandingDto(
+     string? LogoUrl,
+diff --git a/src/VirtualCompany.Domain/Entities/CompanySetupTemplate.cs b/src/VirtualCompany.Domain/Entities/CompanySetupTemplate.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/CompanySetupTemplate.cs
+@@ -0,0 +1,137 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CompanySetupTemplate
++{
++    private const int TemplateIdMaxLength = 100;
++    private const int NameMaxLength = 200;
++    private const int CategoryMaxLength = 100;
++    private const int TagMaxLength = 100;
++    private const int DescriptionMaxLength = 2000;
++
++    private CompanySetupTemplate()
++    {
++    }
++
++    public CompanySetupTemplate(
++        Guid id,
++        string templateId,
++        string name,
++        string? description,
++        string? category,
++        string? industryTag,
++        string? businessTypeTag,
++        int sortOrder,
++        bool isActive,
++        IDictionary<string, JsonNode?>? defaults = null,
++        IDictionary<string, JsonNode?>? metadata = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++        UpdateDefinition(
++            templateId,
++            name,
++            description,
++            category,
++            industryTag,
++            businessTypeTag,
++            sortOrder,
++            isActive,
++            defaults,
++            metadata);
++    }
++
++    public Guid Id { get; private set; }
++    public string TemplateId { get; private set; } = null!;
++    public string Name { get; private set; } = null!;
++    public string? Description { get; private set; }
++    public string? Category { get; private set; }
++    public string? IndustryTag { get; private set; }
++    public string? BusinessTypeTag { get; private set; }
++    public int SortOrder { get; private set; }
++    public bool IsActive { get; private set; }
++    public IDictionary<string, JsonNode?> Defaults { get; private set; } = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    public IDictionary<string, JsonNode?> Metadata { get; private set; } = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++
++    public void UpdateDefinition(
++        string templateId,
++        string name,
++        string? description,
++        string? category,
++        string? industryTag,
++        string? businessTypeTag,
++        int sortOrder,
++        bool isActive,
++        IDictionary<string, JsonNode?>? defaults = null,
++        IDictionary<string, JsonNode?>? metadata = null)
++    {
++        if (sortOrder < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sortOrder), "Sort order cannot be negative.");
++        }
++
++        TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
++        Name = NormalizeRequired(name, nameof(name), NameMaxLength);
++        Description = NormalizeOptional(description, nameof(description), DescriptionMaxLength);
++        Category = NormalizeOptional(category, nameof(category), CategoryMaxLength);
++        IndustryTag = NormalizeOptional(industryTag, nameof(industryTag), TagMaxLength);
++        BusinessTypeTag = NormalizeOptional(businessTypeTag, nameof(businessTypeTag), TagMaxLength);
++        SortOrder = sortOrder;
++        IsActive = isActive;
++        Defaults = CloneNodes(defaults);
++        Metadata = CloneNodes(metadata);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -9,6 +9,10 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
++    <EmbeddedResource Include="Persistence\SeedData\onboarding-templates.json" />
++  </ItemGroup>
++
++  <ItemGroup>
+     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
+     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -17,6 +17,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<Company> Companies => Set<Company>();
+     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
++    public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore.Metadata.Builders;
+ using Microsoft.EntityFrameworkCore.ChangeTracking;
+@@ -104,6 +105,34 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+     }
+ }
+ 
++internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfiguration<CompanySetupTemplate>
++{
++    public void Configure(EntityTypeBuilder<CompanySetupTemplate> builder)
++    {
++        builder.ToTable("company_setup_templates");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Description).HasMaxLength(2000);
++        builder.Property(x => x.Category).HasMaxLength(100);
++        builder.Property(x => x.IndustryTag).HasMaxLength(100);
++        builder.Property(x => x.BusinessTypeTag).HasMaxLength(100);
++        builder.Property(x => x.SortOrder).HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.Defaults)
++            .HasColumnName("defaults_json")
++            .HasJsonbConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql("'{}'::jsonb")
++            .IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonbConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql("'{}'::jsonb")
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => x.TemplateId).IsUnique();
++    }
++}
++
+ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<CompanyMembership>
+ {
+     public void Configure(EntityTypeBuilder<CompanyMembership> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanySetupTemplateSeeder.cs b/src/VirtualCompany.Infrastructure/Companies/CompanySetupTemplateSeeder.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanySetupTemplateSeeder.cs
+@@ -0,0 +1,115 @@
++using System.Reflection;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanySetupTemplateSeeder
++{
++    private const string ResourceName = "VirtualCompany.Infrastructure.Persistence.SeedData.onboarding-templates.json";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public CompanySetupTemplateSeeder(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task SeedAsync(CancellationToken cancellationToken = default)
++    {
++        var catalog = await LoadCatalogAsync(cancellationToken);
++        if (catalog.Templates.Count == 0)
++        {
++            return;
++        }
++
++        var existingTemplates = await _dbContext.CompanySetupTemplates
++            .ToDictionaryAsync(x => x.TemplateId, StringComparer.OrdinalIgnoreCase, cancellationToken);
++
++        foreach (var seed in catalog.Templates)
++        {
++            if (existingTemplates.TryGetValue(seed.TemplateId, out var existing))
++            {
++                existing.UpdateDefinition(
++                    seed.TemplateId,
++                    seed.Name,
++                    seed.Description,
++                    seed.Category,
++                    seed.Industry,
++                    seed.BusinessType,
++                    seed.SortOrder,
++                    seed.IsActive,
++                    seed.Defaults,
++                    seed.Metadata);
++            }
++            else
++            {
++                _dbContext.CompanySetupTemplates.Add(new CompanySetupTemplate(
++                    Guid.NewGuid(),
++                    seed.TemplateId,
++                    seed.Name,
++                    seed.Description,
++                    seed.Category,
++                    seed.Industry,
++                    seed.BusinessType,
++                    seed.SortOrder,
++                    seed.IsActive,
++                    seed.Defaults,
++                    seed.Metadata));
++            }
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private static async Task<TemplateSeedCatalog> LoadCatalogAsync(CancellationToken cancellationToken)
++    {
++        var assembly = typeof(CompanySetupTemplateSeeder).Assembly;
++        await using var stream = assembly.GetManifestResourceStream(ResourceName)
++            ?? throw new InvalidOperationException($"Embedded onboarding template seed '{ResourceName}' was not found.");
++        using var reader = new StreamReader(stream);
++        var json = await reader.ReadToEndAsync(cancellationToken);
++        return JsonSerializer.Deserialize<TemplateSeedCatalog>(json, SerializerOptions)
++            ?? new TemplateSeedCatalog();
++    }
++
++    private sealed class TemplateSeedCatalog
++    {
++        public List<TemplateSeedDefinition> Templates { get; set; } = [];
++    }
++
++    private sealed class TemplateSeedDefinition
++    {
++        public string TemplateId { get; set; } = string.Empty;
++        public string Name { get; set; } = string.Empty;
++        public string? Description { get; set; }
++        public string? Category { get; set; }
++        public string? Industry { get; set; }
++        public string? BusinessType { get; set; }
++        public int SortOrder { get; set; }
++        public bool IsActive { get; set; } = true;
++        public Dictionary<string, JsonNode?> Defaults { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SeedData/onboarding-templates.json b/src/VirtualCompany.Infrastructure/Persistence/SeedData/onboarding-templates.json
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SeedData/onboarding-templates.json
+@@ -0,0 +1,104 @@
++{
++  "templates": [
++    {
++      "templateId": "professional-services-agency",
++      "name": "Professional Services Agency",
++      "description": "A template for service teams that need client delivery, approvals, and fast knowledge capture.",
++      "category": "Services",
++      "industry": "Professional Services",
++      "businessType": "Agency",
++      "sortOrder": 10,
++      "defaults": {
++        "timezone": "Europe/Stockholm",
++        "currency": "SEK",
++        "language": "sv-SE",
++        "complianceRegion": "EU"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite account leads and assign one owner for each client workflow.",
++          "Hire your first delivery and finance agents to cover recurring admin work.",
++          "Upload proposals, service agreements, and SOPs as company knowledge."
++        ],
++        "workspacePreset": "services-delivery"
++      }
++    },
++    {
++      "templateId": "saas-operations",
++      "name": "SaaS Operations",
++      "description": "A template for product teams running support, subscriptions, and internal operations from one workspace.",
++      "category": "Technology",
++      "industry": "Technology",
++      "businessType": "Software Company",
++      "sortOrder": 20,
++      "defaults": {
++        "timezone": "America/New_York",
++        "currency": "USD",
++        "language": "en-US",
++        "complianceRegion": "US"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite operations, finance, and customer success teammates.",
++          "Hire your first support and revenue operations agents.",
++          "Upload pricing plans, renewal playbooks, and product documentation."
++        ],
++        "workspacePreset": "saas-operations"
++      }
++    },
++    {
++      "templateId": "healthcare-clinic",
++      "name": "Healthcare Clinic",
++      "description": "A template for regulated teams that want a compliant default starting point.",
++      "category": "Healthcare",
++      "industry": "Healthcare",
++      "businessType": "Clinic",
++      "sortOrder": 30,
++      "defaults": {
++        "timezone": "America/Chicago",
++        "currency": "USD",
++        "language": "en-US",
++        "complianceRegion": "HIPAA"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite administrators and clinical operations leads before expanding access.",
++          "Hire intake and scheduling agents with clear ownership boundaries.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ],
++        "workspacePreset": "regulated-clinic"
++      }
++    },
++    {
++      "templateId": "technology-default",
++      "name": "Technology Default",
++      "description": "Fallback defaults for technology companies before a more specific business type is chosen.",
++      "category": "Technology",
++      "industry": "Technology",
++      "sortOrder": 40,
++      "defaults": {
++        "timezone": "America/Los_Angeles",
++        "currency": "USD",
++        "language": "en-US",
++        "complianceRegion": "US"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite product, support, and finance stakeholders early.",
++          "Upload core product docs and operating procedures.",
++          "Choose a more specific business type later to tighten recommendations."
++        ]
++      }
++    },
++    {
++      "templateId": "clinic-default",
++      "name": "Clinic Default",
++      "description": "Fallback defaults for clinic operators when the industry is still undecided.",
++      "category": "Healthcare",
++      "businessType": "Clinic",
++      "sortOrder": 50,
++      "defaults": {
++        "timezone": "America/Denver",
++        "currency": "USD",
++        "language": "en-US",
++        "complianceRegion": "HIPAA"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite clinical administrators before broadening workspace access.",
++          "Upload approved intake and scheduling procedures.",
++          "Upload intake forms, SOPs, and approved policy documents."
++        ]
++      }
++    },
++    {
++      "templateId": "field-service-default",
++      "name": "Field Service Default",
++      "description": "A data-only template proving extra defaults and metadata flow without C# changes.",
++      "category": "Operations",
++      "industry": "Services",
++      "businessType": "Field Service",
++      "sortOrder": 60,
++      "defaults": {
++        "timezone": "America/Chicago",
++        "currency": "USD",
++        "language": "en-US",
++        "complianceRegion": "US",
++        "workWeekStartsOn": "monday"
++      },
++      "metadata": {
++        "starterGuidance": [
++          "Invite dispatch, operations, and finance leads first.",
++          "Upload scheduling rules, route standards, and service policies.",
++          "Use template metadata to shape future onboarding experiences without code changes."
++        ],
++        "brandingHint": "dispatch",
++        "starterWorkflows": [
++          "scheduling",
++          "dispatch",
++          "invoicing"
++        ]
++      }
++    }
++  ]
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -23,10 +23,6 @@ public static class DependencyInjection
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+             options.UseNpgsql(connectionString));
+ 
+-        services.AddOptions<OnboardingTemplateCatalogOptions>()
+-            .Bind(configuration.GetSection(OnboardingTemplateCatalogOptions.SectionName));
+-
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
+@@ -36,6 +32,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanyQueryService>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
++        services.AddScoped<CompanySetupTemplateSeeder>();
+         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300005_AddCompanySetupTemplates.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300005_AddCompanySetupTemplates.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300005_AddCompanySetupTemplates.cs
+@@ -0,0 +1,67 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddCompanySetupTemplates : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "company_setup_templates",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                TemplateId = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
++                Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                Description = table.Column<string>(type: "character varying(2000)", maxLength: 2000, nullable: true),
++                Category = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
++                IndustryTag = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
++                BusinessTypeTag = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
++                SortOrder = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
++                IsActive = table.Column<bool>(type: "boolean", nullable: false, defaultValue: true),
++                defaults_json = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'{}'::jsonb"),
++                metadata_json = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'{}'::jsonb"),
++                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_setup_templates", x => x.Id);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_setup_templates_TemplateId",
++            table: "company_setup_templates",
++            column: "TemplateId",
++            unique: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "company_setup_templates");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -2,7 +2,6 @@ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+-using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Domain.Entities;
+@@ -38,15 +37,12 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+-    private readonly IOptions<OnboardingTemplateCatalogOptions> _templateOptions;
+ 
+     public CompanyOnboardingService(
+         VirtualCompanyDbContext dbContext,
+-        ICurrentUserAccessor currentUserAccessor,
+-        IOptions<OnboardingTemplateCatalogOptions> templateOptions)
++        ICurrentUserAccessor currentUserAccessor)
+     {
+         _dbContext = dbContext;
+         _currentUserAccessor = currentUserAccessor;
+-        _templateOptions = templateOptions;
+     }
+ 
+     public async Task<CreateCompanyResultDto> CreateCompanyAsync(
+@@ -55,19 +51,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     {
+         var userId = RequireCurrentUserId();
+         var selectedTemplateId = NormalizeOptional(command.SelectedTemplateId);
+-        var resolvedTemplate = FindTemplate(selectedTemplateId);
+-        var guidance = ResolveGuidance(selectedTemplateId);
++        var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
++        EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
++        var guidance = ResolveGuidance(resolvedTemplate);
+ 
+         var merged = MergeValues(
+             command.Name,
+             command.Industry,
+             command.BusinessType,
+-            command.Name,
+-            command.Industry,
+-            command.BusinessType,
+             command.Timezone,
+             command.Currency,
+             command.Language,
+             command.ComplianceRegion,
++            resolvedTemplate);
+             resolvedTemplate);
+         ValidateFlexibleConfiguration(command.Branding, command.Settings);
+ 
+@@ -85,7 +80,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.ComplianceRegion);
+         company.UpdateBrandingAndSettings(
+             MergeBranding(null, command.Branding),
+-            BuildSettings(null, command.Settings, selectedTemplateId, merged, CompletedWizardStep, true, guidance));
++            BuildSettings(null, command.Settings, selectedTemplateId, resolvedTemplate, merged, CompletedWizardStep, true, guidance));
+ 
+         company.CompleteOnboarding(
+             CompletedWizardStep,
+@@ -98,21 +93,24 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
+     }
+ 
+-    public Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken)
++    public async Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken)
+     {
+-        IReadOnlyList<OnboardingTemplateDto> templates = _templateOptions.Value.Templates
++        var templates = await _dbContext.CompanySetupTemplates
++            .AsNoTracking()
++            .Where(x => x.IsActive)
++            .OrderBy(x => x.SortOrder)
++            .ThenBy(x => x.Name)
++            .ToListAsync(cancellationToken);
++
++        return templates
+             .Select(ToDto)
+-            .OrderBy(x => x.Name)
+             .ToList();
+-
+-        return Task.FromResult(templates);
+     }
+ 
+-    public Task<OnboardingTemplateRecommendationDto?> GetRecommendedDefaultsAsync(
++    public async Task<OnboardingTemplateRecommendationDto?> GetRecommendedDefaultsAsync(
+         GetOnboardingTemplateRecommendationRequest request,
+         CancellationToken cancellationToken)
+     {
+-        var recommendation = FindRecommendedTemplate(request.Industry, request.BusinessType);
++        var recommendation = await FindRecommendedTemplateAsync(request.Industry, request.BusinessType, cancellationToken);
+         if (recommendation is null)
+         {
+-            return Task.FromResult<OnboardingTemplateRecommendationDto?>(null);
++            return null;
+         }
+ 
+-        return Task.FromResult<OnboardingTemplateRecommendationDto?>(ToRecommendationDto(recommendation.Template, recommendation.MatchKind));
++        return ToRecommendationDto(recommendation.Template, recommendation.MatchKind);
+     }
+@@ -163,7 +161,9 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         }
+ 
+         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId);
+-        var resolvedTemplate = FindTemplate(selectedTemplateId);
++        var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
++        EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
++        var guidance = ResolveGuidance(resolvedTemplate);
+         var merged = MergeValues(
+             request.Name,
+             request.Industry,
+@@ -189,17 +189,17 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ 
+         company.UpdateBrandingAndSettings(
+             MergeBranding(company.Branding, request.Branding),
+-            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, NormalizeDraftStep(request.CurrentStep), false, ResolveGuidance(selectedTemplateId)));
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, NormalizeDraftStep(request.CurrentStep), false, guidance));
+ 
+         company.UpdateWorkspaceProfile(
+-            request.Name,
+-            request.Industry,
+-            request.BusinessType,
+-            request.Timezone,
+-            request.Currency,
+-            request.Language,
+-            request.ComplianceRegion,
+-            resolvedTemplate);
++            merged.Name,
++            merged.Industry,
++            merged.BusinessType,
++            merged.Timezone,
++            merged.Currency,
++            merged.Language,
++            merged.ComplianceRegion);
+ 
+         company.SaveOnboardingProgress(NormalizeDraftStep(request.CurrentStep), selectedTemplateId, SerializeState(
+                 merged,
+                 selectedTemplateId,
+                 NormalizeDraftStep(request.CurrentStep),
+                 false,
+-                ResolveGuidance(selectedTemplateId)));
++                guidance));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapProgress(company);
+@@ -220,12 +220,14 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                 new CreateCompanyWorkspaceRequest(
+                     request.Name,
+                     request.Industry,
+                     request.BusinessType,
++                    request.Branding,
++                    request.Settings,
+                     request.Timezone,
+                     request.Currency,
+                     request.Language,
+                     request.ComplianceRegion,
+                     request.CurrentStep,
+                     request.SelectedTemplateId),
+                 cancellationToken);
+         }
+@@ -253,19 +255,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             request.CurrentStep);
+ 
+         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
+-        var resolvedTemplate = FindTemplate(selectedTemplateId);
++        var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
++        EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
++        var guidance = ResolveGuidance(resolvedTemplate);
+         var merged = MergeValues(
+             request.Name,
+             request.Industry,
+             request.BusinessType,
+-            request.Name,
+-            request.Industry,
+-            request.BusinessType,
+             request.Timezone,
+             request.Currency,
+             request.Language,
+             request.ComplianceRegion,
+             resolvedTemplate);
+         company.UpdateBrandingAndSettings(
+             MergeBranding(company.Branding, request.Branding),
+-            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, NormalizeDraftStep(request.CurrentStep), false, ResolveGuidance(selectedTemplateId)));
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, NormalizeDraftStep(request.CurrentStep), false, guidance));
+ 
+ 
+         company.UpdateWorkspaceProfile(
+@@ -289,7 +290,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                 selectedTemplateId,
+                 NormalizeDraftStep(request.CurrentStep),
+                 false,
+-                ResolveGuidance(selectedTemplateId)));
++                guidance));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapProgress(company);
+@@ -315,6 +316,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         company.AbandonOnboarding();
+ 
+         var onboarding = ResolveOnboardingSettings(company);
++        var resolvedTemplate = await FindTemplateAsync(company.OnboardingTemplateId, cancellationToken);
++        var guidance = ResolveGuidance(resolvedTemplate);
+         company.SaveOnboardingProgress(
+             company.OnboardingCurrentStep ?? 1,
+             company.OnboardingTemplateId,
+@@ -329,10 +332,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                     onboarding.ComplianceRegion ?? company.ComplianceRegion),
+                 company.OnboardingTemplateId,
+                 company.OnboardingCurrentStep ?? 1,
+                 false,
+-                ResolveGuidance(company.OnboardingTemplateId)));
++                guidance));
+         company.UpdateBrandingAndSettings(
+             company.Branding,
+-            BuildSettings(company.Settings, null, company.OnboardingTemplateId, new MergedOnboardingValues(company.Name, company.Industry, company.BusinessType, company.Timezone, company.Currency, company.Language, company.ComplianceRegion), company.OnboardingCurrentStep ?? 1, false, ResolveGuidance(company.OnboardingTemplateId)));
++            BuildSettings(company.Settings, null, company.OnboardingTemplateId, resolvedTemplate, new MergedOnboardingValues(company.Name, company.Industry, company.BusinessType, company.Timezone, company.Currency, company.Language, company.ComplianceRegion), company.OnboardingCurrentStep ?? 1, false, guidance));
+         company.AbandonOnboarding();
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -357,7 +360,9 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         EnsureSessionIsMutable(company);
+ 
+         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
+-        var resolvedTemplate = FindTemplate(selectedTemplateId);
++        var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
++        EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
++        var guidance = ResolveGuidance(resolvedTemplate);
+         var merged = MergeValues(
+             company,
+             request.Name,
+@@ -384,9 +389,9 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.ComplianceRegion);
+ 
+         company.UpdateBrandingAndSettings(
+             MergeBranding(company.Branding, request.Branding),
+-            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, CompletedWizardStep, true, ResolveGuidance(selectedTemplateId)));
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, CompletedWizardStep, true, guidance));
+ 
+-        var guidance = ResolveGuidance(selectedTemplateId);
+         company.CompleteOnboarding(
+             CompletedWizardStep,
+             selectedTemplateId,
+@@ -452,31 +457,94 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         return userId;
+     }
+ 
+-    private static OnboardingTemplateDto ToDto(OnboardingTemplateDefinition definition) =>
++    private static OnboardingTemplateDto ToDto(CompanySetupTemplate template) =>
+         new(
+-            definition.TemplateId,
+-            definition.Name,
+-            definition.Industry,
+-            definition.BusinessType,
+-            definition.Description,
+-            new OnboardingTemplateDefaultsDto(
+-                definition.Defaults.Timezone,
+-                definition.Defaults.Currency,
+-                definition.Defaults.Language,
+-                definition.Defaults.ComplianceRegion),
+-            definition.StarterGuidance);
++            template.TemplateId,
++            template.Name,
++            template.Description ?? string.Empty,
++            template.Category,
++            template.IndustryTag,
++            template.BusinessTypeTag,
++            template.SortOrder,
++            CloneNodes(template.Defaults),
++            CloneNodes(template.Metadata),
++            ResolveStarterGuidance(template.Metadata));
+ 
+     private static OnboardingTemplateRecommendationDto ToRecommendationDto(
+-        OnboardingTemplateDefinition definition,
++        CompanySetupTemplate template,
+         string matchKind) =>
+         new(
+-            definition.TemplateId,
+-            definition.Name,
+-            definition.Description,
++            template.TemplateId,
++            template.Name,
++            template.Description ?? string.Empty,
+             matchKind,
+-            new OnboardingTemplateDefaultsDto(
+-                definition.Defaults.Timezone,
+-                definition.Defaults.Currency,
+-                definition.Defaults.Language,
+-                definition.Defaults.ComplianceRegion),
+-            definition.StarterGuidance);
++            template.Category,
++            template.IndustryTag,
++            template.BusinessTypeTag,
++            CloneNodes(template.Defaults),
++            CloneNodes(template.Metadata),
++            ResolveStarterGuidance(template.Metadata));
++
++    private async Task<TemplateMatch?> FindRecommendedTemplateAsync(string? industry, string? businessType, CancellationToken cancellationToken)
++    {
++        var normalizedIndustry = NormalizeOptional(industry);
++        var normalizedBusinessType = NormalizeOptional(businessType);
++        if (normalizedIndustry is null && normalizedBusinessType is null)
++        {
++            return null;
++        }
++
++        var templates = await _dbContext.CompanySetupTemplates
++            .AsNoTracking()
++            .Where(x => x.IsActive)
++            .OrderBy(x => x.SortOrder)
++            .ThenBy(x => x.Name)
++            .ToListAsync(cancellationToken);
++
++        var exactMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.IndustryTag, normalizedIndustry) &&
++            MatchesValue(template.BusinessTypeTag, normalizedBusinessType) &&
++            !string.IsNullOrWhiteSpace(template.IndustryTag) &&
++            !string.IsNullOrWhiteSpace(template.BusinessTypeTag));
++        if (exactMatch is not null)
++        {
++            return new TemplateMatch(exactMatch, "industry_business_type");
++        }
++
++        var industryOnlyMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.IndustryTag, normalizedIndustry) &&
++            string.IsNullOrWhiteSpace(template.BusinessTypeTag));
++        if (industryOnlyMatch is not null)
++        {
++            return new TemplateMatch(industryOnlyMatch, "industry");
++        }
++
++        var businessTypeOnlyMatch = templates.FirstOrDefault(template =>
++            MatchesValue(template.BusinessTypeTag, normalizedBusinessType) &&
++            string.IsNullOrWhiteSpace(template.IndustryTag));
++        if (businessTypeOnlyMatch is not null)
++        {
++            return new TemplateMatch(businessTypeOnlyMatch, "business_type");
++        }
++
++        return null;
++    }
++
++    private CompanySetupTemplate? FindTemplate(string? templateId)
++    {
++        if (string.IsNullOrWhiteSpace(templateId))
++        {
++            return null;
++        }
++
++        return _dbContext.CompanySetupTemplates
++            .AsNoTracking()
++            .FirstOrDefault(x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase));
++    }
++
++    private async Task<CompanySetupTemplate?> FindTemplateAsync(string? templateId, CancellationToken cancellationToken)
++    {
++        if (string.IsNullOrWhiteSpace(templateId))
++        {
++            return null;
++        }
++
++        return await _dbContext.CompanySetupTemplates
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.TemplateId == templateId, cancellationToken);
++    }
+ 
+-    private TemplateMatch? FindRecommendedTemplate(string? industry, string? businessType)
++    private static MergedOnboardingValues MergeValues(
++        string name,
++        string industry,
++        string businessType,
++        string? timezone,
++        string? currency,
++        string? language,
++        string? complianceRegion,
++        CompanySetupTemplate? template) =>
++        new(
++            NormalizeRequired(name),
++            FirstNonEmpty(industry, template?.IndustryTag),
++            FirstNonEmpty(businessType, template?.BusinessTypeTag),
++            FirstNonEmpty(timezone, GetTemplateDefault(template, "timezone")),
++            FirstNonEmpty(currency, GetTemplateDefault(template, "currency")),
++            FirstNonEmpty(language, GetTemplateDefault(template, "language")),
++            FirstNonEmpty(complianceRegion, GetTemplateDefault(template, "complianceRegion")));
++
++    private static MergedOnboardingValues MergeValues(
++        Company company,
++        string name,
++        string industry,
++        string businessType,
++        string? timezone,
++        string? currency,
++        string? language,
++        string? complianceRegion,
++        CompanySetupTemplate? template) =>
++        new(
++            FirstNonEmpty(name, company.Name) ?? string.Empty,
++            FirstNonEmpty(industry, company.Industry, template?.IndustryTag),
++            FirstNonEmpty(businessType, company.BusinessType, template?.BusinessTypeTag),
++            FirstNonEmpty(timezone, company.Timezone, GetTemplateDefault(template, "timezone")),
++            FirstNonEmpty(currency, company.Currency, GetTemplateDefault(template, "currency")),
++            FirstNonEmpty(language, company.Language, GetTemplateDefault(template, "language")),
++            FirstNonEmpty(complianceRegion, company.ComplianceRegion, GetTemplateDefault(template, "complianceRegion")));
++
++    private static string? GetTemplateDefault(CompanySetupTemplate? template, string key)
+     {
+-        var normalizedIndustry = NormalizeOptional(industry);
+-        var normalizedBusinessType = NormalizeOptional(businessType);
+-        if (normalizedIndustry is null && normalizedBusinessType is null)
++        if (template is null || !template.Defaults.TryGetValue(key, out var value) || value is null)
+         {
+             return null;
+         }
+ 
+-        var templates = _templateOptions.Value.Templates;
+-
+-        var exactMatch = templates.FirstOrDefault(template =>
+-            MatchesValue(template.Industry, normalizedIndustry) &&
+-            MatchesValue(template.BusinessType, normalizedBusinessType) &&
+-            !string.IsNullOrWhiteSpace(template.Industry) &&
+-            !string.IsNullOrWhiteSpace(template.BusinessType));
+-        if (exactMatch is not null)
++        if (value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var stringValue))
+         {
+-            return new TemplateMatch(exactMatch, "industry_business_type");
++            return NormalizeOptional(stringValue);
+         }
+ 
+-        var industryOnlyMatch = templates.FirstOrDefault(template =>
+-            MatchesValue(template.Industry, normalizedIndustry) &&
+-            string.IsNullOrWhiteSpace(template.BusinessType));
+-        if (industryOnlyMatch is not null)
+-        {
+-            return new TemplateMatch(industryOnlyMatch, "industry");
+-        }
++        return null;
++    }
+ 
+-        var businessTypeOnlyMatch = templates.FirstOrDefault(template =>
+-            MatchesValue(template.BusinessType, normalizedBusinessType) &&
+-            string.IsNullOrWhiteSpace(template.Industry));
+-        if (businessTypeOnlyMatch is not null)
++    private static IReadOnlyList<string> ResolveStarterGuidance(IDictionary<string, JsonNode?>? metadata)
++    {
++        if (metadata is null ||
++            !metadata.TryGetValue("starterGuidance", out var node) ||
++            node is not JsonArray guidanceArray)
+         {
+-            return new TemplateMatch(businessTypeOnlyMatch, "business_type");
++            return [];
+         }
+ 
+-        return null;
+-    }
+-
+-    private OnboardingTemplateDefinition? FindTemplate(string? templateId)
+-    {
+-        if (string.IsNullOrWhiteSpace(templateId))
+-        {
+-            return null;
+-        }
+-
+-        return _templateOptions.Value.Templates.FirstOrDefault(x =>
+-            string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase));
++        return guidanceArray
++            .Select(item => item is JsonValue value && value.TryGetValue<string>(out var text) ? NormalizeOptional(text) : null)
++            .Where(item => !string.IsNullOrWhiteSpace(item))
++            .Select(item => item!)
++            .ToList();
+     }
+ 
+-    private static MergedOnboardingValues MergeValues(
+-        string name,
+-        string industry,
+-        string businessType,
+-        string? timezone,
+-        string? currency,
+-        string? language,
+-        string? complianceRegion,
+-        OnboardingTemplateDefinition? template) =>
+-        new(
+-            NormalizeRequired(name),
+-            FirstNonEmpty(industry, template?.Industry),
+-            FirstNonEmpty(businessType, template?.BusinessType),
+-            FirstNonEmpty(timezone, template?.Defaults.Timezone),
+-            FirstNonEmpty(currency, template?.Defaults.Currency),
+-            FirstNonEmpty(language, template?.Defaults.Language),
+-            FirstNonEmpty(complianceRegion, template?.Defaults.ComplianceRegion));
++    private static void EnsureTemplateExists(string? templateId, CompanySetupTemplate? template)
++    {
++        if (!string.IsNullOrWhiteSpace(templateId) && template is null)
++        {
++            throw BuildValidationException("SelectedTemplateId", "The selected template does not exist.");
++        }
++    }
+@@ -688,15 +756,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     private static CompanySettings BuildSettings(
+         CompanySettings? current,
+         CompanySettingsDto? incoming,
+         string? selectedTemplateId,
++        CompanySetupTemplate? template,
+         MergedOnboardingValues values,
+         int currentStep,
+         bool isCompleted,
+         IReadOnlyList<string> starterGuidance)
+     {
+         current ??= new CompanySettings();
+         var incomingOnboarding = incoming?.Onboarding;
++        current.Onboarding ??= new CompanyOnboardingSettings();
++        var extensions = incoming?.Extensions is null ? CloneNodes(current.Extensions) : CloneNodes(incoming.Extensions);
++        ApplyTemplateSnapshot(extensions, template);
+ 
+         return new CompanySettings
+         {
+             Locale = NormalizeOptional(incoming?.Locale) ?? current.Locale,
+@@ -705,9 +776,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             FeatureFlags = incoming?.FeatureFlags is null
+                 ? new Dictionary<string, bool>(current.FeatureFlags, StringComparer.OrdinalIgnoreCase)
+                 : new Dictionary<string, bool>(incoming.FeatureFlags, StringComparer.OrdinalIgnoreCase),
+-            Extensions = incoming?.Extensions is null
+-                ? CloneNodes(current.Extensions)
+-                : CloneNodes(incoming.Extensions),
++            Extensions = extensions,
+             Onboarding = new CompanyOnboardingSettings
+             {
+                 Name = values.Name,
+@@ -720,9 +789,52 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+                 CurrentStep = currentStep,
+                 SelectedTemplateId = selectedTemplateId,
+                 IsCompleted = isCompleted,
+                 StarterGuidance = starterGuidance.ToList(),
+-                Extensions = incomingOnboarding?.Extensions is null
+-                    ? CloneNodes(current.Onboarding.Extensions)
+-                    : CloneNodes(incomingOnboarding.Extensions)
++                Extensions = BuildOnboardingExtensions(current.Onboarding, incomingOnboarding, template)
+             }
+         };
+     }
++
++    private static Dictionary<string, JsonNode?> BuildOnboardingExtensions(
++        CompanyOnboardingSettings current,
++        CompanyOnboardingSettingsDto? incoming,
++        CompanySetupTemplate? template)
++    {
++        var extensions = incoming?.Extensions is null
++            ? CloneNodes(current.Extensions)
++            : CloneNodes(incoming.Extensions);
++
++        if (template is null)
++        {
++            extensions.Remove("templateDefaults");
++            extensions.Remove("templateMetadata");
++            extensions.Remove("templateCategory");
++            return extensions;
++        }
++
++        extensions["templateDefaults"] = BuildJsonObject(template.Defaults);
++        extensions["templateMetadata"] = BuildJsonObject(template.Metadata);
++
++        if (string.IsNullOrWhiteSpace(template.Category))
++        {
++            extensions.Remove("templateCategory");
++        }
++        else
++        {
++            extensions["templateCategory"] = JsonValue.Create(template.Category);
++        }
++
++        return extensions;
++    }
++
++    private static void ApplyTemplateSnapshot(IDictionary<string, JsonNode?> extensions, CompanySetupTemplate? template)
++    {
++        if (template is null)
++        {
++            extensions.Remove("companySetupTemplate");
++            return;
++        }
++
++        extensions["companySetupTemplate"] = new JsonObject
++        {
++            ["templateId"] = template.TemplateId,
++            ["name"] = template.Name,
++            ["category"] = template.Category,
++            ["industry"] = template.IndustryTag,
++            ["businessType"] = template.BusinessTypeTag,
++            ["defaults"] = BuildJsonObject(template.Defaults),
++            ["metadata"] = BuildJsonObject(template.Metadata)
++        };
++    }
++
++    private static JsonObject BuildJsonObject(IDictionary<string, JsonNode?> values)
++    {
++        var json = new JsonObject();
++        foreach (var pair in values)
++        {
++            json[pair.Key] = pair.Value?.DeepClone();
++        }
++
++        return json;
++    }
+@@ -786,36 +898,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             AddError(errors, key, $"{key} must be a valid hex color.");
+         }
+     }
+ 
++    private IReadOnlyList<string> ResolveGuidance(CompanySetupTemplate? template) =>
++        ResolveStarterGuidance(template?.Metadata).Count > 0 ? ResolveStarterGuidance(template?.Metadata) : DefaultStarterGuidance;
++
+     private IReadOnlyList<string> ResolveGuidance(string? templateId)
+     {
+         var template = FindTemplate(templateId);
+-        return template?.StarterGuidance?.Count > 0 ? template.StarterGuidance : DefaultStarterGuidance;
++        return ResolveGuidance(template);
+     }
+     private static string BuildDashboardPath(Guid companyId, bool includeStarterGuidance = false)
+     {
+         return includeStarterGuidance ? $"/dashboard?companyId={companyId}&welcome=onboarding" : $"/dashboard?companyId={companyId}";
+@@ -954,27 +1040,4 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     }
+ 
+     private sealed record TemplateMatch(OnboardingTemplateDefinition Template, string MatchKind);
+ }
+-
+-public sealed class OnboardingTemplateCatalogOptions
+-{
+-    public const string SectionName = "OnboardingTemplates";
+-
+-    public List<OnboardingTemplateDefinition> Templates { get; set; } = [];
+-}
+-
+-public sealed class OnboardingTemplateDefinition
+-{
+-    public string TemplateId { get; set; } = string.Empty;
+-    public string Name { get; set; } = string.Empty;
+-    public string Industry { get; set; } = string.Empty;
+-    public string BusinessType { get; set; } = string.Empty;
+-    public string Description { get; set; } = string.Empty;
+-    public OnboardingTemplateDefaultsDefinition Defaults { get; set; } = new();
+-    public List<string> StarterGuidance { get; set; } = [];
+-}
+-
+-public sealed class OnboardingTemplateDefaultsDefinition
+-{
+-    public string? Timezone { get; set; }
+-    public string? Currency { get; set; }
+-    public string? Language { get; set; }
+-    public string? ComplianceRegion { get; set; }
+-}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -953,5 +953,5 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         public List<string> StarterGuidance { get; set; } = [];
+     }
+ 
+-    private sealed record TemplateMatch(OnboardingTemplateDefinition Template, string MatchKind);
++    private sealed record TemplateMatch(CompanySetupTemplate Template, string MatchKind);
+ }
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Infrastructure;
+ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ var builder = WebApplication.CreateBuilder(args);
+@@ -45,10 +46,17 @@ app.UseAuthorization();
+ using (var scope = app.Services.CreateScope())
+ {
+     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++    var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
++
+     if (dbContext.Database.IsRelational())
+     {
+-        dbContext.Database.Migrate();
++        await dbContext.Database.MigrateAsync();
++    }
++    else
++    {
++        await dbContext.Database.EnsureCreatedAsync();
+     }
++
++    await templateSeeder.SeedAsync();
+ }
+ 
+ app.MapControllers();
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -8,81 +8,5 @@
+       "Microsoft.AspNetCore": "Warning"
+     }
+   },
+-  "OnboardingTemplates": {
+-    "Templates": [
+-      {
+-        "TemplateId": "professional-services-agency",
+-        "Name": "Professional Services Agency",
+-        "Industry": "Professional Services",
+-        "BusinessType": "Agency",
+-        "Description": "A template for service teams that need client delivery, approvals, and fast knowledge capture.",
+-        "Defaults": {
+-          "Timezone": "Europe/Stockholm",
+-          "Currency": "SEK",
+-          "Language": "sv-SE",
+-          "ComplianceRegion": "EU"
+-        },
+-        "StarterGuidance": [
+-          "Invite account leads and assign one owner for each client workflow.",
+-          "Hire your first delivery and finance agents to cover recurring admin work.",
+-          "Upload proposals, service agreements, and SOPs as company knowledge."
+-        ]
+-      },
+-      {
+-        "TemplateId": "saas-operations",
+-        "Name": "SaaS Operations",
+-        "Industry": "Technology",
+-        "BusinessType": "Software Company",
+-        "Description": "A template for product teams running support, subscriptions, and internal operations from one workspace.",
+-        "Defaults": {
+-          "Timezone": "America/New_York",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "US"
+-        },
+-        "StarterGuidance": [
+-          "Invite operations, finance, and customer success teammates.",
+-          "Hire your first support and revenue operations agents.",
+-          "Upload pricing plans, renewal playbooks, and product documentation."
+-        ]
+-      },
+-      {
+-        "TemplateId": "healthcare-clinic",
+-        "Name": "Healthcare Clinic",
+-        "Industry": "Healthcare",
+-        "BusinessType": "Clinic",
+-        "Description": "A template for regulated teams that want a compliant default starting point.",
+-        "Defaults": {
+-          "Timezone": "America/Chicago",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "HIPAA"
+-        },
+-        "StarterGuidance": [
+-          "Invite administrators and clinical operations leads before expanding access.",
+-          "Hire intake and scheduling agents with clear ownership boundaries.",
+-          "Upload intake forms, SOPs, and approved policy documents."
+-        ]
+-      },
+-      {
+-        "TemplateId": "technology-default",
+-        "Name": "Technology Default",
+-        "Industry": "Technology",
+-        "BusinessType": "",
+-        "Description": "Fallback defaults for technology companies before a more specific business type is chosen.",
+-        "Defaults": {
+-          "Timezone": "America/Los_Angeles",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "US"
+-        },
+-        "StarterGuidance": [
+-          "Invite product, support, and finance stakeholders early.",
+-          "Upload core product docs and operating procedures.",
+-          "Choose a more specific business type later to tighten recommendations."
+-        ]
+-      },
+-      {
+-        "TemplateId": "clinic-default",
+-        "Name": "Clinic Default",
+-        "Industry": "",
+-        "BusinessType": "Clinic",
+-        "Description": "Fallback defaults for clinic operators when the industry is still undecided.",
+-        "Defaults": {
+-          "Timezone": "America/Denver",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "HIPAA"
+-        },
+-        "StarterGuidance": [
+-          "Invite clinical administrators before broadening workspace access.",
+-          "Upload approved intake and scheduling procedures.",
+-          "Upload intake forms, SOPs, and approved policy documents."
+-        ]
+-      }
+-    ]
+-  },
+   "AllowedHosts": "*"
+ }
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -8,80 +8,4 @@
+       "Microsoft.AspNetCore": "Warning"
+     }
+   },
+-  "OnboardingTemplates": {
+-    "Templates": [
+-      {
+-        "TemplateId": "professional-services-agency",
+-        "Name": "Professional Services Agency",
+-        "Industry": "Professional Services",
+-        "BusinessType": "Agency",
+-        "Description": "A template for service teams that need client delivery, approvals, and fast knowledge capture.",
+-        "Defaults": {
+-          "Timezone": "Europe/Stockholm",
+-          "Currency": "SEK",
+-          "Language": "sv-SE",
+-          "ComplianceRegion": "EU"
+-        },
+-        "StarterGuidance": [
+-          "Invite account leads and assign one owner for each client workflow.",
+-          "Hire your first delivery and finance agents to cover recurring admin work.",
+-          "Upload proposals, service agreements, and SOPs as company knowledge."
+-        ]
+-      },
+-      {
+-        "TemplateId": "saas-operations",
+-        "Name": "SaaS Operations",
+-        "Industry": "Technology",
+-        "BusinessType": "Software Company",
+-        "Description": "A template for product teams running support, subscriptions, and internal operations from one workspace.",
+-        "Defaults": {
+-          "Timezone": "America/New_York",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "US"
+-        },
+-        "StarterGuidance": [
+-          "Invite operations, finance, and customer success teammates.",
+-          "Hire your first support and revenue operations agents.",
+-          "Upload pricing plans, renewal playbooks, and product documentation."
+-        ]
+-      },
+-      {
+-        "TemplateId": "healthcare-clinic",
+-        "Name": "Healthcare Clinic",
+-        "Industry": "Healthcare",
+-        "BusinessType": "Clinic",
+-        "Description": "A template for regulated teams that want a compliant default starting point.",
+-        "Defaults": {
+-          "Timezone": "America/Chicago",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "HIPAA"
+-        },
+-        "StarterGuidance": [
+-          "Invite administrators and clinical operations leads before expanding access.",
+-          "Hire intake and scheduling agents with clear ownership boundaries.",
+-          "Upload intake forms, SOPs, and approved policy documents."
+-        ]
+-      },
+-      {
+-        "TemplateId": "technology-default",
+-        "Name": "Technology Default",
+-        "Industry": "Technology",
+-        "BusinessType": "",
+-        "Description": "Fallback defaults for technology companies before a more specific business type is chosen.",
+-        "Defaults": {
+-          "Timezone": "America/Los_Angeles",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "US"
+-        },
+-        "StarterGuidance": [
+-          "Invite product, support, and finance stakeholders early.",
+-          "Upload core product docs and operating procedures.",
+-          "Choose a more specific business type later to tighten recommendations."
+-        ]
+-      },
+-      {
+-        "TemplateId": "clinic-default",
+-        "Name": "Clinic Default",
+-        "Industry": "",
+-        "BusinessType": "Clinic",
+-        "Description": "Fallback defaults for clinic operators when the industry is still undecided.",
+-        "Defaults": {
+-          "Timezone": "America/Denver",
+-          "Currency": "USD",
+-          "Language": "en-US",
+-          "ComplianceRegion": "HIPAA"
+-        },
+-        "StarterGuidance": [
+-          "Invite clinical administrators before broadening workspace access.",
+-          "Upload approved intake and scheduling procedures.",
+-          "Upload intake forms, SOPs, and approved policy documents."
+-        ]
+-      }
+-    ]
+-  }
++}
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -198,28 +198,36 @@ public sealed class OnboardingApiException : Exception
+ public sealed class OnboardingTemplateViewModel
+ {
+     public string TemplateId { get; set; } = string.Empty;
+     public string Name { get; set; } = string.Empty;
+-    public string Industry { get; set; } = string.Empty;
+-    public string BusinessType { get; set; } = string.Empty;
+     public string Description { get; set; } = string.Empty;
+-    public OnboardingTemplateDefaultsViewModel Defaults { get; set; } = new();
++    public string? Category { get; set; }
++    public string? Industry { get; set; }
++    public string? BusinessType { get; set; }
++    public int SortOrder { get; set; }
++    public Dictionary<string, JsonElement> Defaults { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonElement> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public List<string> StarterGuidance { get; set; } = [];
+ }
+ 
+ public sealed class OnboardingTemplateRecommendationViewModel
+ {
+     public string TemplateId { get; set; } = string.Empty;
+     public string Name { get; set; } = string.Empty;
+     public string Description { get; set; } = string.Empty;
+     public string MatchKind { get; set; } = string.Empty;
+-    public OnboardingTemplateDefaultsViewModel Defaults { get; set; } = new();
+-    public List<string> StarterGuidance { get; set; } = [];
+-}
+-
+-public sealed class OnboardingTemplateDefaultsViewModel
+-{
+-    public string? Timezone { get; set; }
+-    public string? Currency { get; set; }
+-    public string? Language { get; set; }
+-    public string? ComplianceRegion { get; set; }
++    public string? Category { get; set; }
++    public string? Industry { get; set; }
++    public string? BusinessType { get; set; }
++    public Dictionary<string, JsonElement> Defaults { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonElement> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public List<string> StarterGuidance { get; set; } = [];
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -1,4 +1,5 @@
+ @page "/onboarding"
++@using System.Text.Json
+ @inject OnboardingApiClient ApiClient
+ @inject NavigationManager Navigation
+ 
+@@ -319,29 +320,28 @@ else
+ 
+     private void ApplyRecommendedDefaults()
+     {
+-        if (recommendedTemplate is null)
++        if (recommendedTemplate is null || recommendedTemplate.Defaults.Count == 0)
+         {
+             return;
+         }
+ 
+-        ApplyRecommendedField(nameof(model.Timezone), recommendedTemplate.Defaults.Timezone, value => model.Timezone = value);
+-        ApplyRecommendedField(nameof(model.Currency), recommendedTemplate.Defaults.Currency, value => model.Currency = value);
+-        ApplyRecommendedField(nameof(model.Language), recommendedTemplate.Defaults.Language, value => model.Language = value);
+-        ApplyRecommendedField(nameof(model.ComplianceRegion), recommendedTemplate.Defaults.ComplianceRegion, value => model.ComplianceRegion = value);
++        ApplyTemplateDefaults(recommendedTemplate.Defaults);
+     }
+ 
+     private void ApplyRecommendedField(string fieldName, string? value, Action<string> assign)
+     {
+         if (string.IsNullOrWhiteSpace(value) || manuallyEditedFields.Contains(fieldName))
+         {
+             return;
+         }
+ 
+         assign(value);
+     }
+ 
+     private void ApplySelectedTemplate()
+     {
+-        if (SelectedTemplate is null)
++        var selectedTemplate = SelectedTemplate;
++        if (selectedTemplate is null)
+         {
+             return;
+         }
+ 
+-        ApplyRecommendedField(nameof(model.Timezone), SelectedTemplate.Defaults.Timezone, value => model.Timezone = value);
+-        ApplyRecommendedField(nameof(model.Currency), SelectedTemplate.Defaults.Currency, value => model.Currency = value);
+-        ApplyRecommendedField(nameof(model.Language), SelectedTemplate.Defaults.Language, value => model.Language = value);
+-        ApplyRecommendedField(nameof(model.ComplianceRegion), SelectedTemplate.Defaults.ComplianceRegion, value => model.ComplianceRegion = value);
+-        model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? SelectedTemplate.Industry : model.Industry;
+-        model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? SelectedTemplate.BusinessType : model.BusinessType;
++        ApplyTemplateDefaults(selectedTemplate.Defaults);
++        model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? selectedTemplate.Industry ?? string.Empty : model.Industry;
++        model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? selectedTemplate.BusinessType ?? string.Empty : model.BusinessType;
+     }
+@@ -592,6 +592,29 @@ else
+             : await ApiClient.CreateWorkspaceAsync(request);
+     }
+ 
++    private void ApplyTemplateDefaults(IReadOnlyDictionary<string, JsonElement> defaults)
++    {
++        ApplyRecommendedField(nameof(model.Timezone), GetTemplateDefault(defaults, "timezone"), value => model.Timezone = value);
++        ApplyRecommendedField(nameof(model.Currency), GetTemplateDefault(defaults, "currency"), value => model.Currency = value);
++        ApplyRecommendedField(nameof(model.Language), GetTemplateDefault(defaults, "language"), value => model.Language = value);
++        ApplyRecommendedField(nameof(model.ComplianceRegion), GetTemplateDefault(defaults, "complianceRegion"), value => model.ComplianceRegion = value);
++    }
++
++    private static string? GetTemplateDefault(IReadOnlyDictionary<string, JsonElement> defaults, string key)
++    {
++        if (!defaults.TryGetValue(key, out var value))
++        {
++            return null;
++        }
++
++        return value.ValueKind switch
++        {
++            JsonValueKind.String => value.GetString(),
++            JsonValueKind.Null => null,
++            JsonValueKind.Undefined => null,
++            _ => value.ToString()
++        };
++    }
++
+     private bool ValidateDraftForSave()
+     {
+         validationErrors.Clear();
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -22,6 +22,23 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.NotNull(templates);
+         Assert.NotEmpty(templates!);
+         Assert.Contains(templates, x => x.TemplateId == "professional-services-agency");
++        Assert.Contains(templates, x => x.TemplateId == "field-service-default");
++    }
++
++    [Fact]
++    public async Task GetTemplates_returns_generic_defaults_and_metadata_for_extensible_templates()
++    {
++        using var client = CreateAuthenticatedClient("template-payload-user", "template-payload@example.com", "Template Payload User");
++        var templates = await client.GetFromJsonAsync<List<TemplateResponse>>("/api/onboarding/templates");
++
++        Assert.NotNull(templates);
++        var template = templates!.Single(x => x.TemplateId == "field-service-default");
++        Assert.Equal("Operations", template.Category);
++        Assert.True(template.Defaults.TryGetValue("workWeekStartsOn", out var workWeekStartsOn));
++        Assert.Equal("monday", workWeekStartsOn.GetString());
++        Assert.True(template.Metadata.TryGetValue("brandingHint", out var brandingHint));
++        Assert.Equal("dispatch", brandingHint.GetString());
++        Assert.True(template.Metadata.TryGetValue("starterWorkflows", out var starterWorkflows));
++        Assert.Equal(JsonValueKind.Array, starterWorkflows.ValueKind);
+     }
+ 
+     [Fact]
+@@ -169,6 +186,36 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.Equal(3, company.Settings.Onboarding.CurrentStep);
+     }
+ 
++    [Fact]
++    public async Task CreateWorkspace_persists_generic_template_snapshot_in_settings_extensions()
++    {
++        using var client = CreateAuthenticatedClient("template-settings-user", "template-settings@example.com", "Template Settings User");
++        var response = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Field Ops Co",
++            Industry = "Services",
++            BusinessType = "Field Service",
++            Timezone = "",
++            Currency = "",
++            Language = "",
++            ComplianceRegion = "",
++            CurrentStep = 1,
++            SelectedTemplateId = "field-service-default"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(payload);
++        Assert.NotNull(payload!.Settings);
++        Assert.True(payload.Settings!.Extensions.TryGetProperty("companySetupTemplate", out var templateSnapshot));
++        Assert.Equal("field-service-default", templateSnapshot.GetProperty("templateId").GetString());
++        Assert.Equal("monday", templateSnapshot.GetProperty("defaults").GetProperty("workWeekStartsOn").GetString());
++        Assert.Equal("dispatch", templateSnapshot.GetProperty("metadata").GetProperty("brandingHint").GetString());
++        Assert.Equal("America/Chicago", payload.Timezone);
++        Assert.Equal("USD", payload.Currency);
++        Assert.Equal("US", payload.ComplianceRegion);
++    }
++
+     [Fact]
+     public async Task CreateWorkspace_allows_incomplete_draft_values()
+     {
+@@ -409,6 +456,11 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+     {
+         public string TemplateId { get; set; } = string.Empty;
+         public string Name { get; set; } = string.Empty;
++        public string? Category { get; set; }
++        public Dictionary<string, JsonElement> Defaults { get; set; } = new();
++        public Dictionary<string, JsonElement> Metadata { get; set; } = new();
++        public string? Industry { get; set; }
++        public string? BusinessType { get; set; }
+     }
+ 
+     private sealed class RecommendationResponse
+@@ -462,6 +514,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public string? Locale { get; set; }
+         public string? TemplateId { get; set; }
+         public OnboardingSettingsResponse? Onboarding { get; set; }
++        public JsonElement Extensions { get; set; }
+         public JsonElement FeatureFlags { get; set; }
+     }
+ END_OF_PATCH

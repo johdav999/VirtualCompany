@@ -11,10 +11,10 @@ public partial class AddTenantAwareAuthAndMembership : Migration
             name: "companies",
             columns: table => new
             {
-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                Name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {
@@ -25,13 +25,13 @@ public partial class AddTenantAwareAuthAndMembership : Migration
             name: "users",
             columns: table => new
             {
-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                Email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                DisplayName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                AuthProvider = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
-                AuthSubject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
+                DisplayName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                AuthProvider = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                AuthSubject = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {
@@ -42,14 +42,14 @@ public partial class AddTenantAwareAuthAndMembership : Migration
             name: "company_memberships",
             columns: table => new
             {
-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                UserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                PermissionsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
+                UserId = table.Column<Guid>(type: "uuid", nullable: false),
+                Role = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
+                Status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
+                PermissionsJson = table.Column<string>(type: "text", nullable: true),
+                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {
@@ -72,11 +72,11 @@ public partial class AddTenantAwareAuthAndMembership : Migration
             name: "company_notes",
             columns: table => new
             {
-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                Title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                Content = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
+                Title = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                Content = table.Column<string>(type: "text", nullable: false),
+                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
             {

@@ -1,9 +1,125 @@
 ﻿@page "/"
+@inject OnboardingApiClient ApiClient
+@inject NavigationManager Navigation
 
 <PageTitle>Home</PageTitle>
 
-<section class="py-4">
-    <h1>Virtual Company</h1>
-    <p class="lead mb-2">Project workspace is configured and ready for implementation.</p>
-    <p class="text-body-secondary mb-0">Use this shell as the foundation for the web client.</p>
-</section>
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Virtual Company</h1>
+        <p class="text-body-secondary mb-0">Loading the primary web onboarding surface...</p>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Web-first onboarding</span>
+                <h1>Blazor web is the primary company setup surface</h1>
+                <p class="lead mb-3">Start or resume workspace creation in the web onboarding wizard, persist progress through backend services, and hand off into the dashboard when setup is complete.</p>
+                <div class="dashboard-actions">
+                    <a class="btn btn-primary" href="onboarding">Start web onboarding</a>
+                    @if (!string.IsNullOrWhiteSpace(primaryDashboardPath))
+                    {
+                        <a class="btn btn-outline-secondary" href="@primaryDashboardPath">Open active dashboard</a>
+                    }
+                </div>
+
+                @if (progress?.CanResume == true)
+                {
+                    <div class="alert alert-info mt-4 mb-0">
+                        Saved onboarding is ready to resume for <strong>@progress.Name</strong> at step @progress.CurrentStep.
+                    </div>
+                }
+                else if (currentUser?.CompanySelectionRequired == true && ActiveMemberships.Count > 0)
+                {
+                    <div class="mt-4">
+                        <h2 class="h5">Choose an active company</h2>
+                        <div class="template-grid">
+                            @foreach (var membership in ActiveMemberships)
+                            {
+                                <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
+                                    <strong>@membership.CompanyName</strong>
+                                    <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
+                                </a>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">First-run checklist</h2>
+                <ul class="mb-0 text-body-secondary">
+                    <li>Create a company workspace in the Blazor web wizard.</li>
+                    <li>Set industry, business type, timezone, currency, language, and compliance defaults.</li>
+                    <li>Save progress and resume the same setup session later.</li>
+                    <li>Complete onboarding and land in the dashboard with starter guidance.</li>
+                </ul>
+
+                @if (progress?.IsCompleted == true && !string.IsNullOrWhiteSpace(progress.DashboardPath))
+                {
+                    <div class="mt-4">
+                        <h2 class="h5">Last completed workspace</h2>
+                        <p class="text-body-secondary mb-2">@progress.Name is already set up and ready in the dashboard.</p>
+                        <a class="btn btn-outline-secondary" href="@progress.DashboardPath">Open completed dashboard</a>
+                    </div>
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    private bool isLoading = true;
+    private CurrentUserContextViewModel? currentUser;
+    private OnboardingProgressViewModel? progress;
+    private string? primaryDashboardPath;
+    private string? errorMessage;
+
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            currentUser = await ApiClient.GetCurrentUserContextAsync();
+            progress = await ApiClient.GetProgressAsync();
+
+            primaryDashboardPath = currentUser?.ActiveCompany is not null
+                ? $"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}"
+                : progress?.DashboardPath;
+
+            if (progress?.CanResume == true || string.Equals(progress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
+            {
+                Navigation.NavigateTo("/onboarding", replace: true);
+                return;
+            }
+
+            if (currentUser?.ActiveCompany is not null && string.IsNullOrWhiteSpace(progress?.Status))
+            {
+                Navigation.NavigateTo(primaryDashboardPath!, replace: true);
+                return;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}

@@ -1,0 +1,627 @@
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 70ebc82..772681e 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -40,6 +40,7 @@ public sealed record CompanyAccessDto(
+ public sealed record CompanyDashboardEntryDto(
+     Guid CompanyId,
+     string CompanyName,
++    bool RequiresOnboarding,
+     bool ShowStarterGuidance,
+     DateTime? OnboardingCompletedUtc,
+     IReadOnlyList<string> StarterGuidance);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 8f0bd4e..d6ee278 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -159,6 +159,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         return new CompanyDashboardEntryDto(
+             dashboardEntry.CompanyId,
+             dashboardEntry.CompanyName,
++            dashboardEntry.OnboardingStatus != CompanyOnboardingStatus.Completed,
+             dashboardEntry.OnboardingStatus == CompanyOnboardingStatus.Completed && !dashboardEntry.HasKnowledgeArtifacts,
+             dashboardEntry.OnboardingCompletedUtc,
+             starterGuidance);
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 42efcf1..cf476b1 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -1,97 +1,171 @@
+ @page "/dashboard"
+ @inject OnboardingApiClient ApiClient
++@inject NavigationManager Navigation
+ @using Microsoft.AspNetCore.Components
+ 
+ <PageTitle>Dashboard</PageTitle>
+-<section class="py-4 dashboard-hero">
+-    <div class="dashboard-shell">
+-        <div class="wizard-card dashboard-summary">
+-            <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
+-            <p class="lead mb-2">
+-                @(showStarterGuidance
+-                    ? "Your company workspace is live. Start with the next recommended actions below."
+-                    : "Your company workspace is ready for the next setup actions.")
+-            </p>
+-            <p class="text-body-secondary mb-0">
+-                @(companyAccess is null
+-                    ? "Use onboarding to create or resume a workspace."
+-                    : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
+-            </p>
+-
+-            @if (showStarterGuidance)
+-            {
+-                <div class="dashboard-welcome mt-4">
+-                    <span class="dashboard-kicker">Onboarding complete</span>
+-                    <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
+-                    <p class="text-body-secondary mb-0">
+-                        @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
+-                            ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
+-                            : "Workspace setup finished successfully. These actions keep the new company context moving.")
+-                    </p>
+-                    <ul class="dashboard-checklist mt-4 mb-0">
+-                        @foreach (var item in StarterGuidance)
+-                        {
+-                            <li>@item</li>
+-                        }
+-                    </ul>
+-                    <div class="dashboard-actions mt-4">
+-                        <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
+-                        <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
+-                    </div>
+-                </div>
+-            }
+-        </div>
+-
+-        <div class="wizard-card wizard-card--compact">
+-            <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+-            @if (showStarterGuidance)
+-            {
+-                <ul class="mb-0">
+-                    <li>Invite teammates who need access to the new workspace.</li>
+-                    <li>Upload the first company notes or documents to move beyond the starter state.</li>
+-                    <li>Reopen onboarding only if workspace defaults need to change.</li>
+-                </ul>
+-            }
+-            else
+-            {
+-                <ul class="mb-0">
+-                    <li>Use onboarding to create or resume a workspace if no company is selected.</li>
+-                    <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
+-                    <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
+-                </ul>
+-            }
+-        </div>
+-    </div>
+-</section>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Workspace dashboard</h1>
++        <p class="text-body-secondary mb-0">Loading web dashboard context...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Web-first onboarding</span>
++                <h1>Choose a company dashboard or continue onboarding</h1>
++                <p class="lead mb-3">The Blazor web app is the primary surface for company creation and guided setup. Resume onboarding for new workspaces, or open an active company dashboard.</p>
++                <div class="dashboard-actions">
++                    <a class="btn btn-primary" href="onboarding">Resume web onboarding</a>
++                </div>
++
++                @if (ActiveMemberships.Count > 0)
++                {
++                    <div class="template-grid mt-4">
++                        @foreach (var membership in ActiveMemberships)
++                        {
++                            <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
++                                <strong>@membership.CompanyName</strong>
++                                <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
++                            </a>
++                        }
++                    </div>
++                }
++                else
++                {
++                    <p class="text-body-secondary mt-4 mb-0">No active company membership is selected yet. Start in the onboarding wizard to create the first workspace from the web app.</p>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Dashboard handoff</h2>
++                <ul class="mb-0">
++                    <li>Incomplete company setup is routed back into onboarding.</li>
++                    <li>Completed setup lands in the company dashboard with starter guidance.</li>
++                    <li>Mobile remains a companion surface and does not own onboarding orchestration.</li>
++                </ul>
++            </div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
++                <p class="lead mb-2">
++                    @(showStarterGuidance
++                        ? "Your company workspace is live. Start with the next recommended actions below."
++                        : "Your company workspace is ready for the next setup actions.")
++                </p>
++                <p class="text-body-secondary mb-0">
++                    @(companyAccess is null
++                        ? "Use onboarding to create or resume a workspace."
++                        : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
++                </p>
++
++                @if (showStarterGuidance)
++                {
++                    <div class="dashboard-welcome mt-4">
++                        <span class="dashboard-kicker">Onboarding complete</span>
++                        <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
++                        <p class="text-body-secondary mb-0">
++                            @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
++                                ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
++                                : "Workspace setup finished successfully. These actions keep the new company context moving.")
++                        </p>
++                        <ul class="dashboard-checklist mt-4 mb-0">
++                            @foreach (var item in StarterGuidance)
++                            {
++                                <li>@item</li>
++                            }
++                        </ul>
++                        <div class="dashboard-actions mt-4">
++                            <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
++                            <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
++                        </div>
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
++                @if (showStarterGuidance)
++                {
++                    <ul class="mb-0">
++                        <li>Invite teammates who need access to the new workspace.</li>
++                        <li>Upload the first company notes or documents to move beyond the starter state.</li>
++                        <li>Reopen onboarding only if workspace defaults need to change.</li>
++                    </ul>
++                }
++                else
++                {
++                    <ul class="mb-0">
++                        <li>Use onboarding to create or resume a workspace if no company is selected.</li>
++                        <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
++                        <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
++                    </ul>
++                }
++            </div>
++        </div>
++    </section>
++}
+ 
+ @code {
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+-
+     [SupplyParameterFromQuery(Name = "welcome")]
+     public string? Welcome { get; set; }
+ 
++    private bool isLoading = true;
++    private CurrentUserContextViewModel? currentUser;
++    private OnboardingProgressViewModel? onboardingProgress;
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
+     private IReadOnlyList<string> StarterGuidance => dashboardEntry?.StarterGuidance?.Count > 0
+         ? dashboardEntry.StarterGuidance
+         : Array.Empty<string>();
+     private bool showStarterGuidance =>
+         companyAccess is not null &&
+         dashboardEntry?.ShowStarterGuidance == true &&
+         IsWelcomeEntry();
+-
+     protected override async Task OnParametersSetAsync()
+     {
++        isLoading = true;
++        currentUser = await ApiClient.GetCurrentUserContextAsync();
++        onboardingProgress = await ApiClient.GetProgressAsync();
+         companyAccess = null;
+         dashboardEntry = null;
+ 
+-        if (CompanyId is Guid companyId)
++        if (CompanyId is not Guid companyId)
+         {
+-            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+-            dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
++            if (onboardingProgress?.CanResume == true || string.Equals(onboardingProgress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
++            {
++                Navigation.NavigateTo("/onboarding", replace: true);
++                return;
++            }
++
++            if (currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                return;
++            }
++
++            isLoading = false;
++            return;
+         }
++
++        companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
++        dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
++
++        if (dashboardEntry?.RequiresOnboarding == true)
++        {
++            Navigation.NavigateTo("/onboarding", replace: true);
++            return;
++        }
++
++        isLoading = false;
+     }
+ 
+     private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Web/Pages/Home.razor b/src/VirtualCompany.Web/Pages/Home.razor
+index 2f10a5a..77e1d68 100644
+--- a/src/VirtualCompany.Web/Pages/Home.razor
++++ b/src/VirtualCompany.Web/Pages/Home.razor
+@@ -1,19 +1,100 @@
+ @page "/"
++@inject OnboardingApiClient ApiClient
++@inject NavigationManager Navigation
+ 
+ <PageTitle>Home</PageTitle>
+ 
+-<section class="py-4 dashboard-hero">
+-    <div class="dashboard-shell">
+-        <div>
+-            <h1>Virtual Company</h1>
+-            <p class="lead mb-3">Create a workspace, finish onboarding, and land in a starter dashboard built for the first company setup.</p>
+-            <div class="d-flex gap-2 flex-wrap">
+-                <a class="btn btn-primary" href="onboarding">Create workspace</a>
+-                <a class="btn btn-outline-secondary" href="dashboard">Open dashboard</a>
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Virtual Company</h1>
++        <p class="text-body-secondary mb-0">Loading the primary web onboarding surface...</p>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Web-first onboarding</span>
++                <h1>Blazor web is the primary company setup surface</h1>
++                <p class="lead mb-3">Start or resume workspace creation in the web onboarding wizard, persist progress through backend services, and hand off into the dashboard when setup is complete.</p>
++                <div class="dashboard-actions">
++                    <a class="btn btn-primary" href="onboarding">Start web onboarding</a>
++                    @if (!string.IsNullOrWhiteSpace(primaryDashboardPath))
++                    {
++                        <a class="btn btn-outline-secondary" href="@primaryDashboardPath">Open active dashboard</a>
++                    }
++                </div>
++
++                @if (progress?.CanResume == true)
++                {
++                    <div class="alert alert-info mt-4 mb-0">
++                        Saved onboarding is ready to resume for <strong>@progress.Name</strong> at step @progress.CurrentStep.
++                    </div>
++                }
++                else if (currentUser?.CompanySelectionRequired == true && ActiveMemberships.Count > 0)
++                {
++                    <div class="mt-4">
++                        <h2 class="h5">Choose an active company</h2>
++                        <div class="template-grid">
++                            @foreach (var membership in ActiveMemberships)
++                            {
++                                <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
++                                    <strong>@membership.CompanyName</strong>
++                                    <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
++                                </a>
++                            }
++                        </div>
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">First-run checklist</h2>
++                <ul class="mb-0 text-body-secondary">
++                    <li>Create a company workspace in the Blazor web wizard.</li>
++                    <li>Set industry, business type, timezone, currency, language, and compliance defaults.</li>
++                    <li>Save progress and resume the same setup session later.</li>
++                    <li>Complete onboarding and land in the dashboard with starter guidance.</li>
++                </ul>
++
++                @if (progress?.IsCompleted == true && !string.IsNullOrWhiteSpace(progress.DashboardPath))
++                {
++                    <div class="mt-4">
++                        <h2 class="h5">Last completed workspace</h2>
++                        <p class="text-body-secondary mb-2">@progress.Name is already set up and ready in the dashboard.</p>
++                        <a class="btn btn-outline-secondary" href="@progress.DashboardPath">Open completed dashboard</a>
++                    </div>
++                }
+             </div>
+         </div>
+-        <div class="wizard-card wizard-card--compact">
+-            <h2 class="h5">First-run checklist</h2>
+-            <ul class="mb-0 text-body-secondary">
+-                <li>Create a company workspace.</li>
+-                <li>Choose locale and compliance defaults.</li>
+-                <li>Apply a template and save progress.</li>
+-                <li>Complete onboarding and invite the team.</li>
+-            </ul>
+-        </div>
+-    </div>
+-</section>
++    </section>
++}
++
++@code {
++    private bool isLoading = true;
++    private CurrentUserContextViewModel? currentUser;
++    private OnboardingProgressViewModel? progress;
++    private string? primaryDashboardPath;
++
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnInitializedAsync()
++    {
++        currentUser = await ApiClient.GetCurrentUserContextAsync();
++        progress = await ApiClient.GetProgressAsync();
++
++        primaryDashboardPath = currentUser?.ActiveCompany is not null
++            ? $"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}"
++            : progress?.DashboardPath;
++
++        if (progress?.CanResume == true || string.Equals(progress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
++        {
++            Navigation.NavigateTo("/onboarding", replace: true);
++            return;
++        }
++
++        if (currentUser?.ActiveCompany is not null && string.IsNullOrWhiteSpace(progress?.Status))
++        {
++            Navigation.NavigateTo(primaryDashboardPath!, replace: true);
++            return;
++        }
++
++        isLoading = false;
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+index 0a372d7..cf8bbcb 100644
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -19,9 +19,18 @@ else
+                 <div class="wizard-card">
+                     <h1>Create company workspace</h1>
+-                    <p class="text-body-secondary">Set up the company profile, save progress between sessions, and resume the same company setup later.</p>
++                    <p class="text-body-secondary">Blazor web is the primary onboarding surface for company workspace creation. Set up the company profile, save progress between sessions, and resume the same company setup later.</p>
+ 
+                     @if (!string.IsNullOrWhiteSpace(statusMessage))
+                     {
+                         <div class="alert alert-info mt-3">@statusMessage</div>
+                     }
++
++                    @if (currentUser?.ActiveCompany is not null && !model.CompanyId.HasValue && !showCompletedState)
++                    {
++                        <div class="alert alert-secondary mt-3 mb-0">
++                            You already have an active company context for <strong>@currentUser.ActiveCompany.CompanyName</strong>.
++                            Use this web wizard to create another workspace or <a href="@($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}")">return to the dashboard</a>.
++                        </div>
++                    }
+ 
+                     @if (!string.IsNullOrWhiteSpace(errorMessage))
+                     {
+@@ -221,6 +230,7 @@ else
+     private readonly Dictionary<string, string> validationErrors = new(StringComparer.OrdinalIgnoreCase);
+     private readonly OnboardingFormModel model = new();
+     private readonly HashSet<string> manuallyEditedFields = new(StringComparer.OrdinalIgnoreCase);
++    private CurrentUserContextViewModel? currentUser;
+     private List<OnboardingTemplateViewModel> templates = [];
+     private OnboardingTemplateRecommendationViewModel? recommendedTemplate;
+     private bool isLoading = true;
+@@ -248,6 +258,7 @@ else
+ 
+     protected override async Task OnInitializedAsync()
+     {
++        currentUser = await ApiClient.GetCurrentUserContextAsync();
+         templates = (await ApiClient.GetTemplatesAsync()).ToList();
+         var progress = await ApiClient.GetProgressAsync();
+ 
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 94fcf81..b09ee36 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -56,6 +56,21 @@ public sealed class OnboardingApiClient
+         throw await CreateExceptionAsync(response, cancellationToken);
+     }
+ 
++    public async Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default)
++    {
++        using var response = await _httpClient.GetAsync("api/auth/me", cancellationToken);
++        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
++        {
++            return null;
++        }
++
++        if (response.IsSuccessStatusCode)
++        {
++            return await response.Content.ReadFromJsonAsync<CurrentUserContextViewModel?>(SerializerOptions, cancellationToken);
++        }
++
++        throw await CreateExceptionAsync(response, cancellationToken);
++    }
++
+     public Task<CreateCompanyResultViewModel> CreateCompanyAsync(CreateCompanyRequest request, CancellationToken cancellationToken = default) =>
+         SendAsync<CreateCompanyResultViewModel>(HttpMethod.Post, "api/onboarding/company", request, cancellationToken);
+ 
+@@ -100,6 +115,7 @@ public sealed class OnboardingApiClient
+         response.EnsureSuccessStatusCode();
+         return await response.Content.ReadFromJsonAsync<CompanyDashboardEntryViewModel>(SerializerOptions, cancellationToken);
+     }
++
+     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
+     {
+         using var request = new HttpRequestMessage(method, uri)
+@@ -331,9 +347,40 @@ public sealed class CompanyDashboardEntryViewModel
+ {
+     public Guid CompanyId { get; set; }
+     public string CompanyName { get; set; } = string.Empty;
++    public bool RequiresOnboarding { get; set; }
+     public bool ShowStarterGuidance { get; set; }
+     public DateTime? OnboardingCompletedUtc { get; set; }
+     public List<string> StarterGuidance { get; set; } = [];
+ }
+ 
++public sealed class CurrentUserContextViewModel
++{
++    public CurrentUserViewModel User { get; set; } = new();
++    public List<CompanyMembershipViewModel> Memberships { get; set; } = [];
++    public ResolvedCompanyContextViewModel? ActiveCompany { get; set; }
++    public bool CompanySelectionRequired { get; set; }
++}
++
++public sealed class CurrentUserViewModel
++{
++    public Guid Id { get; set; }
++    public string Email { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string AuthProvider { get; set; } = string.Empty;
++    public string AuthSubject { get; set; } = string.Empty;
++}
++
++public sealed class CompanyMembershipViewModel
++{
++    public Guid MembershipId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string Role { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
++public sealed class ResolvedCompanyContextViewModel
++{
++    public Guid MembershipId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string Role { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+index e961fa9..d64dce5 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -318,6 +318,38 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.NotNull(dashboardEntry);
+         Assert.True(dashboardEntry!.ShowStarterGuidance);
+         Assert.NotEmpty(dashboardEntry.StarterGuidance);
++        Assert.False(dashboardEntry.RequiresOnboarding);
++    }
++
++    [Fact]
++    public async Task DashboardEntry_flags_incomplete_workspace_as_requiring_onboarding()
++    {
++        using var client = CreateAuthenticatedClient("dashboard-gate-user", "dashboard-gate@example.com", "Dashboard Gate User");
++        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Incomplete Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 2,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(created);
++
++        var dashboardEntry = await client.GetFromJsonAsync<DashboardEntryResponse>($"/api/companies/{created!.CompanyId}/dashboard-entry");
++
++        Assert.NotNull(dashboardEntry);
++        Assert.True(dashboardEntry!.RequiresOnboarding);
++        Assert.False(dashboardEntry.ShowStarterGuidance);
++    }
++
++    [Fact]
++    public async Task Progress_is_scoped_to_creator()
++    {
++        using var aliceClient = CreateAuthenticatedClient("owner-user", "owner@example.com", "Owner User");
++        using var bobClient = CreateAuthenticatedClient("other-user", "other@example.com", "Other User");
++
++        var createResponse = await aliceClient.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Owner Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "America/New_York",
++            Currency = "USD",
++            Language = "en-US",
++            ComplianceRegion = "US",
++            CurrentStep = 1,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
++
++        var bobsProgress = await bobClient.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
++        Assert.Null(bobsProgress);
+     }
+-    [Fact]
+-    public async Task Progress_is_scoped_to_creator()
+-    {
+-        using var aliceClient = CreateAuthenticatedClient("owner-user", "owner@example.com", "Owner User");
+-        using var bobClient = CreateAuthenticatedClient("other-user", "other@example.com", "Other User");
+-
+-        var createResponse = await aliceClient.PostAsJsonAsync("/api/onboarding/workspace", new
+-        {
+-            Name = "Owner Co",
+-            Industry = "Technology",
+-            BusinessType = "Software Company",
+-            Timezone = "America/New_York",
+-            Currency = "USD",
+-            Language = "en-US",
+-            ComplianceRegion = "US",
+-            CurrentStep = 1,
+-            SelectedTemplateId = "saas-operations"
+-        });
+-
+-        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+-
+-        var bobsProgress = await bobClient.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
+-        Assert.Null(bobsProgress);
+-    }
+@@ -480,6 +512,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+     {
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
++        public bool RequiresOnboarding { get; set; }
+         public bool ShowStarterGuidance { get; set; }
+         public DateTime? OnboardingCompletedUtc { get; set; }
+         public List<string> StarterGuidance { get; set; } = [];
+END_OF_PATCH

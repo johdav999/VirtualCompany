@@ -1,0 +1,1483 @@
+diff --git a/src/VirtualCompany.Api/Controllers/OnboardingController.cs b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+index 4cb54c7..55df465 100644
+--- a/src/VirtualCompany.Api/Controllers/OnboardingController.cs
++++ b/src/VirtualCompany.Api/Controllers/OnboardingController.cs
+@@ -80,6 +80,28 @@ public sealed class OnboardingController : ControllerBase
+         {
+             var progress = await _onboardingService.SaveProgressAsync(request, cancellationToken);
+             return Ok(progress);
++        }
++        catch (CompanyOnboardingValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("abandon")]
++    public async Task<ActionResult<CompanyOnboardingProgressDto>> AbandonOnboardingAsync(
++        [FromBody] AbandonCompanyOnboardingRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var progress = await _onboardingService.AbandonOnboardingAsync(request, cancellationToken);
++            return Ok(progress);
+         }
+         catch (CompanyOnboardingValidationException ex)
+         {
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 7d6c7a5..ce53d80 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -54,8 +54,13 @@ public sealed record CompanyOnboardingProgressDto(
+     string ComplianceRegion,
+     int CurrentStep,
+     string? SelectedTemplateId,
++    string Status,
+     bool IsCompleted,
++    bool CanResume,
+     DateTime? LastSavedUtc,
++    DateTime? CompletedUtc,
++    DateTime? AbandonedUtc,
++    string? DashboardPath,
+     IReadOnlyList<string> StarterGuidance);
+ 
+ public sealed record CreateCompanyCommand(
+@@ -102,6 +107,8 @@ public sealed record CompleteCompanyOnboardingRequest(
+     string? ComplianceRegion,
+     string? SelectedTemplateId);
+ 
++public sealed record AbandonCompanyOnboardingRequest(Guid CompanyId);
++
+ public sealed record CompleteCompanyOnboardingResultDto(
+     Guid CompanyId,
+     string CompanyName,
+@@ -133,5 +140,6 @@ public interface ICompanyOnboardingService
+     Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken);
+     Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(CreateCompanyWorkspaceRequest request, CancellationToken cancellationToken);
+     Task<CompanyOnboardingProgressDto> SaveProgressAsync(SaveCompanyOnboardingProgressRequest request, CancellationToken cancellationToken);
++    Task<CompanyOnboardingProgressDto> AbandonOnboardingAsync(AbandonCompanyOnboardingRequest request, CancellationToken cancellationToken);
+     Task<CompleteCompanyOnboardingResultDto> CompleteOnboardingAsync(CompleteCompanyOnboardingRequest request, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index 54dcd8c..4bb0fd4 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -94,9 +94,11 @@ public sealed class Company
+     public string? OnboardingStateJson { get; private set; }
+     public int? OnboardingCurrentStep { get; private set; }
+     public string? OnboardingTemplateId { get; private set; }
++    public CompanyOnboardingStatus OnboardingStatus { get; private set; } = CompanyOnboardingStatus.NotStarted;
+     public DateTime? OnboardingLastSavedUtc { get; private set; }
+     public DateTime? OnboardingCompletedUtc { get; private set; }
++    public DateTime? OnboardingAbandonedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
+@@ -137,6 +139,8 @@ public sealed class Company
+         OnboardingTemplateId = NormalizeOptional(templateId, nameof(templateId), 100);
+         OnboardingStateJson = string.IsNullOrWhiteSpace(onboardingStateJson) ? null : onboardingStateJson.Trim();
+         OnboardingLastSavedUtc = DateTime.UtcNow;
++        OnboardingStatus = CompanyOnboardingStatus.InProgress;
++        OnboardingAbandonedUtc = null;
+         UpdatedUtc = OnboardingLastSavedUtc.Value;
+     }
+ 
+@@ -144,10 +148,25 @@ public sealed class Company
+     {
+         SaveOnboardingProgress(currentStep, templateId, onboardingStateJson);
+         OnboardingCompletedUtc ??= DateTime.UtcNow;
++        OnboardingStatus = CompanyOnboardingStatus.Completed;
++        OnboardingAbandonedUtc = null;
+         UpdatedUtc = OnboardingCompletedUtc.Value;
+     }
+ 
++    public void AbandonOnboarding()
++    {
++        if (OnboardingStatus == CompanyOnboardingStatus.Completed)
++        {
++            throw new InvalidOperationException("Completed onboarding cannot be abandoned.");
++        }
++
++        OnboardingStatus = CompanyOnboardingStatus.Abandoned;
++        OnboardingAbandonedUtc = DateTime.UtcNow;
++        UpdatedUtc = OnboardingAbandonedUtc.Value;
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Domain/Enums/OnboardingEnums.cs b/src/VirtualCompany.Domain/Enums/OnboardingEnums.cs
+new file mode 100644
+index 0000000..5638f56
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/OnboardingEnums.cs
+@@ -0,0 +1,43 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum CompanyOnboardingStatus
++{
++    NotStarted = 1,
++    InProgress = 2,
++    Completed = 3,
++    Abandoned = 4
++}
++
++public static class CompanyOnboardingStatusValues
++{
++    public static string ToStorageValue(this CompanyOnboardingStatus status) =>
++        status switch
++        {
++            CompanyOnboardingStatus.NotStarted => "not_started",
++            CompanyOnboardingStatus.InProgress => "in_progress",
++            CompanyOnboardingStatus.Completed => "completed",
++            CompanyOnboardingStatus.Abandoned => "abandoned",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company onboarding status.")
++        };
++
++    public static CompanyOnboardingStatus Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return CompanyOnboardingStatus.NotStarted;
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "not_started" => CompanyOnboardingStatus.NotStarted,
++            "in_progress" => CompanyOnboardingStatus.InProgress,
++            "completed" => CompanyOnboardingStatus.Completed,
++            "abandoned" => CompanyOnboardingStatus.Abandoned,
++            _ when Enum.TryParse<CompanyOnboardingStatus>(value.Trim(), ignoreCase: true, out var legacyStatus) => legacyStatus,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company onboarding status value.")
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+index df345f8..4a86bf9 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json;
++using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Auth;
+@@ -11,6 +12,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+     private const int CompanyNameMaxLength = 200;
++    private const int LastWizardStep = 3;
++    private const int CompletedWizardStep = 4;
+     private const int IndustryMaxLength = 100;
+     private const int BusinessTypeMaxLength = 100;
+     private const int TimezoneMaxLength = 100;
+@@ -43,6 +46,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         var userId = RequireCurrentUserId();
+         var selectedTemplateId = NormalizeOptional(command.SelectedTemplateId);
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
++        var guidance = ResolveGuidance(selectedTemplateId);
+ 
+         var merged = MergeValues(
+             new Company(Guid.NewGuid(), command.Name),
+@@ -66,7 +70,12 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.Currency,
+             merged.Language,
+             merged.ComplianceRegion);
+-
+-        var guidance = ResolveGuidance(selectedTemplateId);
++        company.CompleteOnboarding(
++            CompletedWizardStep,
++            selectedTemplateId,
++            SerializeState(
++                merged,
++                selectedTemplateId,
++                CompletedWizardStep,
++                true,
++                guidance));
+         _dbContext.Companies.Add(company);
+         _dbContext.CompanyMemberships.Add(new CompanyMembership(
+             Guid.NewGuid(),
+@@ -93,8 +102,9 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             return null;
+         }
+ 
+-        var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
++        var company = await GetLatestOwnedOnboardingAsync(userId, cancellationToken);
+         return company is null ? null : MapProgress(company);
+     }
+ 
+     public async Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(
+@@ -102,7 +112,16 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         CancellationToken cancellationToken)
+     {
+         var userId = RequireCurrentUserId();
+-        ValidateDraft(request.Name, request.Industry, request.BusinessType, request.Timezone, request.Currency, request.Language, request.ComplianceRegion, request.CurrentStep);
++        ValidateDraft(
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            request.SelectedTemplateId,
++            request.CurrentStep);
+ 
+         var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
+         if (company is null)
+@@ -131,9 +150,12 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.ComplianceRegion);
+ 
+         company.SaveOnboardingProgress(
+-            Math.Max(1, request.CurrentStep),
+-            request.SelectedTemplateId,
+-            SerializeState(merged, request.SelectedTemplateId, Math.Max(1, request.CurrentStep), false, ResolveGuidance(request.SelectedTemplateId)));
++            NormalizeDraftStep(request.CurrentStep),
++            selectedTemplateId,
++            SerializeState(
++                merged,
++                selectedTemplateId,
++                NormalizeDraftStep(request.CurrentStep),
++                false,
++                ResolveGuidance(selectedTemplateId)));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapProgress(company);
+@@ -161,10 +183,23 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         if (company is null)
+         {
+             throw new UnauthorizedAccessException("The current user cannot update this company onboarding flow.");
+         }
+ 
+-        ValidateDraft(request.Name, request.Industry, request.BusinessType, request.Timezone, request.Currency, request.Language, request.ComplianceRegion, request.CurrentStep);
++        EnsureSessionIsMutable(company);
++
++        ValidateDraft(
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            request.SelectedTemplateId ?? company.OnboardingTemplateId,
++            request.CurrentStep);
+ 
+-        var resolvedTemplate = FindTemplate(request.SelectedTemplateId ?? company.OnboardingTemplateId);
++        var selectedTemplateId = request.SelectedTemplateId ?? company.OnboardingTemplateId;
++        var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+             company,
+             request.Name,
+@@ -185,13 +220,45 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.ComplianceRegion);
+ 
+         company.SaveOnboardingProgress(
+-            Math.Max(1, request.CurrentStep),
+-            request.SelectedTemplateId ?? company.OnboardingTemplateId,
++            NormalizeDraftStep(request.CurrentStep),
++            selectedTemplateId,
+             SerializeState(
+                 merged,
+-                request.SelectedTemplateId ?? company.OnboardingTemplateId,
+-                Math.Max(1, request.CurrentStep),
++                selectedTemplateId,
++                NormalizeDraftStep(request.CurrentStep),
+                 false,
+-                ResolveGuidance(request.SelectedTemplateId ?? company.OnboardingTemplateId)));
++                ResolveGuidance(selectedTemplateId)));
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapProgress(company);
++    }
++
++    public async Task<CompanyOnboardingProgressDto> AbandonOnboardingAsync(
++        AbandonCompanyOnboardingRequest request,
++        CancellationToken cancellationToken)
++    {
++        var userId = RequireCurrentUserId();
++        var company = await GetOwnedCompanyAsync(userId, request.CompanyId, cancellationToken);
++        if (company is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot abandon this company onboarding flow.");
++        }
++
++        if (company.OnboardingStatus == CompanyOnboardingStatus.Completed)
++        {
++            throw BuildValidationException("CompanyId", "Completed onboarding cannot be discarded.");
++        }
++
++        company.AbandonOnboarding();
++
++        var state = DeserializeState(company.OnboardingStateJson);
++        company.SaveOnboardingProgress(
++            company.OnboardingCurrentStep ?? 1,
++            company.OnboardingTemplateId,
++            SerializeState(
++                new MergedOnboardingValues(
++                    state?.Name ?? company.Name,
++                    state?.Industry ?? company.Industry,
++                    state?.BusinessType ?? company.BusinessType,
++                    state?.Timezone ?? company.Timezone,
++                    state?.Currency ?? company.Currency,
++                    state?.Language ?? company.Language,
++                    state?.ComplianceRegion ?? company.ComplianceRegion),
++                company.OnboardingTemplateId,
++                company.OnboardingCurrentStep ?? 1,
++                false,
++                ResolveGuidance(company.OnboardingTemplateId)));
++        company.AbandonOnboarding();
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapProgress(company);
+@@ -205,6 +272,12 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         {
+             throw new UnauthorizedAccessException("The current user cannot complete this company onboarding flow.");
+         }
++
++        if (company.OnboardingStatus == CompanyOnboardingStatus.Completed)
++        {
++            return new CompleteCompanyOnboardingResultDto(company.Id, company.Name, $"/dashboard?companyId={company.Id}", ResolveGuidance(company.OnboardingTemplateId));
++        }
++
++        EnsureSessionIsMutable(company);
+ 
+         var selectedTemplateId = request.SelectedTemplateId ?? company.OnboardingTemplateId;
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
+@@ -228,11 +301,34 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.ComplianceRegion);
+ 
+         var guidance = ResolveGuidance(selectedTemplateId);
+         company.CompleteOnboarding(
+-            4,
++            CompletedWizardStep,
+             selectedTemplateId,
+-            SerializeState(merged, selectedTemplateId, 4, true, guidance));
++            SerializeState(merged, selectedTemplateId, CompletedWizardStep, true, guidance));
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return new CompleteCompanyOnboardingResultDto(
+@@ -242,6 +338,24 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             guidance);
+     }
+ 
++    private async Task<Company?> GetLatestOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)
++    {
++        return await _dbContext.Companies
++            .Where(x => x.Memberships.Any(m =>
++                m.UserId == userId &&
++                m.Role == CompanyMembershipRole.Owner &&
++                m.Status == CompanyMembershipStatus.Active))
++            .Where(x =>
++                x.OnboardingStatus != CompanyOnboardingStatus.NotStarted ||
++                x.OnboardingCurrentStep != null ||
++                x.OnboardingLastSavedUtc != null ||
++                x.OnboardingCompletedUtc != null ||
++                x.OnboardingAbandonedUtc != null)
++            .OrderByDescending(x => x.OnboardingStatus == CompanyOnboardingStatus.InProgress)
++            .ThenByDescending(x => x.OnboardingLastSavedUtc ?? x.OnboardingCompletedUtc ?? x.OnboardingAbandonedUtc ?? x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++    }
++
+     private async Task<Company?> GetLatestOwnedDraftAsync(Guid userId, CancellationToken cancellationToken)
+     {
+         return await _dbContext.Companies
+-            .Where(x => x.OnboardingCompletedUtc == null)
++            .Where(x => x.OnboardingStatus == CompanyOnboardingStatus.InProgress)
+             .Where(x => x.Memberships.Any(m =>
+                 m.UserId == userId &&
+                 m.Role == CompanyMembershipRole.Owner &&
+@@ -286,14 +400,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         string? language,
+         string? complianceRegion,
+         OnboardingTemplateDefinition? template) =>
+         new(
+             NormalizeRequired(name),
+-            FirstNonEmpty(industry, company.Industry, template?.Industry),
+-            FirstNonEmpty(businessType, company.BusinessType, template?.BusinessType),
+-            FirstNonEmpty(timezone, company.Timezone, template?.Defaults.Timezone),
+-            FirstNonEmpty(currency, company.Currency, template?.Defaults.Currency),
+-            FirstNonEmpty(language, company.Language, template?.Defaults.Language),
+-            FirstNonEmpty(complianceRegion, company.ComplianceRegion, template?.Defaults.ComplianceRegion));
++            FirstNonEmpty(industry, template?.Industry),
++            FirstNonEmpty(businessType, template?.BusinessType),
++            FirstNonEmpty(timezone, template?.Defaults.Timezone),
++            FirstNonEmpty(currency, template?.Defaults.Currency),
++            FirstNonEmpty(language, template?.Defaults.Language),
++            FirstNonEmpty(complianceRegion, template?.Defaults.ComplianceRegion));
++
++    private static OnboardingStateDocument? DeserializeState(string? stateJson) =>
++        string.IsNullOrWhiteSpace(stateJson)
++            ? null
++            : JsonSerializer.Deserialize<OnboardingStateDocument>(stateJson, SerializerOptions);
+ 
+     private static string SerializeState(
+         MergedOnboardingValues values,
+@@ -319,24 +437,31 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     private CompanyOnboardingProgressDto MapProgress(Company company)
+     {
+-        var state = string.IsNullOrWhiteSpace(company.OnboardingStateJson)
+-            ? null
+-            : JsonSerializer.Deserialize<OnboardingStateDocument>(company.OnboardingStateJson, SerializerOptions);
++        var state = DeserializeState(company.OnboardingStateJson);
+ 
+         var selectedTemplateId = company.OnboardingTemplateId ?? state?.SelectedTemplateId;
+         var guidance = state?.StarterGuidance?.Count > 0
+             ? state.StarterGuidance
+             : ResolveGuidance(selectedTemplateId);
++        var status = company.OnboardingStatus.ToStorageValue();
+ 
+         return new CompanyOnboardingProgressDto(
+             company.Id,
+-            company.Name,
+-            company.Industry ?? string.Empty,
+-            company.BusinessType ?? string.Empty,
+-            company.Timezone ?? string.Empty,
+-            company.Currency ?? string.Empty,
+-            company.Language ?? string.Empty,
+-            company.ComplianceRegion ?? string.Empty,
++            state?.Name ?? company.Name,
++            state?.Industry ?? company.Industry ?? string.Empty,
++            state?.BusinessType ?? company.BusinessType ?? string.Empty,
++            state?.Timezone ?? company.Timezone ?? string.Empty,
++            state?.Currency ?? company.Currency ?? string.Empty,
++            state?.Language ?? company.Language ?? string.Empty,
++            state?.ComplianceRegion ?? company.ComplianceRegion ?? string.Empty,
+             company.OnboardingCurrentStep ?? state?.CurrentStep ?? 1,
+             selectedTemplateId,
++            status,
+             company.OnboardingCompletedUtc.HasValue,
++            company.OnboardingStatus == CompanyOnboardingStatus.InProgress,
+             company.OnboardingLastSavedUtc,
++            company.OnboardingCompletedUtc,
++            company.OnboardingAbandonedUtc,
++            company.OnboardingStatus == CompanyOnboardingStatus.Completed
++                ? $"/dashboard?companyId={company.Id}"
++                : null,
+             guidance);
+     }
+ 
+@@ -351,26 +476,29 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         string? businessType,
+         string? timezone,
+         string? currency,
+         string? language,
+         string? complianceRegion,
++        string? selectedTemplateId,
+         int currentStep)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
+         AddRequired(errors, "Name", name, "Company name is required.", CompanyNameMaxLength);
+-        AddRequired(errors, "Industry", industry, "Industry is required.", IndustryMaxLength);
+-        AddRequired(errors, "BusinessType", businessType, "Business type is required.", BusinessTypeMaxLength);
+-
++        AddOptionalLength(errors, "Industry", industry, IndustryMaxLength);
++        AddOptionalLength(errors, "BusinessType", businessType, BusinessTypeMaxLength);
+         AddOptionalLength(errors, "Timezone", timezone, TimezoneMaxLength);
+         AddOptionalLength(errors, "Currency", currency, CurrencyMaxLength);
+         AddOptionalLength(errors, "Language", language, LanguageMaxLength);
+         AddOptionalLength(errors, "ComplianceRegion", complianceRegion, ComplianceRegionMaxLength);
+-
+-        if (currentStep >= 2)
++        AddOptionalLength(errors, "SelectedTemplateId", selectedTemplateId, TemplateIdMaxLength);
++        if (currentStep < 1 || currentStep > LastWizardStep)
+         {
+-            AddRequired(errors, "Timezone", timezone, "Timezone is required.", TimezoneMaxLength);
+-            AddRequired(errors, "Currency", currency, "Currency is required.", CurrencyMaxLength);
+-            AddRequired(errors, "Language", language, "Language is required.", LanguageMaxLength);
+-            AddRequired(errors, "ComplianceRegion", complianceRegion, "Compliance region is required.", ComplianceRegionMaxLength);
++            AddError(errors, "CurrentStep", $"Current onboarding step must be between 1 and {LastWizardStep}.");
+         }
+ 
+         ThrowIfAny(errors);
+     }
+@@ -392,6 +520,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         ThrowIfAny(errors);
+     }
+ 
++    private static int NormalizeDraftStep(int currentStep) =>
++        Math.Min(LastWizardStep, Math.Max(1, currentStep));
++
++    private static void EnsureSessionIsMutable(Company company)
++    {
++        if (company.OnboardingStatus == CompanyOnboardingStatus.Completed)
++        {
++            throw BuildValidationException("CompanyId", "This onboarding session is already completed.");
++        }
++
++        if (company.OnboardingStatus == CompanyOnboardingStatus.Abandoned)
++        {
++            throw BuildValidationException("CompanyId", "This onboarding draft was discarded. Start a new setup session.");
++        }
++    }
++
+     private static void AddRequired(
+         IDictionary<string, List<string>> errors,
+         string key,
+@@ -431,6 +571,11 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         }
+     }
+ 
++    private static CompanyOnboardingValidationException BuildValidationException(string key, string message) =>
++        new(new Dictionary<string, string[]>
++        {
++            [key] = [message]
++        });
++
+     private static string NormalizeRequired(string value) => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+     private static string? NormalizeOptional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 4726b9d..3be2d77 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -41,11 +41,17 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+         builder.Property(x => x.OnboardingStateJson);
+         builder.Property(x => x.OnboardingCurrentStep);
+         builder.Property(x => x.OnboardingTemplateId).HasMaxLength(100);
++        builder.Property(x => x.OnboardingStatus)
++            .HasConversion(status => status.ToStorageValue(), value => CompanyOnboardingStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(CompanyOnboardingStatus.NotStarted.ToStorageValue())
++            .IsRequired();
+         builder.Property(x => x.OnboardingLastSavedUtc);
+         builder.Property(x => x.OnboardingCompletedUtc);
++        builder.Property(x => x.OnboardingAbandonedUtc);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.HasIndex(x => x.OnboardingCompletedUtc);
++        builder.HasIndex(x => x.OnboardingStatus);
+ 
+         builder.HasMany(x => x.Memberships)
+             .WithOne(x => x.Company)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs
+new file mode 100644
+index 0000000..3e94dc4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs
+@@ -0,0 +1,48 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddCompanyOnboardingSessionStatus : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<DateTime>(
++            name: "OnboardingAbandonedUtc",
++            table: "companies",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "OnboardingStatus",
++            table: "companies",
++            type: "nvarchar(32)",
++            maxLength: 32,
++            nullable: false,
++            defaultValue: "not_started");
++
++        migrationBuilder.Sql("""
++            UPDATE companies
++            SET OnboardingStatus =
++                CASE
++                    WHEN OnboardingCompletedUtc IS NOT NULL THEN 'completed'
++                    WHEN OnboardingCurrentStep IS NOT NULL OR OnboardingLastSavedUtc IS NOT NULL THEN 'in_progress'
++                    ELSE 'not_started'
++                END
++            """);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_companies_OnboardingStatus",
++            table: "companies",
++            column: "OnboardingStatus");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_companies_OnboardingStatus",
++            table: "companies");
++
++        migrationBuilder.DropColumn(name: "OnboardingAbandonedUtc", table: "companies");
++        migrationBuilder.DropColumn(name: "OnboardingStatus", table: "companies");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Onboarding.razor b/src/VirtualCompany.Web/Pages/Onboarding.razor
+index 885af7d..df09acd 100644
+--- a/src/VirtualCompany.Web/Pages/Onboarding.razor
++++ b/src/VirtualCompany.Web/Pages/Onboarding.razor
+@@ -1,301 +1,458 @@
+ @page "/onboarding"
+ @inject OnboardingApiClient ApiClient
+ @inject NavigationManager Navigation
+ 
+ <PageTitle>Create Company Workspace</PageTitle>
+ 
+ @if (isLoading)
+ {
+     <section class="py-4">
+         <h1>Create company workspace</h1>
+-        <p class="text-body-secondary mb-0">Loading setup defaults...</p>
++        <p class="text-body-secondary mb-0">Loading saved setup progress...</p>
+     </section>
+ }
+ else
+ {
+     <section class="py-4">
+         <div class="dashboard-shell">
+             <div class="wizard-panel">
+                 <div class="wizard-card">
+                     <h1>Create company workspace</h1>
+-                    <p class="text-body-secondary">Set up the company profile, create the workspace, and make yourself the initial owner.</p>
++                    <p class="text-body-secondary">Set up the company profile, save progress between sessions, and resume the same company setup later.</p>
+ 
+                     @if (!string.IsNullOrWhiteSpace(statusMessage))
+                     {
+                         <div class="alert alert-info mt-3">@statusMessage</div>
+                     }
+@@ -28,69 +185,133 @@ else
+                     {
+                         <div class="alert alert-danger mt-3">@errorMessage</div>
+                     }
+ 
+-                    <div class="row g-3 mt-1">
+-                        <div class="col-12">
+-                            <label class="form-label">Starting template</label>
+-                            <select class="form-select" value="@model.SelectedTemplateId" @onchange="OnTemplateChanged">
+-                                <option value="">No template</option>
+-                                @foreach (var template in templates)
+-                                {
+-                                    <option value="@template.TemplateId">@template.Name</option>
+-                                }
+-                            </select>
+-                            <div class="form-text">Optional. Use an existing template to prefill industry and locale defaults.</div>
+-                            @RenderError(nameof(model.SelectedTemplateId))
+-                        </div>
+-
+-                        <div class="col-12">
+-                            <label class="form-label">Company name</label>
+-                            <input class="form-control" @bind="model.Name" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.Name))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Industry</label>
+-                            <input class="form-control" @bind="model.Industry" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.Industry))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Business type</label>
+-                            <input class="form-control" @bind="model.BusinessType" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.BusinessType))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Timezone</label>
+-                            <input class="form-control" @bind="model.Timezone" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.Timezone))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Currency</label>
+-                            <input class="form-control" @bind="model.Currency" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.Currency))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Language</label>
+-                            <input class="form-control" @bind="model.Language" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.Language))
+-                        </div>
+-
+-                        <div class="col-md-6">
+-                            <label class="form-label">Compliance region</label>
+-                            <input class="form-control" @bind="model.ComplianceRegion" @bind:after="ClearStatus" />
+-                            @RenderError(nameof(model.ComplianceRegion))
+-                        </div>
+-                    </div>
+-
+-                    <div class="d-flex gap-2 mt-4 flex-wrap">
+-                        <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="SubmitAsync">
+-                            @(isSubmitting ? "Creating workspace..." : model.CompanyId.HasValue ? "Continue with saved setup" : "Create workspace")
+-                        </button>
+-                    </div>
++                    @if (showCompletedState)
++                    {
++                        <div class="mt-4">
++                            <h2 class="h5">Workspace already completed</h2>
++                            <p class="text-body-secondary">This company setup is complete. You can open the dashboard or start a fresh workspace setup without reopening the finished session.</p>
++                            <div class="d-flex gap-2 flex-wrap">
++                                <button type="button" class="btn btn-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">Open dashboard</button>
++                                <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">Start another workspace</button>
++                            </div>
++                        </div>
++                    }
++                    else
++                    {
++                        <ol class="wizard-steps mt-4">
++                            @for (var wizardStep = 1; wizardStep <= StepCount; wizardStep++)
++                            {
++                                <li class="wizard-step @GetStepClass(wizardStep)">
++                                    <span>@wizardStep</span>
++                                    <div>
++                                        <strong>@GetStepTitle(wizardStep)</strong>
++                                    </div>
++                                </li>
++                            }
++                        </ol>
++
++                        @if (currentStep == 1)
++                        {
++                            <div class="row g-3 mt-1">
++                                <div class="col-12">
++                                    <label class="form-label">Starting template</label>
++                                    <select class="form-select" value="@model.SelectedTemplateId" @onchange="OnTemplateChanged">
++                                        <option value="">No template</option>
++                                        @foreach (var template in templates)
++                                        {
++                                            <option value="@template.TemplateId">@template.Name</option>
++                                        }
++                                    </select>
++                                    <div class="form-text">Optional. Use an existing template to prefill industry and locale defaults.</div>
++                                    @RenderError(nameof(model.SelectedTemplateId))
++                                </div>
++
++                                <div class="col-12">
++                                    <label class="form-label">Company name</label>
++                                    <input class="form-control" @bind="model.Name" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.Name))
++                                </div>
++
++                                <div class="col-md-6">
++                                    <label class="form-label">Industry</label>
++                                    <input class="form-control" @bind="model.Industry" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.Industry))
++                                </div>
++
++                                <div class="col-md-6">
++                                    <label class="form-label">Business type</label>
++                                    <input class="form-control" @bind="model.BusinessType" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.BusinessType))
++                                </div>
++                            </div>
++                        }
++                        else if (currentStep == 2)
++                        {
++                            <div class="row g-3 mt-1">
++                                <div class="col-md-6">
++                                    <label class="form-label">Timezone</label>
++                                    <input class="form-control" @bind="model.Timezone" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.Timezone))
++                                </div>
++
++                                <div class="col-md-6">
++                                    <label class="form-label">Currency</label>
++                                    <input class="form-control" @bind="model.Currency" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.Currency))
++                                </div>
++
++                                <div class="col-md-6">
++                                    <label class="form-label">Language</label>
++                                    <input class="form-control" @bind="model.Language" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.Language))
++                                </div>
++
++                                <div class="col-md-6">
++                                    <label class="form-label">Compliance region</label>
++                                    <input class="form-control" @bind="model.ComplianceRegion" @bind:after="ClearMessages" />
++                                    @RenderError(nameof(model.ComplianceRegion))
++                                </div>
++                            </div>
++                        }
++                        else
++                        {
++                            <div class="mt-4">
++                                <h2 class="h5">Review setup</h2>
++                                <dl class="row mb-0">
++                                    <dt class="col-sm-4">Company</dt>
++                                    <dd class="col-sm-8">@model.Name</dd>
++                                    <dt class="col-sm-4">Industry</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.Industry)</dd>
++                                    <dt class="col-sm-4">Business type</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.BusinessType)</dd>
++                                    <dt class="col-sm-4">Timezone</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.Timezone)</dd>
++                                    <dt class="col-sm-4">Currency</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.Currency)</dd>
++                                    <dt class="col-sm-4">Language</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.Language)</dd>
++                                    <dt class="col-sm-4">Compliance</dt>
++                                    <dd class="col-sm-8">@DisplayValue(model.ComplianceRegion)</dd>
++                                </dl>
++                            </div>
++                        }
++
++                        <div class="d-flex gap-2 mt-4 flex-wrap">
++                            @if (currentStep > 1)
++                            {
++                                <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="GoBack">Back</button>
++                            }
++
++                            <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="SaveAndExitAsync">
++                                @(isSubmitting ? "Saving..." : "Save and exit")
++                            </button>
++
++                            @if (model.CompanyId.HasValue)
++                            {
++                                <button type="button" class="btn btn-outline-danger" disabled="@isSubmitting" @onclick="DiscardAsync">Discard saved setup</button>
++                            }
++
++                            @if (currentStep < StepCount)
++                            {
++                                <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="ContinueAsync">
++                                    @(isSubmitting ? "Saving..." : "Continue")
++                                </button>
++                            }
++                            else
++                            {
++                                <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="CompleteAsync">
++                                    @(isSubmitting ? "Completing setup..." : "Complete workspace setup")
++                                </button>
++                            }
++                        </div>
++                    }
+                 </div>
+             </div>
+ 
+             <aside class="wizard-panel">
+                 <div class="wizard-card wizard-card--compact">
+                     <h2 class="h5">Workspace outcome</h2>
+                     <p class="text-body-secondary mb-2">Signed-in user becomes the initial <strong>owner</strong> membership.</p>
+-                    <p class="text-body-secondary mb-0">Success redirects to the company dashboard.</p>
++                    <p class="text-body-secondary mb-0">Saved progress is restored for the same authenticated user and company setup session.</p>
+                 </div>
+                 <div class="wizard-card wizard-card--compact mt-3">
+-                    <h2 class="h5">Saved setup</h2>
+-                    <p class="text-body-secondary mb-2">Draft company id: @(model.CompanyId?.ToString() ?? "No saved draft")</p>
+-                    <p class="text-body-secondary mb-0">Last saved: @(lastSavedLabel ?? "No draft restored")</p>
++                    <h2 class="h5">Resume state</h2>
++                    <p class="text-body-secondary mb-2">Session status: @DisplaySessionStatus()</p>
++                    <p class="text-body-secondary mb-2">Draft company id: @(model.CompanyId?.ToString() ?? "No active draft")</p>
++                    <p class="text-body-secondary mb-0">Last saved: @(lastSavedLabel ?? "No saved setup yet")</p>
+                 </div>
+                 <div class="wizard-card wizard-card--compact mt-3">
+                     <h2 class="h5">Starter guidance</h2>
+@@ -104,6 +325,7 @@ else
+ }
+ 
+ @code {
++    private const int StepCount = 3;
+     private static readonly string[] DefaultGuidance =
+     [
+         "Invite teammates after the workspace is live.",
+@@ -117,6 +339,10 @@ else
+     private bool isSubmitting;
+     private string? statusMessage;
+     private string? errorMessage;
++    private string sessionStatus = "not_started";
++    private int currentStep = 1;
++    private List<string> savedGuidance = [];
++    private string? completedDashboardPath;
+     private string? lastSavedLabel;
+ 
+     private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
+@@ -124,6 +350,9 @@ else
+         ? SelectedTemplate.StarterGuidance
++        : savedGuidance.Count > 0
++            ? savedGuidance
+         : DefaultGuidance;
++    private bool showCompletedState => string.Equals(sessionStatus, "completed", StringComparison.OrdinalIgnoreCase);
+ 
+     protected override async Task OnInitializedAsync()
+     {
+@@ -131,102 +360,249 @@ else
+ 
+         if (progress is null)
+         {
+             isLoading = false;
+             return;
+         }
+ 
+-        model.CompanyId = progress.CompanyId;
+-        model.Name = progress.Name;
+-        model.Industry = progress.Industry;
+-        model.BusinessType = progress.BusinessType;
+-        model.Timezone = progress.Timezone;
+-        model.Currency = progress.Currency;
+-        model.Language = progress.Language;
+-        model.ComplianceRegion = progress.ComplianceRegion;
+-        model.SelectedTemplateId = progress.SelectedTemplateId;
+-        lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
+-        statusMessage = "Saved company setup restored.";
++        ApplyProgress(progress);
+         isLoading = false;
+     }
+ 
+-    private async Task SubmitAsync()
++    private async Task ContinueAsync()
+     {
+-        if (!ValidateForm())
++        if (!ValidateStep(currentStep))
+         {
+             return;
+         }
+ 
+         try
+         {
+             isSubmitting = true;
+-            errorMessage = null;
+-
+-            if (model.CompanyId.HasValue)
+-            {
+-                var resumedResult = await ApiClient.CompleteAsync(new CompleteOnboardingRequest
+-                {
+-                    CompanyId = model.CompanyId.Value,
+-                    Name = model.Name,
+-                    Industry = model.Industry,
+-                    BusinessType = model.BusinessType,
+-                    Timezone = model.Timezone,
+-                    Currency = model.Currency,
+-                    Language = model.Language,
+-                    ComplianceRegion = model.ComplianceRegion,
+-                    SelectedTemplateId = model.SelectedTemplateId
+-                });
+-
+-                Navigation.NavigateTo(resumedResult.DashboardPath);
+-                return;
+-            }
+-
+-            var created = await ApiClient.CreateCompanyAsync(new CreateCompanyRequest
+-            {
+-                Name = model.Name,
+-                Industry = model.Industry,
+-                BusinessType = model.BusinessType,
+-                Timezone = model.Timezone,
+-                Currency = model.Currency,
+-                Language = model.Language,
+-                ComplianceRegion = model.ComplianceRegion,
+-                SelectedTemplateId = model.SelectedTemplateId
+-            });
+-
+-            Navigation.NavigateTo(created.DashboardPath);
++            ClearMessages();
++            var progress = await PersistProgressAsync(Math.Min(StepCount, currentStep + 1));
++            ApplyProgress(progress);
++            statusMessage = "Setup progress saved.";
+         }
+         catch (OnboardingApiException ex)
+         {
+             ApplyApiErrors(ex.Errors);
+             errorMessage = ex.Message;
+         }
+         finally
+         {
+             isSubmitting = false;
+         }
+     }
+ 
++    private async Task SaveAndExitAsync()
++    {
++        if (!ValidateDraftForSave())
++        {
++            return;
++        }
++
++        try
++        {
++            isSubmitting = true;
++            ClearMessages();
++            var progress = await PersistProgressAsync(currentStep);
++            ApplyProgress(progress);
++            statusMessage = "Setup saved. You can resume later from the same step.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            ApplyApiErrors(ex.Errors);
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private async Task CompleteAsync()
++    {
++        if (!ValidateAllSteps())
++        {
++            return;
++        }
++
++        try
++        {
++            isSubmitting = true;
++            ClearMessages();
++
++            if (!model.CompanyId.HasValue)
++            {
++                var progress = await PersistProgressAsync(StepCount);
++                ApplyProgress(progress);
++            }
++
++            var result = await ApiClient.CompleteAsync(new CompleteOnboardingRequest
++            {
++                CompanyId = model.CompanyId!.Value,
++                Name = model.Name,
++                Industry = model.Industry,
++                BusinessType = model.BusinessType,
++                Timezone = model.Timezone,
++                Currency = model.Currency,
++                Language = model.Language,
++                ComplianceRegion = model.ComplianceRegion,
++                SelectedTemplateId = model.SelectedTemplateId
++            });
++
++            completedDashboardPath = result.DashboardPath;
++            sessionStatus = "completed";
++            savedGuidance = result.StarterGuidance;
++            statusMessage = "Workspace setup is complete.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            ApplyApiErrors(ex.Errors);
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private async Task DiscardAsync()
++    {
++        if (!model.CompanyId.HasValue)
++        {
++            StartAnotherWorkspace();
++            return;
++        }
++
++        try
++        {
++            isSubmitting = true;
++            ClearMessages();
++            var progress = await ApiClient.AbandonAsync(model.CompanyId.Value);
++            ApplyProgress(progress, startFresh: true);
++            statusMessage = "Saved setup was discarded. You can start again with the restored values.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            ApplyApiErrors(ex.Errors);
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private void GoBack()
++    {
++        if (currentStep > 1)
++        {
++            currentStep--;
++            ClearMessages();
++        }
++    }
++
++    private void GoToDashboard()
++    {
++        if (!string.IsNullOrWhiteSpace(completedDashboardPath))
++        {
++            Navigation.NavigateTo(completedDashboardPath);
++        }
++    }
++
++    private void StartAnotherWorkspace()
++    {
++        model.CompanyId = null;
++        currentStep = 1;
++        sessionStatus = "not_started";
++        completedDashboardPath = null;
++        lastSavedLabel = null;
++        ClearMessages();
++        statusMessage = "Starting a new workspace setup.";
++    }
++
+     private void OnTemplateChanged(ChangeEventArgs args)
+     {
+         model.SelectedTemplateId = args.Value?.ToString();
+         ApplySelectedTemplate();
+-        ClearStatus();
++        ClearMessages();
+     }
+ 
+     private void ApplySelectedTemplate()
+     {
+         if (SelectedTemplate is null)
+         {
+             return;
+         }
+ 
+         model.Industry = string.IsNullOrWhiteSpace(model.Industry) ? SelectedTemplate.Industry : model.Industry;
+         model.BusinessType = string.IsNullOrWhiteSpace(model.BusinessType) ? SelectedTemplate.BusinessType : model.BusinessType;
+         model.Timezone = string.IsNullOrWhiteSpace(model.Timezone) ? SelectedTemplate.Defaults.Timezone ?? string.Empty : model.Timezone;
+         model.Currency = string.IsNullOrWhiteSpace(model.Currency) ? SelectedTemplate.Defaults.Currency ?? string.Empty : model.Currency;
+         model.Language = string.IsNullOrWhiteSpace(model.Language) ? SelectedTemplate.Defaults.Language ?? string.Empty : model.Language;
+         model.ComplianceRegion = string.IsNullOrWhiteSpace(model.ComplianceRegion) ? SelectedTemplate.Defaults.ComplianceRegion ?? string.Empty : model.ComplianceRegion;
+     }
+ 
+-    private bool ValidateForm()
++    private void ApplyProgress(OnboardingProgressViewModel progress, bool startFresh = false)
++    {
++        model.CompanyId = startFresh || !progress.CanResume ? null : progress.CompanyId;
++        model.Name = progress.Name;
++        model.Industry = progress.Industry;
++        model.BusinessType = progress.BusinessType;
++        model.Timezone = progress.Timezone;
++        model.Currency = progress.Currency;
++        model.Language = progress.Language;
++        model.ComplianceRegion = progress.ComplianceRegion;
++        model.SelectedTemplateId = progress.SelectedTemplateId;
++        savedGuidance = progress.StarterGuidance;
++        completedDashboardPath = progress.DashboardPath;
++        sessionStatus = progress.Status;
++        lastSavedLabel = progress.LastSavedUtc?.ToLocalTime().ToString("g");
++
++        if (progress.CanResume && !startFresh)
++        {
++            currentStep = Math.Clamp(progress.CurrentStep, 1, StepCount);
++            statusMessage = "Saved company setup restored.";
++            return;
++        }
++
++        if (string.Equals(progress.Status, "completed", StringComparison.OrdinalIgnoreCase) && !startFresh)
++        {
++            currentStep = StepCount;
++            statusMessage = "This company setup is already complete.";
++            return;
++        }
++
++        currentStep = 1;
++    }
++
++    private async Task<OnboardingProgressViewModel> PersistProgressAsync(int step)
++    {
++        var request = new SaveOnboardingRequest
++        {
++            CompanyId = model.CompanyId,
++            Name = model.Name,
++            Industry = model.Industry,
++            BusinessType = model.BusinessType,
++            Timezone = model.Timezone,
++            Currency = model.Currency,
++            Language = model.Language,
++            ComplianceRegion = model.ComplianceRegion,
++            CurrentStep = step,
++            SelectedTemplateId = model.SelectedTemplateId
++        };
++
++        return model.CompanyId.HasValue
++            ? await ApiClient.SaveProgressAsync(request)
++            : await ApiClient.CreateWorkspaceAsync(request);
++    }
++
++    private bool ValidateDraftForSave()
++    {
++        validationErrors.Clear();
++
++        if (string.IsNullOrWhiteSpace(model.Name))
++        {
++            validationErrors[nameof(model.Name)] = "Company name is required to save setup progress.";
++        }
++
++        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before saving." : null;
++        return validationErrors.Count == 0;
++    }
++
++    private bool ValidateStep(int step)
+     {
+         validationErrors.Clear();
+ 
+-        if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = "Company name is required.";
+-        if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = "Industry is required.";
+-        if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = "Business type is required.";
++        if (step >= 1)
++        {
++            if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = "Company name is required.";
++            if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = "Industry is required.";
++            if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = "Business type is required.";
++        }
+ 
+-        if (step >= 2)
++        if (step >= 2 || currentStep >= 2)
+         {
+             if (string.IsNullOrWhiteSpace(model.Timezone)) validationErrors[nameof(model.Timezone)] = "Timezone is required.";
+             if (string.IsNullOrWhiteSpace(model.Currency)) validationErrors[nameof(model.Currency)] = "Currency is required.";
+             if (string.IsNullOrWhiteSpace(model.Language)) validationErrors[nameof(model.Language)] = "Language is required.";
+             if (string.IsNullOrWhiteSpace(model.ComplianceRegion)) validationErrors[nameof(model.ComplianceRegion)] = "Compliance region is required.";
+-
+-        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before continuing." : null;
++        }
++
++        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before continuing." : null;
+         return validationErrors.Count == 0;
+     }
+ 
+-    private void ClearStatus() => statusMessage = null;
++    private bool ValidateAllSteps() => ValidateStep(StepCount);
++
++    private void ClearMessages()
++    {
++        statusMessage = null;
++        errorMessage = null;
++    }
+ 
+     private void ApplyApiErrors(IReadOnlyDictionary<string, string[]> errors)
+     {
+@@ -236,11 +612,43 @@ else
+         {
+             validationErrors[error.Key] = error.Value.FirstOrDefault() ?? "Invalid value.";
+         }
+     }
+-    
++
++    private string GetStepClass(int wizardStep)
++    {
++        if (wizardStep == currentStep)
++        {
++            return "is-active";
++        }
++
++        return wizardStep < currentStep ? "is-complete" : string.Empty;
++    }
++
++    private static string GetStepTitle(int wizardStep) =>
++        wizardStep switch
++        {
++            1 => "Company profile",
++            2 => "Workspace defaults",
++            3 => "Review and complete",
++            _ => "Setup"
++        };
++
++    private string DisplaySessionStatus() =>
++        sessionStatus switch
++        {
++            "in_progress" => "In progress",
++            "completed" => "Completed",
++            "abandoned" => "Discarded",
++            _ => "Not started"
++        };
++
++    private static string DisplayValue(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "Not set" : value;
++
+     private RenderFragment RenderError(string field) => builder =>
+     {
+         if (validationErrors.TryGetValue(field, out var message))
+         {
+             builder.OpenElement(0, "div");
+             builder.AddAttribute(1, "class", "validation-message");
+             builder.AddContent(2, message);
+             builder.CloseElement();
+         }
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index d245f17..5e0f08e 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -31,6 +31,9 @@ public sealed class OnboardingApiClient
+     public Task<OnboardingProgressViewModel> SaveProgressAsync(SaveOnboardingRequest request, CancellationToken cancellationToken = default) =>
+         SendAsync<OnboardingProgressViewModel>(HttpMethod.Put, "api/onboarding/progress", request, cancellationToken);
+ 
++    public Task<OnboardingProgressViewModel> AbandonAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendAsync<OnboardingProgressViewModel>(HttpMethod.Post, "api/onboarding/abandon", new AbandonOnboardingRequest { CompanyId = companyId }, cancellationToken);
++
+     public Task<CompleteOnboardingResultViewModel> CompleteAsync(CompleteOnboardingRequest request, CancellationToken cancellationToken = default) =>
+         SendAsync<CompleteOnboardingResultViewModel>(HttpMethod.Post, "api/onboarding/complete", request, cancellationToken);
+ 
+@@ -121,9 +124,14 @@ public sealed class OnboardingProgressViewModel
+     public string ComplianceRegion { get; set; } = string.Empty;
+     public int CurrentStep { get; set; }
+     public string? SelectedTemplateId { get; set; }
++    public string Status { get; set; } = "not_started";
+     public bool IsCompleted { get; set; }
++    public bool CanResume { get; set; }
+     public DateTime? LastSavedUtc { get; set; }
++    public DateTime? CompletedUtc { get; set; }
++    public DateTime? AbandonedUtc { get; set; }
+     public List<string> StarterGuidance { get; set; } = [];
++    public string? DashboardPath { get; set; }
+ }
+ 
+ public sealed class CreateCompanyRequest
+@@ -188,6 +196,11 @@ public sealed class CompleteOnboardingRequest
+     public string? SelectedTemplateId { get; set; }
+ }
+ 
++public sealed class AbandonOnboardingRequest
++{
++    public Guid CompanyId { get; set; }
++}
++
+ public sealed class CreateCompanyResultViewModel
+ {
+     public Guid CompanyId { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+index 77bf4c3..0865e39 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -95,6 +95,30 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         Assert.Equal("Resume Co", progress.Name);
+     }
+ 
++    [Fact]
++    public async Task CreateWorkspace_allows_incomplete_draft_values()
++    {
++        using var client = CreateAuthenticatedClient("draft-user", "draft@example.com", "Draft User");
++        var response = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Draft Co",
++            Industry = "",
++            BusinessType = "",
++            Timezone = "",
++            Currency = "",
++            Language = "",
++            ComplianceRegion = "",
++            CurrentStep = 1,
++            SelectedTemplateId = (string?)null
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("in_progress", payload!.Status);
++        Assert.True(payload.CanResume);
++        Assert.Equal("Draft Co", payload.Name);
++    }
++
+     [Fact]
+     public async Task CreateCompany_rejects_blank_required_fields()
+     {
+@@ -174,8 +198,10 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+             Assert.NotNull(company.OnboardingCompletedUtc);
+         }
+ 
+-        var progressAfterComplete = await client.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
+-        Assert.Null(progressAfterComplete);
++        var progressAfterComplete = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");
++        Assert.NotNull(progressAfterComplete);
++        Assert.Equal("completed", progressAfterComplete!.Status);
++        Assert.False(progressAfterComplete.CanResume);
+     }
+ 
+     [Fact]
+@@ -202,6 +228,64 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         var bobsProgress = await bobClient.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
+         Assert.Null(bobsProgress);
+     }
++
++    [Fact]
++    public async Task SaveProgress_blocks_other_user_from_mutating_draft()
++    {
++        using var aliceClient = CreateAuthenticatedClient("owner-edit-user", "owner-edit@example.com", "Owner Edit User");
++        using var bobClient = CreateAuthenticatedClient("mutating-user", "mutating@example.com", "Mutating User");
++
++        var createResponse = await aliceClient.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Private Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 2,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        Assert.NotNull(created);
++
++        var saveResponse = await bobClient.PutAsJsonAsync("/api/onboarding/progress", new
++        {
++            CompanyId = created!.CompanyId,
++            Name = "Private Co",
++            Industry = "Technology",
++            BusinessType = "Software Company",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 3,
++            SelectedTemplateId = "saas-operations"
++        });
++
++        Assert.Equal(HttpStatusCode.Forbidden, saveResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Abandoning_progress_marks_session_discarded_and_disables_resume()
++    {
++        using var client = CreateAuthenticatedClient("abandon-user", "abandon@example.com", "Abandon User");
++        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
++        {
++            Name = "Abandon Co",
++            Industry = "Retail",
++            BusinessType = "Store",
++            Timezone = "Europe/Stockholm",
++            Currency = "SEK",
++            Language = "sv-SE",
++            ComplianceRegion = "EU",
++            CurrentStep = 2,
++            SelectedTemplateId = (string?)null
++        });
++
++        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
++        var abandonResponse = await client.PostAsJsonAsync("/api/onboarding/abandon", new { CompanyId = created!.CompanyId });
++        Assert.Equal(HttpStatusCode.OK, abandonResponse.StatusCode);
++
++        var progress = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");
++        Assert.NotNull(progress);
++        Assert.Equal("abandoned", progress!.Status);
++        Assert.False(progress.CanResume);
++    }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, string? provider = null)
+     {
+@@ -234,8 +318,13 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public string ComplianceRegion { get; set; } = string.Empty;
+         public int CurrentStep { get; set; }
+         public string? SelectedTemplateId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public bool IsCompleted { get; set; }
++        public bool CanResume { get; set; }
++        public DateTime? LastSavedUtc { get; set; }
++        public DateTime? CompletedUtc { get; set; }
++        public DateTime? AbandonedUtc { get; set; }
++        public string? DashboardPath { get; set; }
+     }
+ 
+     private sealed class CompleteResponse
+     {
+         public Guid CompanyId { get; set; }
+         public string CompanyName { get; set; } = string.Empty;
+         public string DashboardPath { get; set; } = string.Empty;
+         public List<string> StarterGuidance { get; set; } = [];
+     }
+ }
+END_OF_PATCH

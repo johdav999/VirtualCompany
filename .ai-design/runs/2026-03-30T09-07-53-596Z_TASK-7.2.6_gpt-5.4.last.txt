@@ -1,0 +1,1292 @@
+diff --git a/README.md b/README.md
+index 8ec7f68..f073bc2 100644
+--- a/README.md
++++ b/README.md
+@@ -25,7 +25,7 @@ VirtualCompany/
+   tests/
+     VirtualCompany.Api.Tests/
+ ```
+ 
+-## Local Database Setup (Docker SQL Server)
++## Local Database Setup (Docker PostgreSQL)
+ 
+-This solution includes a Docker Compose setup for a local SQL Server instance that stays compatible with Azure SQL development.
++This solution includes a Docker Compose setup for a local PostgreSQL instance that matches the production JSONB persistence model used by onboarding.
+ 
+ ### Prerequisite: Docker Desktop on Windows
+ 
+@@ -48,19 +48,19 @@ If Docker is not installed:
+ If startup fails:
+ 
+ ```powershell
+-docker logs virtualcompany-sql
++docker logs virtualcompany-postgres
+ ```
+ 
+ ### Connect to the database
+ 
+-- Server: `localhost,1433`
+-- Database: `VirtualCompanyDb`
+-- User: `sa`
+-- Password: `YourStrongPassword123!`
++- Host: `localhost`
++- Port: `5432`
++- Database: `virtualcompany`
++- User: `postgres`
++- Password: `postgres`
+ 
+ ### Sample connection string
+ 
+ ```text
+-Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True
++Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres
+ ```
+ 
+ ## Local Development Authentication
+@@ -94,6 +94,6 @@ Company-scoped endpoints:
+ 
+ ## Notes
+ 
+-- The SQL Server container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
+-- Data is persisted in the named Docker volume `sqlserver-data`.
++- The PostgreSQL container uses the `postgres:17` image.
++- Data is persisted in the named Docker volume `postgres-data`.
+ - The API applies EF Core migrations at startup when using a relational provider.
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 9a0399c..4e543cb 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,13 +1,13 @@
+ services:
+-  sqlserver:
+-    image: mcr.microsoft.com/mssql/server:2022-latest
+-    container_name: virtualcompany-sql
++  postgres:
++    image: postgres:17
++    container_name: virtualcompany-postgres
+     environment:
+-      ACCEPT_EULA: "Y"
+-      SA_PASSWORD: "YourStrongPassword123!"
++      POSTGRES_DB: "virtualcompany"
++      POSTGRES_USER: "postgres"
++      POSTGRES_PASSWORD: "postgres"
+     ports:
+-      - "1433:1433"
++      - "5432:5432"
+     volumes:
+-      - sqlserver-data:/var/opt/mssql
++      - postgres-data:/var/lib/postgresql/data
+     restart: unless-stopped
+ 
+ volumes:
+-  sqlserver-data:
++  postgres-data:
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 83ebc65..9716f2b 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -1,6 +1,6 @@
+ {
+   "ConnectionStrings": {
+-    "VirtualCompanyDb": "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True"
++    "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres"
+   },
+   "Logging": {
+     "LogLevel": {
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index d3d08e8..2492e09 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -1,6 +1,6 @@
+ {
+   "ConnectionStrings": {
+-    "VirtualCompanyDb": "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True"
++    "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres"
+   },
+   "Logging": {
+     "LogLevel": {
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 3ee15ba..0d0bbdd 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -1,3 +1,5 @@
++using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ using System.Collections.ObjectModel;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -66,6 +68,29 @@ public sealed record OnboardingTemplateRecommendationDto(
+     OnboardingTemplateDefaultsDto Defaults,
+     IReadOnlyList<string> StarterGuidance);
+ 
++public sealed record CompanyBrandingDto(
++    string? LogoUrl,
++    string? PrimaryColor,
++    string? SecondaryColor,
++    string? Theme,
++    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
++
++public sealed record CompanyOnboardingSettingsDto(
++    string? Name,
++    string? Industry,
++    string? BusinessType,
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion,
++    int? CurrentStep,
++    string? SelectedTemplateId,
++    bool IsCompleted,
++    IReadOnlyList<string>? StarterGuidance,
++    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
++
++public sealed record CompanySettingsDto(
++    string? Locale,
++    string? TemplateId,
++    CompanyOnboardingSettingsDto? Onboarding,
++    IDictionary<string, bool>? FeatureFlags,
++    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
++
+ public sealed record CompanyOnboardingProgressDto(
+     Guid? CompanyId,
+     string Name,
+@@ -82,14 +107,18 @@ public sealed record CompanyOnboardingProgressDto(
+     DateTime? LastSavedUtc,
+     DateTime? CompletedUtc,
+     DateTime? AbandonedUtc,
+-    string? DashboardPath,
+-    IReadOnlyList<string> StarterGuidance);
++    string? DashboardPath,
++    IReadOnlyList<string> StarterGuidance,
++    CompanyBrandingDto Branding,
++    CompanySettingsDto Settings);
+ 
+ public sealed record CreateCompanyCommand(
+     string Name,
+     string Industry,
+     string BusinessType,
++    CompanyBrandingDto? Branding,
++    CompanySettingsDto? Settings,
+     string? Timezone,
+     string? Currency,
+     string? Language,
+@@ -101,6 +130,8 @@ public sealed record CreateCompanyWorkspaceRequest(
+     string Name,
+     string Industry,
+     string BusinessType,
++    CompanyBrandingDto? Branding,
++    CompanySettingsDto? Settings,
+     string? Timezone,
+     string? Currency,
+     string? Language,
+@@ -112,6 +143,8 @@ public sealed record SaveCompanyOnboardingProgressRequest(
+     string Name,
+     string Industry,
+     string BusinessType,
++    CompanyBrandingDto? Branding,
++    CompanySettingsDto? Settings,
+     string? Timezone,
+     string? Currency,
+     string? Language,
+@@ -124,6 +157,8 @@ public sealed record CompleteCompanyOnboardingRequest(
+     string Name,
+     string Industry,
+     string BusinessType,
++    CompanyBrandingDto? Branding,
++    CompanySettingsDto? Settings,
+     string? Timezone,
+     string? Currency,
+     string? Language,
+diff --git a/src/VirtualCompany.Domain/Entities/CompanyConfigurationModels.cs b/src/VirtualCompany.Domain/Entities/CompanyConfigurationModels.cs
+new file mode 100644
+index 0000000..ec27354
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/CompanyConfigurationModels.cs
+@@ -0,0 +1,35 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CompanyBranding
++{
++    public string? LogoUrl { get; set; }
++    public string? PrimaryColor { get; set; }
++    public string? SecondaryColor { get; set; }
++    public string? Theme { get; set; }
++    public IDictionary<string, JsonNode?> Extensions { get; set; } = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class CompanySettings
++{
++    public string? Locale { get; set; }
++    public string? TemplateId { get; set; }
++    public CompanyOnboardingSettings Onboarding { get; set; } = new();
++    public IDictionary<string, bool> FeatureFlags { get; set; } = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
++    public IDictionary<string, JsonNode?> Extensions { get; set; } = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class CompanyOnboardingSettings
++{
++    public string? Name { get; set; }
++    public string? Industry { get; set; }
++    public string? BusinessType { get; set; }
++    public string? Timezone { get; set; }
++    public string? Currency { get; set; }
++    public string? Language { get; set; }
++    public string? ComplianceRegion { get; set; }
++    public int? CurrentStep { get; set; }
++    public string? SelectedTemplateId { get; set; }
++    public bool IsCompleted { get; set; }
++    public List<string> StarterGuidance { get; set; } = [];
++    public IDictionary<string, JsonNode?> Extensions { get; set; } = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index 2c4845c..67c8b80 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -92,6 +92,8 @@ public sealed class Company
+     public string? Currency { get; private set; }
+     public string? Language { get; private set; }
+     public string? ComplianceRegion { get; private set; }
++    public CompanyBranding Branding { get; private set; } = new();
++    public CompanySettings Settings { get; private set; } = new();
+     public string? OnboardingStateJson { get; private set; }
+     public int? OnboardingCurrentStep { get; private set; }
+     public string? OnboardingTemplateId { get; private set; }
+@@ -120,6 +122,14 @@ public sealed class Company
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public void UpdateBrandingAndSettings(CompanyBranding? branding, CompanySettings? settings)
++    {
++        Branding = branding ?? new CompanyBranding();
++        Settings = settings ?? new CompanySettings();
++        Settings.Onboarding ??= new CompanyOnboardingSettings();
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void SaveOnboardingProgress(int currentStep, string? templateId, string onboardingStateJson)
+     {
+         if (currentStep < 1)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+index eaa9c92..50d9c72 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOnboardingService.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
+@@ -18,6 +19,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     private const int LanguageMaxLength = 16;
+     private const int ComplianceRegionMaxLength = 50;
+     private const int TemplateIdMaxLength = 100;
++    private const int LogoUrlMaxLength = 2048;
++    private const int ThemeMaxLength = 50;
++    private const int LocaleMaxLength = 16;
++    private const int HexColorMaxLength = 16;
+ 
+     private static readonly string[] DefaultStarterGuidance =
+     [
+@@ -50,6 +55,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         var guidance = ResolveGuidance(selectedTemplateId);
+ 
+         var merged = MergeValues(
+-            new Company(Guid.NewGuid(), command.Name),
++            command.Name,
++            command.Industry,
++            command.BusinessType,
+             command.Name,
+             command.Industry,
+             command.BusinessType,
+@@ -59,6 +66,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             command.Language,
+             command.ComplianceRegion,
+             resolvedTemplate);
++        ValidateFlexibleConfiguration(command.Branding, command.Settings);
+ 
+         ValidateCompanyCreation(merged, selectedTemplateId);
+ 
+@@ -72,6 +81,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.Language,
+             merged.ComplianceRegion);
++        company.UpdateBrandingAndSettings(
++            MergeBranding(null, command.Branding),
++            BuildSettings(null, command.Settings, selectedTemplateId, merged, CompletedWizardStep, true, guidance));
++
+         company.CompleteOnboarding(
+             CompletedWizardStep,
+             selectedTemplateId,
+@@ -117,6 +130,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         if (_currentUserAccessor.UserId is not Guid userId)
+         {
+             return null;
+         }
+ 
+         var company = await GetLatestOwnedOnboardingAsync(userId, cancellationToken);
+         return company is null ? null : MapProgress(company);
+@@ -131,16 +146,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         CreateCompanyWorkspaceRequest request,
+         CancellationToken cancellationToken)
+     {
+         var userId = RequireCurrentUserId();
+-        ValidateDraft(
+-            request.Name,
+-            request.Industry,
+-            request.BusinessType,
+-            request.Timezone,
+-            request.Currency,
+-            request.Language,
+-            request.ComplianceRegion,
+-            request.SelectedTemplateId,
+-            request.CurrentStep);
+ 
+         var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
+         if (company is null)
+@@ -157,6 +174,19 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId);
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+-            company,
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            resolvedTemplate);
++        ValidateDraft(
++            request.Name,
++            request.Industry,
++            request.BusinessType,
++            request.Branding,
++            request.Settings,
++            request.Timezone,
++            request.Currency,
++            request.Language,
++            request.ComplianceRegion,
++            request.SelectedTemplateId,
++            request.CurrentStep);
++
++        company.UpdateBrandingAndSettings(
++            MergeBranding(company.Branding, request.Branding),
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, NormalizeDraftStep(request.CurrentStep), false, ResolveGuidance(selectedTemplateId)));
++
++        company.UpdateWorkspaceProfile(
+             request.Name,
+             request.Industry,
+             request.BusinessType,
+@@ -164,18 +194,6 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             request.Currency,
+             request.Language,
+             request.ComplianceRegion,
+-            resolvedTemplate);
+-
+-        company.UpdateWorkspaceProfile(
+-            merged.Name,
+-            merged.Industry,
+-            merged.BusinessType,
+-            merged.Timezone,
+-            merged.Currency,
+-            merged.Language,
+-            merged.ComplianceRegion);
+-
+-        company.SaveOnboardingProgress(
+-            NormalizeDraftStep(request.CurrentStep),
+-            selectedTemplateId,
+-            SerializeState(
++            resolvedTemplate);
++
++        company.SaveOnboardingProgress(NormalizeDraftStep(request.CurrentStep), selectedTemplateId, SerializeState(
+                 merged,
+                 selectedTemplateId,
+                 NormalizeDraftStep(request.CurrentStep),
+@@ -208,14 +226,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         EnsureSessionIsMutable(company);
+ 
+         ValidateDraft(
+             request.Name,
+             request.Industry,
+             request.BusinessType,
++            request.Branding,
++            request.Settings,
+             request.Timezone,
+             request.Currency,
+             request.Language,
+             request.ComplianceRegion,
+             request.SelectedTemplateId ?? company.OnboardingTemplateId,
+             request.CurrentStep);
+ 
+         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
+         var resolvedTemplate = FindTemplate(selectedTemplateId);
+         var merged = MergeValues(
+-            company,
++            request.Name,
++            request.Industry,
++            request.BusinessType,
+             request.Name,
+             request.Industry,
+             request.BusinessType,
+@@ -225,6 +247,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             request.Language,
+             request.ComplianceRegion,
+             resolvedTemplate);
++        company.UpdateBrandingAndSettings(
++            MergeBranding(company.Branding, request.Branding),
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, NormalizeDraftStep(request.CurrentStep), false, ResolveGuidance(selectedTemplateId)));
++
+ 
+         company.UpdateWorkspaceProfile(
+             merged.Name,
+@@ -262,17 +288,21 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+ 
+         company.AbandonOnboarding();
+ 
+-        var state = DeserializeState(company.OnboardingStateJson);
++        var onboarding = ResolveOnboardingSettings(company);
+         company.SaveOnboardingProgress(
+             company.OnboardingCurrentStep ?? 1,
+             company.OnboardingTemplateId,
+             SerializeState(
+                 new MergedOnboardingValues(
+-                    state?.Name ?? company.Name,
+-                    state?.Industry ?? company.Industry,
+-                    state?.BusinessType ?? company.BusinessType,
+-                    state?.Timezone ?? company.Timezone,
+-                    state?.Currency ?? company.Currency,
+-                    state?.Language ?? company.Language,
+-                    state?.ComplianceRegion ?? company.ComplianceRegion),
++                    onboarding.Name ?? company.Name,
++                    onboarding.Industry ?? company.Industry,
++                    onboarding.BusinessType ?? company.BusinessType,
++                    onboarding.Timezone ?? company.Timezone,
++                    onboarding.Currency ?? company.Currency,
++                    onboarding.Language ?? company.Language,
++                    onboarding.ComplianceRegion ?? company.ComplianceRegion),
+                 company.OnboardingTemplateId,
+                 company.OnboardingCurrentStep ?? 1,
+                 false,
+                 ResolveGuidance(company.OnboardingTemplateId)));
++        company.UpdateBrandingAndSettings(
++            company.Branding,
++            BuildSettings(company.Settings, null, company.OnboardingTemplateId, new MergedOnboardingValues(company.Name, company.Industry, company.BusinessType, company.Timezone, company.Currency, company.Language, company.ComplianceRegion), company.OnboardingCurrentStep ?? 1, false, ResolveGuidance(company.OnboardingTemplateId)));
+         company.AbandonOnboarding();
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -301,6 +331,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             request.Language,
+             request.ComplianceRegion,
+             resolvedTemplate);
++        ValidateFlexibleConfiguration(request.Branding, request.Settings);
+ 
+         ValidateCompletion(merged);
+ 
+@@ -312,6 +344,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             merged.Language,
+             merged.ComplianceRegion);
+ 
++        company.UpdateBrandingAndSettings(
++            MergeBranding(company.Branding, request.Branding),
++            BuildSettings(company.Settings, request.Settings, selectedTemplateId, merged, CompletedWizardStep, true, ResolveGuidance(selectedTemplateId)));
++
+         var guidance = ResolveGuidance(selectedTemplateId);
+         company.CompleteOnboarding(
+             CompletedWizardStep,
+@@ -413,8 +449,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     }
+ 
+     private static MergedOnboardingValues MergeValues(
+-        Company company,
+-        string name,
++        string name,
+         string industry,
+         string businessType,
+         string? timezone,
+@@ -443,15 +478,17 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     {
+         var state = DeserializeState(company.OnboardingStateJson);
++        var onboarding = ResolveOnboardingSettings(company, state);
+ 
+-        var selectedTemplateId = company.OnboardingTemplateId ?? state?.SelectedTemplateId;
+-        var guidance = state?.StarterGuidance?.Count > 0
+-            ? state.StarterGuidance
++        var selectedTemplateId = company.OnboardingTemplateId ?? onboarding.SelectedTemplateId ?? state?.SelectedTemplateId;
++        var guidance = onboarding.StarterGuidance.Count > 0
++            ? onboarding.StarterGuidance
+             : ResolveGuidance(selectedTemplateId);
+         var status = company.OnboardingStatus.ToStorageValue();
+ 
+         return new CompanyOnboardingProgressDto(
+             company.Id,
+-            state?.Name ?? company.Name,
+-            state?.Industry ?? company.Industry ?? string.Empty,
+-            state?.BusinessType ?? company.BusinessType ?? string.Empty,
+-            state?.Timezone ?? company.Timezone ?? string.Empty,
+-            state?.Currency ?? company.Currency ?? string.Empty,
+-            state?.Language ?? company.Language ?? string.Empty,
+-            state?.ComplianceRegion ?? company.ComplianceRegion ?? string.Empty,
+-            company.OnboardingCurrentStep ?? state?.CurrentStep ?? 1,
++            onboarding.Name ?? state?.Name ?? company.Name,
++            onboarding.Industry ?? state?.Industry ?? company.Industry ?? string.Empty,
++            onboarding.BusinessType ?? state?.BusinessType ?? company.BusinessType ?? string.Empty,
++            onboarding.Timezone ?? state?.Timezone ?? company.Timezone ?? string.Empty,
++            onboarding.Currency ?? state?.Currency ?? company.Currency ?? string.Empty,
++            onboarding.Language ?? state?.Language ?? company.Language ?? string.Empty,
++            onboarding.ComplianceRegion ?? state?.ComplianceRegion ?? company.ComplianceRegion ?? string.Empty,
++            company.OnboardingCurrentStep ?? onboarding.CurrentStep ?? state?.CurrentStep ?? 1,
+             selectedTemplateId,
+             status,
+             company.OnboardingCompletedUtc.HasValue,
+@@ -461,7 +498,187 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+             company.OnboardingStatus == CompanyOnboardingStatus.Completed
+                 ? BuildDashboardPath(company.Id)
+                 : null,
+-            guidance);
++            guidance,
++            ToBrandingDto(company.Branding),
++            ToSettingsDto(company.Settings, onboarding));
++    }
++
++    private static CompanyBrandingDto ToBrandingDto(CompanyBranding branding) =>
++        new(
++            branding.LogoUrl,
++            branding.PrimaryColor,
++            branding.SecondaryColor,
++            branding.Theme,
++            CloneNodes(branding.Extensions));
++
++    private static CompanySettingsDto ToSettingsDto(CompanySettings settings, CompanyOnboardingSettings onboarding) =>
++        new(
++            settings.Locale,
++            settings.TemplateId,
++            new CompanyOnboardingSettingsDto(
++                onboarding.Name,
++                onboarding.Industry,
++                onboarding.BusinessType,
++                onboarding.Timezone,
++                onboarding.Currency,
++                onboarding.Language,
++                onboarding.ComplianceRegion,
++                onboarding.CurrentStep,
++                onboarding.SelectedTemplateId,
++                onboarding.IsCompleted,
++                onboarding.StarterGuidance,
++                CloneNodes(onboarding.Extensions)),
++            new Dictionary<string, bool>(settings.FeatureFlags, StringComparer.OrdinalIgnoreCase),
++            CloneNodes(settings.Extensions));
++
++    private static CompanyOnboardingSettings ResolveOnboardingSettings(Company company, OnboardingStateDocument? state = null)
++    {
++        state ??= DeserializeState(company.OnboardingStateJson);
++        var settings = company.Settings ?? new CompanySettings();
++        var onboarding = settings.Onboarding ?? new CompanyOnboardingSettings();
++
++        return new CompanyOnboardingSettings
++        {
++            Name = onboarding.Name ?? state?.Name ?? company.Name,
++            Industry = onboarding.Industry ?? state?.Industry ?? company.Industry,
++            BusinessType = onboarding.BusinessType ?? state?.BusinessType ?? company.BusinessType,
++            Timezone = onboarding.Timezone ?? state?.Timezone ?? company.Timezone,
++            Currency = onboarding.Currency ?? state?.Currency ?? company.Currency,
++            Language = onboarding.Language ?? state?.Language ?? company.Language,
++            ComplianceRegion = onboarding.ComplianceRegion ?? state?.ComplianceRegion ?? company.ComplianceRegion,
++            CurrentStep = onboarding.CurrentStep ?? company.OnboardingCurrentStep ?? state?.CurrentStep,
++            SelectedTemplateId = onboarding.SelectedTemplateId ?? company.OnboardingTemplateId ?? state?.SelectedTemplateId,
++            IsCompleted = onboarding.IsCompleted || state?.IsCompleted == true || company.OnboardingCompletedUtc.HasValue,
++            StarterGuidance = onboarding.StarterGuidance.Count > 0
++                ? onboarding.StarterGuidance.ToList()
++                : state?.StarterGuidance?.ToList() ?? [],
++            Extensions = CloneNodes(onboarding.Extensions)
++        };
++    }
++
++    private static CompanyBranding MergeBranding(CompanyBranding? current, CompanyBrandingDto? incoming)
++    {
++        current ??= new CompanyBranding();
++        if (incoming is null)
++        {
++            return CloneBranding(current);
++        }
++
++        return new CompanyBranding
++        {
++            LogoUrl = NormalizeOptional(incoming.LogoUrl),
++            PrimaryColor = NormalizeOptional(incoming.PrimaryColor),
++            SecondaryColor = NormalizeOptional(incoming.SecondaryColor),
++            Theme = NormalizeOptional(incoming.Theme),
++            Extensions = CloneNodes(incoming.Extensions)
++        };
++    }
++
++    private static CompanySettings BuildSettings(
++        CompanySettings? current,
++        CompanySettingsDto? incoming,
++        string? selectedTemplateId,
++        MergedOnboardingValues values,
++        int currentStep,
++        bool isCompleted,
++        IReadOnlyList<string> starterGuidance)
++    {
++        current ??= new CompanySettings();
++        var incomingOnboarding = incoming?.Onboarding;
++
++        return new CompanySettings
++        {
++            Locale = NormalizeOptional(incoming?.Locale) ?? current.Locale,
++            TemplateId = selectedTemplateId ?? NormalizeOptional(incoming?.TemplateId) ?? current.TemplateId,
++            FeatureFlags = incoming?.FeatureFlags is null
++                ? new Dictionary<string, bool>(current.FeatureFlags, StringComparer.OrdinalIgnoreCase)
++                : new Dictionary<string, bool>(incoming.FeatureFlags, StringComparer.OrdinalIgnoreCase),
++            Extensions = incoming?.Extensions is null
++                ? CloneNodes(current.Extensions)
++                : CloneNodes(incoming.Extensions),
++            Onboarding = new CompanyOnboardingSettings
++            {
++                Name = values.Name,
++                Industry = values.Industry,
++                BusinessType = values.BusinessType,
++                Timezone = values.Timezone,
++                Currency = values.Currency,
++                Language = values.Language,
++                ComplianceRegion = values.ComplianceRegion,
++                CurrentStep = currentStep,
++                SelectedTemplateId = selectedTemplateId,
++                IsCompleted = isCompleted,
++                StarterGuidance = starterGuidance.ToList(),
++                Extensions = incomingOnboarding?.Extensions is null
++                    ? CloneNodes(current.Onboarding.Extensions)
++                    : CloneNodes(incomingOnboarding.Extensions)
++            }
++        };
++    }
++
++    private static CompanyBranding CloneBranding(CompanyBranding source) =>
++        new()
++        {
++            LogoUrl = source.LogoUrl,
++            PrimaryColor = source.PrimaryColor,
++            SecondaryColor = source.SecondaryColor,
++            Theme = source.Theme,
++            Extensions = CloneNodes(source.Extensions)
++        };
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static void ValidateFlexibleConfiguration(CompanyBrandingDto? branding, CompanySettingsDto? settings)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        AddOptionalLength(errors, "Branding.LogoUrl", branding?.LogoUrl, LogoUrlMaxLength);
++        AddOptionalLength(errors, "Branding.Theme", branding?.Theme, ThemeMaxLength);
++        AddOptionalLength(errors, "Settings.Locale", settings?.Locale, LocaleMaxLength);
++        AddOptionalLength(errors, "Settings.TemplateId", settings?.TemplateId, TemplateIdMaxLength);
++        AddOptionalLength(errors, "Settings.Onboarding.SelectedTemplateId", settings?.Onboarding?.SelectedTemplateId, TemplateIdMaxLength);
++
++        ValidateHexColor(errors, "Branding.PrimaryColor", branding?.PrimaryColor);
++        ValidateHexColor(errors, "Branding.SecondaryColor", branding?.SecondaryColor);
++
++        ThrowIfAny(errors);
++    }
++
++    private static void ValidateHexColor(IDictionary<string, List<string>> errors, string key, string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return;
++        }
++
++        var candidate = value.Trim();
++        if (candidate.Length > HexColorMaxLength)
++        {
++            AddError(errors, key, $"{key} must be {HexColorMaxLength} characters or fewer.");
++            return;
++        }
++
++        if (!(candidate.Length is 4 or 7 or 9) || candidate[0] != '#' || !candidate.Skip(1).All(Uri.IsHexDigit))
++        {
++            AddError(errors, key, $"{key} must be a valid hex color.");
++        }
+     }
+ 
+     private IReadOnlyList<string> ResolveGuidance(string? templateId)
+@@ -481,6 +698,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+     private static void ValidateDraft(
+         string name,
+         string industry,
+         string businessType,
++        CompanyBrandingDto? branding,
++        CompanySettingsDto? settings,
+         string? timezone,
+         string? currency,
+         string? language,
+@@ -497,6 +716,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
+         AddOptionalLength(errors, "ComplianceRegion", complianceRegion, ComplianceRegionMaxLength);
+         AddOptionalLength(errors, "SelectedTemplateId", selectedTemplateId, TemplateIdMaxLength);
+         if (currentStep < 1 || currentStep > LastWizardStep)
+         {
+             AddError(errors, "CurrentStep", $"Current onboarding step must be between 1 and {LastWizardStep}.");
+         }
++        ValidateFlexibleConfiguration(branding, settings);
+ 
+         ThrowIfAny(errors);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 06ec282..6262d30 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -130,7 +131,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+                 x.Company.Name,
+                 x.Company.OnboardingStatus,
+                 x.Company.OnboardingCompletedUtc,
++                x.Company.Settings,
+                 x.Company.OnboardingStateJson,
+-                x.Company.Notes.Any()))
++                x.Company.Notes.Any()))
+             .SingleOrDefaultAsync(cancellationToken);
+ 
+         if (dashboardEntry is null)
+@@ -138,7 +140,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             return null;
+         }
+ 
+-        var starterGuidance = ResolveStarterGuidance(dashboardEntry.OnboardingStateJson);
++        var starterGuidance = ResolveStarterGuidance(dashboardEntry.Settings, dashboardEntry.OnboardingStateJson);
+         return new CompanyDashboardEntryDto(
+             dashboardEntry.CompanyId,
+             dashboardEntry.CompanyName,
+@@ -217,13 +219,20 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             ? requestContext
+             : null;
+     }
+ 
+-    private static IReadOnlyList<string> ResolveStarterGuidance(string? onboardingStateJson)
++    private static IReadOnlyList<string> ResolveStarterGuidance(CompanySettings? settings, string? onboardingStateJson)
+     {
++        if (settings?.Onboarding?.StarterGuidance is { Count: > 0 } persistedGuidance)
++        {
++            return persistedGuidance;
++        }
++
+         var state = string.IsNullOrWhiteSpace(onboardingStateJson)
+             ? null
+             : JsonSerializer.Deserialize<OnboardingStateDocument>(onboardingStateJson, SerializerOptions);
+ 
+         return state?.StarterGuidance is { Count: > 0 } guidance ? guidance : DefaultStarterGuidance;
+     }
+     private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
+         new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+@@ -233,6 +242,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         Guid CompanyId,
+         string CompanyName,
+         CompanyOnboardingStatus OnboardingStatus,
+         DateTime? OnboardingCompletedUtc,
++        CompanySettings Settings,
+         string? OnboardingStateJson,
+         bool HasKnowledgeArtifacts);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 412ee93..39c10cb 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -17,11 +17,11 @@ public static class DependencyInjection
+     {
+         var connectionString =
+             configuration.GetConnectionString("VirtualCompanyDb")
+-            ?? "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True";
++            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres";
+ 
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+-            options.UseSqlServer(connectionString));
++            options.UseNpgsql(connectionString));
+ 
+         services.AddOptions<OnboardingTemplateCatalogOptions>()
+             .Bind(configuration.GetSection(OnboardingTemplateCatalogOptions.SectionName));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 90f16fd..446a610 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1,5 +1,8 @@
++using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using Microsoft.EntityFrameworkCore.ChangeTracking;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -16,6 +19,46 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
+     }
+ }
+ 
++internal static class CompanyJsonColumnConfiguration
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    public static PropertyBuilder<T> HasJsonbConversion<T>(this PropertyBuilder<T> propertyBuilder)
++        where T : class, new()
++    {
++        var converter = new ValueConverter<T, string>(
++            value => JsonSerializer.Serialize(value ?? new T(), SerializerOptions),
++            value => DeserializeOrDefault<T>(value));
++
++        var comparer = new ValueComparer<T>(
++            (left, right) => Serialize(left) == Serialize(right),
++            value => StringComparer.Ordinal.GetHashCode(Serialize(value)),
++            value => DeserializeOrDefault<T>(Serialize(value)));
++
++        propertyBuilder.HasColumnType("jsonb");
++        propertyBuilder.HasConversion(converter);
++        propertyBuilder.Metadata.SetValueComparer(comparer);
++        return propertyBuilder;
++    }
++
++    private static string Serialize<T>(T? value)
++        where T : class, new() =>
++        JsonSerializer.Serialize(value ?? new T(), SerializerOptions);
++
++    private static T DeserializeOrDefault<T>(string? json)
++        where T : class, new()
++    {
++        if (string.IsNullOrWhiteSpace(json))
++        {
++            return new T();
++        }
++
++        return JsonSerializer.Deserialize<T>(json, SerializerOptions) ?? new T();
++    }
++}
++
+ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+ {
+     public void Configure(EntityTypeBuilder<Company> builder)
+@@ -30,6 +73,14 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+         builder.Property(x => x.Timezone).HasMaxLength(100);
+         builder.Property(x => x.Currency).HasMaxLength(16);
+         builder.Property(x => x.Language).HasMaxLength(16);
+         builder.Property(x => x.ComplianceRegion).HasMaxLength(50);
++        builder.Property(x => x.Branding)
++            .HasColumnName("branding_json")
++            .HasJsonbConversion()
++            .HasDefaultValueSql("'{}'::jsonb")
++            .IsRequired();
++        builder.Property(x => x.Settings)
++            .HasColumnName("settings_json")
++            .HasJsonbConversion()
++            .HasDefaultValueSql("'{}'::jsonb")
++            .IsRequired();
+         builder.Property(x => x.OnboardingStateJson);
+         builder.Property(x => x.OnboardingCurrentStep);
+         builder.Property(x => x.OnboardingTemplateId).HasMaxLength(100);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs
+index 3f6018b..b69cb42 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs
+@@ -10,10 +10,10 @@ public partial class AddTenantAwareAuthAndMembership : Migration
+         migrationBuilder.CreateTable(
+             name: "companies",
+             columns: table => new
+             {
+-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                Name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+             },
+             constraints: table =>
+             {
+@@ -24,12 +24,12 @@ public partial class AddTenantAwareAuthAndMembership : Migration
+         migrationBuilder.CreateTable(
+             name: "users",
+             columns: table => new
+             {
+-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                Email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+-                DisplayName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+-                AuthProvider = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
+-                AuthSubject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                Email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
++                DisplayName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                AuthProvider = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
++                AuthSubject = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+             },
+             constraints: table =>
+             {
+@@ -40,14 +40,14 @@ public partial class AddTenantAwareAuthAndMembership : Migration
+         migrationBuilder.CreateTable(
+             name: "company_memberships",
+             columns: table => new
+             {
+-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                UserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+-                Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+-                PermissionsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
+-                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
++                UserId = table.Column<Guid>(type: "uuid", nullable: false),
++                Role = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
++                Status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
++                PermissionsJson = table.Column<string>(type: "text", nullable: true),
++                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+             },
+             constraints: table =>
+             {
+@@ -66,10 +66,10 @@ public partial class AddTenantAwareAuthAndMembership : Migration
+         migrationBuilder.CreateTable(
+             name: "company_notes",
+             columns: table => new
+             {
+-                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                Title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+-                Content = table.Column<string>(type: "nvarchar(max)", nullable: false),
+-                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                Id = table.Column<Guid>(type: "uuid", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
++                Title = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                Content = table.Column<string>(type: "text", nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+             },
+             constraints: table =>
+             {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs
+index 6d5ebef..97e6cea 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300002_AddCompanyOnboarding.cs
+@@ -10,58 +10,58 @@ public partial class AddCompanyOnboarding : Migration
+         migrationBuilder.AddColumn<string>(
+             name: "BusinessType",
+             table: "companies",
+-            type: "nvarchar(100)",
++            type: "character varying(100)",
+             maxLength: 100,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "ComplianceRegion",
+             table: "companies",
+-            type: "nvarchar(50)",
++            type: "character varying(50)",
+             maxLength: 50,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "Currency",
+             table: "companies",
+-            type: "nvarchar(16)",
++            type: "character varying(16)",
+             maxLength: 16,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "Industry",
+             table: "companies",
+-            type: "nvarchar(100)",
++            type: "character varying(100)",
+             maxLength: 100,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "Language",
+             table: "companies",
+-            type: "nvarchar(16)",
++            type: "character varying(16)",
+             maxLength: 16,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<int>(
+             name: "OnboardingCurrentStep",
+             table: "companies",
+-            type: "int",
++            type: "integer",
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<DateTime>(
+             name: "OnboardingCompletedUtc",
+             table: "companies",
+-            type: "datetime2",
++            type: "timestamp with time zone",
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<DateTime>(
+             name: "OnboardingLastSavedUtc",
+             table: "companies",
+-            type: "datetime2",
++            type: "timestamp with time zone",
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "OnboardingStateJson",
+             table: "companies",
+-            type: "nvarchar(max)",
++            type: "text",
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "OnboardingTemplateId",
+             table: "companies",
+-            type: "nvarchar(100)",
++            type: "character varying(100)",
+             maxLength: 100,
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "Timezone",
+             table: "companies",
+-            type: "nvarchar(100)",
++            type: "character varying(100)",
+             maxLength: 100,
+             nullable: true);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs
+index 0352b28..7d433ca 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300003_AddCompanyOnboardingSessionStatus.cs
+@@ -10,14 +10,14 @@ public partial class AddCompanyOnboardingSessionStatus : Migration
+         migrationBuilder.AddColumn<DateTime>(
+             name: "OnboardingAbandonedUtc",
+             table: "companies",
+-            type: "datetime2",
++            type: "timestamp with time zone",
+             nullable: true);
+ 
+         migrationBuilder.AddColumn<string>(
+             name: "OnboardingStatus",
+             table: "companies",
+-            type: "nvarchar(32)",
++            type: "character varying(32)",
+             maxLength: 32,
+             nullable: false,
+             defaultValue: "not_started");
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300004_AddCompanyBrandingAndSettingsJsonb.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300004_AddCompanyBrandingAndSettingsJsonb.cs
+new file mode 100644
+index 0000000..582f4c8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300004_AddCompanyBrandingAndSettingsJsonb.cs
+@@ -0,0 +1,64 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddCompanyBrandingAndSettingsJsonb : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "branding_json",
++            table: "companies",
++            type: "jsonb",
++            nullable: false,
++            defaultValueSql: "'{}'::jsonb");
++
++        migrationBuilder.AddColumn<string>(
++            name: "settings_json",
++            table: "companies",
++            type: "jsonb",
++            nullable: false,
++            defaultValueSql: "'{}'::jsonb");
++
++        migrationBuilder.Sql(
++            """
++            UPDATE companies
++            SET settings_json =
++                CASE
++                    WHEN "OnboardingStateJson" IS NULL OR btrim("OnboardingStateJson") = '' THEN settings_json
++                    ELSE jsonb_strip_nulls(
++                        jsonb_build_object(
++                            'templateId', "OnboardingTemplateId",
++                            'onboarding',
++                            (
++                                ("OnboardingStateJson")::jsonb ||
++                                jsonb_build_object('selectedTemplateId', COALESCE(("OnboardingStateJson")::jsonb ->> 'selectedTemplateId', "OnboardingTemplateId"))
++                            )
++                        )
++                    )
++                END
++            WHERE settings_json = '{}'::jsonb;
++            """);
++
++        migrationBuilder.Sql(
++            """
++            UPDATE companies
++            SET settings_json = jsonb_set(
++                settings_json,
++                '{onboarding,isCompleted}',
++                to_jsonb(COALESCE("OnboardingCompletedUtc" IS NOT NULL, false)),
++                true)
++            WHERE "OnboardingCompletedUtc" IS NOT NULL;
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropColumn(
++            name: "branding_json",
++            table: "companies");
++
++        migrationBuilder.DropColumn(
++            name: "settings_json",
++            table: "companies");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+index 9290047..83f1b71 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+@@ -8,8 +8,8 @@ public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory
+     public VirtualCompanyDbContext CreateDbContext(string[] args)
+     {
+         var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
+-        optionsBuilder.UseSqlServer(
+-            "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True");
++        optionsBuilder.UseNpgsql(
++            "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres");
+ 
+         return new VirtualCompanyDbContext(optionsBuilder.Options);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+index 1e81ff4..cfba01c 100644
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -12,7 +12,7 @@
+   <ItemGroup>
+     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
+-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
++    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+   </ItemGroup>
+ 
+   <PropertyGroup>
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+index e8c3f2a..af74ef3 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyOnboardingIntegrationTests.cs
+@@ -1,5 +1,6 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -112,6 +113,19 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+             Timezone = "Europe/Stockholm",
+             Currency = "SEK",
+             Language = "sv-SE",
++            Branding = new
++            {
++                LogoUrl = "https://cdn.example.com/logo.png",
++                PrimaryColor = "#112233",
++                SecondaryColor = "#445566",
++                Theme = "nordic"
++            },
++            Settings = new
++            {
++                Locale = "sv-SE",
++                FeatureFlags = new
++                {
++                    onboardingResume = true
++                }
++            },
+             ComplianceRegion = "EU",
+             CurrentStep = 1,
+             SelectedTemplateId = "professional-services-agency"
+@@ -138,6 +152,18 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+ 
+         var progress = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");
+         Assert.NotNull(progress);
++        Assert.NotNull(progress!.Branding);
++        Assert.Equal("https://cdn.example.com/logo.png", progress.Branding!.LogoUrl);
++        Assert.Equal("#112233", progress.Branding.PrimaryColor);
++        Assert.NotNull(progress.Settings);
++        Assert.Equal("sv-SE", progress.Settings!.Locale);
++        Assert.NotNull(progress.Settings.Onboarding);
++        Assert.Equal(3, progress.Settings.Onboarding!.CurrentStep);
+         Assert.Equal(3, progress!.CurrentStep);
+         Assert.Equal("professional-services-agency", progress.SelectedTemplateId);
+         Assert.Equal("Resume Co", progress.Name);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var company = await dbContext.Companies.SingleAsync(x => x.Id == progress.CompanyId);
++        Assert.Equal("#445566", company.Branding.SecondaryColor);
++        Assert.True(company.Settings.FeatureFlags["onboardingResume"]);
++        Assert.Equal(3, company.Settings.Onboarding.CurrentStep);
+     }
+@@ -430,6 +456,20 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public DateTime? AbandonedUtc { get; set; }
+         public string? DashboardPath { get; set; }
++        public BrandingResponse? Branding { get; set; }
++        public SettingsResponse? Settings { get; set; }
++    }
++
++    private sealed class BrandingResponse
++    {
++        public string? LogoUrl { get; set; }
++        public string? PrimaryColor { get; set; }
++        public string? SecondaryColor { get; set; }
++        public string? Theme { get; set; }
++    }
++
++    private sealed class SettingsResponse
++    {
++        public string? Locale { get; set; }
++        public string? TemplateId { get; set; }
++        public OnboardingSettingsResponse? Onboarding { get; set; }
++        public JsonElement FeatureFlags { get; set; }
+     }
+ 
+     private sealed class CompleteResponse
+@@ -452,4 +492,20 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
+         public DateTime? OnboardingCompletedUtc { get; set; }
+         public List<string> StarterGuidance { get; set; } = [];
+     }
++
++    private sealed class OnboardingSettingsResponse
++    {
++        public string? Name { get; set; }
++        public string? Industry { get; set; }
++        public string? BusinessType { get; set; }
++        public string? Timezone { get; set; }
++        public string? Currency { get; set; }
++        public string? Language { get; set; }
++        public string? ComplianceRegion { get; set; }
++        public int? CurrentStep { get; set; }
++        public string? SelectedTemplateId { get; set; }
++        public bool IsCompleted { get; set; }
++        public List<string> StarterGuidance { get; set; } = [];
++        public JsonElement Extensions { get; set; }
++    }
+ }
++END_OF_PATCH

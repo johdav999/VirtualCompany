@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.2.1",
+  "promptPath": ".ai-design/prompts/TASK-7.2.1.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T06:43:20.137Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T06-43-20-137Z_TASK-7.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T06-43-20-137Z_TASK-7.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T06:48:38.882Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nboardingIntegrationTests : IClassFixture<TestWebApp\n         Assert.Equal(\"Resume Co\", progress.Name);\n     }\n \n+    [Fact]\n+    public async Task CreateCompany_rejects_blank_required_fields()\n+    {\n+        using var client = CreateAuthenticatedClient(\"validation-user\", \"validation@example.com\", \"Validation User\");\n+        var response = await client.PostAsJsonAsync(\"/api/onboarding/company\", new\n+        {\n+            Name = \"   \",\n+            Industry = \"  \",\n+            BusinessType = \"\",\n+            Timezone = \" \",\n+            Currency = \"\",\n+            Language = \"   \",\n+            ComplianceRegion = \"\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(payload);\n+        Assert.Contains(\"Name\", payload!.Errors.Keys);\n+        Assert.Contains(\"Industry\", payload.Errors.Keys);\n+        Assert.Contains(\"BusinessType\", payload.Errors.Keys);\n+        Assert.Contains(\"Timezone\", payload.Errors.Keys);\n+        Assert.Contains(\"Currency\", payload.Errors.Keys);\n+        Assert.Contains(\"Language\", payload.Errors.Keys);\n+        Assert.Contains(\"ComplianceRegion\", payload.Errors.Keys);\n+    }\n+\n+    [Fact]\n+    public async Task CreateCompany_requires_authenticated_user()\n+    {\n+        using var client = _factory.CreateClient();\n+        var response = await client.PostAsJsonAsync(\"/api/onboarding/company\", new\n+        {\n+            Name = \"Unauthenticated Co\",\n+            Industry = \"Technology\",\n+            BusinessType = \"Software Company\",\n+            Timezone = \"Europe/Stockholm\",\n+            Currency = \"SEK\",\n+            Language = \"sv-SE\",\n+            ComplianceRegion = \"EU\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task CompleteOnboarding_marks_company_complete_and_clears_resume_state()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "nTests : IClassFixture<TestWebApp\n         Assert.Equal(\"Resume Co\", progress.Name);\n     }\n \n+    [Fact]\n+    public async Task CreateCompany_rejects_blank_required_fields()\n+    {\n+        using var client = CreateAuthenticatedClient(\"validation-user\", \"validation@example.com\", \"Validation User\");\n+        var response = await client.PostAsJsonAsync(\"/api/onboarding/company\", new\n+        {\n+            Name = \"   \",\n+            Industry = \"  \",\n+            BusinessType = \"\",\n+            Timezone = \" \",\n+            Currency = \"\",\n+            Language = \"   \",\n+            ComplianceRegion = \"\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(payload);\n+        Assert.Contains(\"Name\", payload!.Errors.Keys);\n+        Assert.Contains(\"Industry\", payload.Errors.Keys);\n+        Assert.Contains(\"BusinessType\", payload.Errors.Keys);\n+        Assert.Contains(\"Timezone\", payload.Errors.Keys);\n+        Assert.Contains(\"Currency\", payload.Errors.Keys);\n+        Assert.Contains(\"Language\", payload.Errors.Keys);\n+        Assert.Contains(\"ComplianceRegion\", payload.Errors.Keys);\n+    }\n+\n+    [Fact]\n+    public async Task CreateCompany_requires_authenticated_user()\n+    {\n+        using var client = _factory.CreateClient();\n+        var response = await client.PostAsJsonAsync(\"/api/onboarding/company\", new\n+        {\n+            Name = \"Unauthenticated Co\",\n+            Industry = \"Technology\",\n+            BusinessType = \"Software Company\",\n+            Timezone = \"Europe/Stockholm\",\n+            Currency = \"SEK\",\n+            Language = \"sv-SE\",\n+            ComplianceRegion = \"EU\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task CompleteOnboarding_marks_company_complete_and_clears_resume_state()\n     {\nEND_OF_PATCH\ntokens used\n59,853\n",
+  "verbosityMode": "normal"
+}

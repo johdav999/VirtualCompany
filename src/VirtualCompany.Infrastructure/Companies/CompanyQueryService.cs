@@ -1,13 +1,24 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
 public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNoteService
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] DefaultStarterGuidance =
+    [
+        "Invite teammates who need access to payroll, finance, or operations.",
+        "Hire your first agents and assign one owner for each workflow.",
+        "Upload company knowledge so the workspace can answer questions accurately.",
+        "Connect the first systems your team depends on before expanding automation."
+    ];
+
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly ICompanyContextAccessor _companyContextAccessor;
@@ -120,6 +131,42 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             .SingleOrDefaultAsync(cancellationToken);
     }
 
+    public async Task<CompanyDashboardEntryDto?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        if (_currentUserAccessor.UserId is not Guid userId)
+        {
+            return null;
+        }
+
+        var dashboardEntry = await _dbContext.CompanyMemberships.AsNoTracking()
+            .Where(x => x.UserId == userId &&
+                        x.CompanyId == companyId &&
+                        x.Status == CompanyMembershipStatus.Active)
+            .Select(x => new DashboardEntryProjection(
+                x.CompanyId,
+                x.Company.Name,
+                x.Company.OnboardingStatus,
+                x.Company.OnboardingCompletedUtc,
+                x.Company.Settings,
+                x.Company.OnboardingStateJson,
+                x.Company.Notes.Any()))
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (dashboardEntry is null)
+        {
+            return null;
+        }
+
+        var starterGuidance = ResolveStarterGuidance(dashboardEntry.Settings, dashboardEntry.OnboardingStateJson);
+        return new CompanyDashboardEntryDto(
+            dashboardEntry.CompanyId,
+            dashboardEntry.CompanyName,
+            dashboardEntry.OnboardingStatus != CompanyOnboardingStatus.Completed,
+            dashboardEntry.OnboardingStatus == CompanyOnboardingStatus.Completed && !dashboardEntry.HasKnowledgeArtifacts,
+            dashboardEntry.OnboardingCompletedUtc,
+            starterGuidance);
+    }
+
     public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
     {
         if (_currentUserAccessor.UserId is not Guid userId)
@@ -200,12 +247,39 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             : null;
     }
 
+    private static IReadOnlyList<string> ResolveStarterGuidance(CompanySettings? settings, string? onboardingStateJson)
+    {
+        if (settings?.Onboarding?.StarterGuidance is { Count: > 0 } persistedGuidance)
+        {
+            return persistedGuidance;
+        }
+
+        var state = string.IsNullOrWhiteSpace(onboardingStateJson)
+            ? null
+            : JsonSerializer.Deserialize<OnboardingStateDocument>(onboardingStateJson, SerializerOptions);
+
+        return state?.StarterGuidance is { Count: > 0 } guidance ? guidance : DefaultStarterGuidance;
+    }
+    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
+        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+
+    private sealed record DashboardEntryProjection(
+        Guid CompanyId,
+        string CompanyName,
+        CompanyOnboardingStatus OnboardingStatus,
+        DateTime? OnboardingCompletedUtc,
+        CompanySettings Settings,
+        string? OnboardingStateJson,
+        bool HasKnowledgeArtifacts);
+
+    private sealed class OnboardingStateDocument
+    {
+        public List<string> StarterGuidance { get; set; } = [];
+    }
+
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
         new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
         new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
-
-    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
-        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
 }

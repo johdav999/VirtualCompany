@@ -1,0 +1,206 @@
+@page "/dashboard"
+@inject OnboardingApiClient ApiClient
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.Components
+
+<PageTitle>Dashboard</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Workspace dashboard</h1>
+        <p class="text-body-secondary mb-0">Loading web dashboard context...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Web-first onboarding</span>
+                <h1>Choose a company dashboard or continue onboarding</h1>
+                <p class="lead mb-3">The Blazor web app is the primary surface for company creation and guided setup. Resume onboarding for new workspaces, or open an active company dashboard.</p>
+                <div class="dashboard-actions">
+                    <a class="btn btn-primary" href="onboarding">Resume web onboarding</a>
+                </div>
+
+                @if (ActiveMemberships.Count > 0)
+                {
+                    <div class="template-grid mt-4">
+                        @foreach (var membership in ActiveMemberships)
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
+                                <strong>@membership.CompanyName</strong>
+                                <div class="text-body-secondary mt-2">Role: @membership.Role | Access: @membership.Status</div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mt-4 mb-0">No active company membership is selected yet. Start in the onboarding wizard to create the first workspace from the web app.</p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">Dashboard handoff</h2>
+                <ul class="mb-0">
+                    <li>Incomplete company setup is routed back into onboarding.</li>
+                    <li>Completed setup lands in the company dashboard with starter guidance.</li>
+                    <li>Mobile remains a companion surface and does not own onboarding orchestration.</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <h1>@(companyAccess?.CompanyName ?? "Workspace dashboard")</h1>
+                <p class="lead mb-2">
+                    @(showStarterGuidance
+                        ? "Your company workspace is live. Start with the next recommended actions below."
+                        : "Your company workspace is ready for the next setup actions.")
+                </p>
+                <p class="text-body-secondary mb-0">
+                    @(companyAccess is null
+                        ? "Use onboarding to create or resume a workspace."
+                        : $"Role: {companyAccess.Role} | Access: {companyAccess.Status}")
+                </p>
+
+                @if (showStarterGuidance)
+                {
+                    <div class="dashboard-welcome mt-4">
+                        <span class="dashboard-kicker">Onboarding complete</span>
+                        <h2 class="h4 mt-2">Starter guidance for the first dashboard visit</h2>
+                        <p class="text-body-secondary mb-0">
+                            @(dashboardEntry?.OnboardingCompletedUtc is DateTime completedUtc
+                                ? $"Workspace setup finished on {completedUtc.ToLocalTime():g}. These actions keep the new company context moving."
+                                : "Workspace setup finished successfully. These actions keep the new company context moving.")
+                        </p>
+                        <ul class="dashboard-checklist mt-4 mb-0">
+                            @foreach (var item in StarterGuidance)
+                            {
+                                <li>@item</li>
+                            }
+                        </ul>
+                        <div class="dashboard-actions mt-4">
+                            <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
+                            <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
+                        </div>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+                @if (showStarterGuidance)
+                {
+                    <ul class="mb-0">
+                        <li>Invite teammates who need access to the new workspace.</li>
+                        <li>Upload the first company notes or documents to move beyond the starter state.</li>
+                        <li>Reopen onboarding only if workspace defaults need to change.</li>
+                    </ul>
+                }
+                else
+                {
+                    <ul class="mb-0">
+                        <li>Use onboarding to create or resume a workspace if no company is selected.</li>
+                        <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
+                        <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
+                    </ul>
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "welcome")]
+    public string? Welcome { get; set; }
+
+    private bool isLoading = true;
+    private CurrentUserContextViewModel? currentUser;
+    private OnboardingProgressViewModel? onboardingProgress;
+    private CompanyAccessViewModel? companyAccess;
+    private CompanyDashboardEntryViewModel? dashboardEntry;
+    private string? errorMessage;
+    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+    private IReadOnlyList<string> StarterGuidance => dashboardEntry?.StarterGuidance?.Count > 0
+        ? dashboardEntry.StarterGuidance
+        : Array.Empty<string>();
+    private bool showStarterGuidance =>
+        companyAccess is not null &&
+        dashboardEntry?.ShowStarterGuidance == true &&
+        IsWelcomeEntry();
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            currentUser = await ApiClient.GetCurrentUserContextAsync();
+            onboardingProgress = await ApiClient.GetProgressAsync();
+            companyAccess = null;
+            dashboardEntry = null;
+
+            if (CompanyId is not Guid companyId)
+            {
+                if (onboardingProgress?.CanResume == true || string.Equals(onboardingProgress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    Navigation.NavigateTo("/onboarding", replace: true);
+                    return;
+                }
+
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                    return;
+                }
+
+                return;
+            }
+
+            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+            dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
+
+            if (dashboardEntry?.RequiresOnboarding == true)
+            {
+                Navigation.NavigateTo("/onboarding", replace: true);
+                return;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            companyAccess = null;
+            dashboardEntry = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+}
