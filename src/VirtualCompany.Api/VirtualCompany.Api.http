@@ -1,0 +1,31 @@
+@VirtualCompany.Api_HostAddress = http://localhost:5301
+@CompanyId = 11111111-1111-1111-1111-111111111111
+@NoteId = 33333333-3333-3333-3333-333333333333
+
+GET {{VirtualCompany.Api_HostAddress}}/api/auth/me
+X-Dev-Auth-Subject: alice
+X-Dev-Auth-Email: alice@example.com
+X-Dev-Auth-DisplayName: Alice Admin
+
+###
+
+GET {{VirtualCompany.Api_HostAddress}}/api/auth/memberships
+X-Dev-Auth-Subject: alice
+X-Dev-Auth-Email: alice@example.com
+X-Dev-Auth-DisplayName: Alice Admin
+
+###
+
+GET {{VirtualCompany.Api_HostAddress}}/api/companies/{{CompanyId}}/access
+X-Dev-Auth-Subject: alice
+X-Dev-Auth-Email: alice@example.com
+X-Dev-Auth-DisplayName: Alice Admin
+
+###
+
+GET {{VirtualCompany.Api_HostAddress}}/api/companies/{{CompanyId}}/notes/{{NoteId}}
+X-Dev-Auth-Subject: alice
+X-Dev-Auth-Email: alice@example.com
+Accept: application/json
+
+###

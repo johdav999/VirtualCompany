@@ -1,0 +1,2030 @@
+diff --git a/VirtualCompany.sln b/VirtualCompany.sln
+index 7c5f8d1..8f2f9aa 100644
+--- a/VirtualCompany.sln
++++ b/VirtualCompany.sln
+@@ -18,6 +18,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCompany.Application"
+ EndProject
+ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCompany.Infrastructure", "src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj", "{A7749349-A19E-48EB-B69E-3A0CF69179B6}"
+ EndProject
++Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCompany.Api.Tests", "tests\VirtualCompany.Api.Tests\VirtualCompany.Api.Tests.csproj", "{B88F77C8-1A71-4D9A-8A9E-2BDB60FC4321}"
++EndProject
+ Global
+ 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+ 		Debug|Any CPU = Debug|Any CPU
+@@ -49,6 +51,10 @@ Global
+ 		{A7749349-A19E-48EB-B69E-3A0CF69179B6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+ 		{A7749349-A19E-48EB-B69E-3A0CF69179B6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+ 		{A7749349-A19E-48EB-B69E-3A0CF69179B6}.Release|Any CPU.Build.0 = Release|Any CPU
++		{B88F77C8-1A71-4D9A-8A9E-2BDB60FC4321}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
++		{B88F77C8-1A71-4D9A-8A9E-2BDB60FC4321}.Debug|Any CPU.Build.0 = Debug|Any CPU
++		{B88F77C8-1A71-4D9A-8A9E-2BDB60FC4321}.Release|Any CPU.ActiveCfg = Release|Any CPU
++		{B88F77C8-1A71-4D9A-8A9E-2BDB60FC4321}.Release|Any CPU.Build.0 = Release|Any CPU
+ 	EndGlobalSection
+ 	GlobalSection(NestedProjects) = preSolution
+ 		{FB307A83-C969-48CF-B86B-618F48CE6A97} = {C4079159-F94B-49BD-801F-83D1CE8C29FB}
+diff --git a/README.md b/README.md
+index 2f4204c..2e5538d 100644
+--- a/README.md
++++ b/README.md
+@@ -1,84 +1,123 @@
+-# VirtualCompany
+-
+-Initial .NET solution setup for the `VirtualCompany` application.
+-
+-## Projects
+-
+-- `VirtualCompany.Api` = ASP.NET Core backend
+-- `VirtualCompany.Web` = Blazor WebAssembly frontend
+-- `VirtualCompany.Mobile` = .NET MAUI mobile app
+-- `VirtualCompany.Shared` = shared DTOs, contracts, and enums
+-- `VirtualCompany.Domain` = core business and domain logic
+-- `VirtualCompany.Application` = application use cases and services
+-- `VirtualCompany.Infrastructure` = persistence and external integrations
+-
+-## Structure
+-
+-```text
+-VirtualCompany/
+-  VirtualCompany.sln
+-  src/
+-    VirtualCompany.Api/
+-    VirtualCompany.Web/
+-    VirtualCompany.Mobile/
+-    VirtualCompany.Shared/
+-    VirtualCompany.Domain/
+-    VirtualCompany.Application/
+-    VirtualCompany.Infrastructure/
+-```
+-
+-## Local Database Setup (Docker SQL Server)
+-
+-This solution includes a Docker Compose setup for a local SQL Server instance that stays compatible with Azure SQL development.
+-
+-### Prerequisite: Docker Desktop on Windows
+-
+-If Docker is not installed:
+-
+-1. Install Docker Desktop for Windows from the official Docker installer.
+-2. Enable WSL 2 integration during setup if prompted.
+-3. Reboot Windows if the installer requests it.
+-4. Start Docker Desktop and wait until it shows that Docker is running.
+-5. Verify installation from a terminal:
+-
+-```powershell
+-docker --version
+-docker compose version
+-docker info
+-```
+-
+-### Start the database
+-
+-From the solution root:
+-
+-```powershell
+-docker compose up -d
+-```
+-
+-### Stop the database
+-
+-```powershell
+-docker compose down
+-```
+-
+-### Check container logs
+-
+-If startup fails:
+-
+-```powershell
+-docker logs virtualcompany-sql
+-```
+-
+-### Connect to the database
+-
+-- Server: `localhost,1433`
+-- Database: `VirtualCompanyDb`
+-- User: `sa`
+-- Password: `YourStrongPassword123!`
+-
+-### Sample connection string
+-
+-```text
+-Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True
+-```
+-
+-### Notes
+-
+-- The SQL Server container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
+-- Data is persisted in the named Docker volume `sqlserver-data`.
+-- The database is not hardcoded into application configuration yet.
++# VirtualCompany
++
++Initial .NET solution setup for the `VirtualCompany` application.
++
++## Projects
++
++- `VirtualCompany.Api` = ASP.NET Core backend
++- `VirtualCompany.Web` = Blazor WebAssembly frontend
++- `VirtualCompany.Mobile` = .NET MAUI mobile app
++- `VirtualCompany.Shared` = shared DTOs, contracts, and enums
++- `VirtualCompany.Domain` = core business and domain logic
++- `VirtualCompany.Application` = application use cases and services
++- `VirtualCompany.Infrastructure` = persistence and external integrations
++
++## Structure
++
++```text
++VirtualCompany/
++  VirtualCompany.sln
++  src/
++    VirtualCompany.Api/
++    VirtualCompany.Web/
++    VirtualCompany.Mobile/
++    VirtualCompany.Shared/
++    VirtualCompany.Domain/
++    VirtualCompany.Application/
++    VirtualCompany.Infrastructure/
++  tests/
++    VirtualCompany.Api.Tests/
++```
++
++## Local Database Setup (Docker SQL Server)
++
++This solution includes a Docker Compose setup for a local SQL Server instance that stays compatible with Azure SQL development.
++
++### Prerequisite: Docker Desktop on Windows
++
++If Docker is not installed:
++
++1. Install Docker Desktop for Windows from the official Docker installer.
++2. Enable WSL 2 integration during setup if prompted.
++3. Reboot Windows if the installer requests it.
++4. Start Docker Desktop and wait until it shows that Docker is running.
++5. Verify installation from a terminal:
++
++```powershell
++docker --version
++docker compose version
++docker info
++```
++
++### Start the database
++
++From the solution root:
++
++```powershell
++docker compose up -d
++```
++
++### Stop the database
++
++```powershell
++docker compose down
++```
++
++### Check container logs
++
++If startup fails:
++
++```powershell
++docker logs virtualcompany-sql
++```
++
++### Connect to the database
++
++- Server: `localhost,1433`
++- Database: `VirtualCompanyDb`
++- User: `sa`
++- Password: `YourStrongPassword123!`
++
++### Sample connection string
++
++```text
++Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True
++```
++
++## Local Development Authentication
++
++The API uses a development-only header authentication scheme that preserves an auth-provider abstraction for future SSO/OIDC integration.
++
++Send these headers with authenticated API requests:
++
++- `X-Dev-Auth-Subject` = stable external identity subject
++- `X-Dev-Auth-Email` = user email
++- `X-Dev-Auth-DisplayName` = display name
++- `X-Dev-Auth-Provider` = optional provider name, defaults to `dev-header`
++
++On first authenticated request, the API provisions or updates the internal `User` row using the `(authProvider, authSubject)` identity pair.
++
++## Company Context Resolution
++
++Tenant-owned API requests resolve company context from:
++
++1. Route value `companyId`
++2. Header `X-Company-Id` when a route value is not present
++
++If both are supplied and do not match, the API returns `400 Bad Request`.
++
++## Tenant-Aware Endpoints
++
++Authenticated endpoints:
++
++- `GET /api/auth/me`
++- `GET /api/auth/memberships`
++- `POST /api/auth/select-company`
++
++Company-scoped endpoints:
++
++- `GET /api/companies/{companyId}/access`
++- `GET /api/companies/{companyId}/access/admin`
++- `GET /api/companies/{companyId}/notes/{noteId}`
++
++## Authorization Behavior
++
++- Active membership is required for company-scoped access.
++- Role-gated endpoints use ASP.NET Core policy-based authorization against persisted membership roles.
++- `403 Forbidden` is returned when the company context is known but the caller lacks an active membership or required role.
++- `404 Not Found` is returned for company-owned resource fetches when the resource does not exist inside the resolved company context. This hides cross-tenant resource existence.
++
++## Notes
++
++- The SQL Server container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
++- Data is persisted in the named Docker volume `sqlserver-data`.
++- The API applies EF Core migrations at startup when using a relational provider.
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 73d38a8..506f3dc 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1,15 +1,51 @@
++using System.Text.Json.Serialization;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure;
++using VirtualCompany.Infrastructure.Authorization;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
+ var builder = WebApplication.CreateBuilder(args);
+ 
+-// Add services to the container.
++builder.Services
++    .AddControllers()
++    .AddJsonOptions(options =>
++    {
++        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
++    });
+ 
+-builder.Services.AddControllers();
++builder.Services.AddEndpointsApiExplorer();
++builder.Services.AddSwaggerGen();
++builder.Services.AddProblemDetails();
++builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
++builder.Services.AddAuthorization(options =>
++{
++    options.AddPolicy(CompanyPolicies.CompanyMembership, policy =>
++        policy.RequireAuthenticatedUser()
++            .AddRequirements(new CompanyMembershipRequirement()));
++
++    options.AddPolicy(CompanyPolicies.CompanyManager, policy =>
++        policy.RequireAuthenticatedUser()
++            .AddRequirements(new CompanyRoleRequirement(
++                CompanyMembershipRole.Owner,
++                CompanyMembershipRole.Admin,
++                CompanyMembershipRole.Manager)));
++
++    options.AddPolicy(CompanyPolicies.CompanyAdmin, policy =>
++        policy.RequireAuthenticatedUser()
++            .AddRequirements(new CompanyRoleRequirement(
++                CompanyMembershipRole.Owner,
++                CompanyMembershipRole.Admin)));
++});
+ 
+ var app = builder.Build();
+ 
+-// Configure the HTTP request pipeline.
++if (app.Environment.IsDevelopment())
++{
++    app.UseSwagger();
++    app.UseSwaggerUI();
++}
+ 
++app.UseExceptionHandler();
+ app.UseHttpsRedirection();
+-
++app.UseRouting();
++app.UseAuthentication();
++app.UseMiddleware<CompanyContextResolutionMiddleware>();
+ app.UseAuthorization();
+ 
++using (var scope = app.Services.CreateScope())
++{
++    var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++    if (dbContext.Database.IsRelational())
++    {
++        dbContext.Database.Migrate();
++    }
++}
++
+ app.MapControllers();
+ 
+ app.Run();
++
++public partial class Program;
+diff --git a/src/VirtualCompany.Api/VirtualCompany.Api.http b/src/VirtualCompany.Api/VirtualCompany.Api.http
+index 934b8cc..2f7ae84 100644
+--- a/src/VirtualCompany.Api/VirtualCompany.Api.http
++++ b/src/VirtualCompany.Api/VirtualCompany.Api.http
+@@ -1,4 +1,26 @@
+ @VirtualCompany.Api_HostAddress = http://localhost:5301
++@CompanyId = 11111111-1111-1111-1111-111111111111
++@NoteId = 33333333-3333-3333-3333-333333333333
+ 
+-GET {{VirtualCompany.Api_HostAddress}}/weatherforecast/
++GET {{VirtualCompany.Api_HostAddress}}/api/auth/me
++X-Dev-Auth-Subject: alice
++X-Dev-Auth-Email: alice@example.com
++X-Dev-Auth-DisplayName: Alice Admin
++
++###
++
++GET {{VirtualCompany.Api_HostAddress}}/api/auth/memberships
++X-Dev-Auth-Subject: alice
++X-Dev-Auth-Email: alice@example.com
++X-Dev-Auth-DisplayName: Alice Admin
++
++###
++
++GET {{VirtualCompany.Api_HostAddress}}/api/companies/{{CompanyId}}/access
++X-Dev-Auth-Subject: alice
++X-Dev-Auth-Email: alice@example.com
++X-Dev-Auth-DisplayName: Alice Admin
++
++###
++
++GET {{VirtualCompany.Api_HostAddress}}/api/companies/{{CompanyId}}/notes/{{NoteId}}
++X-Dev-Auth-Subject: alice
++X-Dev-Auth-Email: alice@example.com
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index e1d71cb..2f5be68 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -1,7 +1,10 @@
+ {
++  "ConnectionStrings": {
++    "VirtualCompanyDb": "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True"
++  },
+   "Logging": {
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+     }
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 10d5f8f..a69754a 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -1,8 +1,11 @@
+ {
++  "ConnectionStrings": {
++    "VirtualCompanyDb": "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True"
++  },
+   "Logging": {
+     "LogLevel": {
+       "Default": "Information",
+       "Microsoft.AspNetCore": "Warning"
+     }
+   },
+   "AllowedHosts": "*"
+-}
++}
+\ No newline at end of file
+diff --git a/src/VirtualCompany.Api/Controllers/AuthController.cs b/src/VirtualCompany.Api/Controllers/AuthController.cs
+new file mode 100644
+index 0000000..6bc5a7d
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/AuthController.cs
+@@ -0,0 +1,62 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/auth")]
++[Authorize]
++public sealed class AuthController : ControllerBase
++{
++    private readonly ICurrentUserCompanyService _companyService;
++
++    public AuthController(ICurrentUserCompanyService companyService)
++    {
++        _companyService = companyService;
++    }
++
++    [HttpGet("me")]
++    public async Task<ActionResult<CurrentUserDto>> GetCurrentUserAsync(CancellationToken cancellationToken)
++    {
++        var currentUser = await _companyService.GetCurrentUserAsync(cancellationToken);
++        if (currentUser is null)
++        {
++            return Unauthorized();
++        }
++
++        return Ok(currentUser);
++    }
++
++    [HttpGet("memberships")]
++    public async Task<ActionResult<IReadOnlyList<CompanyMembershipDto>>> GetMembershipsAsync(CancellationToken cancellationToken)
++    {
++        var memberships = await _companyService.GetMembershipsAsync(cancellationToken);
++        return Ok(memberships);
++    }
++
++    [HttpPost("select-company")]
++    public async Task<ActionResult<CompanySelectionDto>> SelectCompanyAsync(
++        [FromBody] SelectCompanyRequest request,
++        CancellationToken cancellationToken)
++    {
++        var canAccessCompany = await _companyService.CanAccessCompanyAsync(request.CompanyId, cancellationToken);
++        if (!canAccessCompany)
++        {
++            return Forbid();
++        }
++
++        return Ok(new CompanySelectionDto(
++            request.CompanyId,
++            CompanyContextResolutionMiddleware.CompanyHeaderName));
++    }
++
++    public sealed record SelectCompanyRequest(Guid CompanyId);
++}
+diff --git a/src/VirtualCompany.Api/Controllers/CompaniesController.cs b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+new file mode 100644
+index 0000000..4a8fd7b
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+@@ -0,0 +1,66 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Companies;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}")]
++[Authorize]
++public sealed class CompaniesController : ControllerBase
++{
++    private readonly ICurrentUserCompanyService _companyService;
++    private readonly ICompanyNoteService _companyNoteService;
++
++    public CompaniesController(
++        ICurrentUserCompanyService companyService,
++        ICompanyNoteService companyNoteService)
++    {
++        _companyService = companyService;
++        _companyNoteService = companyNoteService;
++    }
++
++    [HttpGet("access")]
++    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
++    public async Task<ActionResult<CompanyAccessDto>> GetAccessAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var access = await _companyService.GetCompanyAccessAsync(companyId, cancellationToken);
++        if (access is null)
++        {
++            return Forbid();
++        }
++
++        return Ok(access);
++    }
++
++    [HttpGet("access/admin")]
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
++    public async Task<ActionResult<CompanyAccessDto>> GetAdminAccessAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var access = await _companyService.GetCompanyAccessAsync(companyId, cancellationToken);
++        if (access is null)
++        {
++            return Forbid();
++        }
++
++        return Ok(access);
++    }
++
++    [HttpGet("notes/{noteId:guid}")]
++    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
++    public async Task<ActionResult<CompanyNoteDto>> GetNoteAsync(
++        Guid companyId,
++        Guid noteId,
++        CancellationToken cancellationToken)
++    {
++        var note = await _companyNoteService.GetNoteAsync(companyId, noteId, cancellationToken);
++        if (note is null)
++        {
++            return NotFound();
++        }
++
++        return Ok(note);
++    }
++}
+diff --git a/src/VirtualCompany.Application/Class1.cs b/src/VirtualCompany.Application/Class1.cs
+deleted file mode 100644
+index 8f5bf6c..0000000
+--- a/src/VirtualCompany.Application/Class1.cs
++++ /dev/null
+@@ -1,6 +0,0 @@
+-namespace VirtualCompany.Application;
+-
+-public class Class1
+-{
+-
+-}
+diff --git a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+new file mode 100644
+index 0000000..311bb7f
+--- /dev/null
++++ b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+@@ -0,0 +1,31 @@
++using System.Security.Claims;
++
++namespace VirtualCompany.Application.Auth;
++
++public static class CurrentUserClaimTypes
++{
++    public const string UserId = "virtual_company:user_id";
++    public const string AuthProvider = "virtual_company:auth_provider";
++    public const string AuthSubject = "virtual_company:auth_subject";
++}
++
++public sealed record ExternalUserIdentity(
++    string Provider,
++    string Subject,
++    string? Email,
++    string? DisplayName);
++
++public interface ICurrentUserAccessor
++{
++    ClaimsPrincipal Principal { get; }
++    bool IsAuthenticated { get; }
++    Guid? UserId { get; }
++}
++
++public interface IExternalUserIdentityAccessor
++{
++    ExternalUserIdentity? GetCurrentIdentity();
++}
++
++public interface ICompanyContextAccessor
++{
++    Guid? CompanyId { get; }
++    void SetCompanyId(Guid? companyId);
++}
+diff --git a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+new file mode 100644
+index 0000000..f84fe85
+--- /dev/null
++++ b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+@@ -0,0 +1,8 @@
++namespace VirtualCompany.Application.Authorization;
++
++public static class CompanyPolicies
++{
++    public const string CompanyMembership = "RequireCompanyMembership";
++    public const string CompanyManager = "RequireCompanyManager";
++    public const string CompanyAdmin = "RequireCompanyAdmin";
++}
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+new file mode 100644
+index 0000000..892485d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -0,0 +1,35 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Companies;
++
++public sealed record CurrentUserDto(
++    Guid Id,
++    string Email,
++    string DisplayName,
++    string AuthProvider,
++    string AuthSubject);
++
++public sealed record CompanyMembershipDto(
++    Guid MembershipId,
++    Guid CompanyId,
++    string CompanyName,
++    CompanyMembershipRole Role,
++    CompanyMembershipStatus Status);
++
++public sealed record CompanyAccessDto(
++    Guid CompanyId,
++    string CompanyName,
++    CompanyMembershipRole Role,
++    CompanyMembershipStatus Status);
++
++public sealed record CompanySelectionDto(Guid CompanyId, string HeaderName);
++
++public sealed record CompanyNoteDto(Guid Id, Guid CompanyId, string Title, string Content);
++
++public interface ICurrentUserCompanyService
++{
++    Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken);
++    Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken);
++    Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken);
++}
++
++public interface ICompanyNoteService
++{
++    Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Class1.cs b/src/VirtualCompany.Domain/Class1.cs
+deleted file mode 100644
+index 8f5bf6c..0000000
+--- a/src/VirtualCompany.Domain/Class1.cs
++++ /dev/null
+@@ -1,6 +0,0 @@
+-namespace VirtualCompany.Domain;
+-
+-public class Class1
+-{
+-
+-}
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+new file mode 100644
+index 0000000..5fd5cff
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -0,0 +1,194 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class User
++{
++    private User()
++    {
++    }
++
++    public User(Guid id, string email, string displayName, string authProvider, string authSubject)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        Email = NormalizeEmail(email);
++        DisplayName = NormalizeRequired(displayName, nameof(displayName), 200);
++        AuthProvider = NormalizeRequired(authProvider, nameof(authProvider), 100);
++        AuthSubject = NormalizeRequired(authSubject, nameof(authSubject), 200);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public string Email { get; private set; } = null!;
++    public string DisplayName { get; private set; } = null!;
++    public string AuthProvider { get; private set; } = null!;
++    public string AuthSubject { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
++
++    public void UpdateIdentity(string email, string displayName, string authProvider, string authSubject)
++    {
++        Email = NormalizeEmail(email);
++        DisplayName = NormalizeRequired(displayName, nameof(displayName), 200);
++        AuthProvider = NormalizeRequired(authProvider, nameof(authProvider), 100);
++        AuthSubject = NormalizeRequired(authSubject, nameof(authSubject), 200);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeEmail(string email)
++    {
++        if (string.IsNullOrWhiteSpace(email))
++        {
++            throw new ArgumentException("Email is required.", nameof(email));
++        }
++
++        return email.Trim().ToLowerInvariant();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class Company
++{
++    private Company()
++    {
++    }
++
++    public Company(Guid id, string name)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        Name = NormalizeRequired(name, nameof(name), 200);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public string Name { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
++    public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
++
++    public void Rename(string name)
++    {
++        Name = NormalizeRequired(name, nameof(name), 200);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class CompanyMembership
++{
++    private CompanyMembership()
++    {
++    }
++
++    public CompanyMembership(
++        Guid id,
++        Guid companyId,
++        Guid userId,
++        CompanyMembershipRole role,
++        CompanyMembershipStatus status,
++        string? permissionsJson = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        Role = role;
++        Status = status;
++        PermissionsJson = string.IsNullOrWhiteSpace(permissionsJson) ? null : permissionsJson.Trim();
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public CompanyMembershipRole Role { get; private set; }
++    public CompanyMembershipStatus Status { get; private set; }
++    public string? PermissionsJson { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++
++    public bool IsActive => Status == CompanyMembershipStatus.Active;
++
++    public void UpdateRole(CompanyMembershipRole role)
++    {
++        Role = role;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void UpdateStatus(CompanyMembershipStatus status)
++    {
++        Status = status;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++public sealed class CompanyOwnedNote
++{
++    private CompanyOwnedNote()
++    {
++    }
++
++    public CompanyOwnedNote(Guid id, Guid companyId, string title, string content)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Title = NormalizeRequired(title, nameof(title), 200);
++        Content = string.IsNullOrWhiteSpace(content) ? string.Empty : content.Trim();
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Content { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+new file mode 100644
+index 0000000..019e44f
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+@@ -0,0 +1,15 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum CompanyMembershipRole
++{
++    Owner = 1,
++    Admin = 2,
++    Manager = 3,
++    Employee = 4
++}
++
++public enum CompanyMembershipStatus
++{
++    Pending = 1,
++    Active = 2,
++    Revoked = 3
++}
+diff --git a/src/VirtualCompany.Infrastructure/Class1.cs b/src/VirtualCompany.Infrastructure/Class1.cs
+deleted file mode 100644
+index 8f5bf6c..0000000
+--- a/src/VirtualCompany.Infrastructure/Class1.cs
++++ /dev/null
+@@ -1,6 +0,0 @@
+-namespace VirtualCompany.Infrastructure;
+-
+-public class Class1
+-{
+-
+-}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+new file mode 100644
+index 0000000..b894431
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -0,0 +1,53 @@
++using Microsoft.AspNetCore.Authentication;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Configuration;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Authorization;
++using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure;
++
++public static class DependencyInjection
++{
++    public static IServiceCollection AddVirtualCompanyInfrastructure(
++        this IServiceCollection services,
++        IConfiguration configuration)
++    {
++        var connectionString =
++            configuration.GetConnectionString("VirtualCompanyDb")
++            ?? "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True";
++
++        services.AddDbContext<VirtualCompanyDbContext>(options =>
++            options.UseSqlServer(connectionString));
++
++        services.AddHttpContextAccessor();
++        services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
++        services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
++        services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
++        services.AddScoped<CompanyQueryService>();
++        services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
++        services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
++        services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
++        services.AddScoped<CompanyContextResolutionMiddleware>();
++        services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
++
++        services
++            .AddAuthentication(options =>
++            {
++                options.DefaultAuthenticateScheme = DevHeaderAuthenticationDefaults.Scheme;
++                options.DefaultChallengeScheme = DevHeaderAuthenticationDefaults.Scheme;
++            })
++            .AddScheme<AuthenticationSchemeOptions, DevHeaderAuthenticationHandler>(
++                DevHeaderAuthenticationDefaults.Scheme,
++                _ => { });
++
++        return services;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+new file mode 100644
+index 0000000..718a55f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -0,0 +1,28 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++public sealed class VirtualCompanyDbContext : DbContext
++{
++    public VirtualCompanyDbContext(DbContextOptions<VirtualCompanyDbContext> options)
++        : base(options)
++    {
++    }
++
++    public DbSet<User> Users => Set<User>();
++    public DbSet<Company> Companies => Set<Company>();
++    public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
++    public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
++
++    protected override void OnModelCreating(ModelBuilder modelBuilder)
++    {
++        base.OnModelCreating(modelBuilder);
++
++        modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+new file mode 100644
+index 0000000..76cc3fd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -0,0 +1,127 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
++{
++    public void Configure(EntityTypeBuilder<User> builder)
++    {
++        builder.ToTable("users");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Email).HasMaxLength(256).IsRequired();
++        builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.AuthProvider).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.AuthSubject).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++
++        builder.HasIndex(x => new { x.AuthProvider, x.AuthSubject }).IsUnique();
++        builder.HasIndex(x => x.Email);
++    }
++}
++
++internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
++{
++    public void Configure(EntityTypeBuilder<Company> builder)
++    {
++        builder.ToTable("companies");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++
++        builder.HasMany(x => x.Memberships)
++            .WithOne(x => x.Company)
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasMany(x => x.Notes)
++            .WithOne(x => x.Company)
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<CompanyMembership>
++{
++    public void Configure(EntityTypeBuilder<CompanyMembership> builder)
++    {
++        builder.ToTable("company_memberships");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Role)
++            .HasConversion<string>()
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasConversion<string>()
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.PermissionsJson);
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.UserId }).IsUnique();
++        builder.HasIndex(x => new { x.UserId, x.Status });
++
++        builder.HasOne(x => x.Company)
++            .WithMany(x => x.Memberships)
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasOne(x => x.User)
++            .WithMany(x => x.Memberships)
++            .HasForeignKey(x => x.UserId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CompanyOwnedNoteConfiguration : IEntityTypeConfiguration<CompanyOwnedNote>
++{
++    public void Configure(EntityTypeBuilder<CompanyOwnedNote> builder)
++    {
++        builder.ToTable("company_notes");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Title).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Content).IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.Id });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+new file mode 100644
+index 0000000..f446255
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+@@ -0,0 +1,19 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Design;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory<VirtualCompanyDbContext>
++{
++    public VirtualCompanyDbContext CreateDbContext(string[] args)
++    {
++        var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
++        optionsBuilder.UseSqlServer(
++            "Server=localhost,1433;Database=VirtualCompanyDb;User Id=sa;Password=YourStrongPassword123!;TrustServerCertificate=True");
++
++        return new VirtualCompanyDbContext(optionsBuilder.Options);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs
+new file mode 100644
+index 0000000..6ae3c03
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603290001_AddTenantAwareAuthAndMembership.cs
+@@ -0,0 +1,132 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddTenantAwareAuthAndMembership : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "companies",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                Name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_companies", x => x.Id);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "users",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                Email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                DisplayName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                AuthProvider = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                AuthSubject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_users", x => x.Id);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "company_memberships",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                UserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                PermissionsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_memberships", x => x.Id);
++                table.ForeignKey(
++                    name: "FK_company_memberships_companies_CompanyId",
++                    column: x => x.CompanyId,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_company_memberships_users_UserId",
++                    column: x => x.UserId,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "company_notes",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                Title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                Content = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_notes", x => x.Id);
++                table.ForeignKey(
++                    name: "FK_company_notes_companies_CompanyId",
++                    column: x => x.CompanyId,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_memberships_CompanyId_UserId",
++            table: "company_memberships",
++            columns: new[] { "CompanyId", "UserId" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_memberships_UserId_Status",
++            table: "company_memberships",
++            columns: new[] { "UserId", "Status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_notes_CompanyId_Id",
++            table: "company_notes",
++            columns: new[] { "CompanyId", "Id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_users_AuthProvider_AuthSubject",
++            table: "users",
++            columns: new[] { "AuthProvider", "AuthSubject" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_users_Email",
++            table: "users",
++            column: "Email");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "company_memberships");
++        migrationBuilder.DropTable(name: "company_notes");
++        migrationBuilder.DropTable(name: "users");
++        migrationBuilder.DropTable(name: "companies");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+new file mode 100644
+index 0000000..2f4d8ff
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+@@ -0,0 +1,209 @@
++using System.Security.Claims;
++using System.Text.Encodings.Web;
++using Microsoft.AspNetCore.Authentication;
++using Microsoft.AspNetCore.Http;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Auth;
++
++public static class DevHeaderAuthenticationDefaults
++{
++    public const string Scheme = "DevHeader";
++    public const string SubjectHeader = "X-Dev-Auth-Subject";
++    public const string EmailHeader = "X-Dev-Auth-Email";
++    public const string DisplayNameHeader = "X-Dev-Auth-DisplayName";
++    public const string ProviderHeader = "X-Dev-Auth-Provider";
++}
++
++public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
++{
++    public DevHeaderAuthenticationHandler(
++        IOptionsMonitor<AuthenticationSchemeOptions> options,
++        ILoggerFactory logger,
++        UrlEncoder encoder)
++        : base(options, logger, encoder)
++    {
++    }
++
++    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
++    {
++        var subject = Request.Headers[DevHeaderAuthenticationDefaults.SubjectHeader].FirstOrDefault()?.Trim();
++        var email = Request.Headers[DevHeaderAuthenticationDefaults.EmailHeader].FirstOrDefault()?.Trim();
++        var displayName = Request.Headers[DevHeaderAuthenticationDefaults.DisplayNameHeader].FirstOrDefault()?.Trim();
++        var provider = Request.Headers[DevHeaderAuthenticationDefaults.ProviderHeader].FirstOrDefault()?.Trim();
++
++        if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(email))
++        {
++            return Task.FromResult(AuthenticateResult.NoResult());
++        }
++
++        provider = string.IsNullOrWhiteSpace(provider) ? "dev-header" : provider;
++        subject = string.IsNullOrWhiteSpace(subject) ? email! : subject;
++
++        var claims = new List<Claim>
++        {
++            new(CurrentUserClaimTypes.AuthProvider, provider),
++            new(CurrentUserClaimTypes.AuthSubject, subject),
++            new(ClaimTypes.NameIdentifier, subject)
++        };
++
++        if (!string.IsNullOrWhiteSpace(email))
++        {
++            claims.Add(new Claim(ClaimTypes.Email, email));
++        }
++
++        if (!string.IsNullOrWhiteSpace(displayName))
++        {
++            claims.Add(new Claim(ClaimTypes.Name, displayName));
++        }
++
++        var identity = new ClaimsIdentity(claims, Scheme.Name);
++        var principal = new ClaimsPrincipal(identity);
++        var ticket = new AuthenticationTicket(principal, Scheme.Name);
++        return Task.FromResult(AuthenticateResult.Success(ticket));
++    }
++}
++
++public sealed class HttpContextCurrentUserAccessor : ICurrentUserAccessor
++{
++    private readonly IHttpContextAccessor _httpContextAccessor;
++
++    public HttpContextCurrentUserAccessor(IHttpContextAccessor httpContextAccessor)
++    {
++        _httpContextAccessor = httpContextAccessor;
++    }
++
++    public ClaimsPrincipal Principal => _httpContextAccessor.HttpContext?.User ?? new ClaimsPrincipal(new ClaimsIdentity());
++
++    public bool IsAuthenticated => Principal.Identity?.IsAuthenticated == true;
++
++    public Guid? UserId
++    {
++        get
++        {
++            var value = Principal.FindFirstValue(CurrentUserClaimTypes.UserId);
++            return Guid.TryParse(value, out var userId) ? userId : null;
++        }
++    }
++}
++
++public sealed class ClaimsExternalUserIdentityAccessor : IExternalUserIdentityAccessor
++{
++    private readonly IHttpContextAccessor _httpContextAccessor;
++
++    public ClaimsExternalUserIdentityAccessor(IHttpContextAccessor httpContextAccessor)
++    {
++        _httpContextAccessor = httpContextAccessor;
++    }
++
++    public ExternalUserIdentity? GetCurrentIdentity()
++    {
++        var principal = _httpContextAccessor.HttpContext?.User;
++        if (principal?.Identity?.IsAuthenticated != true)
++        {
++            return null;
++        }
++
++        var provider = principal.FindFirstValue(CurrentUserClaimTypes.AuthProvider);
++        var subject = principal.FindFirstValue(CurrentUserClaimTypes.AuthSubject)
++                      ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
++
++        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(subject))
++        {
++            return null;
++        }
++
++        return new ExternalUserIdentity(
++            provider,
++            subject,
++            principal.FindFirstValue(ClaimTypes.Email),
++            principal.FindFirstValue(ClaimTypes.Name));
++    }
++}
++
++public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
++{
++    public Guid? CompanyId { get; private set; }
++
++    public void SetCompanyId(Guid? companyId)
++    {
++        CompanyId = companyId;
++    }
++}
++
++public sealed class UserClaimsTransformation : IClaimsTransformation
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
++
++    public UserClaimsTransformation(
++        VirtualCompanyDbContext dbContext,
++        IExternalUserIdentityAccessor externalUserIdentityAccessor)
++    {
++        _dbContext = dbContext;
++        _externalUserIdentityAccessor = externalUserIdentityAccessor;
++    }
++
++    public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
++    {
++        if (principal.Identity?.IsAuthenticated != true)
++        {
++            return principal;
++        }
++
++        if (principal.HasClaim(claim => claim.Type == CurrentUserClaimTypes.UserId))
++        {
++            return principal;
++        }
++
++        var externalIdentity = _externalUserIdentityAccessor.GetCurrentIdentity();
++        if (externalIdentity is null)
++        {
++            return principal;
++        }
++
++        var email = NormalizeEmail(externalIdentity.Email, externalIdentity.Subject);
++        var displayName = string.IsNullOrWhiteSpace(externalIdentity.DisplayName)
++            ? email
++            : externalIdentity.DisplayName.Trim();
++
++        var user = await _dbContext.Users.SingleOrDefaultAsync(x =>
++            x.AuthProvider == externalIdentity.Provider &&
++            x.AuthSubject == externalIdentity.Subject);
++
++        if (user is null && !string.IsNullOrWhiteSpace(externalIdentity.Email))
++        {
++            user = await _dbContext.Users.SingleOrDefaultAsync(x => x.Email == email);
++        }
++
++        if (user is null)
++        {
++            user = new User(Guid.NewGuid(), email, displayName, externalIdentity.Provider, externalIdentity.Subject);
++            _dbContext.Users.Add(user);
++        }
++        else
++        {
++            user.UpdateIdentity(email, displayName, externalIdentity.Provider, externalIdentity.Subject);
++        }
++
++        if (_dbContext.ChangeTracker.HasChanges())
++        {
++            await _dbContext.SaveChangesAsync();
++        }
++
++        var clonedPrincipal = new ClaimsPrincipal(principal.Identities.Select(identity => new ClaimsIdentity(identity)));
++        var claimsIdentity = clonedPrincipal.Identities.First();
++        claimsIdentity.AddClaim(new Claim(CurrentUserClaimTypes.UserId, user.Id.ToString()));
++        return clonedPrincipal;
++    }
++
++    private static string NormalizeEmail(string? email, string subject)
++    {
++        if (!string.IsNullOrWhiteSpace(email))
++        {
++            return email.Trim().ToLowerInvariant();
++        }
++
++        var fallback = subject.Contains('@')
++            ? subject
++            : $"{subject.Trim().ToLowerInvariant().Replace(' ', '.') }@local.virtualcompany.test";
++
++        return fallback.ToLowerInvariant();
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+new file mode 100644
+index 0000000..b0f344f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+@@ -0,0 +1,89 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Authorization;
++
++public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
++{
++}
++
++public sealed class CompanyRoleRequirement : IAuthorizationRequirement
++{
++    public CompanyRoleRequirement(params CompanyMembershipRole[] allowedRoles)
++    {
++        AllowedRoles = allowedRoles.ToHashSet();
++    }
++
++    public IReadOnlySet<CompanyMembershipRole> AllowedRoles { get; }
++}
++
++public sealed class CompanyMembershipAuthorizationHandler
++    : AuthorizationHandler<CompanyMembershipRequirement>
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyMembershipAuthorizationHandler(
++        VirtualCompanyDbContext dbContext,
++        ICurrentUserAccessor currentUserAccessor,
++        ICompanyContextAccessor companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _currentUserAccessor = currentUserAccessor;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyMembershipRequirement requirement)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        var hasMembership = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
++            x.UserId == userId &&
++            x.CompanyId == companyId &&
++            x.Status == CompanyMembershipStatus.Active);
++
++        if (hasMembership)
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
++
++public sealed class CompanyRoleAuthorizationHandler
++    : AuthorizationHandler<CompanyRoleRequirement>
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyRoleAuthorizationHandler(
++        VirtualCompanyDbContext dbContext,
++        ICurrentUserAccessor currentUserAccessor,
++        ICompanyContextAccessor companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _currentUserAccessor = currentUserAccessor;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyRoleRequirement requirement)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        var hasRequiredRole = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
++            x.UserId == userId &&
++            x.CompanyId == companyId &&
++            x.Status == CompanyMembershipStatus.Active &&
++            requirement.AllowedRoles.Contains(x.Role));
++
++        if (hasRequiredRole)
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+new file mode 100644
+index 0000000..e7bc275
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -0,0 +1,93 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNoteService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++
++    public CompanyQueryService(
++        VirtualCompanyDbContext dbContext,
++        ICurrentUserAccessor currentUserAccessor)
++    {
++        _dbContext = dbContext;
++        _currentUserAccessor = currentUserAccessor;
++    }
++
++    public async Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        return await _dbContext.Users.AsNoTracking()
++            .Where(x => x.Id == userId)
++            .Select(x => new CurrentUserDto(x.Id, x.Email, x.DisplayName, x.AuthProvider, x.AuthSubject))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return Array.Empty<CompanyMembershipDto>();
++        }
++
++        return await _dbContext.CompanyMemberships.AsNoTracking()
++            .Where(x => x.UserId == userId)
++            .OrderBy(x => x.Company.Name)
++            .Select(x => new CompanyMembershipDto(
++                x.Id,
++                x.CompanyId,
++                x.Company.Name,
++                x.Role,
++                x.Status))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        return await _dbContext.CompanyMemberships.AsNoTracking()
++            .Where(x => x.UserId == userId &&
++                        x.CompanyId == companyId &&
++                        x.Status == CompanyMembershipStatus.Active)
++            .Select(x => new CompanyAccessDto(
++                x.CompanyId,
++                x.Company.Name,
++                x.Role,
++                x.Status))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return Task.FromResult(false);
++        }
++
++        return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
++            x.UserId == userId &&
++            x.CompanyId == companyId &&
++            x.Status == CompanyMembershipStatus.Active,
++            cancellationToken);
++    }
++
++    public async Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken)
++    {
++        return await _dbContext.CompanyNotes.AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Id == noteId)
++            .Select(x => new CompanyNoteDto(x.Id, x.CompanyId, x.Title, x.Content))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+new file mode 100644
+index 0000000..76dcfe0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+@@ -0,0 +1,79 @@
++using Microsoft.AspNetCore.Http;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Auth;
++
++namespace VirtualCompany.Infrastructure.Tenancy;
++
++public sealed class CompanyContextResolutionMiddleware : IMiddleware
++{
++    public const string CompanyHeaderName = "X-Company-Id";
++
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyContextResolutionMiddleware(ICompanyContextAccessor companyContextAccessor)
++    {
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
++    {
++        var routeCompanyIdValue = context.Request.RouteValues.TryGetValue("companyId", out var routeCompanyId)
++            ? routeCompanyId?.ToString()
++            : null;
++
++        var headerCompanyIdValue = context.Request.Headers[CompanyHeaderName].FirstOrDefault();
++
++        if (string.IsNullOrWhiteSpace(routeCompanyIdValue) && string.IsNullOrWhiteSpace(headerCompanyIdValue))
++        {
++            await next(context);
++            return;
++        }
++
++        if (!TryParseCompanyId(routeCompanyIdValue, out var parsedRouteCompanyId) ||
++            !TryParseCompanyId(headerCompanyIdValue, out var parsedHeaderCompanyId))
++        {
++            await WriteBadRequestAsync(context, "Company context must be a valid GUID.");
++            return;
++        }
++
++        if (parsedRouteCompanyId.HasValue &&
++            parsedHeaderCompanyId.HasValue &&
++            parsedRouteCompanyId.Value != parsedHeaderCompanyId.Value)
++        {
++            await WriteBadRequestAsync(context, "Route companyId and X-Company-Id must match when both are supplied.");
++            return;
++        }
++
++        _companyContextAccessor.SetCompanyId(parsedRouteCompanyId ?? parsedHeaderCompanyId);
++        await next(context);
++    }
++
++    private static bool TryParseCompanyId(string? rawValue, out Guid? companyId)
++    {
++        companyId = null;
++
++        if (string.IsNullOrWhiteSpace(rawValue))
++        {
++            return true;
++        }
++
++        if (!Guid.TryParse(rawValue, out var parsed))
++        {
++            return false;
++        }
++
++        companyId = parsed;
++        return true;
++    }
++
++    private static async Task WriteBadRequestAsync(HttpContext context, string detail)
++    {
++        context.Response.StatusCode = StatusCodes.Status400BadRequest;
++        await context.Response.WriteAsJsonAsync(new ProblemDetails
++        {
++            Status = StatusCodes.Status400BadRequest,
++            Title = "Invalid company context",
++            Detail = detail
++        });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+index 7b66aec..01ef0b1 100644
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -1,11 +1,17 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
++  <ItemGroup>
++    <FrameworkReference Include="Microsoft.AspNetCore.App" />
++  </ItemGroup>
++
+   <ItemGroup>
+     <ProjectReference Include="..\VirtualCompany.Application\VirtualCompany.Application.csproj" />
+     <ProjectReference Include="..\VirtualCompany.Domain\VirtualCompany.Domain.csproj" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
+   </ItemGroup>
+ 
+   <PropertyGroup>
+diff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+new file mode 100644
+index 0000000..36f9e10
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+@@ -0,0 +1,30 @@
++<Project Sdk="Microsoft.NET.Sdk">
++
++  <PropertyGroup>
++    <TargetFramework>net9.0</TargetFramework>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <Nullable>enable</Nullable>
++    <IsPackable>false</IsPackable>
++    <IsTestProject>true</IsTestProject>
++  </PropertyGroup>
++
++  <ItemGroup>
++    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.1" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.14" />
++    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
++    <PackageReference Include="xunit" Version="2.9.2" />
++    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
++      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
++      <PrivateAssets>all</PrivateAssets>
++    </PackageReference>
++  </ItemGroup>
++
++  <ItemGroup>
++    <ProjectReference Include="..\..\src\VirtualCompany.Api\VirtualCompany.Api.csproj" />
++    <ProjectReference Include="..\..\src\VirtualCompany.Domain\VirtualCompany.Domain.csproj" />
++    <ProjectReference Include="..\..\src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj" />
++  </ItemGroup>
++
++</Project>
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+new file mode 100644
+index 0000000..a627e5a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -0,0 +1,39 @@
++using Microsoft.AspNetCore.Hosting;
++using Microsoft.AspNetCore.Mvc.Testing;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.DependencyInjection.Extensions;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
++{
++    protected override void ConfigureWebHost(IWebHostBuilder builder)
++    {
++        builder.ConfigureServices(services =>
++        {
++            services.RemoveAll<DbContextOptions<VirtualCompanyDbContext>>();
++            services.RemoveAll<VirtualCompanyDbContext>();
++
++            services.AddDbContext<VirtualCompanyDbContext>(options =>
++                options.UseInMemoryDatabase($"virtual-company-tests-{Guid.NewGuid()}"));
++        });
++    }
++
++    public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
++    {
++        using var scope = Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        await dbContext.Database.EnsureCreatedAsync();
++        await seed(dbContext);
++        await dbContext.SaveChangesAsync();
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+new file mode 100644
+index 0000000..a5d3e0d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -0,0 +1,213 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AuthAndTenantIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task GetMemberships_returns_current_users_memberships()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var memberships = await client.GetFromJsonAsync<List<MembershipResponse>>("/api/auth/memberships");
++
++        Assert.NotNull(memberships);
++        Assert.Equal(2, memberships!.Count);
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Status == "Active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Status == "Pending");
++    }
++
++    [Fact]
++    public async Task Company_access_succeeds_for_active_membership()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Company_access_is_forbidden_without_membership()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyNoMembershipId}/access");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Company_admin_policy_reads_persisted_membership_role()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access/admin");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Company_admin_policy_rejects_non_admin_membership_role()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Employee);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access/admin");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Company_owned_query_filters_by_company_id()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/notes/{ids.CompanyBNoteId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Pending_membership_cannot_access_company_scoped_endpoint()
++    {
++        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyPendingId}/access");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<SeedIds> SeedAsync(CompanyMembershipRole adminRole)
++    {
++        var userId = Guid.NewGuid();
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var companyPendingId = Guid.NewGuid();
++        var companyNoMembershipId = Guid.NewGuid();
++        var companyANoteId = Guid.NewGuid();
++        var companyBNoteId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "alice@example.com", "Alice", "dev-header", "alice"));
++            dbContext.Companies.AddRange(
++                new Company(companyAId, "Company A"),
++                new Company(companyBId, "Company B"),
++                new Company(companyPendingId, "Company Pending"),
++                new Company(companyNoMembershipId, "Company No Membership"));
++
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, adminRole, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyPendingId, userId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Pending));
++
++            dbContext.CompanyNotes.AddRange(
++                new CompanyOwnedNote(companyANoteId, companyAId, "A note", "inside company A"),
++                new CompanyOwnedNote(companyBNoteId, companyBId, "B note", "inside company B"));
++
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(
++            UserId: userId,
++            CompanyAId: companyAId,
++            CompanyBId: companyBId,
++            CompanyPendingId: companyPendingId,
++            CompanyNoMembershipId: companyNoMembershipId,
++            CompanyANoteId: companyANoteId,
++            CompanyBNoteId: companyBNoteId);
++    }
++
++    private sealed record SeedIds(
++        Guid UserId,
++        Guid CompanyAId,
++        Guid CompanyBId,
++        Guid CompanyPendingId,
++        Guid CompanyNoMembershipId,
++        Guid CompanyANoteId,
++        Guid CompanyBNoteId);
++
++    private sealed class MembershipResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string Status { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH
