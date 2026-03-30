@@ -25,10 +25,12 @@ public static class DependencyInjection
     {
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
-            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres";
+            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True";
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
-            options.UseNpgsql(connectionString));
+            options.UseSqlServer(
+                connectionString,
+                sqlServerOptions => sqlServerOptions.EnableRetryOnFailure()));
 
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
@@ -61,8 +63,8 @@ public static class DependencyInjection
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
-        services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
-        services.AddScoped<IAuthorizationHandler, CompanyRoleResourceAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyMembershipRoleResourceAuthorizationHandler>();
 
         services
             .AddAuthentication(options =>

@@ -128,13 +128,19 @@ public sealed class OnboardingApiClient
         try
         {
             using var response = await _httpClient.GetAsync("api/onboarding/progress", cancellationToken);
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 return null;
             }
 
             if (response.IsSuccessStatusCode)
             {
+                if (response.Content.Headers.ContentLength is 0)
+                {
+                    return null;
+                }
+
                 return await response.Content.ReadFromJsonAsync<OnboardingProgressViewModel?>(SerializerOptions, cancellationToken);
             }
 

@@ -11,6 +11,7 @@ using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
+using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Persistence;
 using Xunit;
 
@@ -184,12 +185,12 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Equal("employee", accepted.MembershipRole);
         Assert.Equal("active", accepted.Status);
 
-        using var scope = _factory.Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        using var assertionScope = _factory.Services.CreateScope();
+        var assertionDbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
 
-        var inviteeUser = await dbContext.Users.SingleAsync(x => x.Email == "invitee@example.com");
-        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.Id == pendingMembershipId);
-        var storedInvitation = await dbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "invitee@example.com");
+        var inviteeUser = await assertionDbContext.Users.SingleAsync(x => x.Email == "invitee@example.com");
+        var membership = await assertionDbContext.CompanyMemberships.SingleAsync(x => x.Id == pendingMembershipId);
+        var storedInvitation = await assertionDbContext.CompanyInvitations.SingleAsync(x => x.CompanyId == seed.CompanyId && x.Email == "invitee@example.com");
 
         Assert.Equal(CompanyMembershipStatus.Active, membership.Status);
         Assert.Equal(CompanyMembershipRole.Employee, membership.Role);

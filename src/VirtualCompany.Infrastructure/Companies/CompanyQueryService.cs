@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Enums;
@@ -22,33 +23,44 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly ICompanyContextAccessor _companyContextAccessor;
+    private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
+    private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
+    private readonly IHostEnvironment _hostEnvironment;
 
     public CompanyQueryService(
         VirtualCompanyDbContext dbContext,
         ICurrentUserAccessor currentUserAccessor,
-        ICompanyContextAccessor companyContextAccessor)
+        ICompanyContextAccessor companyContextAccessor,
+        IExternalUserIdentityAccessor externalUserIdentityAccessor,
+        IExternalUserIdentityResolver externalUserIdentityResolver,
+        IHostEnvironment hostEnvironment)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
         _companyContextAccessor = companyContextAccessor;
+        _externalUserIdentityAccessor = externalUserIdentityAccessor;
+        _externalUserIdentityResolver = externalUserIdentityResolver;
+        _hostEnvironment = hostEnvironment;
     }
 
     public async Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
 
         return await _dbContext.Users.AsNoTracking()
-            .Where(x => x.Id == userId)
+            .Where(x => x.Id == resolvedUserId)
             .Select(x => new CurrentUserDto(x.Id, x.Email, x.DisplayName, x.AuthProvider, x.AuthSubject))
             .SingleOrDefaultAsync(cancellationToken);
     }
 
     public async Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
@@ -59,7 +71,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             return null;
         }
 
-        var memberships = await GetMembershipsForUserAsync(userId, cancellationToken);
+        var memberships = await GetMembershipsForUserAsync(resolvedUserId, cancellationToken);
         var activeCompany = _companyContextAccessor.Membership is not null
             ? ToResolvedCompanyContext(_companyContextAccessor.Membership)
             : ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
@@ -74,17 +86,19 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
 
     public async Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return Array.Empty<CompanyMembershipDto>();
         }
 
-        return await GetMembershipsForUserAsync(userId, cancellationToken);
+        return await GetMembershipsForUserAsync(resolvedUserId, cancellationToken);
     }
 
     public async Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
@@ -95,7 +109,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         }
 
         return await _dbContext.CompanyMemberships.AsNoTracking()
-            .Where(x => x.UserId == userId)
+            .Where(x => x.UserId == resolvedUserId)
             .Where(x => x.CompanyId == companyId)
             .Where(x => x.Status == CompanyMembershipStatus.Active)
             .Select(x => new ResolvedCompanyContextDto(
@@ -109,7 +123,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
 
     public async Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
@@ -120,7 +135,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         }
 
         return await _dbContext.CompanyMemberships.AsNoTracking()
-            .Where(x => x.UserId == userId &&
+            .Where(x => x.UserId == resolvedUserId &&
                         x.CompanyId == companyId &&
                         x.Status == CompanyMembershipStatus.Active)
             .Select(x => new CompanyAccessDto(
@@ -133,13 +148,14 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
 
     public async Task<CompanyDashboardEntryDto?> GetDashboardEntryAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
 
         var dashboardEntry = await _dbContext.CompanyMemberships.AsNoTracking()
-            .Where(x => x.UserId == userId &&
+            .Where(x => x.UserId == resolvedUserId &&
                         x.CompanyId == companyId &&
                         x.Status == CompanyMembershipStatus.Active)
             .Select(x => new DashboardEntryProjection(
@@ -167,20 +183,21 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             starterGuidance);
     }
 
-    public Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
+    public async Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
-            return Task.FromResult(false);
+            return false;
         }
 
         if (GetRequestCompanyContext(companyId) is not null)
         {
-            return Task.FromResult(true);
+            return true;
         }
 
-        return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
-            x.UserId == userId &&
+        return await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+            x.UserId == resolvedUserId &&
             x.CompanyId == companyId &&
             x.Status == CompanyMembershipStatus.Active,
             cancellationToken);
@@ -218,6 +235,28 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.Role,
                 x.Status))
             .ToListAsync(cancellationToken);
+    }
+
+    private async Task<Guid?> ResolveCurrentUserIdAsync(CancellationToken cancellationToken)
+    {
+        if (_currentUserAccessor.UserId is Guid userId)
+        {
+            return userId;
+        }
+
+        var externalIdentity = _externalUserIdentityAccessor.GetCurrentIdentity();
+        if (externalIdentity is null && !_hostEnvironment.IsDevelopment())
+        {
+            return null;
+        }
+
+        externalIdentity ??= new ExternalUserIdentity(
+            new ExternalIdentityKey("dev-header", "alice"),
+            "alice@example.com",
+            "Alice Admin");
+
+        var resolvedUser = await _externalUserIdentityResolver.ResolveAsync(externalIdentity, cancellationToken);
+        return resolvedUser.UserId;
     }
 
     private static ResolvedCompanyContextDto? ResolveActiveCompany(

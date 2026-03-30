@@ -9,11 +9,12 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 
 var configuredApiBaseUrl = builder.Configuration["ApiBaseUrl"];
 var useOfflineMode = ShouldUseOfflineMode(builder, configuredApiBaseUrl);
+var developmentAuth = ResolveDevelopmentAuth(builder);
 
 builder.Services.AddScoped(_ => new HttpClient
 {
     BaseAddress = ResolveApiBaseAddress(builder, configuredApiBaseUrl, useOfflineMode)
-});
+}.ApplyDevelopmentAuth(developmentAuth));
 builder.Services.AddScoped(sp => new OnboardingApiClient(
     sp.GetRequiredService<HttpClient>(),
     useOfflineMode));
@@ -51,3 +52,70 @@ static bool ShouldUseOfflineMode(WebAssemblyHostBuilder builder, string? configu
     var hostUri = new Uri(builder.HostEnvironment.BaseAddress);
     return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase);
 }
+
+static DevelopmentAuthSettings? ResolveDevelopmentAuth(WebAssemblyHostBuilder builder)
+{
+    if (!builder.HostEnvironment.IsDevelopment())
+    {
+        return null;
+    }
+
+    var subject = builder.Configuration["DevelopmentAuth:Subject"]?.Trim();
+    var email = builder.Configuration["DevelopmentAuth:Email"]?.Trim();
+    var displayName = builder.Configuration["DevelopmentAuth:DisplayName"]?.Trim();
+    var provider = builder.Configuration["DevelopmentAuth:Provider"]?.Trim();
+
+    if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(email))
+    {
+        var hostUri = new Uri(builder.HostEnvironment.BaseAddress);
+        return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+            ? new DevelopmentAuthSettings(
+                "alice",
+                "alice@example.com",
+                "Alice Admin",
+                "dev-header")
+            : null;
+    }
+
+    return new DevelopmentAuthSettings(
+        subject ?? email!,
+        email,
+        displayName,
+        string.IsNullOrWhiteSpace(provider) ? "dev-header" : provider);
+}
+
+static class HttpClientDevelopmentAuthExtensions
+{
+    public static HttpClient ApplyDevelopmentAuth(this HttpClient httpClient, DevelopmentAuthSettings? auth)
+    {
+        if (auth is null)
+        {
+            return httpClient;
+        }
+
+        httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Subject", auth.Subject);
+
+        if (!string.IsNullOrWhiteSpace(auth.Email))
+        {
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Email", auth.Email);
+        }
+
+        if (!string.IsNullOrWhiteSpace(auth.DisplayName))
+        {
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-DisplayName", auth.DisplayName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(auth.Provider))
+        {
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Provider", auth.Provider);
+        }
+
+        return httpClient;
+    }
+}
+
+sealed record DevelopmentAuthSettings(
+    string Subject,
+    string? Email,
+    string? DisplayName,
+    string? Provider);

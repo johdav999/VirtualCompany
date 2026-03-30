@@ -54,7 +54,7 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
         // changes take effect on the next authorization check without trusting stale request state.
         var membership = await _dbContext.CompanyMemberships.AsNoTracking()
             .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
-            .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId, x.Company.Name, x.Role, x.Status))
+            .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId!.Value, x.Company.Name, x.Role, x.Status))
             .SingleOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 

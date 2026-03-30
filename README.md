@@ -29,9 +29,9 @@ VirtualCompany/
     VirtualCompany.Api.Tests/
 ```
 
-## Local Database Setup (Docker PostgreSQL)
+## Local Database Setup (Docker SQL Server)
 
-This solution includes a Docker Compose setup for a local PostgreSQL instance that matches the production JSONB persistence model used by onboarding.
+This solution includes a Docker Compose setup for a local SQL Server 2022 instance for application development.
 
 ### Prerequisite: Docker Desktop on Windows
 
@@ -68,22 +68,32 @@ docker compose down
 If startup fails:
 
 ```powershell
-docker logs virtualcompany-postgres
+docker logs virtualcompany-sqlserver
 ```
 
 ### Connect to the database
 
 - Host: `localhost`
-- Port: `5432`
+- Port: `1433`
 - Database: `virtualcompany`
-- User: `postgres`
-- Password: `postgres`
+- User: `sa`
+- Password: `YourStrong!Passw0rd`
 
 ### Sample connection string
 
 ```text
-Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres
+Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True
 ```
+
+### Start the API against local Docker SQL Server
+
+Once the container is running, start the API from the solution root:
+
+```powershell
+dotnet run --project src/VirtualCompany.Api
+```
+
+The API applies EF Core migrations automatically on startup for relational providers.
 
 ## Local Development Authentication
 
@@ -157,6 +167,8 @@ Company-scoped endpoints:
 
 ## Notes
 
-- The PostgreSQL container uses the `postgres:17` image.
-- Data is persisted in the named Docker volume `postgres-data`.
+- The local database container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
+- Data is persisted in the named Docker volume `sqlserver-data`.
+- SQL Server startup can take a short time on first boot; if API startup fails immediately after `docker compose up -d`, check the container logs and retry once the server is ready.
+- Local development is standardized on SQL Server in Docker. The intended production target is Azure SQL.
 - The API applies EF Core migrations at startup when using a relational provider.

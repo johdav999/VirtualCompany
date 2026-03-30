@@ -48,7 +48,7 @@ public sealed class BackgroundJobExecutorTests
 
         Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
         Assert.Equal("Unsupported payload.", result.ErrorMessage);
-        Assert.Equal("System.TimeoutException", Assert.NotEqual("System.TimeoutException", result.ExceptionType));
+        Assert.NotEqual("System.TimeoutException", result.ExceptionType);
 
         var entry = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Error, entry.LogLevel);

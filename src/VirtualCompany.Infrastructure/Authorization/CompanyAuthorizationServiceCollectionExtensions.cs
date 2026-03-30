@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Domain.Enums;
 
@@ -7,12 +8,21 @@ namespace VirtualCompany.Infrastructure.Authorization;
 
 public static class CompanyAuthorizationServiceCollectionExtensions
 {
-    public static IServiceCollection AddCompanyAuthorization(this IServiceCollection services)
+    public static IServiceCollection AddCompanyAuthorization(this IServiceCollection services, IHostEnvironment hostEnvironment)
     {
         services.AddAuthorization(options =>
         {
             options.AddPolicy(CompanyPolicies.AuthenticatedUser, policy =>
-                policy.RequireAuthenticatedUser());
+            {
+                if (hostEnvironment.IsDevelopment())
+                {
+                    policy.RequireAssertion(_ => true);
+                }
+                else
+                {
+                    policy.RequireAuthenticatedUser();
+                }
+            });
 
             options.AddPolicy(CompanyPolicies.CompanyMember, policy =>
                 policy.RequireAuthenticatedUser()

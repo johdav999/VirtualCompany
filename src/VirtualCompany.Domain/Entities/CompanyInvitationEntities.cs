@@ -252,7 +252,6 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
 
         return trimmed;
     }
-}
 
     private static string? NormalizeOptional(string? value, string name, int maxLength)
     {
@@ -269,26 +268,6 @@ public sealed class CompanyInvitation : ICompanyOwnedEntity
 
         return trimmed;
     }
-
-
-
-    private static string? NormalizeOptional(string? value, string name, int maxLength)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        var trimmed = value.Trim();
-        if (trimmed.Length > maxLength)
-        {
-            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
-        }
-
-        return trimmed;
-    }
-
-
 
     private static DateTime EnsureFuture(DateTime value, string name)
     {
@@ -401,3 +380,20 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
 
         return trimmed;
     }
+
+    private static string? NormalizeOptional(string? value, string name, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > maxLength)
+        {
+            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+        }
+
+        return trimmed;
+    }
+}

@@ -35,10 +35,13 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
-builder.Services.AddCompanyAuthorization();
+builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
 
 var app = builder.Build();
+var applyMigrationsOnStartup =
+    app.Environment.IsDevelopment() ||
+    app.Configuration.GetValue<bool>("DatabaseInitialization:ApplyMigrationsOnStartup");
 
 if (app.Environment.IsDevelopment())
 {
@@ -63,9 +66,12 @@ using (var scope = app.Services.CreateScope())
 
     if (dbContext.Database.IsRelational())
     {
-        await dbContext.Database.MigrateAsync();
+        if (applyMigrationsOnStartup)
+        {
+            await dbContext.Database.MigrateAsync();
+        }
     }
-    else
+    else if (app.Environment.IsDevelopment())
     {
         await dbContext.Database.EnsureCreatedAsync();
     }

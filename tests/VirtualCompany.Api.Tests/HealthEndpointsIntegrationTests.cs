@@ -30,8 +30,8 @@ public sealed class HealthEndpointsIntegrationTests : IClassFixture<TestWebAppli
 
         var results = payload.RootElement.GetProperty("results");
         Assert.True(results.TryGetProperty("application", out _));
-        Assert.Equal(1, results.EnumerateObject().Count());
-        Assert.False(results.TryGetProperty("postgresql", out _));
+        Assert.Single(results.EnumerateObject());
+        Assert.False(results.TryGetProperty("database", out _));
         Assert.False(results.TryGetProperty("redis", out _));
         Assert.False(results.TryGetProperty("object-storage", out _));
     }
@@ -56,7 +56,7 @@ public sealed class HealthEndpointsIntegrationTests : IClassFixture<TestWebAppli
 
         var results = payload.RootElement.GetProperty("results");
 
-        Assert.True(results.TryGetProperty("postgresql", out _));
+        Assert.True(results.TryGetProperty("database", out _));
         Assert.True(results.TryGetProperty("redis", out _));
         Assert.True(results.TryGetProperty("object-storage", out _));
         Assert.False(results.TryGetProperty("application", out _));

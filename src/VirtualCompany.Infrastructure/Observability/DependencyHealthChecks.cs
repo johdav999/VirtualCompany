@@ -34,12 +34,12 @@ public sealed class DatabaseHealthCheck : IHealthCheck
 
             var canConnect = await _dbContext.Database.CanConnectAsync(cancellationToken);
             return canConnect
-                ? HealthCheckResult.Healthy("PostgreSQL connection succeeded.")
-                : HealthCheckResult.Unhealthy("PostgreSQL connection failed.");
+                ? HealthCheckResult.Healthy("Database connection succeeded.")
+                : HealthCheckResult.Unhealthy("Database connection failed.");
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy("PostgreSQL health check failed.", ex);
+            return HealthCheckResult.Unhealthy("Database health check failed.", ex);
         }
     }
 }

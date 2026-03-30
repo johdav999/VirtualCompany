@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Auth;
@@ -23,12 +24,16 @@ public static class DevHeaderAuthenticationDefaults
 
 public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
+    private readonly IHostEnvironment _hostEnvironment;
+
     public DevHeaderAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
-        UrlEncoder encoder)
+        UrlEncoder encoder,
+        IHostEnvironment hostEnvironment)
         : base(options, logger, encoder)
     {
+        _hostEnvironment = hostEnvironment;
     }
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -40,7 +45,15 @@ public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<Authe
 
         if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(email))
         {
-            return Task.FromResult(AuthenticateResult.NoResult());
+            if (!_hostEnvironment.IsDevelopment())
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
+            subject = "alice";
+            email = "alice@example.com";
+            displayName = "Alice Admin";
+            provider = "dev-header";
         }
 
         provider = string.IsNullOrWhiteSpace(provider) ? "dev-header" : provider;
@@ -156,17 +169,26 @@ public sealed class ClaimsExternalUserIdentityAccessor : IExternalUserIdentityAc
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
+    private readonly IHostEnvironment _hostEnvironment;
 
     public ClaimsExternalUserIdentityAccessor(
         IHttpContextAccessor httpContextAccessor,
-        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory)
+        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory,
+        IHostEnvironment hostEnvironment)
     {
         _httpContextAccessor = httpContextAccessor;
         _externalUserIdentityFactory = externalUserIdentityFactory;
+        _hostEnvironment = hostEnvironment;
     }
 
     public ExternalUserIdentity? GetCurrentIdentity() =>
-        _externalUserIdentityFactory.Create(_httpContextAccessor.HttpContext?.User);
+        _externalUserIdentityFactory.Create(_httpContextAccessor.HttpContext?.User)
+        ?? (_hostEnvironment.IsDevelopment()
+            ? new ExternalUserIdentity(
+                new ExternalIdentityKey("dev-header", "alice"),
+                "alice@example.com",
+                "Alice Admin")
+            : null);
 }
 
 public sealed class ExternalUserIdentityResolver : IExternalUserIdentityResolver

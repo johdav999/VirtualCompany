@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -25,7 +26,7 @@ public static class ServiceCollectionExtensions
 
         services.AddHealthChecks()
             .AddCheck<ApplicationHealthCheck>("application", tags: ["live"])
-            .AddCheck<DatabaseHealthCheck>("postgresql", tags: ["ready"])
+            .AddCheck<DatabaseHealthCheck>("database", tags: ["ready"])
             .AddCheck<RedisTcpHealthCheck>("redis", tags: ["ready"])
             .AddCheck<ObjectStorageHealthCheck>("object-storage", tags: ["ready"]);
 

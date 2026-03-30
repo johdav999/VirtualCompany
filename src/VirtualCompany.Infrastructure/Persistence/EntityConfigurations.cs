@@ -31,8 +31,10 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
 internal static class CompanyJsonColumnConfiguration
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private const string JsonObjectDefaultSql = "N'{}'";
+    private const string JsonArrayDefaultSql = "N'[]'";
 
-    public static PropertyBuilder<T> HasJsonbConversion<T>(this PropertyBuilder<T> propertyBuilder)
+    public static PropertyBuilder<T> HasJsonConversion<T>(this PropertyBuilder<T> propertyBuilder)
         where T : class, new()
     {
         var converter = new ValueConverter<T, string>(
@@ -44,11 +46,14 @@ internal static class CompanyJsonColumnConfiguration
             value => StringComparer.Ordinal.GetHashCode(Serialize(value)),
             value => DeserializeOrDefault<T>(Serialize(value)));
 
-        propertyBuilder.HasColumnType("jsonb");
+        propertyBuilder.HasColumnType("nvarchar(max)");
         propertyBuilder.HasConversion(converter);
         propertyBuilder.Metadata.SetValueComparer(comparer);
         return propertyBuilder;
     }
+
+    public static string JsonObjectDefault => JsonObjectDefaultSql;
+    public static string JsonArrayDefault => JsonArrayDefaultSql;
 
     private static string Serialize<T>(T? value)
         where T : class, new() =>
@@ -82,13 +87,13 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.Property(x => x.ComplianceRegion).HasMaxLength(50);
         builder.Property(x => x.Branding)
             .HasColumnName("branding_json")
-            .HasJsonbConversion()
-            .HasDefaultValueSql("'{}'::jsonb")
+            .HasJsonConversion()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.Settings)
             .HasColumnName("settings_json")
-            .HasJsonbConversion()
-            .HasDefaultValueSql("'{}'::jsonb")
+            .HasJsonConversion()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.OnboardingStateJson);
         builder.Property(x => x.OnboardingCurrentStep);
@@ -96,7 +101,7 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.Property(x => x.OnboardingStatus)
             .HasConversion(status => status.ToStorageValue(), value => CompanyOnboardingStatusValues.Parse(value))
             .HasMaxLength(32)
-            .HasDefaultValue(CompanyOnboardingStatus.NotStarted.ToStorageValue())
+            .HasDefaultValue(CompanyOnboardingStatus.NotStarted)
             .IsRequired();
         builder.Property(x => x.OnboardingLastSavedUtc);
         builder.Property(x => x.OnboardingCompletedUtc);
@@ -135,13 +140,13 @@ internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
         builder.Property(x => x.Defaults)
             .HasColumnName("defaults_json")
-            .HasJsonbConversion<Dictionary<string, JsonNode?>>()
-            .HasDefaultValueSql("'{}'::jsonb")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.Metadata)
             .HasColumnName("metadata_json")
-            .HasJsonbConversion<Dictionary<string, JsonNode?>>()
-            .HasDefaultValueSql("'{}'::jsonb")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.UpdatedUtc).IsRequired();
@@ -209,7 +214,7 @@ internal sealed class CompanyInvitationConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.DeliveryStatus)
             .HasConversion(status => status.ToStorageValue(), value => CompanyInvitationDeliveryStatusValues.Parse(value))
             .HasMaxLength(32)
-            .HasDefaultValue(CompanyInvitationDeliveryStatus.Pending.ToStorageValue())
+            .HasDefaultValue(CompanyInvitationDeliveryStatus.Pending)
             .IsRequired();
         builder.Property(x => x.ExpiresAtUtc).IsRequired();
         builder.Property(x => x.LastSentUtc);
@@ -289,13 +294,13 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEv
         builder.Property(x => x.OccurredUtc).IsRequired();
         builder.Property(x => x.DataSources)
             .HasColumnName("data_sources_json")
-            .HasJsonbConversion<List<string>>()
-            .HasDefaultValueSql("'[]'::jsonb")
+            .HasJsonConversion<List<string>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
             .IsRequired();
         builder.Property(x => x.Metadata)
             .HasColumnName("metadata_json")
-            .HasJsonbConversion<Dictionary<string, string?>>()
-            .HasDefaultValueSql("'{}'::jsonb")
+            .HasJsonConversion<Dictionary<string, string?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });

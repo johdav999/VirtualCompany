@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -14,6 +15,8 @@ namespace VirtualCompany.Api.Tests;
 
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private SqliteConnection? _connection;
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
@@ -29,12 +32,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         });
 
         builder.ConfigureServices(services =>
-    {
+        {
             services.RemoveAll<DbContextOptions<VirtualCompanyDbContext>>();
             services.RemoveAll<VirtualCompanyDbContext>();
 
+            _connection ??= CreateOpenConnection();
             services.AddDbContext<VirtualCompanyDbContext>(options =>
-                options.UseInMemoryDatabase($"virtual-company-tests-{Guid.NewGuid()}"));
+                options.UseSqlite(_connection));
 
             services.RemoveAll<ICompanyInvitationSender>();
             services.AddSingleton<TestCompanyInvitationSender>();
@@ -52,6 +56,24 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         await dbContext.Database.EnsureCreatedAsync();
         await seed(dbContext);
         await dbContext.SaveChangesAsync();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+
+        if (disposing)
+        {
+            _connection?.Dispose();
+            _connection = null;
+        }
+    }
+
+    private static SqliteConnection CreateOpenConnection()
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        return connection;
     }
 
     public sealed class TestCompanyInvitationSender : ICompanyInvitationSender

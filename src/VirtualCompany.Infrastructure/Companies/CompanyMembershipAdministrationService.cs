@@ -99,8 +99,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 x => x.CompanyId == companyId &&
                      x.Email == email &&
                      x.Status == CompanyInvitationStatus.Pending &&
-                     x.ExpiresAtUtc > DateTime.UtcNow,
-                cancellationToken)
+                     x.ExpiresAtUtc > DateTime.UtcNow)
             .OrderByDescending(x => x.UpdatedUtc)
             .ThenByDescending(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);

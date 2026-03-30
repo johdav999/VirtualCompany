@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.BackgroundJobs;
+using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -228,6 +229,19 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         }
     }
 
+    private static T Deserialize<T>(CompanyOutboxMessage message)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(message.PayloadJson, SerializerOptions)
+                ?? throw new CompanyOutboxPermanentException($"Company outbox payload for topic '{message.Topic}' is empty.");
+        }
+        catch (JsonException ex)
+        {
+            throw new CompanyOutboxPermanentException($"Company outbox payload for topic '{message.Topic}' is invalid JSON: {ex.Message}");
+        }
+    }
+
     private static JsonSerializerOptions CreateSerializerOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -383,8 +397,8 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
 
             try
             {
-                using var scope = _serviceScopeFactory.CreateScope();
-                var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+                using var serviceScope = _serviceScopeFactory.CreateScope();
+                var processor = serviceScope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
                 var handledCount = await processor.DispatchPendingAsync(stoppingToken);
                 if (handledCount > 0)
                 {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
@@ -37,20 +38,29 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICurrentUserAccessor _currentUserAccessor;
+    private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
+    private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
+    private readonly IHostEnvironment _hostEnvironment;
 
     public CompanyOnboardingService(
         VirtualCompanyDbContext dbContext,
-        ICurrentUserAccessor currentUserAccessor)
+        ICurrentUserAccessor currentUserAccessor,
+        IExternalUserIdentityAccessor externalUserIdentityAccessor,
+        IExternalUserIdentityResolver externalUserIdentityResolver,
+        IHostEnvironment hostEnvironment)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
+        _externalUserIdentityAccessor = externalUserIdentityAccessor;
+        _externalUserIdentityResolver = externalUserIdentityResolver;
+        _hostEnvironment = hostEnvironment;
     }
 
     public async Task<CreateCompanyResultDto> CreateCompanyAsync(
         CreateCompanyCommand command,
         CancellationToken cancellationToken)
     {
-        var userId = RequireCurrentUserId();
+        var userId = await RequireCurrentUserIdAsync(cancellationToken);
         var selectedTemplateId = NormalizeOptional(command.SelectedTemplateId);
         var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
         EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
@@ -132,12 +142,13 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
 
     public async Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             return null;
         }
 
-        var company = await GetLatestOwnedOnboardingAsync(userId, cancellationToken);
+        var company = await GetLatestOwnedOnboardingAsync(resolvedUserId, cancellationToken);
         return company is null ? null : MapProgress(company);
     }
 
@@ -145,7 +156,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         CreateCompanyWorkspaceRequest request,
         CancellationToken cancellationToken)
     {
-        var userId = RequireCurrentUserId();
+        var userId = await RequireCurrentUserIdAsync(cancellationToken);
 
         var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
         if (company is null)
@@ -232,7 +243,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
                 cancellationToken);
         }
 
-        var userId = RequireCurrentUserId();
+        var userId = await RequireCurrentUserIdAsync(cancellationToken);
         var company = await GetOwnedCompanyAsync(userId, request.CompanyId.Value, cancellationToken);
         if (company is null)
         {
@@ -299,7 +310,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         AbandonCompanyOnboardingRequest request,
         CancellationToken cancellationToken)
     {
-        var userId = RequireCurrentUserId();
+        var userId = await RequireCurrentUserIdAsync(cancellationToken);
         var company = await GetOwnedCompanyAsync(userId, request.CompanyId, cancellationToken);
         if (company is null)
         {
@@ -345,7 +356,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         CompleteCompanyOnboardingRequest request,
         CancellationToken cancellationToken)
     {
-        var userId = RequireCurrentUserId();
+        var userId = await RequireCurrentUserIdAsync(cancellationToken);
         var company = await GetOwnedCompanyAsync(userId, request.CompanyId, cancellationToken);
         if (company is null)
         {
@@ -445,14 +456,37 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             .SingleOrDefaultAsync(cancellationToken);
     }
 
-    private Guid RequireCurrentUserId()
+    private async Task<Guid?> ResolveCurrentUserIdAsync(CancellationToken cancellationToken)
     {
-        if (_currentUserAccessor.UserId is not Guid userId)
+        if (_currentUserAccessor.UserId is Guid userId)
+        {
+            return userId;
+        }
+
+        var externalIdentity = _externalUserIdentityAccessor.GetCurrentIdentity();
+        if (externalIdentity is null && !_hostEnvironment.IsDevelopment())
+        {
+            return null;
+        }
+
+        externalIdentity ??= new ExternalUserIdentity(
+            new ExternalIdentityKey("dev-header", "alice"),
+            "alice@example.com",
+            "Alice Admin");
+
+        var resolvedUser = await _externalUserIdentityResolver.ResolveAsync(externalIdentity, cancellationToken);
+        return resolvedUser.UserId;
+    }
+
+    private async Task<Guid> RequireCurrentUserIdAsync(CancellationToken cancellationToken)
+    {
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
         {
             throw new UnauthorizedAccessException("An authenticated user is required.");
         }
 
-        return userId;
+        return resolvedUserId;
     }
 
     private static OnboardingTemplateDto ToDto(CompanySetupTemplate template) =>
@@ -693,32 +727,38 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
     }
 
     private static CompanyBrandingDto ToBrandingDto(CompanyBranding branding) =>
-        new(
-            branding.LogoUrl,
-            branding.PrimaryColor,
-            branding.SecondaryColor,
-            branding.Theme,
-            CloneNodes(branding.Extensions));
+        new()
+        {
+            LogoUrl = branding.LogoUrl,
+            PrimaryColor = branding.PrimaryColor,
+            SecondaryColor = branding.SecondaryColor,
+            Theme = branding.Theme,
+            Extensions = BuildJsonObject(CloneNodes(branding.Extensions))
+        };
 
     private static CompanySettingsDto ToSettingsDto(CompanySettings settings, CompanyOnboardingSettings onboarding) =>
-        new(
-            settings.Locale,
-            settings.TemplateId,
-            new CompanyOnboardingSettingsDto(
-                onboarding.Name,
-                onboarding.Industry,
-                onboarding.BusinessType,
-                onboarding.Timezone,
-                onboarding.Currency,
-                onboarding.Language,
-                onboarding.ComplianceRegion,
-                onboarding.CurrentStep,
-                onboarding.SelectedTemplateId,
-                onboarding.IsCompleted,
-                onboarding.StarterGuidance,
-                CloneNodes(onboarding.Extensions)),
-            new Dictionary<string, bool>(settings.FeatureFlags, StringComparer.OrdinalIgnoreCase),
-            CloneNodes(settings.Extensions));
+        new()
+        {
+            Locale = settings.Locale,
+            TemplateId = settings.TemplateId,
+            Onboarding = new CompanyOnboardingSettingsDto
+            {
+                Name = onboarding.Name,
+                Industry = onboarding.Industry,
+                BusinessType = onboarding.BusinessType,
+                Timezone = onboarding.Timezone,
+                Currency = onboarding.Currency,
+                Language = onboarding.Language,
+                ComplianceRegion = onboarding.ComplianceRegion,
+                CurrentStep = onboarding.CurrentStep,
+                SelectedTemplateId = onboarding.SelectedTemplateId,
+                IsCompleted = onboarding.IsCompleted,
+                StarterGuidance = onboarding.StarterGuidance,
+                Extensions = BuildJsonObject(CloneNodes(onboarding.Extensions))
+            },
+            FeatureFlags = new Dictionary<string, bool>(settings.FeatureFlags, StringComparer.OrdinalIgnoreCase),
+            Extensions = BuildJsonObject(CloneNodes(settings.Extensions))
+        };
 
     private static CompanyOnboardingSettings ResolveOnboardingSettings(Company company, OnboardingStateDocument? state = null)
     {

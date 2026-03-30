@@ -82,33 +82,45 @@ public sealed record OnboardingTemplateRecommendationDto(
     IReadOnlyDictionary<string, JsonNode?> Metadata,
     IReadOnlyList<string> StarterGuidance);
 
-public sealed record CompanyBrandingDto(
-    string? LogoUrl,
-    string? PrimaryColor,
-    string? SecondaryColor,
-    string? Theme,
-    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
+public sealed class CompanyBrandingDto
+{
+    public string? LogoUrl { get; init; }
+    public string? PrimaryColor { get; init; }
+    public string? SecondaryColor { get; init; }
+    public string? Theme { get; init; }
 
-public sealed record CompanyOnboardingSettingsDto(
-    string? Name,
-    string? Industry,
-    string? BusinessType,
-    string? Timezone,
-    string? Currency,
-    string? Language,
-    string? ComplianceRegion,
-    int? CurrentStep,
-    string? SelectedTemplateId,
-    bool IsCompleted,
-    IReadOnlyList<string>? StarterGuidance,
-    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
+    [JsonPropertyName("extensions")]
+    public JsonObject? Extensions { get; init; }
+}
 
-public sealed record CompanySettingsDto(
-    string? Locale,
-    string? TemplateId,
-    CompanyOnboardingSettingsDto? Onboarding,
-    IDictionary<string, bool>? FeatureFlags,
-    [property: JsonExtensionData] IDictionary<string, JsonNode?>? Extensions);
+public sealed class CompanyOnboardingSettingsDto
+{
+    public string? Name { get; init; }
+    public string? Industry { get; init; }
+    public string? BusinessType { get; init; }
+    public string? Timezone { get; init; }
+    public string? Currency { get; init; }
+    public string? Language { get; init; }
+    public string? ComplianceRegion { get; init; }
+    public int? CurrentStep { get; init; }
+    public string? SelectedTemplateId { get; init; }
+    public bool IsCompleted { get; init; }
+    public IReadOnlyList<string>? StarterGuidance { get; init; }
+
+    [JsonPropertyName("extensions")]
+    public JsonObject? Extensions { get; init; }
+}
+
+public sealed class CompanySettingsDto
+{
+    public string? Locale { get; init; }
+    public string? TemplateId { get; init; }
+    public CompanyOnboardingSettingsDto? Onboarding { get; init; }
+    public IDictionary<string, bool>? FeatureFlags { get; init; }
+
+    [JsonPropertyName("extensions")]
+    public JsonObject? Extensions { get; init; }
+}
 
 public sealed record CompanyOnboardingProgressDto(
     Guid? CompanyId,
