@@ -1,0 +1,174 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -2,6 +2,11 @@ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Domain.Entities;
+ 
++public interface ICompanyOwnedEntity
++{
++    Guid CompanyId { get; }
++}
++
+ public sealed class User
+ {
+     private User()
+@@ -156,7 +161,7 @@ public sealed class CompanyMembership
+     }
+ }
+ 
+-public sealed class CompanyOwnedNote
++public sealed class CompanyOwnedNote : ICompanyOwnedEntity
+ {
+     private CompanyOwnedNote()
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -1,13 +1,19 @@
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+ 
+ public sealed class VirtualCompanyDbContext : DbContext
+ {
+-    public VirtualCompanyDbContext(DbContextOptions<VirtualCompanyDbContext> options)
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public VirtualCompanyDbContext(
++        DbContextOptions<VirtualCompanyDbContext> options,
++        ICompanyContextAccessor? companyContextAccessor = null)
+         : base(options)
+     {
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
+     public DbSet<User> Users => Set<User>();
+@@ -15,10 +21,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+ 
++    internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
++
+     protected override void OnModelCreating(ModelBuilder modelBuilder)
+     {
+         base.OnModelCreating(modelBuilder);
+ 
+         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
++        modelBuilder.Entity<CompanyOwnedNote>()
++            .HasQueryFilter(note =>
++                CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -154,6 +154,28 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Company_owned_resource_returns_not_found_without_membership()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyNoMembershipId}/notes/{ids.CompanyNoMembershipNoteId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Company_owned_resource_returns_not_found_when_note_belongs_to_another_company()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyBId}/notes/{ids.CompanyANoteId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Company_admin_policy_is_tenant_specific_when_user_has_different_roles_per_company()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs b/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs
+@@ -0,0 +1,68 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class TenantQueryFilterTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public TenantQueryFilterTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task CompanyNotes_query_returns_no_rows_without_company_context()
++    {
++        await SeedCompanyNotesAsync();
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var notes = await dbContext.CompanyNotes.AsNoTracking().ToListAsync();
++
++        Assert.Empty(notes);
++    }
++
++    [Fact]
++    public async Task CompanyNotes_query_filters_rows_to_active_company_context()
++    {
++        var ids = await SeedCompanyNotesAsync();
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(ids.CompanyAId);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var notes = await dbContext.CompanyNotes.AsNoTracking()
++            .OrderBy(x => x.Title)
++            .ToListAsync();
++
++        var note = Assert.Single(notes);
++        Assert.Equal(ids.CompanyANoteId, note.Id);
++        Assert.Equal(ids.CompanyAId, note.CompanyId);
++    }
++
++    private async Task<SeedIds> SeedCompanyNotesAsync()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var companyANoteId = Guid.NewGuid();
++        var companyBNoteId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
++            dbContext.CompanyNotes.AddRange(
++                new CompanyOwnedNote(companyANoteId, companyAId, "A note", "inside company A"),
++                new CompanyOwnedNote(companyBNoteId, companyBId, "B note", "inside company B"));
++
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(companyAId, companyBId, companyANoteId, companyBNoteId);
++    }
++
++    private sealed record SeedIds(Guid CompanyAId, Guid CompanyBId, Guid CompanyANoteId, Guid CompanyBNoteId);
++}
+END_OF_PATCH

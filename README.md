@@ -95,7 +95,7 @@ Send these headers with authenticated API requests:
 - `X-Dev-Auth-DisplayName` = display name
 - `X-Dev-Auth-Provider` = optional provider name, defaults to `dev-header`
 
-On first authenticated request, the API provisions or updates the internal `User` row using the `(authProvider, authSubject)` identity pair.
+On first authenticated request, the API provisions or updates the internal `User` row using the `(authProvider, authSubject)` identity pair. Tenant membership and authorization always resolve from that internal user record, and users are not rebound across providers by email alone.
 
 ## Company Context Resolution
 
@@ -125,7 +125,7 @@ Company-scoped endpoints:
 - Active membership is required for company-scoped access.
 - Role-gated endpoints use ASP.NET Core policy-based authorization against persisted membership roles.
 - `403 Forbidden` is returned when the company context is known but the caller lacks an active membership or required role.
-- `404 Not Found` is returned for company-owned resource fetches when the resource does not exist inside the resolved company context. This hides cross-tenant resource existence.
+- `404 Not Found` is returned for company-owned resource fetches when the caller cannot access the company or the resource does not exist inside the resolved company context. This hides cross-tenant resource existence.
 
 ## Notes
 

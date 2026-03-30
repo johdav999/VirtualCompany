@@ -1,0 +1,138 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -91,7 +91,7 @@ Company-scoped endpoints:
+ ## Authorization Behavior
+ 
+ - Active membership is required for company-scoped access.
+ - Role-gated endpoints use ASP.NET Core policy-based authorization against persisted membership roles.
+ - `403 Forbidden` is returned when the company context is known but the caller lacks an active membership or required role.
+-- `404 Not Found` is returned for company-owned resource fetches when the resource does not exist inside the resolved company context. This hides cross-tenant resource existence.
++- `404 Not Found` is returned for company-owned resource fetches when the caller cannot access the company or the resource does not exist inside the resolved company context. This hides cross-tenant resource existence.
+ 
+ ## Notes
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/CompaniesController.cs b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+--- a/src/VirtualCompany.Api/Controllers/CompaniesController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+@@ -54,7 +54,6 @@ public sealed class CompaniesController : ControllerBase
+     }
+ 
+     [HttpGet("notes/{noteId:guid}")]
+-    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
+     public async Task<ActionResult<CompanyNoteDto>> GetNoteAsync(
+         Guid companyId,
+         Guid noteId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -141,6 +141,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+ 
+     public async Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken)
+     {
++        var canAccessCompany = await CanAccessCompanyAsync(companyId, cancellationToken);
++        if (!canAccessCompany)
++        {
++            return null;
++        }
++
+         if (_companyContextAccessor.CompanyId is Guid requestCompanyId && requestCompanyId != companyId)
+         {
+             return null;
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -120,6 +120,17 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+     }
++
++    [Fact]
++    public async Task Company_owned_resource_requires_authentication()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = _factory.CreateClient();
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/notes/{ids.CompanyANoteId}");
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Company_access_is_forbidden_without_membership()
+     {
+@@ -174,6 +185,17 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Company_owned_query_returns_not_found_when_user_lacks_membership_for_target_company()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyNoMembershipId}/notes/{ids.CompanyNoMembershipNoteId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Pending_membership_cannot_access_company_scoped_endpoint()
+     {
+@@ -198,6 +220,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         var companyNoMembershipId = Guid.NewGuid();
+         var companyANoteId = Guid.NewGuid();
+         var companyBNoteId = Guid.NewGuid();
++        var companyNoMembershipNoteId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+@@ -218,14 +241,16 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+ 
+             dbContext.CompanyNotes.AddRange(
+                 new CompanyOwnedNote(companyANoteId, companyAId, "A note", "inside company A"),
+-                new CompanyOwnedNote(companyBNoteId, companyBId, "B note", "inside company B"));
++                new CompanyOwnedNote(companyBNoteId, companyBId, "B note", "inside company B"),
++                new CompanyOwnedNote(companyNoMembershipNoteId, companyNoMembershipId, "No membership note", "inside company without membership"));
+ 
+             return Task.CompletedTask;
+         });
+ 
+         return new SeedIds(
+             UserId: userId,
+-            CompanyAId: companyAId,
++            CompanyAId: companyAId, 
+             CompanyBId: companyBId,
+             CompanyPendingId: companyPendingId,
+             CompanyNoMembershipId: companyNoMembershipId,
+             CompanyANoteId: companyANoteId,
+-            CompanyBNoteId: companyBNoteId);
++            CompanyBNoteId: companyBNoteId,
++            CompanyNoMembershipNoteId: companyNoMembershipNoteId);
+     }
+ 
+     private async Task<SeedIds> SeedSingleMembershipAsync(CompanyMembershipRole role)
+@@ -247,7 +272,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+             CompanyBId: Guid.Empty,
+             CompanyPendingId: Guid.Empty,
+             CompanyNoMembershipId: Guid.Empty,
+-            CompanyANoteId: Guid.Empty,
++            CompanyANoteId: Guid.Empty, 
+             CompanyBNoteId: Guid.Empty);
++            CompanyNoMembershipNoteId: Guid.Empty);
+     }
+ 
+     private sealed record SeedIds(
+@@ -257,7 +283,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Guid CompanyBId,
+         Guid CompanyPendingId,
+         Guid CompanyNoMembershipId,
+-        Guid CompanyANoteId,
+-        Guid CompanyBNoteId);
++        Guid CompanyANoteId, 
++        Guid CompanyBNoteId,
++        Guid CompanyNoMembershipNoteId);
+ 
+     private sealed class MembershipResponse
+     {
+END_OF_PATCH

@@ -1,0 +1,522 @@
+diff --git a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+index 2fb7357..1c8af64 100644
+--- a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
++++ b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+@@ -8,11 +8,30 @@ public static class CurrentUserClaimTypes
+     public const string AuthSubject = "virtual_company:auth_subject";
+ }
+ 
++public sealed record ExternalIdentityKey(
++    string Provider,
++    string Subject);
++
+ public sealed record ExternalUserIdentity(
+-    string Provider,
+-    string Subject,
++    ExternalIdentityKey Key,
+     string? Email,
+-    string? DisplayName);
++    string? DisplayName)
++{
++    public string Provider => Key.Provider;
++    public string Subject => Key.Subject;
++}
++
++public sealed record AuthenticatedUserIdentity(
++    bool IsAuthenticated,
++    Guid? UserId,
++    ExternalUserIdentity? ExternalIdentity);
++
++public sealed record ResolvedUserIdentity(
++    Guid UserId,
++    string Email,
++    string DisplayName,
++    ExternalUserIdentity ExternalIdentity)
++{
++}
+ 
+ public sealed record ResolvedCompanyMembershipContext(
+     Guid MembershipId,
+@@ -26,12 +45,18 @@ public interface ICurrentUserAccessor
+     ClaimsPrincipal Principal { get; }
+     bool IsAuthenticated { get; }
+     Guid? UserId { get; }
++    AuthenticatedUserIdentity Current { get; }
+ }
+ 
+ public interface IExternalUserIdentityAccessor
+ {
+     ExternalUserIdentity? GetCurrentIdentity();
+ }
++
++public interface IExternalUserIdentityResolver
++{
++    Task<ResolvedUserIdentity> ResolveAsync(ExternalUserIdentity externalIdentity, CancellationToken cancellationToken);
++}
+ 
+ public interface ICompanyContextAccessor
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+index 697d4da..7024a07 100644
+--- a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+@@ -1,5 +1,6 @@
+ using System.Security.Claims;
+ using System.Text.Encodings.Web;
++using System.Text;
+ using Microsoft.AspNetCore.Authentication;
+ using Microsoft.AspNetCore.Http;
+ using Microsoft.EntityFrameworkCore;
+@@ -47,7 +48,7 @@ public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+         var claims = new List<Claim>
+         {
+             new(CurrentUserClaimTypes.AuthProvider, provider),
+-            new(CurrentUserClaimTypes.AuthSubject, subject),
++            new(CurrentUserClaimTypes.AuthSubject, subject),
+             new(ClaimTypes.NameIdentifier, subject)
+         };
+ 
+@@ -68,6 +69,58 @@ public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+     }
+ }
+ 
++public sealed class ClaimsPrincipalExternalUserIdentityFactory
++{
++    private const string SubjectClaimType = "sub";
++    private const string EmailClaimType = "email";
++    private const string NameClaimType = "name";
++
++    public ExternalUserIdentity? Create(ClaimsPrincipal? principal)
++    {
++        if (principal?.Identity?.IsAuthenticated != true)
++        {
++            return null;
++        }
++
++        var provider = Normalize(
++            principal.FindFirstValue(CurrentUserClaimTypes.AuthProvider)
++            ?? principal.Identity.AuthenticationType);
++
++        var subject = Normalize(
++            principal.FindFirstValue(CurrentUserClaimTypes.AuthSubject)
++            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier)
++            ?? principal.FindFirstValue(SubjectClaimType));
++
++        if (provider is null || subject is null)
++        {
++            return null;
++        }
++
++        var email = Normalize(
++            principal.FindFirstValue(ClaimTypes.Email)
++            ?? principal.FindFirstValue(EmailClaimType));
++
++        var displayName = Normalize(
++            principal.FindFirstValue(ClaimTypes.Name)
++            ?? principal.FindFirstValue(NameClaimType));
++
++        return new ExternalUserIdentity(
++            new ExternalIdentityKey(provider, subject),
++            email,
++            displayName);
++    }
++
++    private static string? Normalize(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return value.Trim();
++    }
++}
++
+ public sealed class HttpContextCurrentUserAccessor : ICurrentUserAccessor
+ {
+     private readonly IHttpContextAccessor _httpContextAccessor;
++    private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
+ 
+-    public HttpContextCurrentUserAccessor(IHttpContextAccessor httpContextAccessor)
++    public HttpContextCurrentUserAccessor(
++        IHttpContextAccessor httpContextAccessor,
++        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory)
+     {
+         _httpContextAccessor = httpContextAccessor;
++        _externalUserIdentityFactory = externalUserIdentityFactory;
+     }
+ 
+     public ClaimsPrincipal Principal => _httpContextAccessor.HttpContext?.User ?? new ClaimsPrincipal(new ClaimsIdentity());
+@@ -84,30 +137,26 @@ public sealed class HttpContextCurrentUserAccessor : ICurrentUserAccessor
+             var value = Principal.FindFirstValue(CurrentUserClaimTypes.UserId);
+             return Guid.TryParse(value, out var userId) ? userId : null;
+         }
+-    }
++    }
++
++    public AuthenticatedUserIdentity Current =>
++        new(IsAuthenticated, UserId, _externalUserIdentityFactory.Create(Principal));
+ }
+ 
+ public sealed class ClaimsExternalUserIdentityAccessor : IExternalUserIdentityAccessor
+ {
+     private readonly IHttpContextAccessor _httpContextAccessor;
++    private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
+ 
+-    public ClaimsExternalUserIdentityAccessor(IHttpContextAccessor httpContextAccessor)
++    public ClaimsExternalUserIdentityAccessor(
++        IHttpContextAccessor httpContextAccessor,
++        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory)
+     {
+         _httpContextAccessor = httpContextAccessor;
++        _externalUserIdentityFactory = externalUserIdentityFactory;
+     }
+ 
+-    public ExternalUserIdentity? GetCurrentIdentity()
+-    {
+-        var principal = _httpContextAccessor.HttpContext?.User;
+-        if (principal?.Identity?.IsAuthenticated != true)
+-        {
+-            return null;
+-        }
+-
+-        var provider = principal.FindFirstValue(CurrentUserClaimTypes.AuthProvider);
+-        var subject = principal.FindFirstValue(CurrentUserClaimTypes.AuthSubject)
+-                      ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+-
+-        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(subject))
+-        {
+-            return null;
+-        }
+-
+-        return new ExternalUserIdentity(
+-            provider,
+-            subject,
+-            principal.FindFirstValue(ClaimTypes.Email),
+-            principal.FindFirstValue(ClaimTypes.Name));
+-    }
++    public ExternalUserIdentity? GetCurrentIdentity() =>
++        _externalUserIdentityFactory.Create(_httpContextAccessor.HttpContext?.User);
++}
++
++public sealed class ExternalUserIdentityResolver : IExternalUserIdentityResolver
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public ExternalUserIdentityResolver(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<ResolvedUserIdentity> ResolveAsync(ExternalUserIdentity externalIdentity, CancellationToken cancellationToken)
++    {
++        var email = NormalizeEmail(externalIdentity.Email, externalIdentity.Provider, externalIdentity.Subject);
++        var displayName = string.IsNullOrWhiteSpace(externalIdentity.DisplayName)
++            ? email
++            : externalIdentity.DisplayName.Trim();
++
++        var user = await _dbContext.Users.SingleOrDefaultAsync(
++            x => x.AuthProvider == externalIdentity.Provider && x.AuthSubject == externalIdentity.Subject,
++            cancellationToken);
++
++        if (user is null)
++        {
++            user = new User(Guid.NewGuid(), email, displayName, externalIdentity.Provider, externalIdentity.Subject);
++            _dbContext.Users.Add(user);
++        }
++        else
++        {
++            user.UpdateIdentity(email, displayName, externalIdentity.Provider, externalIdentity.Subject);
++        }
++
++        if (_dbContext.ChangeTracker.HasChanges())
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        return new ResolvedUserIdentity(
++            user.Id,
++            user.Email,
++            user.DisplayName,
++            new ExternalUserIdentity(
++                new ExternalIdentityKey(user.AuthProvider, user.AuthSubject),
++                user.Email,
++                user.DisplayName));
++    }
++
++    private static string NormalizeEmail(string? email, string provider, string subject)
++    {
++        if (!string.IsNullOrWhiteSpace(email))
++        {
++            return email.Trim().ToLowerInvariant();
++        }
++
++        if (subject.Contains('@'))
++        {
++            return subject.Trim().ToLowerInvariant();
++        }
++
++        return $"{NormalizeLocalPart(provider)}.{NormalizeLocalPart(subject)}@local.virtualcompany.test";
++    }
++
++    private static string NormalizeLocalPart(string value)
++    {
++        var builder = new StringBuilder(value.Length);
++
++        foreach (var character in value.Trim().ToLowerInvariant())
++        {
++            builder.Append(char.IsLetterOrDigit(character) ? character : '.');
++        }
++
++        return builder.ToString().Trim('.');
++    }
+ }
+ 
+ public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
+@@ -147,12 +196,12 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
++    private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
+ 
+     public UserClaimsTransformation(
+         VirtualCompanyDbContext dbContext,
+-        IExternalUserIdentityAccessor externalUserIdentityAccessor)
++        IExternalUserIdentityAccessor externalUserIdentityAccessor,
++        IExternalUserIdentityResolver externalUserIdentityResolver)
+     {
+         _dbContext = dbContext;
+         _externalUserIdentityAccessor = externalUserIdentityAccessor;
++        _externalUserIdentityResolver = externalUserIdentityResolver;
+     }
+ 
+     public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+@@ -171,42 +220,35 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
+             return principal;
+         }
+ 
+-        var email = NormalizeEmail(externalIdentity.Email, externalIdentity.Subject);
+-        var displayName = string.IsNullOrWhiteSpace(externalIdentity.DisplayName)
+-            ? email
+-            : externalIdentity.DisplayName.Trim();
+-
+-        var user = await _dbContext.Users.SingleOrDefaultAsync(x =>
+-            x.AuthProvider == externalIdentity.Provider &&
+-            x.AuthSubject == externalIdentity.Subject);
+-
+-        if (user is null && !string.IsNullOrWhiteSpace(externalIdentity.Email))
++        var resolvedUser = await _externalUserIdentityResolver.ResolveAsync(externalIdentity, CancellationToken.None);
++        var clonedPrincipal = new ClaimsPrincipal(principal.Identities.Select(identity => new ClaimsIdentity(identity)));
++        var claimsIdentity = clonedPrincipal.Identities.FirstOrDefault();
++        if (claimsIdentity is null)
+         {
+-            user = await _dbContext.Users.SingleOrDefaultAsync(x => x.Email == email);
++            claimsIdentity = new ClaimsIdentity(principal.Identity?.AuthenticationType);
++            clonedPrincipal.AddIdentity(claimsIdentity);
+         }
+ 
+-        if (user is null)
+-        {
+-            user = new User(Guid.NewGuid(), email, displayName, externalIdentity.Provider, externalIdentity.Subject);
+-            _dbContext.Users.Add(user);
+-        }
+-        else
+-        {
+-            user.UpdateIdentity(email, displayName, externalIdentity.Provider, externalIdentity.Subject);
+-        }
++        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthProvider, resolvedUser.ExternalIdentity.Provider);
++        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthSubject, resolvedUser.ExternalIdentity.Subject);
++        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.UserId, resolvedUser.UserId.ToString());
+ 
+-        if (_dbContext.ChangeTracker.HasChanges())
+-        {
+-            await _dbContext.SaveChangesAsync();
+-        }
+-
+-        var clonedPrincipal = new ClaimsPrincipal(principal.Identities.Select(identity => new ClaimsIdentity(identity)));
+-        var claimsIdentity = clonedPrincipal.Identities.First();
+-        claimsIdentity.AddClaim(new Claim(CurrentUserClaimTypes.UserId, user.Id.ToString()));
+         return clonedPrincipal;
+     }
+ 
+-    private static string NormalizeEmail(string? email, string subject)
++    private static void ReplaceClaim(ClaimsIdentity identity, string claimType, string claimValue)
+     {
+-        if (!string.IsNullOrWhiteSpace(email))
++        foreach (var existingClaim in identity.FindAll(claimType).ToList())
+         {
+-            return email.Trim().ToLowerInvariant();
++            identity.RemoveClaim(existingClaim);
+         }
+ 
+-        var fallback = subject.Contains('@')
+-            ? subject
+-            : $"{subject.Trim().ToLowerInvariant().Replace(' ', '.') }@local.virtualcompany.test";
+-
+-        return fallback.ToLowerInvariant();
++        identity.AddClaim(new Claim(claimType, claimValue));
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 806c62b..08e6759 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -25,8 +25,10 @@ public static class DependencyInjection
+ 
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
++        services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
+         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
+         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
++        services.AddScoped<IExternalUserIdentityResolver, ExternalUserIdentityResolver>();
+         services.AddScoped<CompanyQueryService>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+diff --git a/README.md b/README.md
+index 0f86020..91386b7 100644
+--- a/README.md
++++ b/README.md
+@@ -98,7 +98,7 @@ Send these headers with authenticated API requests:
+ - `X-Dev-Auth-DisplayName` = display name
+ - `X-Dev-Auth-Provider` = optional provider name, defaults to `dev-header`
+ 
+-On first authenticated request, the API provisions or updates the internal `User` row using the `(authProvider, authSubject)` identity pair.
++On first authenticated request, the API provisions or updates the internal `User` row using the `(authProvider, authSubject)` identity pair. Tenant membership and authorization always resolve from that internal user record, and users are not rebound across providers by email alone.
+ 
+ ## Company Context Resolution
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+index 4ab5f92..7e0c27e 100644
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -31,6 +31,49 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.False(response.CompanySelectionRequired);
+     }
+ 
++    [Fact]
++    public async Task GetCurrentUser_resolves_existing_user_by_provider_and_subject_when_email_changes()
++    {
++        var userId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "alice@example.com", "Alice", "entra-id", "alice"));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("alice", "alice.updated@example.com", "Alice Updated", "entra-id");
++        var response = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(response);
++        Assert.Equal(userId, response!.User.Id);
++        Assert.Equal("alice.updated@example.com", response.User.Email);
++        Assert.Equal("Alice Updated", response.User.DisplayName);
++        Assert.Equal("entra-id", response.User.AuthProvider);
++        Assert.Equal("alice", response.User.AuthSubject);
++    }
++
++    [Fact]
++    public async Task GetCurrentUser_creates_distinct_internal_users_for_same_subject_and_email_across_providers()
++    {
++        using var firstClient = CreateAuthenticatedClient("shared-subject", "shared@example.com", "Shared User", "entra-id");
++        using var secondClient = CreateAuthenticatedClient("shared-subject", "shared@example.com", "Shared User", "partner-saml");
++
++        var firstResponse = await firstClient.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++        var secondResponse = await secondClient.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(firstResponse);
++        Assert.NotNull(secondResponse);
++        Assert.NotEqual(firstResponse!.User.Id, secondResponse!.User.Id);
++        Assert.Equal("entra-id", firstResponse.User.AuthProvider);
++        Assert.Equal("partner-saml", secondResponse.User.AuthProvider);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var users = await dbContext.Users.Where(x => x.Email == "shared@example.com").ToListAsync();
++
++        Assert.Equal(2, users.Count);
++        Assert.Contains(users, x => x.AuthProvider == "entra-id" && x.AuthSubject == "shared-subject");
++        Assert.Contains(users, x => x.AuthProvider == "partner-saml" && x.AuthSubject == "shared-subject");
++    }
++
+     [Fact]
+     public async Task GetCurrentUser_auto_resolves_single_active_membership()
+     {
+@@ -159,11 +202,15 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider("Active"));
+     }
+ 
+-    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName, string? provider = null)
+     {
+         var client = _factory.CreateClient();
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
+         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        if (!string.IsNullOrWhiteSpace(provider))
++        {
++            client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.ProviderHeader, provider);
++        }
+         return client;
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ClaimsPrincipalExternalUserIdentityFactoryTests.cs b/tests/VirtualCompany.Api.Tests/ClaimsPrincipalExternalUserIdentityFactoryTests.cs
+new file mode 100644
+index 0000000..57eb01a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ClaimsPrincipalExternalUserIdentityFactoryTests.cs
+@@ -0,0 +1,50 @@
++using System.Security.Claims;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ClaimsPrincipalExternalUserIdentityFactoryTests
++{
++    private readonly ClaimsPrincipalExternalUserIdentityFactory _factory = new();
++
++    [Fact]
++    public void Create_maps_standard_oidc_style_claims_without_virtual_company_claims()
++    {
++        var principal = new ClaimsPrincipal(new ClaimsIdentity(
++            new[]
++            {
++                new Claim("sub", "oidc-subject"),
++                new Claim("email", "alice@example.com"),
++                new Claim("name", "Alice Oidc")
++            },
++            "oidc"));
++
++        var identity = _factory.Create(principal);
++
++        Assert.NotNull(identity);
++        Assert.Equal("oidc", identity!.Provider);
++        Assert.Equal("oidc-subject", identity.Subject);
++        Assert.Equal("alice@example.com", identity.Email);
++        Assert.Equal("Alice Oidc", identity.DisplayName);
++    }
++
++    [Fact]
++    public void Create_prefers_normalized_virtual_company_claims_when_present()
++    {
++        var principal = new ClaimsPrincipal(new ClaimsIdentity(
++            new[]
++            {
++                new Claim(CurrentUserClaimTypes.AuthProvider, "entra-id"),
++                new Claim(CurrentUserClaimTypes.AuthSubject, "provider-subject"),
++                new Claim(ClaimTypes.NameIdentifier, "framework-subject"),
++                new Claim(ClaimTypes.Email, "alice@example.com"),
++                new Claim(ClaimTypes.Name, "Alice")
++            },
++            "oidc"));
++
++        var identity = _factory.Create(principal);
++
++        Assert.NotNull(identity);
++        Assert.Equal("entra-id", identity!.Provider);
++        Assert.Equal("provider-subject", identity.Subject);
++    }
++}
+END_OF_PATCH

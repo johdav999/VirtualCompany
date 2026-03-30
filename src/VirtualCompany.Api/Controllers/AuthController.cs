@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -7,26 +8,30 @@ namespace VirtualCompany.Api.Controllers;
 
 [ApiController]
 [Route("api/auth")]
-[Authorize]
+[Authorize(Policy = CompanyPolicies.AuthenticatedUser)]
 public sealed class AuthController : ControllerBase
 {
+    private readonly IAuthorizationService _authorizationService;
     private readonly ICurrentUserCompanyService _companyService;
 
-    public AuthController(ICurrentUserCompanyService companyService)
+    public AuthController(
+        IAuthorizationService authorizationService,
+        ICurrentUserCompanyService companyService)
     {
+        _authorizationService = authorizationService;
         _companyService = companyService;
     }
 
     [HttpGet("me")]
-    public async Task<ActionResult<CurrentUserDto>> GetCurrentUserAsync(CancellationToken cancellationToken)
+    public async Task<ActionResult<CurrentUserContextDto>> GetCurrentUserAsync(CancellationToken cancellationToken)
     {
-        var currentUser = await _companyService.GetCurrentUserAsync(cancellationToken);
-        if (currentUser is null)
+        var currentUserContext = await _companyService.GetCurrentUserContextAsync(cancellationToken);
+        if (currentUserContext is null)
         {
             return Unauthorized();
         }
 
-        return Ok(currentUser);
+        return Ok(currentUserContext);
     }
 
     [HttpGet("memberships")]
@@ -41,15 +46,27 @@ public sealed class AuthController : ControllerBase
         [FromBody] SelectCompanyRequest request,
         CancellationToken cancellationToken)
     {
-        var canAccessCompany = await _companyService.CanAccessCompanyAsync(request.CompanyId, cancellationToken);
-        if (!canAccessCompany)
+        var authorizationResult = await _authorizationService.AuthorizeAsync(
+            User,
+            request.CompanyId,
+            CompanyPolicies.CompanyMember);
+
+        if (!authorizationResult.Succeeded)
+        {
+            return Forbid();
+        }
+
+        var activeCompany = await _companyService.GetResolvedActiveCompanyAsync(request.CompanyId, cancellationToken);
+        if (activeCompany is null)
         {
             return Forbid();
         }
 
         return Ok(new CompanySelectionDto(
             request.CompanyId,
-            CompanyContextResolutionMiddleware.CompanyHeaderName));
+            CompanyContextResolutionMiddleware.CompanyHeaderName,
+            request.CompanyId.ToString(),
+            activeCompany));
     }
 
     public sealed record SelectCompanyRequest(Guid CompanyId);

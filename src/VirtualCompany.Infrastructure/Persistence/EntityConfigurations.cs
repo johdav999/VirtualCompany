@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence;
 
@@ -53,12 +54,14 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<
         builder.ToTable("company_memberships");
 
         builder.HasKey(x => x.Id);
+
         builder.Property(x => x.Role)
-            .HasConversion<string>()
+            .HasConversion(role => role.ToStorageValue(), value => CompanyMembershipRoleValues.Parse(value))
             .HasMaxLength(32)
             .IsRequired();
+
         builder.Property(x => x.Status)
-            .HasConversion<string>()
+            .HasConversion(status => status.ToStorageValue(), value => CompanyMembershipStatusValues.Parse(value))
             .HasMaxLength(32)
             .IsRequired();
         builder.Property(x => x.PermissionsJson);

@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.1.6",
+  "promptPath": ".ai-design/prompts/TASK-7.1.6.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T06:06:03.407Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T06-06-03-407Z_TASK-7.1.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T06-06-03-407Z_TASK-7.1.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T06:09:53.623Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/ClaimsPrincipalExternalUserIdentityFactoryTests.cs\n@@ -0,0 +1,50 @@\n+using System.Security.Claims;\n+using VirtualCompany.Application.Auth;\n+using VirtualCompany.Infrastructure.Auth;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class ClaimsPrincipalExternalUserIdentityFactoryTests\n+{\n+    private readonly ClaimsPrincipalExternalUserIdentityFactory _factory = new();\n+\n+    [Fact]\n+    public void Create_maps_standard_oidc_style_claims_without_virtual_company_claims()\n+    {\n+        var principal = new ClaimsPrincipal(new ClaimsIdentity(\n+            new[]\n+            {\n+                new Claim(\"sub\", \"oidc-subject\"),\n+                new Claim(\"email\", \"alice@example.com\"),\n+                new Claim(\"name\", \"Alice Oidc\")\n+            },\n+            \"oidc\"));\n+\n+        var identity = _factory.Create(principal);\n+\n+        Assert.NotNull(identity);\n+        Assert.Equal(\"oidc\", identity!.Provider);\n+        Assert.Equal(\"oidc-subject\", identity.Subject);\n+        Assert.Equal(\"alice@example.com\", identity.Email);\n+        Assert.Equal(\"Alice Oidc\", identity.DisplayName);\n+    }\n+\n+    [Fact]\n+    public void Create_prefers_normalized_virtual_company_claims_when_present()\n+    {\n+        var principal = new ClaimsPrincipal(new ClaimsIdentity(\n+            new[]\n+            {\n+                new Claim(CurrentUserClaimTypes.AuthProvider, \"entra-id\"),\n+                new Claim(CurrentUserClaimTypes.AuthSubject, \"provider-subject\"),\n+                new Claim(ClaimTypes.NameIdentifier, \"framework-subject\"),\n+                new Claim(ClaimTypes.Email, \"alice@example.com\"),\n+                new Claim(ClaimTypes.Name, \"Alice\")\n+            },\n+            \"oidc\"));\n+\n+        var identity = _factory.Create(principal);\n+\n+        Assert.NotNull(identity);\n+        Assert.Equal(\"entra-id\", identity!.Provider);\n+        Assert.Equal(\"provider-subject\", identity.Subject);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "b/tests/VirtualCompany.Api.Tests/ClaimsPrincipalExternalUserIdentityFactoryTests.cs\n@@ -0,0 +1,50 @@\n+using System.Security.Claims;\n+using VirtualCompany.Application.Auth;\n+using VirtualCompany.Infrastructure.Auth;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class ClaimsPrincipalExternalUserIdentityFactoryTests\n+{\n+    private readonly ClaimsPrincipalExternalUserIdentityFactory _factory = new();\n+\n+    [Fact]\n+    public void Create_maps_standard_oidc_style_claims_without_virtual_company_claims()\n+    {\n+        var principal = new ClaimsPrincipal(new ClaimsIdentity(\n+            new[]\n+            {\n+                new Claim(\"sub\", \"oidc-subject\"),\n+                new Claim(\"email\", \"alice@example.com\"),\n+                new Claim(\"name\", \"Alice Oidc\")\n+            },\n+            \"oidc\"));\n+\n+        var identity = _factory.Create(principal);\n+\n+        Assert.NotNull(identity);\n+        Assert.Equal(\"oidc\", identity!.Provider);\n+        Assert.Equal(\"oidc-subject\", identity.Subject);\n+        Assert.Equal(\"alice@example.com\", identity.Email);\n+        Assert.Equal(\"Alice Oidc\", identity.DisplayName);\n+    }\n+\n+    [Fact]\n+    public void Create_prefers_normalized_virtual_company_claims_when_present()\n+    {\n+        var principal = new ClaimsPrincipal(new ClaimsIdentity(\n+            new[]\n+            {\n+                new Claim(CurrentUserClaimTypes.AuthProvider, \"entra-id\"),\n+                new Claim(CurrentUserClaimTypes.AuthSubject, \"provider-subject\"),\n+                new Claim(ClaimTypes.NameIdentifier, \"framework-subject\"),\n+                new Claim(ClaimTypes.Email, \"alice@example.com\"),\n+                new Claim(ClaimTypes.Name, \"Alice\")\n+            },\n+            \"oidc\"));\n+\n+        var identity = _factory.Create(principal);\n+\n+        Assert.NotNull(identity);\n+        Assert.Equal(\"entra-id\", identity!.Provider);\n+        Assert.Equal(\"provider-subject\", identity.Subject);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n46,287\n",
+  "verbosityMode": "debug"
+}

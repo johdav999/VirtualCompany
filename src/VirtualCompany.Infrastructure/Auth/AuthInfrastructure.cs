@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -69,13 +70,69 @@ public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<Authe
     }
 }
 
+public sealed class ClaimsPrincipalExternalUserIdentityFactory
+{
+    private const string SubjectClaimType = "sub";
+    private const string EmailClaimType = "email";
+    private const string NameClaimType = "name";
+
+    public ExternalUserIdentity? Create(ClaimsPrincipal? principal)
+    {
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            return null;
+        }
+
+        var provider = Normalize(
+            principal.FindFirstValue(CurrentUserClaimTypes.AuthProvider)
+            ?? principal.Identity.AuthenticationType);
+
+        var subject = Normalize(
+            principal.FindFirstValue(CurrentUserClaimTypes.AuthSubject)
+            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? principal.FindFirstValue(SubjectClaimType));
+
+        if (provider is null || subject is null)
+        {
+            return null;
+        }
+
+        var email = Normalize(
+            principal.FindFirstValue(ClaimTypes.Email)
+            ?? principal.FindFirstValue(EmailClaimType));
+
+        var displayName = Normalize(
+            principal.FindFirstValue(ClaimTypes.Name)
+            ?? principal.FindFirstValue(NameClaimType));
+
+        return new ExternalUserIdentity(
+            new ExternalIdentityKey(provider, subject),
+            email,
+            displayName);
+    }
+
+    private static string? Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Trim();
+    }
+}
+
 public sealed class HttpContextCurrentUserAccessor : ICurrentUserAccessor
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
 
-    public HttpContextCurrentUserAccessor(IHttpContextAccessor httpContextAccessor)
+    public HttpContextCurrentUserAccessor(
+        IHttpContextAccessor httpContextAccessor,
+        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory)
     {
         _httpContextAccessor = httpContextAccessor;
+        _externalUserIdentityFactory = externalUserIdentityFactory;
     }
 
     public ClaimsPrincipal Principal => _httpContextAccessor.HttpContext?.User ?? new ClaimsPrincipal(new ClaimsIdentity());
@@ -90,49 +147,131 @@ public sealed class HttpContextCurrentUserAccessor : ICurrentUserAccessor
             return Guid.TryParse(value, out var userId) ? userId : null;
         }
     }
+
+    public AuthenticatedUserIdentity Current =>
+        new(IsAuthenticated, UserId, _externalUserIdentityFactory.Create(Principal));
 }
 
 public sealed class ClaimsExternalUserIdentityAccessor : IExternalUserIdentityAccessor
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
 
-    public ClaimsExternalUserIdentityAccessor(IHttpContextAccessor httpContextAccessor)
+    public ClaimsExternalUserIdentityAccessor(
+        IHttpContextAccessor httpContextAccessor,
+        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory)
     {
         _httpContextAccessor = httpContextAccessor;
+        _externalUserIdentityFactory = externalUserIdentityFactory;
     }
 
-    public ExternalUserIdentity? GetCurrentIdentity()
+    public ExternalUserIdentity? GetCurrentIdentity() =>
+        _externalUserIdentityFactory.Create(_httpContextAccessor.HttpContext?.User);
+}
+
+public sealed class ExternalUserIdentityResolver : IExternalUserIdentityResolver
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+
+    public ExternalUserIdentityResolver(VirtualCompanyDbContext dbContext)
     {
-        var principal = _httpContextAccessor.HttpContext?.User;
-        if (principal?.Identity?.IsAuthenticated != true)
+        _dbContext = dbContext;
+    }
+
+    public async Task<ResolvedUserIdentity> ResolveAsync(ExternalUserIdentity externalIdentity, CancellationToken cancellationToken)
+    {
+        var email = NormalizeEmail(externalIdentity.Email, externalIdentity.Provider, externalIdentity.Subject);
+        var displayName = string.IsNullOrWhiteSpace(externalIdentity.DisplayName)
+            ? email
+            : externalIdentity.DisplayName.Trim();
+
+        var user = await _dbContext.Users.SingleOrDefaultAsync(
+            x => x.AuthProvider == externalIdentity.Provider && x.AuthSubject == externalIdentity.Subject,
+            cancellationToken);
+
+        if (user is null)
         {
-            return null;
+            user = new User(Guid.NewGuid(), email, displayName, externalIdentity.Provider, externalIdentity.Subject);
+            _dbContext.Users.Add(user);
+        }
+        else
+        {
+            user.UpdateIdentity(email, displayName, externalIdentity.Provider, externalIdentity.Subject);
         }
 
-        var provider = principal.FindFirstValue(CurrentUserClaimTypes.AuthProvider);
-        var subject = principal.FindFirstValue(CurrentUserClaimTypes.AuthSubject)
-                      ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
-
-        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(subject))
+        if (_dbContext.ChangeTracker.HasChanges())
         {
-            return null;
+            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
-        return new ExternalUserIdentity(
-            provider,
-            subject,
-            principal.FindFirstValue(ClaimTypes.Email),
-            principal.FindFirstValue(ClaimTypes.Name));
+        return new ResolvedUserIdentity(
+            user.Id,
+            user.Email,
+            user.DisplayName,
+            new ExternalUserIdentity(
+                new ExternalIdentityKey(user.AuthProvider, user.AuthSubject),
+                user.Email,
+                user.DisplayName));
+    }
+
+    private static string NormalizeEmail(string? email, string provider, string subject)
+    {
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            return email.Trim().ToLowerInvariant();
+        }
+
+        if (subject.Contains('@'))
+        {
+            return subject.Trim().ToLowerInvariant();
+        }
+
+        return $"{NormalizeLocalPart(provider)}.{NormalizeLocalPart(subject)}@local.virtualcompany.test";
+    }
+
+    private static string NormalizeLocalPart(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+
+        foreach (var character in value.Trim().ToLowerInvariant())
+        {
+            builder.Append(char.IsLetterOrDigit(character) ? character : '.');
+        }
+
+        return builder.ToString().Trim('.');
     }
 }
 
 public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
 {
     public Guid? CompanyId { get; private set; }
+    public Guid? UserId { get; private set; }
+    public bool IsResolved => Membership is not null;
+    public ResolvedCompanyMembershipContext? Membership { get; private set; }
 
     public void SetCompanyId(Guid? companyId)
     {
         CompanyId = companyId;
+
+        if (!companyId.HasValue || Membership?.CompanyId != companyId.Value)
+        {
+            Membership = null;
+            UserId = null;
+        }
+    }
+
+    public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
+    {
+        Membership = companyContext;
+
+        if (companyContext is null)
+        {
+            UserId = null;
+            return;
+        }
+
+        CompanyId = companyContext.CompanyId;
+        UserId = companyContext.UserId;
     }
 }
 
@@ -140,13 +279,16 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
+    private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
 
     public UserClaimsTransformation(
         VirtualCompanyDbContext dbContext,
-        IExternalUserIdentityAccessor externalUserIdentityAccessor)
+        IExternalUserIdentityAccessor externalUserIdentityAccessor,
+        IExternalUserIdentityResolver externalUserIdentityResolver)
     {
         _dbContext = dbContext;
         _externalUserIdentityAccessor = externalUserIdentityAccessor;
+        _externalUserIdentityResolver = externalUserIdentityResolver;
     }
 
     public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
@@ -167,52 +309,29 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
             return principal;
         }
 
-        var email = NormalizeEmail(externalIdentity.Email, externalIdentity.Subject);
-        var displayName = string.IsNullOrWhiteSpace(externalIdentity.DisplayName)
-            ? email
-            : externalIdentity.DisplayName.Trim();
-
-        var user = await _dbContext.Users.SingleOrDefaultAsync(x =>
-            x.AuthProvider == externalIdentity.Provider &&
-            x.AuthSubject == externalIdentity.Subject);
-
-        if (user is null && !string.IsNullOrWhiteSpace(externalIdentity.Email))
-        {
-            user = await _dbContext.Users.SingleOrDefaultAsync(x => x.Email == email);
-        }
-
-        if (user is null)
-        {
-            user = new User(Guid.NewGuid(), email, displayName, externalIdentity.Provider, externalIdentity.Subject);
-            _dbContext.Users.Add(user);
-        }
-        else
-        {
-            user.UpdateIdentity(email, displayName, externalIdentity.Provider, externalIdentity.Subject);
-        }
-
-        if (_dbContext.ChangeTracker.HasChanges())
-        {
-            await _dbContext.SaveChangesAsync();
-        }
-
+        var resolvedUser = await _externalUserIdentityResolver.ResolveAsync(externalIdentity, CancellationToken.None);
         var clonedPrincipal = new ClaimsPrincipal(principal.Identities.Select(identity => new ClaimsIdentity(identity)));
-        var claimsIdentity = clonedPrincipal.Identities.First();
-        claimsIdentity.AddClaim(new Claim(CurrentUserClaimTypes.UserId, user.Id.ToString()));
+        var claimsIdentity = clonedPrincipal.Identities.FirstOrDefault();
+        if (claimsIdentity is null)
+        {
+            claimsIdentity = new ClaimsIdentity(principal.Identity?.AuthenticationType);
+            clonedPrincipal.AddIdentity(claimsIdentity);
+        }
+
+        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthProvider, resolvedUser.ExternalIdentity.Provider);
+        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthSubject, resolvedUser.ExternalIdentity.Subject);
+        ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.UserId, resolvedUser.UserId.ToString());
+
         return clonedPrincipal;
     }
 
-    private static string NormalizeEmail(string? email, string subject)
+    private static void ReplaceClaim(ClaimsIdentity identity, string claimType, string claimValue)
     {
-        if (!string.IsNullOrWhiteSpace(email))
+        foreach (var existingClaim in identity.FindAll(claimType).ToList())
         {
-            return email.Trim().ToLowerInvariant();
+            identity.RemoveClaim(existingClaim);
         }
 
-        var fallback = subject.Contains('@')
-            ? subject
-            : $"{subject.Trim().ToLowerInvariant().Replace(' ', '.') }@local.virtualcompany.test";
-
-        return fallback.ToLowerInvariant();
+        identity.AddClaim(new Claim(claimType, claimValue));
     }
 }

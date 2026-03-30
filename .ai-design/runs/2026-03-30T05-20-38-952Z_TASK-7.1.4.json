@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.1.4",
+  "promptPath": ".ai-design/prompts/TASK-7.1.4.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T05:20:38.952Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T05-20-38-952Z_TASK-7.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T05-20-38-952Z_TASK-7.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T05:23:49.305Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ending_membership_cannot_access_company_scoped_endpoint()\n     {\n@@ -160,6 +173,24 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);\n     }\n \n+    [Fact]\n+    public void CompanyMembership_role_and_status_use_canonical_storage_values()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+\n+        var roleConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!\n+            .FindProperty(nameof(CompanyMembership.Role))!\n+            .GetTypeMapping().Converter;\n+        var statusConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!\n+            .FindProperty(nameof(CompanyMembership.Status))!\n+            .GetTypeMapping().Converter;\n+\n+        Assert.Equal(\"finance_approver\", roleConverter!.ConvertToProvider(CompanyMembershipRole.FinanceApprover));\n+        Assert.Equal(CompanyMembershipRole.FinanceApprover, roleConverter.ConvertFromProvider(\"FinanceApprover\"));\n+        Assert.Equal(\"active\", statusConverter!.ConvertToProvider(CompanyMembershipStatus.Active));\n+        Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider(\"Active\"));\n+    }\n+\n     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)\n     {\n         var client = _factory.CreateClient();\n@@ -263,8 +294,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica\n             CompanyAId: companyAId,\n             CompanyBId: Guid.Empty,\n             CompanyPendingId: Guid.Empty,\n-            CompanyNoMembershipId: Guid.Empty,\n             CompanyANoteId: Guid.Empty,\n-            CompanyBNoteId: Guid.Empty);\n+            CompanyBNoteId: Guid.Empty,\n+            CompanyNoMembershipId: Guid.Empty,\n             CompanyNoMembershipNoteId: Guid.Empty);\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": "annot_access_company_scoped_endpoint()\n     {\n@@ -160,6 +173,24 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);\n     }\n \n+    [Fact]\n+    public void CompanyMembership_role_and_status_use_canonical_storage_values()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+\n+        var roleConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!\n+            .FindProperty(nameof(CompanyMembership.Role))!\n+            .GetTypeMapping().Converter;\n+        var statusConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!\n+            .FindProperty(nameof(CompanyMembership.Status))!\n+            .GetTypeMapping().Converter;\n+\n+        Assert.Equal(\"finance_approver\", roleConverter!.ConvertToProvider(CompanyMembershipRole.FinanceApprover));\n+        Assert.Equal(CompanyMembershipRole.FinanceApprover, roleConverter.ConvertFromProvider(\"FinanceApprover\"));\n+        Assert.Equal(\"active\", statusConverter!.ConvertToProvider(CompanyMembershipStatus.Active));\n+        Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider(\"Active\"));\n+    }\n+\n     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)\n     {\n         var client = _factory.CreateClient();\n@@ -263,8 +294,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica\n             CompanyAId: companyAId,\n             CompanyBId: Guid.Empty,\n             CompanyPendingId: Guid.Empty,\n-            CompanyNoMembershipId: Guid.Empty,\n             CompanyANoteId: Guid.Empty,\n-            CompanyBNoteId: Guid.Empty);\n+            CompanyBNoteId: Guid.Empty,\n+            CompanyNoMembershipId: Guid.Empty,\n             CompanyNoMembershipNoteId: Guid.Empty);\n     }\n \nEND_OF_PATCH\ntokens used\n49,139\n",
+  "verbosityMode": "debug"
+}

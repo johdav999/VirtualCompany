@@ -1,0 +1,477 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AuthController.cs b/src/VirtualCompany.Api/Controllers/AuthController.cs
+index 2f1b3ce..b6d2cfd 100644
+--- a/src/VirtualCompany.Api/Controllers/AuthController.cs
++++ b/src/VirtualCompany.Api/Controllers/AuthController.cs
+@@ -15,10 +15,10 @@ public sealed class AuthController : ControllerBase
+     }
+ 
+     [HttpGet("me")]
+-    public async Task<ActionResult<CurrentUserDto>> GetCurrentUserAsync(CancellationToken cancellationToken)
++    public async Task<ActionResult<CurrentUserContextDto>> GetCurrentUserAsync(CancellationToken cancellationToken)
+     {
+-        var currentUser = await _companyService.GetCurrentUserAsync(cancellationToken);
+-        if (currentUser is null)
++        var currentUserContext = await _companyService.GetCurrentUserContextAsync(cancellationToken);
++        if (currentUserContext is null)
+         {
+             return Unauthorized();
+         }
+@@ -26,7 +26,7 @@ public sealed class AuthController : ControllerBase
+-        return Ok(currentUser);
++        return Ok(currentUserContext);
+     }
+ 
+     [HttpGet("memberships")]
+@@ -42,14 +42,16 @@ public sealed class AuthController : ControllerBase
+         [FromBody] SelectCompanyRequest request,
+         CancellationToken cancellationToken)
+     {
+-        var canAccessCompany = await _companyService.CanAccessCompanyAsync(request.CompanyId, cancellationToken);
+-        if (!canAccessCompany)
++        var activeCompany = await _companyService.GetResolvedActiveCompanyAsync(request.CompanyId, cancellationToken);
++        if (activeCompany is null)
+         {
+             return Forbid();
+         }
+ 
+         return Ok(new CompanySelectionDto(
+             request.CompanyId,
+-            CompanyContextResolutionMiddleware.CompanyHeaderName));
++            CompanyContextResolutionMiddleware.CompanyHeaderName,
++            request.CompanyId.ToString(),
++            activeCompany));
+     }
+ 
+     public sealed record SelectCompanyRequest(Guid CompanyId);
+diff --git a/src/VirtualCompany.Application/Companies/CompanyContracts.cs b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+index 3f0692d..45b2476 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyContracts.cs
+@@ -12,13 +12,28 @@ public sealed record CompanyMembershipDto(
+     CompanyMembershipRole Role,
+     CompanyMembershipStatus Status);
+ 
++public sealed record ResolvedCompanyContextDto(
++    Guid MembershipId,
++    Guid CompanyId,
++    string CompanyName,
++    CompanyMembershipRole Role,
++    CompanyMembershipStatus Status);
++
++public sealed record CurrentUserContextDto(
++    CurrentUserDto User,
++    IReadOnlyList<CompanyMembershipDto> Memberships,
++    ResolvedCompanyContextDto? ActiveCompany,
++    bool CompanySelectionRequired);
++
+ public sealed record CompanyAccessDto(
+     Guid CompanyId,
+     string CompanyName,
+     CompanyMembershipRole Role,
+     CompanyMembershipStatus Status);
+ 
+-public sealed record CompanySelectionDto(Guid CompanyId, string HeaderName);
++public sealed record CompanySelectionDto(
++    Guid CompanyId,
++    string HeaderName,
++    string HeaderValue,
++    ResolvedCompanyContextDto ActiveCompany);
+ 
+ public sealed record CompanyNoteDto(Guid Id, Guid CompanyId, string Title, string Content);
+ 
+@@ -26,7 +41,9 @@ public interface ICurrentUserCompanyService
+ {
+     Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken);
++    Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken);
++    Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<bool> CanAccessCompanyAsync(Guid companyId, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 4a13005..cb73316 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -9,14 +9,17 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
+ 
+     public CompanyQueryService(
+         VirtualCompanyDbContext dbContext,
+-        ICurrentUserAccessor currentUserAccessor)
++        ICurrentUserAccessor currentUserAccessor,
++        ICompanyContextAccessor companyContextAccessor)
+     {
+         _dbContext = dbContext;
+         _currentUserAccessor = currentUserAccessor;
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
+     public async Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken)
+@@ -31,16 +34,50 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             .SingleOrDefaultAsync(cancellationToken);
+     }
+ 
++    public async Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        var currentUser = await GetCurrentUserAsync(cancellationToken);
++        if (currentUser is null)
++        {
++            return null;
++        }
++
++        var memberships = await GetMembershipsForUserAsync(userId, cancellationToken);
++        var activeCompany = ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
++        var activeMembershipCount = memberships.Count(x => x.Status == CompanyMembershipStatus.Active);
++
++        return new CurrentUserContextDto(
++            currentUser,
++            memberships,
++            activeCompany,
++            activeCompany is null && activeMembershipCount > 1);
++    }
++
+     public async Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken)
+     {
+         if (_currentUserAccessor.UserId is not Guid userId)
+         {
+             return Array.Empty<CompanyMembershipDto>();
+         }
+ 
+-        return await _dbContext.CompanyMemberships.AsNoTracking()
++        return await GetMembershipsForUserAsync(userId, cancellationToken);
++    }
++
++    public async Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
++        return await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId)
+-            .OrderBy(x => x.Company.Name)
++            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.Status == CompanyMembershipStatus.Active)
+             .Select(x => new CompanyMembershipDto(
+                 x.Id,
+                 x.CompanyId,
+@@ -48,7 +85,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+                 x.Role,
+                 x.Status))
+-            .ToListAsync(cancellationToken);
++            .Select(ToResolvedCompanyContext)
++            .SingleOrDefaultAsync(cancellationToken);
+     }
+ 
+     public async Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -84,4 +121,40 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             .Select(x => new CompanyNoteDto(x.Id, x.CompanyId, x.Title, x.Content))
+             .SingleOrDefaultAsync(cancellationToken);
+     }
++
++    private Task<List<CompanyMembershipDto>> GetMembershipsForUserAsync(Guid userId, CancellationToken cancellationToken)
++    {
++        return _dbContext.CompanyMemberships.AsNoTracking()
++            .Where(x => x.UserId == userId)
++            .OrderBy(x => x.Company.Name)
++            .ThenBy(x => x.Id)
++            .Select(x => new CompanyMembershipDto(
++                x.Id,
++                x.CompanyId,
++                x.Company.Name,
++                x.Role,
++                x.Status))
++            .ToListAsync(cancellationToken);
++    }
++
++    private static ResolvedCompanyContextDto? ResolveActiveCompany(
++        IReadOnlyList<CompanyMembershipDto> memberships,
++        Guid? requestedCompanyId)
++    {
++        if (requestedCompanyId is Guid companyId)
++        {
++            var requestedMembership = memberships.SingleOrDefault(x =>
++                x.CompanyId == companyId &&
++                x.Status == CompanyMembershipStatus.Active);
++
++            if (requestedMembership is not null)
++            {
++                return ToResolvedCompanyContext(requestedMembership);
++            }
++        }
++
++        var activeMemberships = memberships.Where(x => x.Status == CompanyMembershipStatus.Active).ToList();
++        return activeMemberships.Count == 1 ? ToResolvedCompanyContext(activeMemberships[0]) : null;
++    }
++
++    private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
++        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+index 89f374e..86a6b4f 100644
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -17,9 +18,67 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         _factory = factory;
+     }
+ 
++    [Fact]
++    public async Task GetCurrentUser_provisions_internal_user_and_returns_empty_memberships()
++    {
++        using var client = CreateAuthenticatedClient("new-user", "new.user@example.com", "New User");
++        var response = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(response);
++        Assert.NotEqual(Guid.Empty, response!.User.Id);
++        Assert.Equal("new.user@example.com", response.User.Email);
++        Assert.Equal("New User", response.User.DisplayName);
++        Assert.Equal("dev-header", response.User.AuthProvider);
++        Assert.Equal("new-user", response.User.AuthSubject);
++        Assert.Empty(response.Memberships);
++        Assert.Null(response.ActiveCompany);
++        Assert.False(response.CompanySelectionRequired);
++    }
++
++    [Fact]
++    public async Task GetCurrentUser_auto_resolves_single_active_membership()
++    {
++        var ids = await SeedSingleMembershipAsync(CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(response);
++        Assert.Single(response!.Memberships);
++        Assert.False(response.CompanySelectionRequired);
++        Assert.NotNull(response.ActiveCompany);
++        Assert.Equal(ids.CompanyAId, response.ActiveCompany!.CompanyId);
++        Assert.Equal("Manager", response.ActiveCompany.Role);
++        Assert.Equal("Active", response.ActiveCompany.Status);
++    }
++
++    [Fact]
++    public async Task GetCurrentUser_requires_selection_when_user_has_multiple_active_memberships()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(response);
++        Assert.Equal(3, response!.Memberships.Count);
++        Assert.Null(response.ActiveCompany);
++        Assert.True(response.CompanySelectionRequired);
++    }
++
++    [Fact]
++    public async Task GetCurrentUser_resolves_requested_company_context_when_user_selects_one()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        client.DefaultRequestHeaders.Add(CompanyContextResolutionMiddleware.CompanyHeaderName, ids.CompanyBId.ToString());
++
++        var response = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
++
++        Assert.NotNull(response);
++        Assert.NotNull(response!.ActiveCompany);
++        Assert.Equal(ids.CompanyBId, response.ActiveCompany!.CompanyId);
++        Assert.Equal("Employee", response.ActiveCompany.Role);
++        Assert.False(response.CompanySelectionRequired);
++    }
++
+     [Fact]
+     public async Task GetMemberships_returns_current_users_memberships()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var memberships = await client.GetFromJsonAsync<List<MembershipResponse>>("/api/auth/memberships");
+@@ -27,28 +86,42 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.NotNull(memberships);
+         Assert.Equal(2, memberships!.Count);
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Status == "Active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Role == "Admin" && x.Status == "Active");
+         Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Status == "Pending");
+     }
+ 
++    [Fact]
++    public async Task SelectCompany_returns_header_contract_for_subsequent_tenant_scoped_requests()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.PostAsJsonAsync("/api/auth/select-company", new { CompanyId = ids.CompanyBId });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<CompanySelectionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(ids.CompanyBId, payload!.CompanyId);
++        Assert.Equal(CompanyContextResolutionMiddleware.CompanyHeaderName, payload.HeaderName);
++        Assert.Equal(ids.CompanyBId.ToString(), payload.HeaderValue);
++        Assert.Equal(ids.CompanyBId, payload.ActiveCompany.CompanyId);
++        Assert.Equal("Employee", payload.ActiveCompany.Role);
++        Assert.Equal("Active", payload.ActiveCompany.Status);
++    }
++
+     [Fact]
+     public async Task Company_access_succeeds_for_active_membership()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access");
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+     }
+-
+     [Fact]
+     public async Task Company_access_is_forbidden_without_membership()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyNoMembershipId}/access");
+@@ -59,7 +132,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     [Fact]
+     public async Task Company_admin_policy_reads_persisted_membership_role()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access/admin");
+@@ -70,7 +143,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     [Fact]
+     public async Task Company_admin_policy_rejects_non_admin_membership_role()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Employee);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Employee);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access/admin");
+@@ -81,7 +154,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     [Fact]
+     public async Task Company_owned_query_filters_by_company_id()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/notes/{ids.CompanyBNoteId}");
+@@ -92,7 +165,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     [Fact]
+     public async Task Pending_membership_cannot_access_company_scoped_endpoint()
+     {
+-        var ids = await SeedAsync(adminRole: CompanyMembershipRole.Admin);
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyPendingId}/access");
+@@ -107,7 +180,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         return client;
+     }
+ 
+-    private async Task<SeedIds> SeedAsync(CompanyMembershipRole adminRole)
++    private async Task<SeedIds> SeedMultipleMembershipsAsync(CompanyMembershipRole adminRole)
+     {
+         var userId = Guid.NewGuid();
+         var companyAId = Guid.NewGuid();
+@@ -145,6 +218,31 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+             CompanyBNoteId: companyBNoteId);
+     }
+ 
++    private async Task<SeedIds> SeedSingleMembershipAsync(CompanyMembershipRole role)
++    {
++        var userId = Guid.NewGuid();
++        var companyAId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "alice@example.com", "Alice", "dev-header", "alice"));
++            dbContext.Companies.Add(new Company(companyAId, "Company A"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, role, CompanyMembershipStatus.Active));
++
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(
++            UserId: userId,
++            CompanyAId: companyAId,
++            CompanyBId: Guid.Empty,
++            CompanyPendingId: Guid.Empty,
++            CompanyNoMembershipId: Guid.Empty,
++            CompanyANoteId: Guid.Empty,
++            CompanyBNoteId: Guid.Empty);
++    }
++
+     private sealed record SeedIds(
+         Guid UserId,
+         Guid CompanyAId,
+@@ -157,7 +255,40 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     private sealed class MembershipResponse
+     {
++        public Guid MembershipId { get; set; }
+         public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++        public string Role { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+     }
++
++    private sealed class CurrentUserContextResponse
++    {
++        public CurrentUserResponse User { get; set; } = new();
++        public List<MembershipResponse> Memberships { get; set; } = new();
++        public ActiveCompanyResponse? ActiveCompany { get; set; }
++        public bool CompanySelectionRequired { get; set; }
++    }
++
++    private sealed class CurrentUserResponse
++    {
++        public Guid Id { get; set; }
++        public string Email { get; set; } = string.Empty;
++        public string DisplayName { get; set; } = string.Empty;
++        public string AuthProvider { get; set; } = string.Empty;
++        public string AuthSubject { get; set; } = string.Empty;
++    }
++
++    private sealed class ActiveCompanyResponse
++    {
++        public Guid MembershipId { get; set; }
++        public Guid CompanyId { get; set; }
++        public string CompanyName { get; set; } = string.Empty;
++        public string Role { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++    }
++
++    private sealed class CompanySelectionResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string HeaderName { get; set; } = string.Empty;
++        public string HeaderValue { get; set; } = string.Empty;
++        public ActiveCompanyResponse ActiveCompany { get; set; } = new();
++    }
+ }
+END_OF_PATCH

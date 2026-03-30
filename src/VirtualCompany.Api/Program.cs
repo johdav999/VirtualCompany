@@ -1,8 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
-using VirtualCompany.Application.Authorization;
-using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure;
 using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Persistence;
@@ -14,32 +12,14 @@ builder.Services
     .AddControllers()
     .AddJsonOptions(options =>
     {
-        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
     });
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy(CompanyPolicies.CompanyMembership, policy =>
-        policy.RequireAuthenticatedUser()
-            .AddRequirements(new CompanyMembershipRequirement()));
-
-    options.AddPolicy(CompanyPolicies.CompanyManager, policy =>
-        policy.RequireAuthenticatedUser()
-            .AddRequirements(new CompanyRoleRequirement(
-                CompanyMembershipRole.Owner,
-                CompanyMembershipRole.Admin,
-                CompanyMembershipRole.Manager)));
-
-    options.AddPolicy(CompanyPolicies.CompanyAdmin, policy =>
-        policy.RequireAuthenticatedUser()
-            .AddRequirements(new CompanyRoleRequirement(
-                CompanyMembershipRole.Owner,
-                CompanyMembershipRole.Admin)));
-});
+builder.Services.AddCompanyAuthorization();
 
 var app = builder.Build();
 

@@ -4,6 +4,11 @@ using VirtualCompany.Application.Auth;
 
 namespace VirtualCompany.Infrastructure.Tenancy;
 
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class RequireCompanyContextAttribute : Attribute
+{
+}
+
 public sealed class CompanyContextResolutionMiddleware : IMiddleware
 {
     public const string CompanyHeaderName = "X-Company-Id";
@@ -17,6 +22,7 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
 
     public async Task InvokeAsync(HttpContext context, RequestDelegate next)
     {
+        var requiresCompanyContext = context.GetEndpoint()?.Metadata.GetMetadata<RequireCompanyContextAttribute>() is not null;
         var routeCompanyIdValue = context.Request.RouteValues.TryGetValue("companyId", out var routeCompanyId)
             ? routeCompanyId?.ToString()
             : null;
@@ -25,6 +31,11 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
 
         if (string.IsNullOrWhiteSpace(routeCompanyIdValue) && string.IsNullOrWhiteSpace(headerCompanyIdValue))
         {
+            if (requiresCompanyContext)
+            {
+                await WriteBadRequestAsync(context, "Company context is required for this endpoint.");
+                return;
+            }
             await next(context);
             return;
         }

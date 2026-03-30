@@ -2,6 +2,11 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Domain.Entities;
 
+public interface ICompanyOwnedEntity
+{
+    Guid CompanyId { get; }
+}
+
 public sealed class User
 {
     private User()
@@ -158,7 +163,7 @@ public sealed class CompanyMembership
     }
 }
 
-public sealed class CompanyOwnedNote
+public sealed class CompanyOwnedNote : ICompanyOwnedEntity
 {
     private CompanyOwnedNote()
     {

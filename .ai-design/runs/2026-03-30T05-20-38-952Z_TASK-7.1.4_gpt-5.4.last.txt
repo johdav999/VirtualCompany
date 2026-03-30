@@ -1,0 +1,305 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 8bd8dd1..c863d9c 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json;
+ using System.Text.Json.Serialization;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+@@ -12,7 +13,7 @@ builder.Services
+     .AddControllers()
+     .AddJsonOptions(options =>
+     {
+-        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
++        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
+     });
+ 
+ builder.Services.AddEndpointsApiExplorer();
+diff --git a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+index c004791..10f4e64 100644
+--- a/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MembershipEnums.cs
+@@ -4,12 +4,79 @@ public enum CompanyMembershipRole
+ {
+     Owner = 1,
+     Admin = 2,
+     Manager = 3,
+-    Employee = 4
++    Employee = 4,
++    FinanceApprover = 5,
++    SupportSupervisor = 6
+ }
+ 
+ public enum CompanyMembershipStatus
+ {
+     Pending = 1,
+     Active = 2,
+     Revoked = 3
+ }
++
++public static class CompanyMembershipRoleValues
++{
++    public static string ToStorageValue(this CompanyMembershipRole role) =>
++        role switch
++        {
++            CompanyMembershipRole.Owner => "owner",
++            CompanyMembershipRole.Admin => "admin",
++            CompanyMembershipRole.Manager => "manager",
++            CompanyMembershipRole.Employee => "employee",
++            CompanyMembershipRole.FinanceApprover => "finance_approver",
++            CompanyMembershipRole.SupportSupervisor => "support_supervisor",
++            _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported company membership role.")
++        };
++
++    public static CompanyMembershipRole Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Membership role is required.", nameof(value));
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "owner" => CompanyMembershipRole.Owner,
++            "admin" => CompanyMembershipRole.Admin,
++            "manager" => CompanyMembershipRole.Manager,
++            "employee" => CompanyMembershipRole.Employee,
++            "finance_approver" => CompanyMembershipRole.FinanceApprover,
++            "support_supervisor" => CompanyMembershipRole.SupportSupervisor,
++            _ when Enum.TryParse<CompanyMembershipRole>(value.Trim(), ignoreCase: true, out var legacyRole) => legacyRole,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company membership role value.")
++        };
++    }
++}
++
++public static class CompanyMembershipStatusValues
++{
++    public static string ToStorageValue(this CompanyMembershipStatus status) =>
++        status switch
++        {
++            CompanyMembershipStatus.Pending => "pending",
++            CompanyMembershipStatus.Active => "active",
++            CompanyMembershipStatus.Revoked => "revoked",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company membership status.")
++        };
++
++    public static CompanyMembershipStatus Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Membership status is required.", nameof(value));
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "pending" => CompanyMembershipStatus.Pending,
++            "active" => CompanyMembershipStatus.Active,
++            "revoked" => CompanyMembershipStatus.Revoked,
++            _ when Enum.TryParse<CompanyMembershipStatus>(value.Trim(), ignoreCase: true, out var legacyStatus) => legacyStatus,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company membership status value.")
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index e1a0ec4..0bbbf18 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore.Metadata.Builders;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -49,11 +50,13 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<
+     {
+         builder.ToTable("company_memberships");
+ 
+         builder.HasKey(x => x.Id);
++
+         builder.Property(x => x.Role)
+-            .HasConversion<string>()
++            .HasConversion(role => role.ToStorageValue(), value => CompanyMembershipRoleValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
++
+         builder.Property(x => x.Status)
+-            .HasConversion<string>()
++            .HasConversion(status => status.ToStorageValue(), value => CompanyMembershipStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.PermissionsJson);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300001_NormalizeCompanyMembershipEnumValues.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300001_NormalizeCompanyMembershipEnumValues.cs
+new file mode 100644
+index 0000000..b5ee51d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/202603300001_NormalizeCompanyMembershipEnumValues.cs
+@@ -0,0 +1,61 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class NormalizeCompanyMembershipEnumValues : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.Sql("""
++            UPDATE company_memberships
++            SET Role = CASE Role
++                WHEN 'Owner' THEN 'owner'
++                WHEN 'Admin' THEN 'admin'
++                WHEN 'Manager' THEN 'manager'
++                WHEN 'Employee' THEN 'employee'
++                WHEN 'FinanceApprover' THEN 'finance_approver'
++                WHEN 'SupportSupervisor' THEN 'support_supervisor'
++                ELSE Role
++            END,
++            Status = CASE Status
++                WHEN 'Pending' THEN 'pending'
++                WHEN 'Active' THEN 'active'
++                WHEN 'Revoked' THEN 'revoked'
++                ELSE Status
++            END;
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.Sql("""
++            UPDATE company_memberships
++            SET Role = CASE Role
++                WHEN 'owner' THEN 'Owner'
++                WHEN 'admin' THEN 'Admin'
++                WHEN 'manager' THEN 'Manager'
++                WHEN 'employee' THEN 'Employee'
++                WHEN 'finance_approver' THEN 'FinanceApprover'
++                WHEN 'support_supervisor' THEN 'SupportSupervisor'
++                ELSE Role
++            END,
++            Status = CASE Status
++                WHEN 'pending' THEN 'Pending'
++                WHEN 'active' THEN 'Active'
++                WHEN 'revoked' THEN 'Revoked'
++                ELSE Status
++            END;
++            """);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+index 2fe5046..18ad728 100644
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -2,6 +2,7 @@ using System.Net;
+ using System.Net.Http.Json;
+ using System.Text.Json;
+ using VirtualCompany.Domain.Entities;
++using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -43,8 +44,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Single(response!.Memberships);
+         Assert.False(response.CompanySelectionRequired);
+         Assert.NotNull(response.ActiveCompany);
+         Assert.Equal(ids.CompanyAId, response.ActiveCompany!.CompanyId);
+-        Assert.Equal("Manager", response.ActiveCompany.Role);
+-        Assert.Equal("Active", response.ActiveCompany.Status);
++        Assert.Equal("manager", response.ActiveCompany.Role);
++        Assert.Equal("active", response.ActiveCompany.Status);
+     }
+ 
+     [Fact]
+@@ -73,7 +74,7 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.NotNull(response);
+         Assert.NotNull(response!.ActiveCompany);
+         Assert.Equal(ids.CompanyBId, response.ActiveCompany!.CompanyId);
+-        Assert.Equal("Employee", response.ActiveCompany.Role);
++        Assert.Equal("employee", response.ActiveCompany.Role);
+         Assert.False(response.CompanySelectionRequired);
+     }
+ 
+@@ -85,10 +86,11 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         var memberships = await client.GetFromJsonAsync<List<MembershipResponse>>("/api/auth/memberships");
+ 
+         Assert.NotNull(memberships);
+-        Assert.Equal(2, memberships!.Count);
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Role == "Admin" && x.Status == "Active");
+-        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Status == "Pending");
++        Assert.Equal(3, memberships!.Count);
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyAId && x.Role == "admin" && x.Status == "active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyBId && x.Role == "employee" && x.Status == "active");
++        Assert.Contains(memberships, x => x.CompanyId == ids.CompanyPendingId && x.Role == "employee" && x.Status == "pending");
+     }
+ 
+     [Fact]
+     public async Task SelectCompany_returns_header_contract_for_subsequent_tenant_scoped_requests()
+@@ -105,8 +107,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(CompanyContextResolutionMiddleware.CompanyHeaderName, payload.HeaderName);
+         Assert.Equal(ids.CompanyBId.ToString(), payload.HeaderValue);
+         Assert.Equal(ids.CompanyBId, payload.ActiveCompany.CompanyId);
+-        Assert.Equal("Employee", payload.ActiveCompany.Role);
+-        Assert.Equal("Active", payload.ActiveCompany.Status);
++        Assert.Equal("employee", payload.ActiveCompany.Role);
++        Assert.Equal("active", payload.ActiveCompany.Status);
+     }
+ 
+     [Fact]
+@@ -149,6 +151,17 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Company_admin_policy_is_tenant_specific_when_user_has_different_roles_per_company()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyBId}/access/admin");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Pending_membership_cannot_access_company_scoped_endpoint()
+     {
+@@ -160,6 +173,24 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public void CompanyMembership_role_and_status_use_canonical_storage_values()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var roleConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!
++            .FindProperty(nameof(CompanyMembership.Role))!
++            .GetTypeMapping().Converter;
++        var statusConverter = dbContext.Model.FindEntityType(typeof(CompanyMembership))!
++            .FindProperty(nameof(CompanyMembership.Status))!
++            .GetTypeMapping().Converter;
++
++        Assert.Equal("finance_approver", roleConverter!.ConvertToProvider(CompanyMembershipRole.FinanceApprover));
++        Assert.Equal(CompanyMembershipRole.FinanceApprover, roleConverter.ConvertFromProvider("FinanceApprover"));
++        Assert.Equal("active", statusConverter!.ConvertToProvider(CompanyMembershipStatus.Active));
++        Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider("Active"));
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -263,8 +294,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+             CompanyAId: companyAId,
+             CompanyBId: Guid.Empty,
+             CompanyPendingId: Guid.Empty,
+-            CompanyNoMembershipId: Guid.Empty,
+             CompanyANoteId: Guid.Empty,
+-            CompanyBNoteId: Guid.Empty);
++            CompanyBNoteId: Guid.Empty,
++            CompanyNoMembershipId: Guid.Empty,
+             CompanyNoMembershipNoteId: Guid.Empty);
+     }
+ 
+END_OF_PATCH

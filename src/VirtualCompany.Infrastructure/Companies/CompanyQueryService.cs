@@ -10,13 +10,16 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICurrentUserAccessor _currentUserAccessor;
+    private readonly ICompanyContextAccessor _companyContextAccessor;
 
     public CompanyQueryService(
         VirtualCompanyDbContext dbContext,
-        ICurrentUserAccessor currentUserAccessor)
+        ICurrentUserAccessor currentUserAccessor,
+        ICompanyContextAccessor companyContextAccessor)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
+        _companyContextAccessor = companyContextAccessor;
     }
 
     public async Task<CurrentUserDto?> GetCurrentUserAsync(CancellationToken cancellationToken)
@@ -32,6 +35,32 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             .SingleOrDefaultAsync(cancellationToken);
     }
 
+    public async Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken)
+    {
+        if (_currentUserAccessor.UserId is not Guid userId)
+        {
+            return null;
+        }
+
+        var currentUser = await GetCurrentUserAsync(cancellationToken);
+        if (currentUser is null)
+        {
+            return null;
+        }
+
+        var memberships = await GetMembershipsForUserAsync(userId, cancellationToken);
+        var activeCompany = _companyContextAccessor.Membership is not null
+            ? ToResolvedCompanyContext(_companyContextAccessor.Membership)
+            : ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
+        var activeMembershipCount = memberships.Count(x => x.Status == CompanyMembershipStatus.Active);
+
+        return new CurrentUserContextDto(
+            currentUser,
+            memberships,
+            activeCompany,
+            activeCompany is null && activeMembershipCount > 1);
+    }
+
     public async Task<IReadOnlyList<CompanyMembershipDto>> GetMembershipsAsync(CancellationToken cancellationToken)
     {
         if (_currentUserAccessor.UserId is not Guid userId)
@@ -39,16 +68,32 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             return Array.Empty<CompanyMembershipDto>();
         }
 
+        return await GetMembershipsForUserAsync(userId, cancellationToken);
+    }
+
+    public async Task<ResolvedCompanyContextDto?> GetResolvedActiveCompanyAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        if (_currentUserAccessor.UserId is not Guid userId)
+        {
+            return null;
+        }
+
+        if (GetRequestCompanyContext(companyId) is { } requestContext)
+        {
+            return ToResolvedCompanyContext(requestContext);
+        }
+
         return await _dbContext.CompanyMemberships.AsNoTracking()
             .Where(x => x.UserId == userId)
-            .OrderBy(x => x.Company.Name)
-            .Select(x => new CompanyMembershipDto(
+            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.Status == CompanyMembershipStatus.Active)
+            .Select(x => new ResolvedCompanyContextDto(
                 x.Id,
                 x.CompanyId,
                 x.Company.Name,
                 x.Role,
                 x.Status))
-            .ToListAsync(cancellationToken);
+            .SingleOrDefaultAsync(cancellationToken);
     }
 
     public async Task<CompanyAccessDto?> GetCompanyAccessAsync(Guid companyId, CancellationToken cancellationToken)
@@ -56,6 +101,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         if (_currentUserAccessor.UserId is not Guid userId)
         {
             return null;
+        }
+
+        if (GetRequestCompanyContext(companyId) is { } requestContext)
+        {
+            return ToCompanyAccess(requestContext);
         }
 
         return await _dbContext.CompanyMemberships.AsNoTracking()
@@ -77,6 +127,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             return Task.FromResult(false);
         }
 
+        if (GetRequestCompanyContext(companyId) is not null)
+        {
+            return Task.FromResult(true);
+        }
+
         return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
             x.UserId == userId &&
             x.CompanyId == companyId &&
@@ -86,9 +141,71 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
 
     public async Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken)
     {
+        var canAccessCompany = await CanAccessCompanyAsync(companyId, cancellationToken);
+        if (!canAccessCompany)
+        {
+            return null;
+        }
+
+        if (_companyContextAccessor.CompanyId is Guid requestCompanyId && requestCompanyId != companyId)
+        {
+            return null;
+        }
+
         return await _dbContext.CompanyNotes.AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.Id == noteId)
             .Select(x => new CompanyNoteDto(x.Id, x.CompanyId, x.Title, x.Content))
             .SingleOrDefaultAsync(cancellationToken);
     }
+
+    private Task<List<CompanyMembershipDto>> GetMembershipsForUserAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        return _dbContext.CompanyMemberships.AsNoTracking()
+            .Where(x => x.UserId == userId)
+            .OrderBy(x => x.Company.Name)
+            .ThenBy(x => x.Id)
+            .Select(x => new CompanyMembershipDto(
+                x.Id,
+                x.CompanyId,
+                x.Company.Name,
+                x.Role,
+                x.Status))
+            .ToListAsync(cancellationToken);
+    }
+
+    private static ResolvedCompanyContextDto? ResolveActiveCompany(
+        IReadOnlyList<CompanyMembershipDto> memberships,
+        Guid? requestedCompanyId)
+    {
+        if (requestedCompanyId is Guid companyId)
+        {
+            var requestedMembership = memberships.SingleOrDefault(x =>
+                x.CompanyId == companyId &&
+                x.Status == CompanyMembershipStatus.Active);
+
+            if (requestedMembership is not null)
+            {
+                return ToResolvedCompanyContext(requestedMembership);
+            }
+        }
+
+        var activeMemberships = memberships.Where(x => x.Status == CompanyMembershipStatus.Active).ToList();
+        return activeMemberships.Count == 1 ? ToResolvedCompanyContext(activeMemberships[0]) : null;
+    }
+    private ResolvedCompanyMembershipContext? GetRequestCompanyContext(Guid companyId)
+    {
+        var requestContext = _companyContextAccessor.Membership;
+        return requestContext is not null && requestContext.CompanyId == companyId
+            ? requestContext
+            : null;
+    }
+
+    private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+
+    private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+
+    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
+        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
 }

@@ -2,12 +2,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Controllers;
 
 [ApiController]
 [Route("api/companies/{companyId:guid}")]
-[Authorize]
+[Authorize(Policy = CompanyPolicies.CompanyMember)]
+[RequireCompanyContext]
 public sealed class CompaniesController : ControllerBase
 {
     private readonly ICurrentUserCompanyService _companyService;
@@ -22,7 +24,6 @@ public sealed class CompaniesController : ControllerBase
     }
 
     [HttpGet("access")]
-    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
     public async Task<ActionResult<CompanyAccessDto>> GetAccessAsync(
         Guid companyId,
         CancellationToken cancellationToken)
@@ -37,7 +38,7 @@ public sealed class CompaniesController : ControllerBase
     }
 
     [HttpGet("access/admin")]
-    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
     public async Task<ActionResult<CompanyAccessDto>> GetAdminAccessAsync(
         Guid companyId,
         CancellationToken cancellationToken)
@@ -52,7 +53,6 @@ public sealed class CompaniesController : ControllerBase
     }
 
     [HttpGet("notes/{noteId:guid}")]
-    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
     public async Task<ActionResult<CompanyNoteDto>> GetNoteAsync(
         Guid companyId,
         Guid noteId,

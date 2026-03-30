@@ -1,0 +1,425 @@
+diff --git a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+--- a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
++++ b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+@@ -3,6 +3,10 @@ namespace VirtualCompany.Application.Authorization;
+ public static class CompanyPolicies
+ {
+-    public const string CompanyMembership = "RequireCompanyMembership";
+-    public const string CompanyManager = "RequireCompanyManager";
+-    public const string CompanyAdmin = "RequireCompanyAdmin";
++    public const string AuthenticatedUser = "AuthenticatedUser";
++    public const string CompanyMember = "CompanyMember";
++    public const string CompanyManager = "CompanyManager";
++    public const string CompanyOwnerOrAdmin = "CompanyOwnerOrAdmin";
++
++    public const string CompanyMembership = CompanyMember;
++    public const string CompanyAdmin = CompanyOwnerOrAdmin;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+@@ -1,64 +1,113 @@
+ using Microsoft.AspNetCore.Authorization;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Authorization;
+-public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
++
++public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
+ {
+ }
+ 
+ public sealed class CompanyRoleRequirement : IAuthorizationRequirement
+ {
+     public CompanyRoleRequirement(params CompanyMembershipRole[] allowedRoles)
+@@ -20,45 +20,94 @@ public sealed class CompanyRoleRequirement : IAuthorizationRequirement
+ public sealed class CompanyMembershipAuthorizationHandler
+     : AuthorizationHandler<CompanyMembershipRequirement>
+ {
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+     public CompanyMembershipAuthorizationHandler(
+@@ -31,34 +80,63 @@ public sealed class CompanyMembershipAuthorizationHandler
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+         CompanyMembershipRequirement requirement)
+     {
+-        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
+         if (companyContext is not null)
+         {
+             context.Succeed(requirement);
+         }
+     }
+ }
+ 
+-public sealed class CompanyRoleAuthorizationHandler
+-    : AuthorizationHandler<CompanyRoleRequirement>
++public sealed class CompanyMembershipResourceAuthorizationHandler
++    : AuthorizationHandler<CompanyMembershipRequirement, Guid>
+ {
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+-    public CompanyRoleAuthorizationHandler(
++    public CompanyMembershipResourceAuthorizationHandler(
+         ICompanyMembershipContextResolver companyMembershipContextResolver)
+     {
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+     }
+ 
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+-        CompanyRoleRequirement requirement)
++        CompanyMembershipRequirement requirement,
++        Guid companyId)
+     {
+-        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
++        if (companyContext is not null)
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
++
++public sealed class CompanyRoleAuthorizationHandler
++    : AuthorizationHandler<CompanyRoleRequirement>
++{
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++
++    public CompanyRoleAuthorizationHandler(
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
++    {
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyRoleRequirement requirement)
++    {
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
+         if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
+         {
+             context.Succeed(requirement);
+         }
+     }
+ }
++
++public sealed class CompanyRoleResourceAuthorizationHandler
++    : AuthorizationHandler<CompanyRoleRequirement, Guid>
++{
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++
++    public CompanyRoleResourceAuthorizationHandler(
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
++    {
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++    }
++
++    protected override async Task HandleRequirementAsync(
++        AuthorizationHandlerContext context,
++        CompanyRoleRequirement requirement,
++        Guid companyId)
++    {
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
++        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
++        {
++            context.Succeed(requirement);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+@@ -0,0 +1,37 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Authorization;
++
++public static class CompanyAuthorizationServiceCollectionExtensions
++{
++    public static IServiceCollection AddCompanyAuthorization(this IServiceCollection services)
++    {
++        services.AddAuthorization(options =>
++        {
++            options.AddPolicy(CompanyPolicies.AuthenticatedUser, policy =>
++                policy.RequireAuthenticatedUser());
++
++            options.AddPolicy(CompanyPolicies.CompanyMember, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyMembershipRequirement()));
++
++            options.AddPolicy(CompanyPolicies.CompanyManager, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyRoleRequirement(
++                        CompanyMembershipRole.Owner,
++                        CompanyMembershipRole.Admin,
++                        CompanyMembershipRole.Manager)));
++
++            options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyRoleRequirement(
++                        CompanyMembershipRole.Owner,
++                        CompanyMembershipRole.Admin)));
++        });
++
++        return services;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+--- a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+@@ -8,4 +8,5 @@ namespace VirtualCompany.Infrastructure.Tenancy;
+ public interface ICompanyMembershipContextResolver
+ {
+     Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken);
++    Task<ResolvedCompanyMembershipContext?> ResolveAsync(Guid companyId, CancellationToken cancellationToken);
+ }
+@@ -29,21 +30,40 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
+     public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken)
+     {
+         if (_companyContextAccessor.Membership is not null)
+         {
+             return _companyContextAccessor.Membership;
+         }
+ 
+-        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
++        if (_companyContextAccessor.CompanyId is not Guid companyId)
+         {
+             return null;
+         }
+ 
++        return await ResolveAsync(companyId, cancellationToken);
++    }
++
++    public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (_companyContextAccessor.Membership is not null &&
++            _companyContextAccessor.Membership.CompanyId == companyId)
++        {
++            return _companyContextAccessor.Membership;
++        }
++
++        if (_currentUserAccessor.UserId is not Guid userId)
++        {
++            return null;
++        }
++
+         var membership = await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
+             .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId, x.Company.Name, x.Role, x.Status))
+             .SingleOrDefaultAsync(cancellationToken);
+ 
+-        _companyContextAccessor.SetCompanyContext(membership);
++        if (_companyContextAccessor.CompanyId == companyId)
++        {
++            _companyContextAccessor.SetCompanyContext(membership);
++        }
+ 
+         return membership;
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -39,4 +39,6 @@ public static class DependencyInjection
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
+         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
+         services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
++        services.AddScoped<IAuthorizationHandler, CompanyRoleResourceAuthorizationHandler>();
+ 
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -1,10 +1,7 @@
+ using System.Text.Json;
+ using System.Text.Json.Serialization;
+-using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+-using VirtualCompany.Application.Authorization;
+-using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure;
+ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -21,23 +18,5 @@ builder.Services.AddEndpointsApiExplorer();
+ builder.Services.AddSwaggerGen();
+ builder.Services.AddProblemDetails();
+ builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
+-builder.Services.AddAuthorization(options =>
+-{
+-    options.AddPolicy(CompanyPolicies.CompanyMembership, policy =>
+-        policy.RequireAuthenticatedUser()
+-            .AddRequirements(new CompanyMembershipRequirement()));
+-
+-    options.AddPolicy(CompanyPolicies.CompanyManager, policy =>
+-        policy.RequireAuthenticatedUser()
+-            .AddRequirements(new CompanyRoleRequirement(
+-                CompanyMembershipRole.Owner,
+-                CompanyMembershipRole.Admin,
+-                CompanyMembershipRole.Manager)));
+-
+-    options.AddPolicy(CompanyPolicies.CompanyAdmin, policy =>
+-        policy.RequireAuthenticatedUser()
+-            .AddRequirements(new CompanyRoleRequirement(
+-                CompanyMembershipRole.Owner,
+-                CompanyMembershipRole.Admin)));
+-});
++builder.Services.AddCompanyAuthorization();
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/AuthController.cs b/src/VirtualCompany.Api/Controllers/AuthController.cs
+--- a/src/VirtualCompany.Api/Controllers/AuthController.cs
++++ b/src/VirtualCompany.Api/Controllers/AuthController.cs
+@@ -1,18 +1,23 @@
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+ [Route("api/auth")]
+-[Authorize]
++[Authorize(Policy = CompanyPolicies.AuthenticatedUser)]
+ public sealed class AuthController : ControllerBase
+ {
++    private readonly IAuthorizationService _authorizationService;
+     private readonly ICurrentUserCompanyService _companyService;
+ 
+-    public AuthController(ICurrentUserCompanyService companyService)
++    public AuthController(
++        IAuthorizationService authorizationService,
++        ICurrentUserCompanyService companyService)
+     {
++        _authorizationService = authorizationService;
+         _companyService = companyService;
+     }
+@@ -39,17 +44,27 @@ public sealed class AuthController : ControllerBase
+     public async Task<ActionResult<CompanySelectionDto>> SelectCompanyAsync(
+         [FromBody] SelectCompanyRequest request,
+         CancellationToken cancellationToken)
+     {
++        var authorizationResult = await _authorizationService.AuthorizeAsync(
++            User,
++            request.CompanyId,
++            CompanyPolicies.CompanyMember);
++
++        if (!authorizationResult.Succeeded)
++        {
++            return Forbid();
++        }
++
+         var activeCompany = await _companyService.GetResolvedActiveCompanyAsync(request.CompanyId, cancellationToken);
+         if (activeCompany is null)
+         {
+             return Forbid();
+         }
+ 
+         return Ok(new CompanySelectionDto(
+             request.CompanyId,
+             CompanyContextResolutionMiddleware.CompanyHeaderName,
+             request.CompanyId.ToString(),
+             activeCompany));
+     }
+diff --git a/src/VirtualCompany.Api/Controllers/CompaniesController.cs b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+--- a/src/VirtualCompany.Api/Controllers/CompaniesController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+@@ -9,4 +9,4 @@ namespace VirtualCompany.Api.Controllers;
+ [ApiController]
+ [Route("api/companies/{companyId:guid}")]
+-[Authorize]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
+ [RequireCompanyContext]
+@@ -26,3 +26,2 @@ public sealed class CompaniesController : ControllerBase
+     [HttpGet("access")]
+-    [Authorize(Policy = CompanyPolicies.CompanyMembership)]
+     public async Task<ActionResult<CompanyAccessDto>> GetAccessAsync(
+@@ -41,2 +40,2 @@ public sealed class CompaniesController : ControllerBase
+     [HttpGet("access/admin")]
+-    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -149,96 +149,118 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+     [Fact]
+     public async Task SelectCompany_returns_header_contract_for_subsequent_tenant_scoped_requests()
+     {
+         var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.PostAsJsonAsync("/api/auth/select-company", new { CompanyId = ids.CompanyBId });
+@@ -164,6 +164,16 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("employee", payload.ActiveCompany.Role);
+         Assert.Equal("active", payload.ActiveCompany.Status);
+     }
+ 
+     [Fact]
++    public async Task SelectCompany_forbids_company_selection_without_active_membership()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.PostAsJsonAsync("/api/auth/select-company", new { CompanyId = ids.CompanyNoMembershipId });
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
+     public async Task Company_access_succeeds_for_active_membership()
+     {
+         var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access");
+@@ -171,6 +181,16 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+     }
+ 
+     [Fact]
++    public async Task Company_admin_policy_succeeds_for_admin_membership_in_requested_company()
++    {
++        var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++        var response = await client.GetAsync($"/api/companies/{ids.CompanyAId}/access/admin");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++    }
++
++    [Fact]
+     public async Task Company_owned_resource_requires_authentication()
+     {
+         var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = _factory.CreateClient();
+@@ -193,14 +213,14 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
+     [Fact]
+-    public async Task Company_owned_resource_returns_not_found_without_membership()
++    public async Task Company_owned_resource_is_forbidden_without_membership()
+     {
+         var ids = await SeedMultipleMembershipsAsync(adminRole: CompanyMembershipRole.Admin);
+ 
+         using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
+         var response = await client.GetAsync($"/api/companies/{ids.CompanyNoMembershipId}/notes/{ids.CompanyNoMembershipNoteId}");
+ 
+-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
+     [Fact]
+     public async Task Company_owned_resource_returns_not_found_when_note_belongs_to_another_company()
+     {
+END_OF_PATCH

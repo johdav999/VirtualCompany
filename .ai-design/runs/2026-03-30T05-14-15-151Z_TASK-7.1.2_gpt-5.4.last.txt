@@ -1,0 +1,455 @@
+diff --git a/src/VirtualCompany.Api/Controllers/CompaniesController.cs b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+index 619d7fc..4873097 100644
+--- a/src/VirtualCompany.Api/Controllers/CompaniesController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompaniesController.cs
+@@ -2,12 +2,14 @@ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+ [Route("api/companies/{companyId:guid}")]
+ [Authorize]
++[RequireCompanyContext]
+ public sealed class CompaniesController : ControllerBase
+ {
+     private readonly ICurrentUserCompanyService _companyService;
+diff --git a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+index c43e09b..d2c72fb 100644
+--- a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
++++ b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+@@ -1,4 +1,5 @@
+ using System.Security.Claims;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Auth;
+ 
+@@ -13,6 +14,14 @@ public sealed record ExternalUserIdentity(
+     string? Email,
+     string? DisplayName);
+ 
++public sealed record ResolvedCompanyMembershipContext(
++    Guid MembershipId,
++    Guid CompanyId,
++    Guid UserId,
++    string CompanyName,
++    CompanyMembershipRole Role,
++    CompanyMembershipStatus Status);
++
+ public interface ICurrentUserAccessor
+ {
+     ClaimsPrincipal Principal { get; }
+@@ -29,5 +38,9 @@ public interface IExternalUserIdentityAccessor
+ public interface ICompanyContextAccessor
+ {
+     Guid? CompanyId { get; }
++    Guid? UserId { get; }
++    bool IsResolved { get; }
++    ResolvedCompanyMembershipContext? Membership { get; }
+     void SetCompanyId(Guid? companyId);
++    void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+index 0ccf79a..f253839 100644
+--- a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+@@ -129,11 +129,31 @@ public sealed class ClaimsExternalUserIdentityAccessor : IExternalUserIdentityAc
+ public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
+ {
+     public Guid? CompanyId { get; private set; }
++    public Guid? UserId { get; private set; }
++    public bool IsResolved => Membership is not null;
++    public ResolvedCompanyMembershipContext? Membership { get; private set; }
+ 
+     public void SetCompanyId(Guid? companyId)
+     {
+         CompanyId = companyId;
++
++        if (!companyId.HasValue || Membership?.CompanyId != companyId.Value)
++        {
++            Membership = null;
++            UserId = null;
++        }
++    }
++
++    public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++    {
++        Membership = companyContext;
++
++        if (companyContext is null)
++        {
++            UserId = null;
++            return;
++        }
++
++        CompanyId = companyContext.CompanyId;
++        UserId = companyContext.UserId;
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+index b89d3d6..5eb66c9 100644
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorization.cs
+@@ -1,12 +1,8 @@
+ using Microsoft.AspNetCore.Authorization;
+-using Microsoft.EntityFrameworkCore;
+-using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Enums;
+-using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Authorization;
+-
+ public sealed class CompanyMembershipRequirement : IAuthorizationRequirement
+ {
+ }
+@@ -20,82 +16,48 @@ public sealed class CompanyRoleRequirement : IAuthorizationRequirement
+ public sealed class CompanyMembershipAuthorizationHandler
+     : AuthorizationHandler<CompanyMembershipRequirement>
+ {
+-    private readonly VirtualCompanyDbContext _dbContext;
+-    private readonly ICurrentUserAccessor _currentUserAccessor;
+-    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+     public CompanyMembershipAuthorizationHandler(
+-        VirtualCompanyDbContext dbContext,
+-        ICurrentUserAccessor currentUserAccessor,
+-        ICompanyContextAccessor companyContextAccessor)
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
+     {
+-        _dbContext = dbContext;
+-        _currentUserAccessor = currentUserAccessor;
+-        _companyContextAccessor = companyContextAccessor;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
+     }
+ 
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+         CompanyMembershipRequirement requirement)
+     {
+-        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
+-        {
+-            return;
+-        }
+-
+-        var hasMembership = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+-            x.UserId == userId &&
+-            x.CompanyId == companyId &&
+-            x.Status == CompanyMembershipStatus.Active);
+-
+-        if (hasMembership)
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
++        if (companyContext is not null)
+         {
+             context.Succeed(requirement);
+         }
+@@ -105,44 +67,23 @@ public sealed class CompanyMembershipAuthorizationHandler
+ public sealed class CompanyRoleAuthorizationHandler
+     : AuthorizationHandler<CompanyRoleRequirement>
+ {
+-    private readonly VirtualCompanyDbContext _dbContext;
+-    private readonly ICurrentUserAccessor _currentUserAccessor;
+-    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+ 
+     public CompanyRoleAuthorizationHandler(
+-        VirtualCompanyDbContext dbContext,
+-        ICurrentUserAccessor currentUserAccessor,
+-        ICompanyContextAccessor companyContextAccessor)
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
+     {
+-        _dbContext = dbContext;
+-        _currentUserAccessor = currentUserAccessor;
+-        _companyContextAccessor = companyContextAccessor;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
+     }
+ 
+     protected override async Task HandleRequirementAsync(
+         AuthorizationHandlerContext context,
+         CompanyRoleRequirement requirement)
+     {
+-        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
+-        {
+-            return;
+-        }
+-
+-        var hasRequiredRole = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+-            x.UserId == userId &&
+-            x.CompanyId == companyId &&
+-            x.Status == CompanyMembershipStatus.Active &&
+-            requirement.AllowedRoles.Contains(x.Role));
+-
+-        if (hasRequiredRole)
++        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
++        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
+         {
+             context.Succeed(requirement);
+         }
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+index 8ed0ec0..2c813e4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -43,7 +43,9 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         }
+ 
+         var memberships = await GetMembershipsForUserAsync(userId, cancellationToken);
+-        var activeCompany = ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
++        var activeCompany = _companyContextAccessor.Membership is not null
++            ? ToResolvedCompanyContext(_companyContextAccessor.Membership)
++            : ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
+         var activeMembershipCount = memberships.Count(x => x.Status == CompanyMembershipStatus.Active);
+ 
+         return new CurrentUserContextDto(
+@@ -67,6 +69,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             return null;
+         }
+ 
++        if (GetRequestCompanyContext(companyId) is { } requestContext)
++        {
++            return ToResolvedCompanyContext(requestContext);
++        }
++
+         return await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId)
+             .Where(x => x.CompanyId == companyId)
+@@ -86,6 +93,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             return null;
+         }
+ 
++        if (GetRequestCompanyContext(companyId) is { } requestContext)
++        {
++            return ToCompanyAccess(requestContext);
++        }
++
+         return await _dbContext.CompanyMemberships.AsNoTracking()
+             .Where(x => x.UserId == userId &&
+                         x.CompanyId == companyId &&
+@@ -103,6 +115,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+             return Task.FromResult(false);
+         }
+ 
++        if (GetRequestCompanyContext(companyId) is not null)
++        {
++            return Task.FromResult(true);
++        }
++
+         return _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+             x.UserId == userId &&
+             x.CompanyId == companyId &&
+@@ -111,6 +128,11 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+ 
+     public async Task<CompanyNoteDto?> GetNoteAsync(Guid companyId, Guid noteId, CancellationToken cancellationToken)
+     {
++        if (_companyContextAccessor.CompanyId is Guid requestCompanyId && requestCompanyId != companyId)
++        {
++            return null;
++        }
++
+         return await _dbContext.CompanyNotes.AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.Id == noteId)
+             .Select(x => new CompanyNoteDto(x.Id, x.CompanyId, x.Title, x.Content))
+@@ -145,6 +167,18 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         var activeMemberships = memberships.Where(x => x.Status == CompanyMembershipStatus.Active).ToList();
+         return activeMemberships.Count == 1 ? ToResolvedCompanyContext(activeMemberships[0]) : null;
+     }
++    private ResolvedCompanyMembershipContext? GetRequestCompanyContext(Guid companyId)
++    {
++        var requestContext = _companyContextAccessor.Membership;
++        return requestContext is not null && requestContext.CompanyId == companyId
++            ? requestContext
++            : null;
++    }
+ 
+     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
+         new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++
++    private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
++        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
++
++    private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
++        new(membership.CompanyId, membership.CompanyName, membership.Role, membership.Status);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index b4c86d2..1f04601 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -33,6 +33,7 @@ public static class DependencyInjection
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
++        services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
+         services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
+ 
+         services
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+index 403a8bb..556db55 100644
+--- a/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+@@ -4,6 +4,12 @@ using VirtualCompany.Application.Auth;
+ 
+ namespace VirtualCompany.Infrastructure.Tenancy;
+ 
++[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
++public sealed class RequireCompanyContextAttribute : Attribute
++{
++}
++
+ public sealed class CompanyContextResolutionMiddleware : IMiddleware
+ {
+     public const string CompanyHeaderName = "X-Company-Id";
+@@ -17,6 +23,7 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
+ 
+     public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+     {
++        var requiresCompanyContext = context.GetEndpoint()?.Metadata.GetMetadata<RequireCompanyContextAttribute>() is not null;
+         var routeCompanyIdValue = context.Request.RouteValues.TryGetValue("companyId", out var routeCompanyId)
+             ? routeCompanyId?.ToString()
+             : null;
+@@ -24,6 +31,12 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
+         var headerCompanyIdValue = context.Request.Headers[CompanyHeaderName].FirstOrDefault();
+ 
+         if (string.IsNullOrWhiteSpace(routeCompanyIdValue) && string.IsNullOrWhiteSpace(headerCompanyIdValue))
++        {
++            if (requiresCompanyContext)
++            {
++                await WriteBadRequestAsync(context, "Company context is required for this endpoint.");
++                return;
++            }
+             await next(context);
+             return;
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+new file mode 100644
+index 0000000..6b4571a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyMembershipContextResolver.cs
+@@ -0,0 +1,48 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Tenancy;
++
++public interface ICompanyMembershipContextResolver
++{
++    Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken);
++}
++
++public sealed class CompanyMembershipContextResolver : ICompanyMembershipContextResolver
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyMembershipContextResolver(
++        VirtualCompanyDbContext dbContext,
++        ICurrentUserAccessor currentUserAccessor,
++        ICompanyContextAccessor companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _currentUserAccessor = currentUserAccessor;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken)
++    {
++        if (_companyContextAccessor.Membership is not null)
++        {
++            return _companyContextAccessor.Membership;
++        }
++
++        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
++        {
++            return null;
++        }
++
++        var membership = await _dbContext.CompanyMemberships.AsNoTracking()
++            .Where(x => x.UserId == userId && x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active)
++            .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId, x.Company.Name, x.Role, x.Status))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        _companyContextAccessor.SetCompanyContext(membership);
++
++        return membership;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyContextResolutionMiddlewareTests.cs b/tests/VirtualCompany.Api.Tests/CompanyContextResolutionMiddlewareTests.cs
+new file mode 100644
+index 0000000..89a0efe
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanyContextResolutionMiddlewareTests.cs
+@@ -0,0 +1,61 @@
++using System.Text;
++using Microsoft.AspNetCore.Http;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Tenancy;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanyContextResolutionMiddlewareTests
++{
++    [Fact]
++    public async Task InvokeAsync_rejects_missing_company_context_for_marked_endpoint()
++    {
++        var accessor = new RequestCompanyContextAccessor();
++        var middleware = new CompanyContextResolutionMiddleware(accessor);
++        var context = new DefaultHttpContext();
++        context.Response.Body = new MemoryStream();
++        context.SetEndpoint(new Endpoint(
++            _ => Task.CompletedTask,
++            new EndpointMetadataCollection(new RequireCompanyContextAttribute()),
++            "company-scoped"));
++
++        var nextCalled = false;
++        await middleware.InvokeAsync(context, _ =>
++        {
++            nextCalled = true;
++            return Task.CompletedTask;
++        });
++
++        Assert.False(nextCalled);
++        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
++        Assert.Null(accessor.CompanyId);
++
++        context.Response.Body.Position = 0;
++        using var reader = new StreamReader(context.Response.Body, Encoding.UTF8);
++        var body = await reader.ReadToEndAsync();
++        Assert.Contains("Company context is required for this endpoint.", body);
++    }
++
++    [Fact]
++    public async Task InvokeAsync_resolves_header_company_context_for_marked_endpoint()
++    {
++        var accessor = new RequestCompanyContextAccessor();
++        var middleware = new CompanyContextResolutionMiddleware(accessor);
++        var context = new DefaultHttpContext();
++        var companyId = Guid.NewGuid();
++        context.Request.Headers[CompanyContextResolutionMiddleware.CompanyHeaderName] = companyId.ToString();
++        context.SetEndpoint(new Endpoint(
++            _ => Task.CompletedTask,
++            new EndpointMetadataCollection(new RequireCompanyContextAttribute()),
++            "company-scoped"));
++
++        var nextCalled = false;
++        await middleware.InvokeAsync(context, _ =>
++        {
++            nextCalled = true;
++            return Task.CompletedTask;
++        });
++
++        Assert.True(nextCalled);
++        Assert.Equal(companyId, accessor.CompanyId);
++        Assert.False(accessor.IsResolved);
++        Assert.Null(accessor.Membership);
++    }
++}
+END_OF_PATCH

@@ -28,15 +28,20 @@ public static class DependencyInjection
 
         services.AddHttpContextAccessor();
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+        services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
+        services.AddScoped<IExternalUserIdentityResolver, ExternalUserIdentityResolver>();
         services.AddScoped<CompanyQueryService>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
+        services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();
         services.AddScoped<IAuthorizationHandler, CompanyRoleAuthorizationHandler>();
+        services.AddScoped<IAuthorizationHandler, CompanyRoleResourceAuthorizationHandler>();
 
         services
             .AddAuthentication(options =>

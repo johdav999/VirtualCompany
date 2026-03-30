@@ -1,13 +1,19 @@
 using Microsoft.EntityFrameworkCore;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Infrastructure.Persistence;
 
 public sealed class VirtualCompanyDbContext : DbContext
 {
-    public VirtualCompanyDbContext(DbContextOptions<VirtualCompanyDbContext> options)
+    private readonly ICompanyContextAccessor? _companyContextAccessor;
+
+    public VirtualCompanyDbContext(
+        DbContextOptions<VirtualCompanyDbContext> options,
+        ICompanyContextAccessor? companyContextAccessor = null)
         : base(options)
     {
+        _companyContextAccessor = companyContextAccessor;
     }
 
     public DbSet<User> Users => Set<User>();
@@ -15,10 +21,15 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
 
+    internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
+        modelBuilder.Entity<CompanyOwnedNote>()
+            .HasQueryFilter(note =>
+                CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
     }
 }

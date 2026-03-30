@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.EntityFrameworkCore;
-using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Enums;
-using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure.Authorization;
 
@@ -23,35 +21,44 @@ public sealed class CompanyRoleRequirement : IAuthorizationRequirement
 public sealed class CompanyMembershipAuthorizationHandler
     : AuthorizationHandler<CompanyMembershipRequirement>
 {
-    private readonly VirtualCompanyDbContext _dbContext;
-    private readonly ICurrentUserAccessor _currentUserAccessor;
-    private readonly ICompanyContextAccessor _companyContextAccessor;
+    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
     public CompanyMembershipAuthorizationHandler(
-        VirtualCompanyDbContext dbContext,
-        ICurrentUserAccessor currentUserAccessor,
-        ICompanyContextAccessor companyContextAccessor)
+        ICompanyMembershipContextResolver companyMembershipContextResolver)
     {
-        _dbContext = dbContext;
-        _currentUserAccessor = currentUserAccessor;
-        _companyContextAccessor = companyContextAccessor;
+        _companyMembershipContextResolver = companyMembershipContextResolver;
     }
 
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
         CompanyMembershipRequirement requirement)
     {
-        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
+        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
+        if (companyContext is not null)
         {
-            return;
+            context.Succeed(requirement);
         }
+    }
+}
 
-        var hasMembership = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
-            x.UserId == userId &&
-            x.CompanyId == companyId &&
-            x.Status == CompanyMembershipStatus.Active);
+public sealed class CompanyMembershipResourceAuthorizationHandler
+    : AuthorizationHandler<CompanyMembershipRequirement, Guid>
+{
+    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
-        if (hasMembership)
+    public CompanyMembershipResourceAuthorizationHandler(
+        ICompanyMembershipContextResolver companyMembershipContextResolver)
+    {
+        _companyMembershipContextResolver = companyMembershipContextResolver;
+    }
+
+    protected override async Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        CompanyMembershipRequirement requirement,
+        Guid companyId)
+    {
+        var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
+        if (companyContext is not null)
         {
             context.Succeed(requirement);
         }
@@ -61,36 +68,44 @@ public sealed class CompanyMembershipAuthorizationHandler
 public sealed class CompanyRoleAuthorizationHandler
     : AuthorizationHandler<CompanyRoleRequirement>
 {
-    private readonly VirtualCompanyDbContext _dbContext;
-    private readonly ICurrentUserAccessor _currentUserAccessor;
-    private readonly ICompanyContextAccessor _companyContextAccessor;
+    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
     public CompanyRoleAuthorizationHandler(
-        VirtualCompanyDbContext dbContext,
-        ICurrentUserAccessor currentUserAccessor,
-        ICompanyContextAccessor companyContextAccessor)
+        ICompanyMembershipContextResolver companyMembershipContextResolver)
     {
-        _dbContext = dbContext;
-        _currentUserAccessor = currentUserAccessor;
-        _companyContextAccessor = companyContextAccessor;
+        _companyMembershipContextResolver = companyMembershipContextResolver;
     }
 
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
         CompanyRoleRequirement requirement)
     {
-        if (_currentUserAccessor.UserId is not Guid userId || _companyContextAccessor.CompanyId is not Guid companyId)
+        var companyContext = await _companyMembershipContextResolver.ResolveAsync(CancellationToken.None);
+        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
         {
-            return;
+            context.Succeed(requirement);
         }
+    }
+}
 
-        var hasRequiredRole = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
-            x.UserId == userId &&
-            x.CompanyId == companyId &&
-            x.Status == CompanyMembershipStatus.Active &&
-            requirement.AllowedRoles.Contains(x.Role));
+public sealed class CompanyRoleResourceAuthorizationHandler
+    : AuthorizationHandler<CompanyRoleRequirement, Guid>
+{
+    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
 
-        if (hasRequiredRole)
+    public CompanyRoleResourceAuthorizationHandler(
+        ICompanyMembershipContextResolver companyMembershipContextResolver)
+    {
+        _companyMembershipContextResolver = companyMembershipContextResolver;
+    }
+
+    protected override async Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        CompanyRoleRequirement requirement,
+        Guid companyId)
+    {
+        var companyContext = await _companyMembershipContextResolver.ResolveAsync(companyId, CancellationToken.None);
+        if (companyContext is not null && requirement.AllowedRoles.Contains(companyContext.Role))
         {
             context.Succeed(requirement);
         }
