@@ -53,16 +53,17 @@ app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseExceptionHandler();
 app.UseHttpsRedirection();
 app.UseRouting();
-app.UseRateLimiter();
 app.UseCors(DevelopmentCorsPolicy);
 app.UseAuthentication();
 app.UseMiddleware<CompanyContextResolutionMiddleware>();
+app.UseRateLimiter();
 app.UseAuthorization();
 
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
+    var agentTemplateSeeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
 
     if (dbContext.Database.IsRelational())
     {
@@ -77,6 +78,7 @@ using (var scope = app.Services.CreateScope())
     }
 
     await templateSeeder.SeedAsync();
+    await agentTemplateSeeder.SeedAsync();
 }
 
 app.MapVirtualCompanyHealthEndpoints();

@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Infrastructure.Observability;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -17,6 +19,7 @@ public sealed class OnboardingController : ControllerBase
         _onboardingService = onboardingService;
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("company")]
     public async Task<ActionResult<CreateCompanyResultDto>> CreateCompanyAsync(
         [FromBody] CreateCompanyCommand command,
@@ -64,6 +67,7 @@ public sealed class OnboardingController : ControllerBase
         return Ok(progress);
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("workspace")]
     public async Task<ActionResult<CompanyOnboardingProgressDto>> CreateWorkspaceAsync(
         [FromBody] CreateCompanyWorkspaceRequest request,
@@ -84,6 +88,7 @@ public sealed class OnboardingController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPut("progress")]
     public async Task<ActionResult<CompanyOnboardingProgressDto>> SaveProgressAsync(
         [FromBody] SaveCompanyOnboardingProgressRequest request,
@@ -108,6 +113,7 @@ public sealed class OnboardingController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("abandon")]
     public async Task<ActionResult<CompanyOnboardingProgressDto>> AbandonOnboardingAsync(
         [FromBody] AbandonCompanyOnboardingRequest request,
@@ -132,6 +138,7 @@ public sealed class OnboardingController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("complete")]
     public async Task<ActionResult<CompleteCompanyOnboardingResultDto>> CompleteOnboardingAsync(
         [FromBody] CompleteCompanyOnboardingRequest request,

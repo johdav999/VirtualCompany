@@ -286,6 +286,32 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
     }
 
     [Fact]
+    public void Agent_status_uses_canonical_storage_values_and_defaults_to_active_when_not_specified()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var statusConverter = dbContext.Model.FindEntityType(typeof(Agent))!
+            .FindProperty(nameof(Agent.Status))!
+            .GetTypeMapping().Converter;
+
+        Assert.Equal("active", statusConverter!.ConvertToProvider(AgentStatus.Active));
+        Assert.Equal(AgentStatus.Active, statusConverter.ConvertFromProvider("Active"));
+
+        var agent = new Agent(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "finance",
+            "Default Status Agent",
+            "Finance Manager",
+            "Finance",
+            null,
+            AgentSeniority.Senior);
+
+        Assert.Equal(AgentStatus.Active, agent.Status);
+    }
+
+    [Fact]
     public async Task Company_admin_policy_ignores_membership_access_configuration_that_looks_like_agent_permissions()
     {
         var userId = Guid.NewGuid();

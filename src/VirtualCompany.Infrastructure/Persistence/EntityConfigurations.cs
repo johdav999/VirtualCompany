@@ -154,6 +154,66 @@ internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfigurati
     }
 }
 
+internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<AgentTemplate>
+{
+    public void Configure(EntityTypeBuilder<AgentTemplate> builder)
+    {
+        builder.ToTable("agent_templates");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.PersonaSummary).HasMaxLength(1000);
+        builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
+        builder.Property(x => x.DefaultSeniority)
+            .HasConversion(value => value.ToStorageValue(), value => AgentSeniorityValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.SortOrder).HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.Personality)
+            .HasColumnName("personality_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Objectives)
+            .HasColumnName("objectives_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Kpis)
+            .HasColumnName("kpis_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Tools)
+            .HasColumnName("tool_permissions_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Scopes)
+            .HasColumnName("data_scopes_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Thresholds)
+            .HasColumnName("approval_thresholds_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.EscalationRules)
+            .HasColumnName("escalation_rules_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.HasIndex(x => x.TemplateId).IsUnique();
+        builder.HasIndex(x => new { x.IsActive, x.SortOrder });
+    }
+}
+
 internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<CompanyMembership>
 {
     public void Configure(EntityTypeBuilder<CompanyMembership> builder)
@@ -255,19 +315,23 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Topic).HasMaxLength(200).IsRequired();
+        builder.Property(x => x.MessageType).HasMaxLength(1000);
+        builder.Property(x => x.IdempotencyKey).HasMaxLength(200);
         builder.Property(x => x.CorrelationId).HasMaxLength(128);
         builder.Property(x => x.PayloadJson).IsRequired();
+        builder.Property(x => x.OccurredUtc).IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.AvailableUtc).IsRequired();
         builder.Property(x => x.AttemptCount).HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.LastAttemptUtc);
         builder.Property(x => x.LastError).HasMaxLength(4000);
         builder.Property(x => x.ClaimToken).HasMaxLength(64).IsConcurrencyToken();
         builder.Property(x => x.ProcessedUtc).IsConcurrencyToken();
 
-        builder.HasIndex(x => new { x.ProcessedUtc, x.AvailableUtc });
+        builder.HasIndex(x => new { x.ProcessedUtc, x.AvailableUtc, x.AttemptCount });
         builder.HasIndex(x => new { x.ProcessedUtc, x.ClaimedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Topic, x.IdempotencyKey }).HasFilter("\"IdempotencyKey\" IS NOT NULL").IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
-        builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
 
         builder.HasOne(x => x.Company)
@@ -324,5 +388,70 @@ internal sealed class CompanyOwnedNoteConfiguration : IEntityTypeConfiguration<C
         builder.Property(x => x.CreatedUtc).IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.Id });
+    }
+}
+
+internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+{
+    public void Configure(EntityTypeBuilder<Agent> builder)
+    {
+        builder.ToTable("agents");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
+        builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
+        builder.Property(x => x.Seniority)
+            .HasConversion(value => value.ToStorageValue(), value => AgentSeniorityValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Status)
+            .HasConversion(value => value.ToStorageValue(), value => AgentStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(AgentStatusValues.DefaultStatus)
+            .IsRequired();
+        builder.Property(x => x.Personality)
+            .HasColumnName("personality_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Objectives)
+            .HasColumnName("objectives_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Kpis)
+            .HasColumnName("kpis_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Tools)
+            .HasColumnName("tool_permissions_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Scopes)
+            .HasColumnName("data_scopes_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Thresholds)
+            .HasColumnName("approval_thresholds_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.EscalationRules)
+            .HasColumnName("escalation_rules_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.Department });
+        builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
 }

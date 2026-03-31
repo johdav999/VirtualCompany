@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
@@ -57,7 +58,9 @@ public static class DependencyInjection
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+        services.AddScoped<AgentTemplateSeeder>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+        services.AddScoped<ICompanyAgentService, CompanyAgentService>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();

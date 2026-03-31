@@ -1,0 +1,340 @@
+@page "/agents"
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Components
+@inject OnboardingApiClient OnboardingApiClient
+@inject AgentApiClient AgentApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Agents</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Agent management</h1>
+        <p class="text-body-secondary mb-0">Loading template catalog and company roster...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Select a company</h1>
+            <p class="text-body-secondary">Choose the company where you want to browse templates and hire agents.</p>
+
+            @if (activeMemberships.Count == 0)
+            {
+                <p class="mb-0">No active company memberships are available yet.</p>
+            }
+            else
+            {
+                <div class="template-grid">
+                    @foreach (var membership in activeMemberships)
+                    {
+                        <a class="template-card text-decoration-none text-reset" href="@($"/agents?companyId={membership.CompanyId}")">
+                            <strong>@membership.CompanyName</strong>
+                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="agent-layout">
+            <div class="wizard-card">
+                <span class="dashboard-kicker">Template catalog</span>
+                <h1>Hire agents for @(companyAccess?.CompanyName ?? "your company")</h1>
+                <p class="text-body-secondary">Start from seeded templates, customize identity fields, and create an active company-owned roster entry.</p>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(successMessage))
+                {
+                    <div class="alert alert-success">@successMessage</div>
+                }
+
+                <div class="agent-template-grid mt-4">
+                    @foreach (var template in templates)
+                    {
+                        var isSelected = string.Equals(selectedTemplateId, template.TemplateId, StringComparison.OrdinalIgnoreCase);
+                        <button class="template-card agent-template-card @(isSelected ? "is-selected" : null)"
+                                type="button"
+                                @onclick="@(() => SelectTemplate(template.TemplateId))">
+                            <div class="agent-template-header">
+                                <strong>@template.RoleName</strong>
+                                <span class="badge text-bg-light">@template.DefaultSeniority</span>
+                            </div>
+                            <div class="text-body-secondary">@template.Department</div>
+                            <p class="mb-0 mt-3">@template.PersonaSummary</p>
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="wizard-card">
+                <h2 class="h4 mb-3">Customize and hire</h2>
+
+                @if (selectedTemplate is null)
+                {
+                    <p class="text-body-secondary mb-0">Select a template to prepare the hire form.</p>
+                }
+                else
+                {
+                    <EditForm Model="@hireModel" OnValidSubmit="@HandleHireAsync">
+                        <DataAnnotationsValidator />
+                        <ValidationSummary />
+
+                        <div class="mb-3">
+                            <label class="form-label" for="display-name">Name</label>
+                            <InputText id="display-name" class="form-control" @bind-Value="hireModel.DisplayName" />
+                            <ValidationMessage For="@(() => hireModel.DisplayName)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="avatar-url">Avatar URL</label>
+                            <InputText id="avatar-url" class="form-control" @bind-Value="hireModel.AvatarUrl" />
+                            <ValidationMessage For="@(() => hireModel.AvatarUrl)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="department">Department</label>
+                            <InputText id="department" class="form-control" @bind-Value="hireModel.Department" />
+                            <ValidationMessage For="@(() => hireModel.Department)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="role-name">Role</label>
+                            <InputText id="role-name" class="form-control" @bind-Value="hireModel.RoleName" />
+                            <ValidationMessage For="@(() => hireModel.RoleName)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="seniority">Seniority</label>
+                            <InputSelect id="seniority" class="form-select" @bind-Value="hireModel.Seniority">
+                                @foreach (var option in seniorityOptions)
+                                {
+                                    <option value="@option">@option</option>
+                                }
+                            </InputSelect>
+                            <ValidationMessage For="@(() => hireModel.Seniority)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label" for="personality">Personality</label>
+                            <InputTextArea id="personality" class="form-control" rows="4" @bind-Value="hireModel.Personality" />
+                            <ValidationMessage For="@(() => hireModel.Personality)" />
+                        </div>
+
+                        <div class="dashboard-actions">
+                            <button class="btn btn-primary" type="submit" disabled="@isSubmitting">Hire agent</button>
+                            <button class="btn btn-outline-secondary" type="button" @onclick="@ResetSelectedTemplate">Reset defaults</button>
+                        </div>
+                    </EditForm>
+                }
+            </div>
+        </div>
+
+        <div class="wizard-card mt-4">
+            <div class="agent-roster-header">
+                <div>
+                    <span class="dashboard-kicker">Company roster</span>
+                    <h2 class="h4 mb-0 mt-2">Active agents</h2>
+                </div>
+                <span class="badge text-bg-light">@roster.Count total</span>
+            </div>
+
+            @if (roster.Count == 0)
+            {
+                <p class="text-body-secondary mb-0 mt-3">No agents have been hired for this company yet.</p>
+            }
+            else
+            {
+                <div class="agent-roster-grid mt-4">
+                    @foreach (var agent in roster)
+                    {
+                        <article class="template-card">
+                            <div class="agent-template-header">
+                                <strong>@agent.DisplayName</strong>
+                                <span class="badge text-bg-success">@agent.Status</span>
+                            </div>
+                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
+                            <div class="text-body-secondary">@agent.Seniority</div>
+                            @if (!string.IsNullOrWhiteSpace(agent.Personality))
+                            {
+                                <p class="mb-0 mt-3">@agent.Personality</p>
+                            }
+                        </article>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
+    private bool isLoading = true;
+    private bool isSubmitting;
+    private string? errorMessage;
+    private string? successMessage;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private List<AgentTemplateCatalogItemViewModel> templates = [];
+    private List<CompanyAgentSummaryViewModel> roster = [];
+    private HireAgentFormModel hireModel = new();
+    private string? selectedTemplateId;
+
+    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+        currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
+        ?? [];
+
+    private AgentTemplateCatalogItemViewModel? selectedTemplate =>
+        templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo($"/agents?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                if (companyAccess is null)
+                {
+                    errorMessage = "The selected company could not be loaded.";
+                    templates = [];
+                    roster = [];
+                }
+                else
+                {
+                    templates = (await AgentApiClient.GetTemplatesAsync(companyId)).ToList();
+                    roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+
+                    if (selectedTemplateId is null || templates.All(x => !string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
+                        ResetSelectedTemplate();
+                    }
+                }
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void SelectTemplate(string templateId)
+    {
+        selectedTemplateId = templateId;
+        ResetSelectedTemplate();
+    }
+
+    private void ResetSelectedTemplate()
+    {
+        if (selectedTemplate is null)
+        {
+            hireModel = new HireAgentFormModel();
+            return;
+        }
+
+        hireModel = new HireAgentFormModel
+        {
+            TemplateId = selectedTemplate.TemplateId,
+            DisplayName = selectedTemplate.RoleName,
+            AvatarUrl = selectedTemplate.AvatarUrl,
+            Department = selectedTemplate.Department,
+            RoleName = selectedTemplate.RoleName,
+            Personality = selectedTemplate.PersonaSummary,
+            Seniority = selectedTemplate.DefaultSeniority
+        };
+    }
+
+    private async Task HandleHireAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isSubmitting = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
+            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+            successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
+            ResetSelectedTemplate();
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private sealed class HireAgentFormModel
+    {
+        [Required, StringLength(100)]
+        public string TemplateId { get; set; } = string.Empty;
+
+        [Required, StringLength(200)]
+        public string DisplayName { get; set; } = string.Empty;
+
+        [StringLength(2048)]
+        public string? AvatarUrl { get; set; }
+
+        [StringLength(100)]
+        public string? Department { get; set; }
+
+        [StringLength(100)]
+        public string? RoleName { get; set; }
+
+        [StringLength(1000)]
+        public string? Personality { get; set; }
+
+        [StringLength(32)]
+        public string? Seniority { get; set; }
+
+        public CreateAgentFromTemplateRequest ToRequest() =>
+            new()
+            {
+                TemplateId = TemplateId,
+                DisplayName = DisplayName,
+                AvatarUrl = AvatarUrl,
+                Department = Department,
+                RoleName = RoleName,
+                Personality = Personality,
+                Seniority = Seniority
+            };
+    }
+}

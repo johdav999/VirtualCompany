@@ -141,6 +141,9 @@ Logging boundary:
 - Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.
 - Business audit events are persisted separately in the `audit_events` store through the dedicated `IAuditEventWriter` application abstraction.
 - Do not treat `ILogger` output as business history or compliance evidence.
+- Reliability-sensitive side effects are persisted to `company_outbox_messages` in the same EF Core transaction as business state changes.
+- `CompanyOutboxDispatcherBackgroundService` dispatches pending outbox work outside the request path with retry metadata, idempotency keys, and correlation-aware logging.
+- Dispatcher behavior is configured through `CompanyOutboxDispatcher:*` in API configuration.
 - When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.
 - The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.
 

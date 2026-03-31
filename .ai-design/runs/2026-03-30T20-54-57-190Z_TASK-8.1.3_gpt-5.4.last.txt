@@ -1,0 +1,181 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -135,7 +135,7 @@ public sealed class AgentTemplate
+             FirstNonEmpty(roleName, RoleName)!,
+             FirstNonEmpty(department, Department)!,
+             FirstNonEmpty(avatarUrl, AvatarUrl),
+             resolvedSeniority,
+-            AgentStatus.Active,
++            AgentStatusValues.DefaultStatus,
+             MergePersonality(personality),
+             CloneNodes(Objectives),
+             CloneNodes(Kpis),
+@@ -237,7 +237,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         string department,
+         string? avatarUrl,
+         AgentSeniority seniority,
+-        AgentStatus status,
++        AgentStatus? status = null,
+         IDictionary<string, JsonNode?>? personality = null,
+         IDictionary<string, JsonNode?>? objectives = null,
+         IDictionary<string, JsonNode?>? kpis = null,
+@@ -252,7 +252,8 @@ public sealed class Agent : ICompanyOwnedEntity
+         }
+ 
+         AgentSeniorityValues.EnsureSupported(seniority, nameof(seniority));
+-        AgentStatusValues.EnsureSupported(status, nameof(status));
++        var resolvedStatus = status ?? AgentStatusValues.DefaultStatus;
++        AgentStatusValues.EnsureSupported(resolvedStatus, nameof(status));
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+@@ -262,7 +263,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
+         AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+         Seniority = seniority;
+-        Status = status;
++        Status = resolvedStatus;
+         Personality = CloneNodes(personality);
+         Objectives = CloneNodes(objectives);
+         Kpis = CloneNodes(kpis);
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -17,14 +17,19 @@ public enum AgentSeniority
+ 
+ public static class AgentStatusValues
+ {
++    public const string Active = "active";
++    public const string Inactive = "inactive";
++    public static AgentStatus DefaultStatus => AgentStatus.Active;
++
+     public static string ToStorageValue(this AgentStatus status) =>
+         status switch
+         {
+-            AgentStatus.Active => "active",
+-            AgentStatus.Inactive => "inactive",
++            AgentStatus.Active => Active,
++            AgentStatus.Inactive => Inactive,
+             _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported agent status.")
+         };
+ 
+     public static AgentStatus Parse(string value)
+     {
++        value = value?.Trim() ?? string.Empty;
+         if (string.IsNullOrWhiteSpace(value))
+         {
+             throw new ArgumentException("Agent status is required.", nameof(value));
+@@ -32,9 +37,9 @@ public static class AgentStatusValues
+ 
+-        return value.Trim().ToLowerInvariant() switch
++        return value.ToLowerInvariant() switch
+         {
+-            "active" => AgentStatus.Active,
+-            "inactive" => AgentStatus.Inactive,
+-            _ when Enum.TryParse<AgentStatus>(value.Trim(), ignoreCase: true, out var legacyStatus) => legacyStatus,
++            Active => AgentStatus.Active,
++            Inactive => AgentStatus.Inactive,
++            _ when Enum.TryParse<AgentStatus>(value, ignoreCase: true, out var legacyStatus) => legacyStatus,
+             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported agent status value.")
+         };
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -410,7 +410,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.Property(x => x.Status)
+             .HasConversion(value => value.ToStorageValue(), value => AgentStatusValues.Parse(value))
+             .HasMaxLength(32)
+-            .HasDefaultValue(AgentStatus.Active)
++            .HasDefaultValue(AgentStatusValues.DefaultStatus)
+             .IsRequired();
+         builder.Property(x => x.Personality)
+             .HasColumnName("personality_json")
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -167,6 +167,34 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(template.Personality["summary"]!.ToJsonString(), agent.Personality["summary"]!.ToJsonString());
+         Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
+         Assert.Equal("Casey Support", agent.DisplayName);
+     }
+ 
++    [Fact]
++    public async Task Hiring_from_template_adds_agent_to_roster_with_active_status_immediately()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var hireResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "support",
++            displayName = "Casey Support"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, hireResponse.StatusCode);
++
++        var payload = await hireResponse.Content.ReadFromJsonAsync<HireAgentResponse>();
++        Assert.NotNull(payload);
++
++        var roster = await client.GetFromJsonAsync<List<CompanyAgentResponse>>($"/api/companies/{ids.CompanyId}/agents");
++
++        Assert.NotNull(roster);
++        var hiredAgent = Assert.Single(roster!, x => x.Id == payload!.Agent.Id);
++        Assert.Equal(ids.CompanyId, hiredAgent.CompanyId);
++        Assert.Equal("Casey Support", hiredAgent.DisplayName);
++        Assert.Equal("active", hiredAgent.Status);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.Equal(AgentStatus.Active, await dbContext.Agents.Where(x => x.Id == hiredAgent.Id).Select(x => x.Status).SingleAsync());
++    }
++
+     [Fact]
+     public async Task Roster_is_company_scoped_and_cross_tenant_access_is_blocked()
+     {
+@@ -336,6 +364,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public Guid Id { get; set; }
+         public Guid CompanyId { get; set; }
+         public string DisplayName { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
+     }
+ 
+     private sealed class HireAgentResponse
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -286,6 +286,31 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(CompanyMembershipStatus.Active, statusConverter.ConvertFromProvider("Active"));
+     }
+ 
++    [Fact]
++    public void Agent_status_uses_canonical_storage_values_and_defaults_to_active_when_not_specified()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var statusConverter = dbContext.Model.FindEntityType(typeof(Agent))!
++            .FindProperty(nameof(Agent.Status))!
++            .GetTypeMapping().Converter;
++
++        Assert.Equal("active", statusConverter!.ConvertToProvider(AgentStatus.Active));
++        Assert.Equal(AgentStatus.Active, statusConverter.ConvertFromProvider("Active"));
++
++        var agent = new Agent(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "finance",
++            "Default Status Agent",
++            "Finance Manager",
++            "Finance",
++            null,
++            AgentSeniority.Senior);
++
++        Assert.Equal(AgentStatus.Active, agent.Status);
++    }
++
+     [Fact]
+     public async Task Company_admin_policy_ignores_membership_access_configuration_that_looks_like_agent_permissions()
+     {
+END_OF_PATCH

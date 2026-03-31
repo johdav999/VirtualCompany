@@ -94,7 +94,13 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
         return properties;
     }
 
-    public static IReadOnlyDictionary<string, object?> ForOutboxMessage(Guid outboxMessageId, Guid companyId, string? correlationId)
+    public static IReadOnlyDictionary<string, object?> ForOutboxMessage(
+        Guid outboxMessageId,
+        Guid companyId,
+        string? correlationId,
+        string? topic = null,
+        string? messageType = null,
+        string? idempotencyKey = null)
     {
         var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -105,6 +111,21 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
         if (!string.IsNullOrWhiteSpace(correlationId))
         {
             properties["CorrelationId"] = correlationId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(topic))
+        {
+            properties["OutboxTopic"] = topic;
+        }
+
+        if (!string.IsNullOrWhiteSpace(messageType))
+        {
+            properties["OutboxMessageType"] = messageType;
+        }
+
+        if (!string.IsNullOrWhiteSpace(idempotencyKey))
+        {
+            properties["OutboxIdempotencyKey"] = idempotencyKey;
         }
 
         return properties;

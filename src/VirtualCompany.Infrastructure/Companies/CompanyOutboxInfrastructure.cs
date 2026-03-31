@@ -30,21 +30,90 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ILogger<CompanyOutboxEnqueuer> _logger;
 
-    public CompanyOutboxEnqueuer(VirtualCompanyDbContext dbContext)
+    public CompanyOutboxEnqueuer(
+        VirtualCompanyDbContext dbContext,
+        ILogger<CompanyOutboxEnqueuer> logger)
     {
         _dbContext = dbContext;
+        _logger = logger;
     }
 
-    public void Enqueue(Guid companyId, string topic, object payload, string? correlationId = null, DateTime? availableAtUtc = null)
+    public void Enqueue(
+        Guid companyId,
+        string topic,
+        object payload,
+        string? correlationId = null,
+        DateTime? availableAtUtc = null,
+        string? idempotencyKey = null,
+        string? messageType = null)
     {
-        _dbContext.CompanyOutboxMessages.Add(new CompanyOutboxMessage(
+        var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
+            ? null
+            : idempotencyKey.Trim();
+
+        if (normalizedIdempotencyKey is not null && AlreadyQueued(companyId, topic, normalizedIdempotencyKey))
+        {
+            _logger.LogInformation(
+                "Skipped duplicate company outbox message {Topic} for company {CompanyId} with idempotency key {IdempotencyKey}.",
+                topic,
+                companyId,
+                normalizedIdempotencyKey);
+            return;
+        }
+
+        var outboxMessage = new CompanyOutboxMessage(
             Guid.NewGuid(),
             companyId,
             topic,
             JsonSerializer.Serialize(payload, SerializerOptions),
-            correlationId,
-            availableAtUtc));
+            correlationId: correlationId,
+            messageType: ResolveMessageType(payload, topic, messageType),
+            availableUtc: availableAtUtc,
+            idempotencyKey: normalizedIdempotencyKey);
+
+        _dbContext.CompanyOutboxMessages.Add(outboxMessage);
+
+        using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(
+            outboxMessage.Id,
+            outboxMessage.CompanyId,
+            outboxMessage.CorrelationId,
+            outboxMessage.Topic,
+            outboxMessage.MessageType,
+            outboxMessage.IdempotencyKey));
+
+        _logger.LogInformation(
+            "Enqueued company outbox message {Topic} ({MessageType}) for company {CompanyId}.",
+            outboxMessage.Topic,
+            outboxMessage.MessageType ?? outboxMessage.Topic,
+            outboxMessage.CompanyId);
+    }
+
+    private bool AlreadyQueued(Guid companyId, string topic, string idempotencyKey) =>
+        _dbContext.CompanyOutboxMessages.Local.Any(x =>
+            x.CompanyId == companyId &&
+            x.Topic == topic &&
+            x.IdempotencyKey == idempotencyKey) ||
+        _dbContext.CompanyOutboxMessages
+            .AsNoTracking()
+            .Any(x =>
+                x.CompanyId == companyId &&
+                x.Topic == topic &&
+                x.IdempotencyKey == idempotencyKey);
+
+    private static string ResolveMessageType(object payload, string topic, string? explicitMessageType)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitMessageType))
+        {
+            return explicitMessageType.Trim();
+        }
+
+        var payloadType = payload.GetType();
+        var typeName = payloadType.FullName;
+        return string.IsNullOrWhiteSpace(typeName) || typeName.StartsWith("<>", StringComparison.Ordinal)
+            ? topic
+            : typeName;
     }
 
     private static JsonSerializerOptions CreateSerializerOptions()
@@ -99,9 +168,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         foreach (var message in claimedMessages)
         {
-            using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(message.Id, message.CompanyId, message.CorrelationId ?? message.ClaimToken));
+            using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(
+                message.Id,
+                message.CompanyId,
+                message.CorrelationId ?? message.ClaimToken,
+                message.Topic,
+                message.MessageType,
+                message.IdempotencyKey));
 
             var attempt = message.AttemptCount + 1;
+            _logger.LogInformation("Dispatching company outbox message {Topic} ({MessageType}) on attempt {Attempt}.", message.Topic, message.MessageType ?? message.Topic, attempt);
             var execution = await _backgroundJobExecutor.ExecuteAsync(
                 new BackgroundJobExecutionContext(
                     $"company-outbox:{message.Topic}",
@@ -117,21 +193,38 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             {
                 case BackgroundJobExecutionOutcome.Succeeded:
                     message.MarkProcessed();
+                    _logger.LogInformation(
+                        "Dispatched company outbox message {Topic} ({MessageType}) successfully on attempt {Attempt}.",
+                        message.Topic,
+                        message.MessageType ?? message.Topic,
+                        attempt);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
                     break;
                 case BackgroundJobExecutionOutcome.PermanentFailure:
                 case BackgroundJobExecutionOutcome.RetryExhausted:
                     message.MarkDiscarded(ResolveFailureMessage(execution));
+                    _logger.LogError(
+                        "Marked company outbox message {Topic} ({MessageType}) as terminal failure on attempt {Attempt}.",
+                        message.Topic,
+                        message.MessageType ?? message.Topic,
+                        attempt);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
                     break;
                 case BackgroundJobExecutionOutcome.RetryScheduled:
-                    message.ScheduleRetry(
-                        DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero),
-                        ResolveFailureMessage(execution));
+                {
+                    var nextAttemptAtUtc = DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero);
+                    message.ScheduleRetry(nextAttemptAtUtc, ResolveFailureMessage(execution));
+                    _logger.LogWarning(
+                        "Retry scheduled for company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Next attempt at {AvailableUtc}.",
+                        message.Topic,
+                        message.MessageType ?? message.Topic,
+                        attempt,
+                        nextAttemptAtUtc);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     break;
+                }
             }
         }
 
@@ -222,7 +315,10 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.InvitationRevoked:
             case CompanyOutboxTopics.InvitationAccepted:
             case CompanyOutboxTopics.MembershipRoleChanged:
-                _logger.LogInformation("Acknowledged company outbox event '{Topic}' without external dispatch.", message.Topic);
+                _logger.LogInformation(
+                    "Acknowledged company outbox event '{Topic}' ({MessageType}) without external dispatch.",
+                    message.Topic,
+                    message.MessageType ?? message.Topic);
                 break;
             default:
                 throw new CompanyOutboxPermanentException($"Unsupported company outbox topic '{message.Topic}'.");

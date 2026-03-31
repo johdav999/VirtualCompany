@@ -355,6 +355,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<string>("CorrelationId")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
@@ -362,9 +366,19 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("LastAttemptUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("LastError")
                         .HasMaxLength(4000)
                         .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("MessageType")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
@@ -383,11 +397,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CompanyId", "CreatedUtc");
 
+                    b.HasIndex("CompanyId", "Topic", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+
                     b.HasIndex("CompanyId", "ProcessedUtc");
 
-                    b.HasIndex("ProcessedUtc", "AvailableUtc");
-
                     b.HasIndex("ProcessedUtc", "ClaimedUtc");
+                    b.HasIndex("ProcessedUtc", "AvailableUtc", "AttemptCount");
 
                     b.ToTable("company_outbox_messages", (string)null);
                 });

@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Infrastructure.Observability;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -37,6 +39,7 @@ public sealed class CompanyMembershipAdministrationController : ControllerBase
         return Ok(invitations);
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("invitations")]
     public async Task<ActionResult<CompanyInvitationDeliveryDto>> InviteUserAsync(
         Guid companyId,
@@ -58,6 +61,7 @@ public sealed class CompanyMembershipAdministrationController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("invitations/{invitationId:guid}/resend")]
     public async Task<ActionResult<CompanyInvitationDeliveryDto>> ReinviteUserAsync(
         Guid companyId,
@@ -83,6 +87,7 @@ public sealed class CompanyMembershipAdministrationController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("invitations/{invitationId:guid}/revoke")]
     public async Task<ActionResult<CompanyInvitationDto>> RevokeInvitationAsync(
         Guid companyId,
@@ -108,6 +113,7 @@ public sealed class CompanyMembershipAdministrationController : ControllerBase
         }
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPatch("memberships/{membershipId:guid}/role")]
     public async Task<ActionResult<CompanyMemberDirectoryEntryDto>> ChangeMembershipRoleAsync(
         Guid companyId,

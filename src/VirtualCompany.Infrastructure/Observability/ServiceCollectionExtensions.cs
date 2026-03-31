@@ -1,4 +1,5 @@
 using System.Net;
+using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -9,12 +10,17 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using VirtualCompany.Application.Auth;
 
 namespace VirtualCompany.Infrastructure.Observability;
 
 public static class ServiceCollectionExtensions
 {
+    private const string ProblemDetailsContentType = "application/problem+json";
+    private const string RateLimitingLoggerName = "VirtualCompany.Infrastructure.Observability.RateLimiting";
+
     public static IServiceCollection AddVirtualCompanyObservability(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddOptions<ObservabilityOptions>()
@@ -40,31 +46,61 @@ public static class ServiceCollectionExtensions
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
             options.OnRejected = static async (context, cancellationToken) =>
             {
-                var observabilityOptions = context.HttpContext.RequestServices.GetRequiredService<IOptions<ObservabilityOptions>>().Value;
-                var correlationId = CorrelationIdMiddleware.GetCorrelationId(context.HttpContext) ?? context.HttpContext.TraceIdentifier;
+                var httpContext = context.HttpContext;
+                var services = httpContext.RequestServices;
+                var observabilityOptions = services.GetRequiredService<IOptions<ObservabilityOptions>>().Value;
+                var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger(RateLimitingLoggerName);
+                var correlationId = CorrelationIdMiddleware.GetCorrelationId(httpContext) ?? httpContext.TraceIdentifier;
+                var traceId = httpContext.TraceIdentifier;
+                var policyName = ResolveRateLimitPolicyName(httpContext);
                 var problemDetails = new ProblemDetails
                 {
                     Status = StatusCodes.Status429TooManyRequests,
                     Title = "Too many requests",
-                    Detail = "The request was throttled by a platform rate limiting policy."
+                    Detail = "The request was throttled by a platform rate limiting policy.",
+                    Type = "https://httpstatuses.com/429",
+                    Instance = httpContext.Request.Path.HasValue ? httpContext.Request.Path.Value : null
                 };
-                problemDetails.Extensions["correlationId"] = correlationId;
 
-                context.HttpContext.Response.Headers[observabilityOptions.CorrelationId.HeaderName] = correlationId;
-                await context.HttpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
+                problemDetails.Extensions["correlationId"] = correlationId;
+                problemDetails.Extensions["traceId"] = traceId;
+
+                if (!string.IsNullOrWhiteSpace(policyName))
+                {
+                    problemDetails.Extensions["rateLimitPolicy"] = policyName;
+                }
+
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+                {
+                    var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+                    httpContext.Response.Headers["Retry-After"] = retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+                    problemDetails.Extensions["retryAfterSeconds"] = retryAfterSeconds;
+                }
+
+                using var scope = logger.BeginScope(ExecutionLogScope.ForHttpContext(httpContext));
+                logger.LogWarning(
+                    "Rate limiting rejected HTTP {Method} {Path} for policy {PolicyName}.",
+                    httpContext.Request.Method,
+                    httpContext.Request.Path,
+                    policyName ?? "unknown");
+
+                httpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                httpContext.Response.Headers[observabilityOptions.CorrelationId.HeaderName] = correlationId;
+                await httpContext.Response.WriteAsJsonAsync(problemDetails, options: null, contentType: ProblemDetailsContentType, cancellationToken: cancellationToken);
             };
 
             if (!settings.RateLimiting.Enabled)
             {
-                options.AddPolicy(PlatformRateLimitPolicyNames.Chat, static _ => RateLimitPartition.GetNoLimiter("chat"));
-                options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, static _ => RateLimitPartition.GetNoLimiter("tasks"));
+                options.AddPolicy(PlatformRateLimitPolicyNames.Chat, static _ => RateLimitPartition.GetNoLimiter(PlatformRateLimitPolicyNames.Chat));
+                options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, static _ => RateLimitPartition.GetNoLimiter(PlatformRateLimitPolicyNames.Tasks));
                 return;
             }
 
-            options.AddFixedWindowLimiter(PlatformRateLimitPolicyNames.Chat, limiterOptions => ApplyRateLimit(limiterOptions, settings.RateLimiting.Chat));
-            options.AddFixedWindowLimiter(PlatformRateLimitPolicyNames.Tasks, limiterOptions => ApplyRateLimit(limiterOptions, settings.RateLimiting.Tasks));
+            options.AddPolicy(PlatformRateLimitPolicyNames.Chat, context => CreateFixedWindowPartition(context, PlatformRateLimitPolicyNames.Chat, settings.RateLimiting.Chat));
+            options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, context => CreateFixedWindowPartition(context, PlatformRateLimitPolicyNames.Tasks, settings.RateLimiting.Tasks));
         });
 
         return services;
@@ -87,13 +123,53 @@ public static class ServiceCollectionExtensions
         return endpoints;
     }
 
-    private static void ApplyRateLimit(FixedWindowRateLimiterOptions options, RateLimitPolicyOptions settings)
+    private static RateLimitPartition<string> CreateFixedWindowPartition(HttpContext context, string policyName, RateLimitPolicyOptions settings) =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            GetPartitionKey(context, policyName),
+            _ => CreateFixedWindowOptions(settings));
+
+    private static FixedWindowRateLimiterOptions CreateFixedWindowOptions(RateLimitPolicyOptions settings)
     {
-        options.PermitLimit = Math.Max(1, settings.PermitLimit);
-        options.Window = TimeSpan.FromSeconds(Math.Max(1, settings.WindowSeconds));
-        options.QueueLimit = Math.Max(0, settings.QueueLimit);
-        options.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        options.AutoReplenishment = true;
+        var options = new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = Math.Max(1, settings.PermitLimit),
+            Window = TimeSpan.FromSeconds(Math.Max(1, settings.WindowSeconds)),
+            QueueLimit = Math.Max(0, settings.QueueLimit),
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            AutoReplenishment = true
+        };
+
+        return options;
+    }
+
+    private static string GetPartitionKey(HttpContext context, string policyName)
+    {
+        var services = context.RequestServices;
+        var companyContextAccessor = services.GetService<ICompanyContextAccessor>();
+        var currentUserAccessor = services.GetService<ICurrentUserAccessor>();
+
+        var companyId = companyContextAccessor?.CompanyId;
+        var userId = companyContextAccessor?.UserId ?? currentUserAccessor?.UserId;
+
+        if (companyId.HasValue && userId.HasValue)
+        {
+            return $"{policyName}:company:{companyId.Value:N}:user:{userId.Value:N}";
+        }
+
+        if (userId.HasValue)
+        {
+            return $"{policyName}:user:{userId.Value:N}";
+        }
+
+        if (companyId.HasValue)
+        {
+            return $"{policyName}:company:{companyId.Value:N}";
+        }
+
+        var remoteIp = context.Connection.RemoteIpAddress?.ToString();
+        return string.IsNullOrWhiteSpace(remoteIp)
+            ? $"{policyName}:anonymous"
+            : $"{policyName}:ip:{remoteIp}";
     }
 
     private static HealthCheckOptions CreateHealthCheckOptions(Func<HealthCheckRegistration, bool>? predicate = null) =>
@@ -109,6 +185,13 @@ public static class ServiceCollectionExtensions
                 [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
             }
         };
+
+    private static string? ResolveRateLimitPolicyName(HttpContext context) =>
+        context.GetEndpoint()?
+            .Metadata
+            .OfType<EnableRateLimitingAttribute>()
+            .LastOrDefault()?
+            .PolicyName;
 }
 
 public static class PlatformRateLimitPolicyNames

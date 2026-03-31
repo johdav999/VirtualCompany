@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Net.Mail;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
@@ -138,7 +140,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 email,
                 role = invitation.Role,
                 invitedByUserId = companyContext.UserId
-            });
+            },
+            idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationCreated, invitation.Id));
 
             await WriteAuditEventAsync(
                 companyId,
@@ -166,7 +169,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             email = existingPendingInvitation.Email,
             role = existingPendingInvitation.Role,
             resentByUserId = companyContext.UserId
-        });
+        },
+        idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationResent, existingPendingInvitation.Id, CompanyInvitationTokenHasher.ComputeHash(token)));
 
         await WriteAuditEventAsync(
             companyId,
@@ -219,7 +223,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
         invitation.Resend(CompanyInvitationTokenHasher.ComputeHash(token), DateTime.UtcNow.AddDays(InvitationLifetimeDays), invitation.Role, companyContext.UserId);
         var correlationId = CreateCorrelationId();
         EnqueueInvitationDeliveryRequested(invitation, companyContext.CompanyName, token, correlationId);
-        EnqueueInvitationResent(invitation, companyId, companyContext.UserId, correlationId);
+        EnqueueInvitationResent(invitation, companyId, companyContext.UserId, correlationId, token);
 
         await WriteAuditEventAsync(
             companyId,
@@ -286,7 +290,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             correlationId,
             email = invitation.Email,
             revokedByUserId = companyContext.UserId
-        });
+        },
+        idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationRevoked, invitation.Id));
 
         await WriteAuditEventAsync(
             companyId,
@@ -353,7 +358,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 previousRole,
                 newRole = request.MembershipRole,
                 changedByUserId = companyContext.UserId
-            });
+            },
+            idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.MembershipRoleChanged, membership.Id, requestedRole.ToStorageValue(), membership.UpdatedUtc));
 
             await WriteAuditEventAsync(
                 companyId,
@@ -456,7 +462,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             acceptedByUserId = userId,
             email = invitation.Email,
             role = invitation.Role
-        });
+        },
+        idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationAccepted, invitation.Id));
 
         await WriteAuditEventAsync(
             invitation.CompanyId,
@@ -538,10 +545,11 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
                 invitation.ExpiresAtUtc,
                 invitation.InvitedByUserId,
                 correlationId),
-            correlationId);
+            correlationId,
+            idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationDeliveryRequested, invitation.Id, CompanyInvitationTokenHasher.ComputeHash(acceptanceToken)));
     }
 
-    private void EnqueueInvitationResent(CompanyInvitation invitation, Guid companyId, Guid resentByUserId, string correlationId)
+    private void EnqueueInvitationResent(CompanyInvitation invitation, Guid companyId, Guid resentByUserId, string correlationId, string acceptanceToken)
     {
         _outboxEnqueuer.Enqueue(companyId, CompanyOutboxTopics.InvitationResent, new
         {
@@ -551,7 +559,8 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
             email = invitation.Email,
             role = invitation.Role,
             resentByUserId
-        });
+        },
+        idempotencyKey: BuildOutboxIdempotencyKey(CompanyOutboxTopics.InvitationResent, invitation.Id, CompanyInvitationTokenHasher.ComputeHash(acceptanceToken)));
     }
 
     private async Task EnsureInvitableAsync(Guid companyId, string email, CancellationToken cancellationToken)
@@ -695,6 +704,30 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
         }
 
         return metadata;
+    }
+
+    private static string BuildOutboxIdempotencyKey(string topic, params object?[] segments)
+    {
+        var normalizedSegments = segments
+            .Where(static segment => segment is not null)
+            .Select(static segment => segment switch
+            {
+                Guid guid => guid.ToString("N"),
+                DateTime dateTime => dateTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture),
+                _ => Convert.ToString(segment, CultureInfo.InvariantCulture)
+            })
+            .Where(static segment => !string.IsNullOrWhiteSpace(segment))
+            .Select(static segment => segment!.Trim());
+
+        var candidate = string.Join(':', new[] { topic }.Concat(normalizedSegments));
+        if (candidate.Length <= 200)
+        {
+            return candidate;
+        }
+
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(candidate))).ToLowerInvariant();
+        var prefix = topic.Length <= 120 ? topic : topic[..120];
+        return $"{prefix}:{hash}";
     }
 
     private static Expression<Func<CompanyInvitation, CompanyInvitationDto>> ToInvitationDtoExpression() =>

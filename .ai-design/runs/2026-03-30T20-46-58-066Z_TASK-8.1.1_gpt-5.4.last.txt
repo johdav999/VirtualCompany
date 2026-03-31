@@ -1,0 +1,483 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index ee47af9..3a00f9d 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -1,11 +1,20 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
+ 
+ namespace VirtualCompany.Application.Agents;
+ 
+ public sealed record AgentTemplateCatalogItemDto(
+     string TemplateId,
++    int TemplateVersion,
+     string RoleName,
+     string Department,
+     string PersonaSummary,
+     string DefaultSeniority,
+-    string? AvatarUrl);
++    string? AvatarUrl,
++    Dictionary<string, JsonNode?> Personality,
++    Dictionary<string, JsonNode?> Objectives,
++    Dictionary<string, JsonNode?> Kpis,
++    Dictionary<string, JsonNode?> Tools,
++    Dictionary<string, JsonNode?> Scopes,
++    Dictionary<string, JsonNode?> Thresholds,
++    Dictionary<string, JsonNode?> EscalationRules);
+ 
+ public sealed record CompanyAgentSummaryDto(
+     Guid Id,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs
+new file mode 100644
+index 0000000..1f705cb
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs
+@@ -0,0 +1,122 @@
++using System.Reflection;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++internal static class AgentTemplateSeedCatalogReader
++{
++    private const string ResourceName = "VirtualCompany.Infrastructure.Persistence.SeedData.agent-templates.json";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    public static async Task<AgentTemplateSeedCatalog> LoadAsync(CancellationToken cancellationToken = default)
++    {
++        var assembly = typeof(AgentTemplateSeedCatalogReader).Assembly;
++        await using var stream = assembly.GetManifestResourceStream(ResourceName)
++            ?? throw new InvalidOperationException($"Embedded agent template seed '{ResourceName}' was not found.");
++
++        using var reader = new StreamReader(stream);
++        var json = await reader.ReadToEndAsync(cancellationToken);
++        var catalog = JsonSerializer.Deserialize<AgentTemplateSeedCatalog>(json, SerializerOptions) ?? new AgentTemplateSeedCatalog();
++        Validate(catalog);
++        return catalog;
++    }
++
++    private static void Validate(AgentTemplateSeedCatalog catalog)
++    {
++        if (catalog.Version <= 0)
++        {
++            throw new InvalidOperationException("Agent template seed catalog version must be greater than zero.");
++        }
++
++        if (catalog.Templates.Count == 0)
++        {
++            throw new InvalidOperationException("Agent template seed catalog must contain at least one template.");
++        }
++
++        var ids = new HashSet<Guid>();
++        var templateIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var template in catalog.Templates)
++        {
++            ValidateTemplate(template);
++
++            if (!ids.Add(template.Id))
++            {
++                throw new InvalidOperationException($"Agent template seed contains duplicate id '{template.Id}'.");
++            }
++
++            if (!templateIds.Add(template.TemplateId))
++            {
++                throw new InvalidOperationException($"Agent template seed contains duplicate templateId '{template.TemplateId}'.");
++            }
++        }
++    }
++
++    private static void ValidateTemplate(AgentTemplateSeedDefinition template)
++    {
++        if (template.Id == Guid.Empty)
++        {
++            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a stable id.");
++        }
++
++        if (template.TemplateVersion <= 0)
++        {
++            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a templateVersion greater than zero.");
++        }
++
++        if (string.IsNullOrWhiteSpace(template.TemplateId))
++        {
++            throw new InvalidOperationException("Agent template seed must declare a templateId.");
++        }
++
++        if (string.IsNullOrWhiteSpace(template.RoleName))
++        {
++            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a roleName.");
++        }
++
++        if (string.IsNullOrWhiteSpace(template.Department))
++        {
++            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a department.");
++        }
++
++        if (string.IsNullOrWhiteSpace(template.DefaultSeniority))
++        {
++            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a defaultSeniority.");
++        }
++
++        ValidatePayload(template.TemplateId, nameof(template.Personality), template.Personality);
++        ValidatePayload(template.TemplateId, nameof(template.Objectives), template.Objectives);
++        ValidatePayload(template.TemplateId, nameof(template.Kpis), template.Kpis);
++        ValidatePayload(template.TemplateId, nameof(template.Tools), template.Tools);
++        ValidatePayload(template.TemplateId, nameof(template.Scopes), template.Scopes);
++        ValidatePayload(template.TemplateId, nameof(template.Thresholds), template.Thresholds);
++        ValidatePayload(template.TemplateId, nameof(template.EscalationRules), template.EscalationRules);
++    }
++
++    private static void ValidatePayload(string templateId, string payloadName, Dictionary<string, JsonNode?> payload)
++    {
++        if (payload.Count == 0)
++        {
++            throw new InvalidOperationException($"Agent template '{templateId}' must declare a non-empty {payloadName} payload.");
++        }
++    }
++}
++
++internal sealed class AgentTemplateSeedCatalog
++{
++    public int Version { get; set; }
++    public List<AgentTemplateSeedDefinition> Templates { get; set; } = [];
++}
++
++internal sealed class AgentTemplateSeedDefinition
++{
++    public Guid Id { get; set; }
++    public int TemplateVersion { get; set; } = 1;
++    public string TemplateId { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string? PersonaSummary { get; set; }
++    public string DefaultSeniority { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public int SortOrder { get; set; }
++    public bool IsActive { get; set; } = true;
++    public Dictionary<string, JsonNode?> Personality { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Tools { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Scopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Thresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
+index d66d2a1..fd7b9ea 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
+@@ -1,20 +1,14 @@
+-using System.Reflection;
+-using System.Text.Json;
+-using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class AgentTemplateSeeder
+ {
+-    private const string ResourceName = "VirtualCompany.Infrastructure.Persistence.SeedData.agent-templates.json";
+-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+     private readonly VirtualCompanyDbContext _dbContext;
+ 
+     public AgentTemplateSeeder(VirtualCompanyDbContext dbContext)
+     {
+         _dbContext = dbContext;
+@@ -22,7 +16,7 @@ public sealed class AgentTemplateSeeder
+ 
+     public async Task SeedAsync(CancellationToken cancellationToken = default)
+     {
+-        var catalog = await LoadCatalogAsync(cancellationToken);
++        var catalog = await AgentTemplateSeedCatalogReader.LoadAsync(cancellationToken);
+         if (catalog.Templates.Count == 0)
+         {
+             return;
+@@ -48,7 +42,7 @@ public sealed class AgentTemplateSeeder
+             }
+             else
+             {
+-                _dbContext.AgentTemplates.Add(new AgentTemplate(
+-                    Guid.NewGuid(),
++                _dbContext.AgentTemplates.Add(new AgentTemplate(
++                    seed.Id,
+                     seed.TemplateId,
+                     seed.RoleName,
+                     seed.Department,
+@@ -67,31 +61,4 @@ public sealed class AgentTemplateSeeder
+         }
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+-
+-    private static async Task<TemplateSeedCatalog> LoadCatalogAsync(CancellationToken cancellationToken)
+-    {
+-        var assembly = typeof(AgentTemplateSeeder).Assembly;
+-        await using var stream = assembly.GetManifestResourceStream(ResourceName)
+-            ?? throw new InvalidOperationException($"Embedded agent template seed '{ResourceName}' was not found.");
+-        using var reader = new StreamReader(stream);
+-        var json = await reader.ReadToEndAsync(cancellationToken);
+-        return JsonSerializer.Deserialize<TemplateSeedCatalog>(json, SerializerOptions) ?? new TemplateSeedCatalog();
+-    }
+-
+-    private sealed class TemplateSeedCatalog
+-    {
+-        public int Version { get; set; }
+-        public List<TemplateSeedDefinition> Templates { get; set; } = [];
+-    }
+-
+-    private sealed class TemplateSeedDefinition
+-    {
+-        public string TemplateId { get; set; } = string.Empty;
+-        public string RoleName { get; set; } = string.Empty;
+-        public string Department { get; set; } = string.Empty;
+-        public string? PersonaSummary { get; set; }
+-        public string DefaultSeniority { get; set; } = string.Empty;
+-        public string? AvatarUrl { get; set; }
+-        public int SortOrder { get; set; }
+-        public bool IsActive { get; set; } = true;
+-        public Dictionary<string, JsonNode?> Personality { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> Tools { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> Scopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> Thresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-        public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index a3ca717..945b76e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -34,19 +34,38 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     public async Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
++        var catalog = await AgentTemplateSeedCatalogReader.LoadAsync(cancellationToken);
++        var versionsByTemplateId = catalog.Templates.ToDictionary(x => x.TemplateId, x => x.TemplateVersion, StringComparer.OrdinalIgnoreCase);
+ 
+-        return await _dbContext.AgentTemplates
++        var templates = await _dbContext.AgentTemplates
+             .AsNoTracking()
+             .Where(x => x.IsActive)
+             .OrderBy(x => x.SortOrder)
+             .ThenBy(x => x.RoleName)
+-            .Select(x => new AgentTemplateCatalogItemDto(
++            .ToListAsync(cancellationToken);
++
++        return templates
++            .Select(x => new AgentTemplateCatalogItemDto(
+                 x.TemplateId,
++                versionsByTemplateId.TryGetValue(x.TemplateId, out var version) ? version : catalog.Version,
+                 x.RoleName,
+                 x.Department,
+                 x.PersonaSummary ?? string.Empty,
+                 x.DefaultSeniority.ToStorageValue(),
+-                x.AvatarUrl))
+-            .ToListAsync(cancellationToken);
++                x.AvatarUrl,
++                CloneNodes(x.Personality),
++                CloneNodes(x.Objectives),
++                CloneNodes(x.Kpis),
++                CloneNodes(x.Tools),
++                CloneNodes(x.Scopes),
++                CloneNodes(x.Thresholds),
++                CloneNodes(x.EscalationRules)))
++            .ToList();
+     }
+ 
+     public async Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json b/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
+index 3b6742b..dd87064 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
++++ b/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
+@@ -1,8 +1,10 @@
+ {
+-  "version": 1,
++  "version": 2,
+   "templates": [
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30101",
+       "templateId": "finance",
++      "templateVersion": 1,
+       "roleName": "Finance Manager",
+       "department": "Finance",
+       "personaSummary": "Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.",
+@@ -39,8 +41,10 @@
+     },
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30102",
+       "templateId": "sales",
++      "templateVersion": 1,
+       "roleName": "Sales Manager",
+       "department": "Sales",
+       "personaSummary": "Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.",
+@@ -74,8 +78,10 @@
+     },
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30103",
+       "templateId": "marketing",
++      "templateVersion": 1,
+       "roleName": "Marketing Manager",
+       "department": "Marketing",
+       "personaSummary": "Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.",
+@@ -109,8 +115,10 @@
+     },
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30104",
+       "templateId": "support",
++      "templateVersion": 1,
+       "roleName": "Support Lead",
+       "department": "Support",
+       "personaSummary": "Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.",
+@@ -145,8 +153,10 @@
+     },
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30105",
+       "templateId": "operations",
++      "templateVersion": 1,
+       "roleName": "Operations Manager",
+       "department": "Operations",
+       "personaSummary": "Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.",
+@@ -180,8 +190,10 @@
+     },
+     {
++      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30106",
+       "templateId": "executive-assistant",
++      "templateVersion": 1,
+       "roleName": "Executive Assistant",
+       "department": "Executive",
+       "personaSummary": "Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.",
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 4bce623..0e3b367 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -1,5 +1,6 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Domain.Entities;
+@@ -7,6 +8,7 @@ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
++using VirtualCompany.Infrastructure.Companies;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -17,7 +19,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         _factory = factory;
+     }
+ 
+     [Fact]
+-    public async Task Template_catalog_returns_seeded_roles_for_active_company()
++    public async Task Template_catalog_returns_seeded_roles_with_prefill_defaults_for_active_company()
+     {
+         var ids = await SeedMembershipAsync();
+ 
+@@ -25,12 +27,47 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         Assert.NotNull(templates);
+-        Assert.Contains(templates!, x => x.TemplateId == "finance");
+-        Assert.Contains(templates!, x => x.TemplateId == "sales");
+-        Assert.Contains(templates!, x => x.TemplateId == "marketing");
+-        Assert.Contains(templates!, x => x.TemplateId == "support");
+-        Assert.Contains(templates!, x => x.TemplateId == "operations");
+-        Assert.Contains(templates!, x => x.TemplateId == "executive-assistant");
++        Assert.NotEmpty(templates!);
++
++        foreach (var templateId in RequiredTemplateIds)
++        {
++            var template = Assert.Single(templates, x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase));
++            Assert.True(template.TemplateVersion > 0);
++            Assert.False(string.IsNullOrWhiteSpace(template.RoleName));
++            Assert.False(string.IsNullOrWhiteSpace(template.Department));
++            Assert.False(string.IsNullOrWhiteSpace(template.PersonaSummary));
++            Assert.False(string.IsNullOrWhiteSpace(template.DefaultSeniority));
++            Assert.NotEmpty(template.Personality);
++            Assert.NotEmpty(template.Objectives);
++            Assert.NotEmpty(template.Kpis);
++            Assert.NotEmpty(template.Tools);
++            Assert.NotEmpty(template.Scopes);
++            Assert.NotEmpty(template.Thresholds);
++            Assert.NotEmpty(template.EscalationRules);
++        }
++    }
++
++    [Fact]
++    public async Task Agent_template_seed_is_idempotent_and_keeps_single_row_per_template()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var seeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
++
++        await dbContext.Database.EnsureCreatedAsync();
++        await seeder.SeedAsync();
++
++        var baseline = await dbContext.AgentTemplates
++            .AsNoTracking()
++            .OrderBy(x => x.TemplateId)
++            .Select(x => new SeededTemplateSnapshot(x.Id, x.TemplateId))
++            .ToListAsync();
++
++        await seeder.SeedAsync();
++
++        var afterRerun = await dbContext.AgentTemplates
++            .AsNoTracking()
++            .OrderBy(x => x.TemplateId)
++            .Select(x => new SeededTemplateSnapshot(x.Id, x.TemplateId))
++            .ToListAsync();
++
++        Assert.Equal(baseline, afterRerun);
++        Assert.Equal(RequiredTemplateIds.Length, afterRerun.Count(x => RequiredTemplateIds.Contains(x.TemplateId, StringComparer.OrdinalIgnoreCase)));
++        Assert.All(RequiredTemplateIds, templateId => Assert.Single(afterRerun, x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase)));
+     }
+ 
+     [Fact]
+@@ -171,10 +208,36 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         return new SeedIds(companyId, otherCompanyId);
+     }
+ 
++    private static readonly string[] RequiredTemplateIds =
++    [
++        "finance",
++        "sales",
++        "marketing",
++        "support",
++        "operations",
++        "executive-assistant"
++    ];
++
+     private sealed record SeedIds(Guid CompanyId, Guid OtherCompanyId);
++    private sealed record SeededTemplateSnapshot(Guid Id, string TemplateId);
+ 
+     private sealed class AgentTemplateResponse
+     {
+         public string TemplateId { get; set; } = string.Empty;
++        public int TemplateVersion { get; set; }
++        public string RoleName { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public string PersonaSummary { get; set; } = string.Empty;
++        public string DefaultSeniority { get; set; } = string.Empty;
++        public string? AvatarUrl { get; set; }
++        public Dictionary<string, JsonElement> Personality { get; set; } = [];
++        public Dictionary<string, JsonElement> Objectives { get; set; } = [];
++        public Dictionary<string, JsonElement> Kpis { get; set; } = [];
++        public Dictionary<string, JsonElement> Tools { get; set; } = [];
++        public Dictionary<string, JsonElement> Scopes { get; set; } = [];
++        public Dictionary<string, JsonElement> Thresholds { get; set; } = [];
++        public Dictionary<string, JsonElement> EscalationRules { get; set; } = [];
+     }
+ 
+     private sealed class CompanyAgentResponse
+@@ -199,3 +262,4 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public string Seniority { get; set; } = string.Empty;
+     }
+ }
++END_OF_PATCH

@@ -18,6 +18,9 @@ builder.Services.AddScoped(_ => new HttpClient
 builder.Services.AddScoped(sp => new OnboardingApiClient(
     sp.GetRequiredService<HttpClient>(),
     useOfflineMode));
+builder.Services.AddScoped(sp => new AgentApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    useOfflineMode));
 
 await builder.Build().RunAsync();
 

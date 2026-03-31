@@ -27,7 +27,14 @@ public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
 
 public interface ICompanyOutboxEnqueuer
 {
-    void Enqueue(Guid companyId, string topic, object payload, string? correlationId = null, DateTime? availableAtUtc = null);
+    void Enqueue(
+        Guid companyId,
+        string topic,
+        object payload,
+        string? correlationId = null,
+        DateTime? availableAtUtc = null,
+        string? idempotencyKey = null,
+        string? messageType = null);
 }
 
 public interface ICompanyInvitationDeliveryDispatcher

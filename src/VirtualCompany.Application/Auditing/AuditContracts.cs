@@ -30,6 +30,7 @@ public static class AuditTargetTypes
 {
     public const string CompanyInvitation = "company_invitation";
     public const string CompanyMembership = "company_membership";
+    public const string Agent = "agent";
 }
 
 public static class AuditEventOutcomes
@@ -44,4 +45,5 @@ public static class AuditEventActions
     public const string CompanyInvitationRevoked = "company.invitation.revoked";
     public const string CompanyInvitationAccepted = "company.invitation.accepted";
     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
+    public const string AgentHired = "agent.hired";
 }

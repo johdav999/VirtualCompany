@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-7.4.7",
+  "promptPath": ".ai-design/prompts/TASK-7.4.7.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T20:27:46.407Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T20-27-46-407Z_TASK-7.4.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T20-27-46-407Z_TASK-7.4.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T20:35:02.440Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "r>();\n+            await processor.DispatchPendingAsync(CancellationToken.None);\n+        }\n+\n+        using var assertionScope = _factory.Services.CreateScope();\n+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        var failedMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);\n+\n+        Assert.Equal(1, failedMessage.AttemptCount);\n+        Assert.NotNull(failedMessage.LastAttemptUtc);\n+        Assert.NotNull(failedMessage.ProcessedUtc);\n+        Assert.Contains(\"Unsupported company outbox topic\", failedMessage.LastError);\n+    }\n+\n+    [Fact]\n     public async Task OutboxProcessor_skips_delivery_for_revoked_invitation()\n     {\n         var sender = ResetInvitationSender();\ndiff --git a/README.md b/README.md\nindex e1a592b..2ca7170 100644\n--- a/README.md\n+++ b/README.md\n@@ -122,6 +122,9 @@ Logging boundary:\n - Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.\n - Business audit events are persisted separately in the `audit_events` store through the dedicated `IAuditEventWriter` application abstraction.\n - Do not treat `ILogger` output as business history or compliance evidence.\n+- Reliability-sensitive side effects are persisted to `company_outbox_messages` in the same EF Core transaction as business state changes.\n+- `CompanyOutboxDispatcherBackgroundService` dispatches pending outbox work outside the request path with retry metadata, idempotency keys, and correlation-aware logging.\n+- Dispatcher behavior is configured through `CompanyOutboxDispatcher:*` in API configuration.\n - When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.\n - The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.\n END_OF_PATCH\n",
+  "stderrTail": "await processor.DispatchPendingAsync(CancellationToken.None);\n+        }\n+\n+        using var assertionScope = _factory.Services.CreateScope();\n+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        var failedMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);\n+\n+        Assert.Equal(1, failedMessage.AttemptCount);\n+        Assert.NotNull(failedMessage.LastAttemptUtc);\n+        Assert.NotNull(failedMessage.ProcessedUtc);\n+        Assert.Contains(\"Unsupported company outbox topic\", failedMessage.LastError);\n+    }\n+\n+    [Fact]\n     public async Task OutboxProcessor_skips_delivery_for_revoked_invitation()\n     {\n         var sender = ResetInvitationSender();\ndiff --git a/README.md b/README.md\nindex e1a592b..2ca7170 100644\n--- a/README.md\n+++ b/README.md\n@@ -122,6 +122,9 @@ Logging boundary:\n - Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.\n - Business audit events are persisted separately in the `audit_events` store through the dedicated `IAuditEventWriter` application abstraction.\n - Do not treat `ILogger` output as business history or compliance evidence.\n+- Reliability-sensitive side effects are persisted to `company_outbox_messages` in the same EF Core transaction as business state changes.\n+- `CompanyOutboxDispatcherBackgroundService` dispatches pending outbox work outside the request path with retry metadata, idempotency keys, and correlation-aware logging.\n+- Dispatcher behavior is configured through `CompanyOutboxDispatcher:*` in API configuration.\n - When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.\n - The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.\n END_OF_PATCH\ntokens used\n83,530\n",
+  "verbosityMode": "normal"
+}

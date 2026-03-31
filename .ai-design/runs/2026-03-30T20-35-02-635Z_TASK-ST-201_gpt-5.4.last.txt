@@ -1,0 +1,2407 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -0,0 +1,77 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/agents")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class AgentsController : ControllerBase
++{
++    private readonly ICompanyAgentService _agentService;
++
++    public AgentsController(ICompanyAgentService agentService)
++    {
++        _agentService = agentService;
++    }
++
++    [HttpGet("templates")]
++    public async Task<ActionResult<IReadOnlyList<AgentTemplateCatalogItemDto>>> GetTemplatesAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var templates = await _agentService.GetTemplatesAsync(companyId, cancellationToken);
++            return Ok(templates);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<CompanyAgentSummaryDto>>> GetRosterAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var roster = await _agentService.GetRosterAsync(companyId, cancellationToken);
++            return Ok(roster);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost]
++    public async Task<ActionResult<HireAgentResultDto>> HireAsync(
++        Guid companyId,
++        [FromBody] HireAgentCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _agentService.HireAsync(companyId, command, cancellationToken);
++            return Ok(result);
++        }
++        catch (AgentValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (AgentTemplateNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -51,6 +51,7 @@ using (var scope = app.Services.CreateScope())
+ {
+     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
++    var agentTemplateSeeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
+ 
+     if (dbContext.Database.IsRelational())
+     {
+@@ -66,6 +67,7 @@ using (var scope = app.Services.CreateScope())
+     }
+ 
+     await templateSeeder.SeedAsync();
++    await agentTemplateSeeder.SeedAsync();
+ }
+ 
+ app.MapVirtualCompanyHealthEndpoints();
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -0,0 +1,56 @@
++using System.Collections.ObjectModel;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record AgentTemplateCatalogItemDto(
++    string TemplateId,
++    string RoleName,
++    string Department,
++    string PersonaSummary,
++    string DefaultSeniority,
++    string? AvatarUrl);
++
++public sealed record CompanyAgentSummaryDto(
++    Guid Id,
++    Guid CompanyId,
++    string TemplateId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    string Seniority,
++    string Status,
++    string? AvatarUrl,
++    string PersonalitySummary);
++
++public sealed record HireAgentCommand(
++    string TemplateId,
++    string DisplayName,
++    string? AvatarUrl,
++    string? Department,
++    string? RoleName,
++    string? PersonalitySummary,
++    string? Seniority);
++
++public sealed record HireAgentResultDto(CompanyAgentSummaryDto Agent);
++
++public interface ICompanyAgentService
++{
++    Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<HireAgentResultDto> HireAsync(Guid companyId, HireAgentCommand command, CancellationToken cancellationToken);
++}
++
++public sealed class AgentValidationException : Exception
++{
++    public AgentValidationException(IDictionary<string, string[]> errors)
++        : base("Agent validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public sealed class AgentTemplateNotFoundException : Exception
++{
++    public AgentTemplateNotFoundException(string templateId)
++        : base($"Agent template '{templateId}' was not found.")
++    {
++    }
++}
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -23,6 +23,7 @@ public static class AuditTargetTypes
+ {
+     public const string CompanyInvitation = "company_invitation";
+     public const string CompanyMembership = "company_membership";
++    public const string Agent = "agent";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -37,4 +38,5 @@ public static class AuditEventActions
+     public const string CompanyInvitationRevoked = "company.invitation.revoked";
+     public const string CompanyInvitationAccepted = "company.invitation.accepted";
+     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
++    public const string AgentHired = "agent.hired";
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -0,0 +1,284 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class AgentTemplate
++{
++    private const int TemplateIdMaxLength = 100;
++    private const int RoleNameMaxLength = 100;
++    private const int DepartmentMaxLength = 100;
++    private const int PersonaSummaryMaxLength = 1000;
++    private const int AvatarUrlMaxLength = 2048;
++
++    private AgentTemplate()
++    {
++    }
++
++    public AgentTemplate(
++        Guid id,
++        string templateId,
++        string roleName,
++        string department,
++        string? personaSummary,
++        AgentSeniority defaultSeniority,
++        string? avatarUrl,
++        int sortOrder,
++        bool isActive,
++        IDictionary<string, JsonNode?>? personality = null,
++        IDictionary<string, JsonNode?>? objectives = null,
++        IDictionary<string, JsonNode?>? kpis = null,
++        IDictionary<string, JsonNode?>? tools = null,
++        IDictionary<string, JsonNode?>? scopes = null,
++        IDictionary<string, JsonNode?>? thresholds = null,
++        IDictionary<string, JsonNode?>? escalationRules = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++        UpdateDefinition(
++            templateId,
++            roleName,
++            department,
++            personaSummary,
++            defaultSeniority,
++            avatarUrl,
++            sortOrder,
++            isActive,
++            personality,
++            objectives,
++            kpis,
++            tools,
++            scopes,
++            thresholds,
++            escalationRules);
++    }
++
++    public Guid Id { get; private set; }
++    public string TemplateId { get; private set; } = null!;
++    public string RoleName { get; private set; } = null!;
++    public string Department { get; private set; } = null!;
++    public string? PersonaSummary { get; private set; }
++    public AgentSeniority DefaultSeniority { get; private set; }
++    public string? AvatarUrl { get; private set; }
++    public int SortOrder { get; private set; }
++    public bool IsActive { get; private set; }
++    public Dictionary<string, JsonNode?> Personality { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Objectives { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Tools { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Scopes { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Thresholds { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++
++    public void UpdateDefinition(
++        string templateId,
++        string roleName,
++        string department,
++        string? personaSummary,
++        AgentSeniority defaultSeniority,
++        string? avatarUrl,
++        int sortOrder,
++        bool isActive,
++        IDictionary<string, JsonNode?>? personality = null,
++        IDictionary<string, JsonNode?>? objectives = null,
++        IDictionary<string, JsonNode?>? kpis = null,
++        IDictionary<string, JsonNode?>? tools = null,
++        IDictionary<string, JsonNode?>? scopes = null,
++        IDictionary<string, JsonNode?>? thresholds = null,
++        IDictionary<string, JsonNode?>? escalationRules = null)
++    {
++        if (sortOrder < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sortOrder), "Sort order cannot be negative.");
++        }
++
++        AgentSeniorityValues.EnsureSupported(defaultSeniority, nameof(defaultSeniority));
++        TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
++        RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
++        Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
++        PersonaSummary = NormalizeOptional(personaSummary, nameof(personaSummary), PersonaSummaryMaxLength);
++        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
++        DefaultSeniority = defaultSeniority;
++        SortOrder = sortOrder;
++        IsActive = isActive;
++        Personality = CloneNodes(personality);
++        Objectives = CloneNodes(objectives);
++        Kpis = CloneNodes(kpis);
++        Tools = CloneNodes(tools);
++        Scopes = CloneNodes(scopes);
++        Thresholds = CloneNodes(thresholds);
++        EscalationRules = CloneNodes(escalationRules);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++}
++
++public sealed class Agent : ICompanyOwnedEntity
++{
++    private const int TemplateIdMaxLength = 100;
++    private const int DisplayNameMaxLength = 200;
++    private const int RoleNameMaxLength = 100;
++    private const int DepartmentMaxLength = 100;
++    private const int AvatarUrlMaxLength = 2048;
++
++    private Agent()
++    {
++    }
++
++    public Agent(
++        Guid id,
++        Guid companyId,
++        string templateId,
++        string displayName,
++        string roleName,
++        string department,
++        string? avatarUrl,
++        AgentSeniority seniority,
++        AgentStatus status,
++        IDictionary<string, JsonNode?>? personality = null,
++        IDictionary<string, JsonNode?>? objectives = null,
++        IDictionary<string, JsonNode?>? kpis = null,
++        IDictionary<string, JsonNode?>? tools = null,
++        IDictionary<string, JsonNode?>? scopes = null,
++        IDictionary<string, JsonNode?>? thresholds = null,
++        IDictionary<string, JsonNode?>? escalationRules = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        AgentSeniorityValues.EnsureSupported(seniority, nameof(seniority));
++        AgentStatusValues.EnsureSupported(status, nameof(status));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
++        DisplayName = NormalizeRequired(displayName, nameof(displayName), DisplayNameMaxLength);
++        RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
++        Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
++        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
++        Seniority = seniority;
++        Status = status;
++        Personality = CloneNodes(personality);
++        Objectives = CloneNodes(objectives);
++        Kpis = CloneNodes(kpis);
++        Tools = CloneNodes(tools);
++        Scopes = CloneNodes(scopes);
++        Thresholds = CloneNodes(thresholds);
++        EscalationRules = CloneNodes(escalationRules);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string TemplateId { get; private set; } = null!;
++    public string DisplayName { get; private set; } = null!;
++    public string RoleName { get; private set; } = null!;
++    public string Department { get; private set; } = null!;
++    public string? AvatarUrl { get; private set; }
++    public AgentSeniority Seniority { get; private set; }
++    public AgentStatus Status { get; private set; }
++    public Dictionary<string, JsonNode?> Personality { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Objectives { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Tools { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Scopes { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Thresholds { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -0,0 +1,113 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum AgentStatus
++{
++    Active = 1,
++    Inactive = 2
++}
++
++public enum AgentSeniority
++{
++    Junior = 1,
++    Mid = 2,
++    Senior = 3,
++    Lead = 4,
++    Executive = 5
++}
++
++public static class AgentStatusValues
++{
++    public static string ToStorageValue(this AgentStatus status) =>
++        status switch
++        {
++            AgentStatus.Active => "active",
++            AgentStatus.Inactive => "inactive",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported agent status.")
++        };
++
++    public static AgentStatus Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Agent status is required.", nameof(value));
++        }
++
++        return value.Trim().ToLowerInvariant() switch
++        {
++            "active" => AgentStatus.Active,
++            "inactive" => AgentStatus.Inactive,
++            _ when Enum.TryParse<AgentStatus>(value.Trim(), ignoreCase: true, out var legacyStatus) => legacyStatus,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported agent status value.")
++        };
++    }
++
++    public static void EnsureSupported(AgentStatus status, string paramName)
++    {
++        _ = status.ToStorageValue();
++    }
++}
++
++public static class AgentSeniorityValues
++{
++    private static readonly IReadOnlyDictionary<AgentSeniority, string> Values = new Dictionary<AgentSeniority, string>
++    {
++        [AgentSeniority.Junior] = "junior",
++        [AgentSeniority.Mid] = "mid",
++        [AgentSeniority.Senior] = "senior",
++        [AgentSeniority.Lead] = "lead",
++        [AgentSeniority.Executive] = "executive"
++    };
++
++    private static readonly IReadOnlyDictionary<string, AgentSeniority> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this AgentSeniority seniority)
++    {
++        if (Values.TryGetValue(seniority, out var value))
++        {
++            return value;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(seniority), seniority, BuildValidationMessage());
++    }
++
++    public static bool TryParse(string? value, out AgentSeniority seniority)
++    {
++        seniority = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out seniority))
++        {
++            return true;
++        }
++
++        if (Enum.TryParse<AgentSeniority>(value.Trim(), ignoreCase: true, out var legacy) && Values.ContainsKey(legacy))
++        {
++            seniority = legacy;
++            return true;
++        }
++
++        return false;
++    }
++
++    public static AgentSeniority Parse(string value)
++    {
++        if (TryParse(value, out var seniority))
++        {
++            return seniority;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static void EnsureSupported(AgentSeniority seniority, string paramName)
++    {
++        _ = seniority.ToStorageValue();
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Agent seniority is required. Allowed values: {allowedValues}."
++            : $"Unsupported agent seniority value '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
+@@ -0,0 +1,106 @@
++using System.Reflection;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class AgentTemplateSeeder
++{
++    private const string ResourceName = "VirtualCompany.Infrastructure.Persistence.SeedData.agent-templates.json";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public AgentTemplateSeeder(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task SeedAsync(CancellationToken cancellationToken = default)
++    {
++        var catalog = await LoadCatalogAsync(cancellationToken);
++        if (catalog.Templates.Count == 0)
++        {
++            return;
++        }
++
++        var existingTemplates = await _dbContext.AgentTemplates
++            .ToDictionaryAsync(x => x.TemplateId, StringComparer.OrdinalIgnoreCase, cancellationToken);
++
++        foreach (var seed in catalog.Templates)
++        {
++            var defaultSeniority = AgentSeniorityValues.Parse(seed.DefaultSeniority);
++
++            if (existingTemplates.TryGetValue(seed.TemplateId, out var existing))
++            {
++                existing.UpdateDefinition(
++                    seed.TemplateId,
++                    seed.RoleName,
++                    seed.Department,
++                    seed.PersonaSummary,
++                    defaultSeniority,
++                    seed.AvatarUrl,
++                    seed.SortOrder,
++                    seed.IsActive,
++                    seed.Personality,
++                    seed.Objectives,
++                    seed.Kpis,
++                    seed.Tools,
++                    seed.Scopes,
++                    seed.Thresholds,
++                    seed.EscalationRules);
++            }
++            else
++            {
++                _dbContext.AgentTemplates.Add(new AgentTemplate(
++                    Guid.NewGuid(),
++                    seed.TemplateId,
++                    seed.RoleName,
++                    seed.Department,
++                    seed.PersonaSummary,
++                    defaultSeniority,
++                    seed.AvatarUrl,
++                    seed.SortOrder,
++                    seed.IsActive,
++                    seed.Personality,
++                    seed.Objectives,
++                    seed.Kpis,
++                    seed.Tools,
++                    seed.Scopes,
++                    seed.Thresholds,
++                    seed.EscalationRules));
++            }
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private static async Task<TemplateSeedCatalog> LoadCatalogAsync(CancellationToken cancellationToken)
++    {
++        var assembly = typeof(AgentTemplateSeeder).Assembly;
++        await using var stream = assembly.GetManifestResourceStream(ResourceName)
++            ?? throw new InvalidOperationException($"Embedded agent template seed '{ResourceName}' was not found.");
++        using var reader = new StreamReader(stream);
++        var json = await reader.ReadToEndAsync(cancellationToken);
++        return JsonSerializer.Deserialize<TemplateSeedCatalog>(json, SerializerOptions) ?? new TemplateSeedCatalog();
++    }
++
++    private sealed class TemplateSeedCatalog
++    {
++        public int Version { get; set; }
++        public List<TemplateSeedDefinition> Templates { get; set; } = [];
++    }
++
++    private sealed class TemplateSeedDefinition
++    {
++        public string TemplateId { get; set; } = string.Empty;
++        public string RoleName { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public string? PersonaSummary { get; set; }
++        public string DefaultSeniority { get; set; } = string.Empty;
++        public string? AvatarUrl { get; set; }
++        public int SortOrder { get; set; }
++        public bool IsActive { get; set; } = true;
++        public Dictionary<string, JsonNode?> Personality { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Tools { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Scopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> Thresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -0,0 +1,272 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyAgentService : ICompanyAgentService
++{
++    private const int TemplateIdMaxLength = 100;
++    private const int DisplayNameMaxLength = 200;
++    private const int DepartmentMaxLength = 100;
++    private const int RoleNameMaxLength = 100;
++    private const int AvatarUrlMaxLength = 2048;
++    private const int PersonalitySummaryMaxLength = 1000;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly IAuditEventWriter _auditEventWriter;
++
++    public CompanyAgentService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        IAuditEventWriter auditEventWriter)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _auditEventWriter = auditEventWriter;
++    }
++
++    public async Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        return await _dbContext.AgentTemplates
++            .AsNoTracking()
++            .Where(x => x.IsActive)
++            .OrderBy(x => x.SortOrder)
++            .ThenBy(x => x.RoleName)
++            .Select(x => new AgentTemplateCatalogItemDto(
++                x.TemplateId,
++                x.RoleName,
++                x.Department,
++                x.PersonaSummary ?? string.Empty,
++                x.DefaultSeniority.ToStorageValue(),
++                x.AvatarUrl))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var agents = await _dbContext.Agents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Department)
++            .ThenBy(x => x.DisplayName)
++            .ToListAsync(cancellationToken);
++
++        return agents.Select(ToSummaryDto).ToList();
++    }
++
++    public async Task<HireAgentResultDto> HireAsync(Guid companyId, HireAgentCommand command, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var template = await _dbContext.AgentTemplates
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.TemplateId == command.TemplateId && x.IsActive, cancellationToken);
++
++        if (template is null)
++        {
++            throw new AgentTemplateNotFoundException(command.TemplateId);
++        }
++
++        var seniority = string.IsNullOrWhiteSpace(command.Seniority)
++            ? template.DefaultSeniority
++            : AgentSeniorityValues.Parse(command.Seniority);
++
++        var agent = new Agent(
++            Guid.NewGuid(),
++            companyId,
++            template.TemplateId,
++            NormalizeRequired(command.DisplayName),
++            FirstNonEmpty(command.RoleName, template.RoleName)!,
++            FirstNonEmpty(command.Department, template.Department)!,
++            FirstNonEmpty(command.AvatarUrl, template.AvatarUrl),
++            seniority,
++            AgentStatus.Active,
++            MergePersonality(template, command.PersonalitySummary),
++            CloneNodes(template.Objectives),
++            CloneNodes(template.Kpis),
++            CloneNodes(template.Tools),
++            CloneNodes(template.Scopes),
++            CloneNodes(template.Thresholds),
++            CloneNodes(template.EscalationRules));
++
++        _dbContext.Agents.Add(agent);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.AgentHired,
++                AuditTargetTypes.Agent,
++                agent.Id.ToString(),
++                AuditEventOutcomes.Succeeded,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["templateId"] = template.TemplateId,
++                    ["displayName"] = agent.DisplayName,
++                    ["roleName"] = agent.RoleName,
++                    ["department"] = agent.Department,
++                    ["seniority"] = agent.Seniority.ToStorageValue()
++                }),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new HireAgentResultDto(ToSummaryDto(agent));
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++
++        return membership;
++    }
++
++    private static CompanyAgentSummaryDto ToSummaryDto(Agent agent) =>
++        new(
++            agent.Id,
++            agent.CompanyId,
++            agent.TemplateId,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Department,
++            agent.Seniority.ToStorageValue(),
++            agent.Status.ToStorageValue(),
++            agent.AvatarUrl,
++            ResolvePersonalitySummary(agent.Personality));
++
++    private static Dictionary<string, JsonNode?> MergePersonality(AgentTemplate template, string? personalitySummary)
++    {
++        var personality = CloneNodes(template.Personality);
++        var summary = FirstNonEmpty(personalitySummary, ResolvePersonalitySummary(personality), template.PersonaSummary);
++
++        if (!string.IsNullOrWhiteSpace(summary))
++        {
++            personality["summary"] = JsonValue.Create(summary);
++        }
++
++        return personality;
++    }
++
++    private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
++    {
++        if (!personality.TryGetValue("summary", out var node) || node is null)
++        {
++            return string.Empty;
++        }
++
++        try
++        {
++            return NormalizeOptional(node.GetValue<string>()) ?? string.Empty;
++        }
++        catch (InvalidOperationException)
++        {
++            return node.ToJsonString();
++        }
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static string? FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
++
++    private static string NormalizeRequired(string value) =>
++        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
++
++    private static string? NormalizeOptional(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static void Validate(HireAgentCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        AddRequired(errors, nameof(command.TemplateId), command.TemplateId, "TemplateId is required.", TemplateIdMaxLength);
++        AddRequired(errors, nameof(command.DisplayName), command.DisplayName, "DisplayName is required.", DisplayNameMaxLength);
++        AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
++        AddOptional(errors, nameof(command.RoleName), command.RoleName, RoleNameMaxLength);
++        AddOptional(errors, nameof(command.AvatarUrl), command.AvatarUrl, AvatarUrlMaxLength);
++        AddOptional(errors, nameof(command.PersonalitySummary), command.PersonalitySummary, PersonalitySummaryMaxLength);
++
++        if (!string.IsNullOrWhiteSpace(command.Seniority) && !AgentSeniorityValues.TryParse(command.Seniority, out _))
++        {
++            AddError(errors, nameof(command.Seniority), AgentSeniorityValues.BuildValidationMessage(command.Seniority));
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static void AddRequired(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string? value,
++        string message,
++        int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, message);
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddOptional(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string? value,
++        int maxLength)
++    {
++        if (!string.IsNullOrWhiteSpace(value) && value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddError(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -47,7 +48,9 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+         services.AddScoped<CompanySetupTemplateSeeder>();
+         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
++        services.AddScoped<AgentTemplateSeeder>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
++        services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -143,6 +143,72 @@ internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfigurati
+     }
+ }
+ 
++internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<AgentTemplate>
++{
++    public void Configure(EntityTypeBuilder<AgentTemplate> builder)
++    {
++        builder.ToTable("agent_templates");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.PersonaSummary).HasMaxLength(1000);
++        builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
++        builder.Property(x => x.DefaultSeniority)
++            .HasConversion(value => value.ToStorageValue(), value => AgentSeniorityValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SortOrder).HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.Personality)
++            .HasColumnName("personality_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Objectives)
++            .HasColumnName("objectives_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Kpis)
++            .HasColumnName("kpis_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Tools)
++            .HasColumnName("tool_permissions_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Scopes)
++            .HasColumnName("data_scopes_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Thresholds)
++            .HasColumnName("approval_thresholds_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.EscalationRules)
++            .HasColumnName("escalation_rules_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => x.TemplateId).IsUnique();
++        builder.HasIndex(x => new { x.IsActive, x.SortOrder });
++    }
++}
++
+ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<CompanyMembership>
+ {
+     public void Configure(EntityTypeBuilder<CompanyMembership> builder)
+@@ -300,3 +366,60 @@ internal sealed class CompanyOwnedNoteConfiguration : IEntityTypeConfiguration<C
+         builder.HasIndex(x => new { x.CompanyId, x.Id });
+     }
+ }
++
++internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
++{
++    public void Configure(EntityTypeBuilder<Agent> builder)
++    {
++        builder.ToTable("agents");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
++        builder.Property(x => x.Seniority)
++            .HasConversion(value => value.ToStorageValue(), value => AgentSeniorityValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasConversion(value => value.ToStorageValue(), value => AgentStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(AgentStatus.Active)
++            .IsRequired();
++        builder.Property(x => x.Personality)
++            .HasColumnName("personality_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Objectives)
++            .HasColumnName("objectives_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Kpis)
++            .HasColumnName("kpis_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Tools)
++            .HasColumnName("tool_permissions_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Scopes)
++            .HasColumnName("data_scopes_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Thresholds)
++            .HasColumnName("approval_thresholds_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.EscalationRules)
++            .HasColumnName("escalation_rules_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Department });
++        builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260330233000_AddAgentManagement.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260330233000_AddAgentManagement.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260330233000_AddAgentManagement.cs
+@@ -0,0 +1,162 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddAgentManagement : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "agent_templates",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    TemplateId = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    RoleName = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    Department = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    PersonaSummary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    DefaultSeniority = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    AvatarUrl = table.Column<string>(type: "nvarchar(2048)", maxLength: 2048, nullable: true),
++                    SortOrder = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    IsActive = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                    Personality = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "personality_json"),
++                    Objectives = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "objectives_json"),
++                    Kpis = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "kpis_json"),
++                    Tools = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "tool_permissions_json"),
++                    Scopes = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "data_scopes_json"),
++                    Thresholds = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "approval_thresholds_json"),
++                    EscalationRules = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "escalation_rules_json"),
++                    CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_agent_templates", x => x.Id);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "agents",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    TemplateId = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    DisplayName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    RoleName = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    Department = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                    AvatarUrl = table.Column<string>(type: "nvarchar(2048)", maxLength: 2048, nullable: true),
++                    Seniority = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "active"),
++                    Personality = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "personality_json"),
++                    Objectives = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "objectives_json"),
++                    Kpis = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "kpis_json"),
++                    Tools = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "tool_permissions_json"),
++                    Scopes = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "data_scopes_json"),
++                    Thresholds = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "approval_thresholds_json"),
++                    EscalationRules = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "escalation_rules_json"),
++                    CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_agents", x => x.Id);
++                    table.ForeignKey(
++                        name: "FK_agents_companies_CompanyId",
++                        column: x => x.CompanyId,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_templates_IsActive_SortOrder",
++                table: "agent_templates",
++                columns: new[] { "IsActive", "SortOrder" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_templates_TemplateId",
++                table: "agent_templates",
++                column: "TemplateId",
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agents_CompanyId_Department",
++                table: "agents",
++                columns: new[] { "CompanyId", "Department" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agents_CompanyId_DisplayName",
++                table: "agents",
++                columns: new[] { "CompanyId", "DisplayName" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agents_CompanyId_Status",
++                table: "agents",
++                columns: new[] { "CompanyId", "Status" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "agents");
++
++            migrationBuilder.DropTable(
++                name: "agent_templates");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json b/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
+@@ -0,0 +1,232 @@
++{
++  "version": 1,
++  "templates": [
++    {
++      "templateId": "finance",
++      "roleName": "Finance Manager",
++      "department": "Finance",
++      "personaSummary": "Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.",
++      "defaultSeniority": "senior",
++      "avatarUrl": "/avatars/agents/finance-manager.png",
++      "sortOrder": 10,
++      "isActive": true,
++      "personality": {
++        "summary": "Calm, precise, audit-ready communicator.",
++        "traits": [ "detail-oriented", "risk-aware", "structured" ]
++      },
++      "objectives": {
++        "primary": [ "Protect cash flow", "Maintain accurate books", "Reduce avoidable spend leakage" ]
++      },
++      "kpis": {
++        "targets": [ "monthly_close_under_5_days", "forecast_variance_under_3_percent", "late_invoices_under_2_percent" ]
++      },
++      "tools": {
++        "allowed": [ "erp", "accounting", "spreadsheets", "billing" ]
++      },
++      "scopes": {
++        "read": [ "finance", "payments", "vendors" ],
++        "write": [ "forecast_drafts", "invoice_followups" ]
++      },
++      "thresholds": {
++        "approval": {
++          "expenseUsd": 5000,
++          "wireTransferUsd": 2500
++        }
++      },
++      "escalationRules": {
++        "critical": [ "cash_runway_under_90_days", "failed_payroll_run" ],
++        "escalateTo": "founder"
++      }
++    },
++    {
++      "templateId": "sales",
++      "roleName": "Sales Manager",
++      "department": "Sales",
++      "personaSummary": "Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.",
++      "defaultSeniority": "senior",
++      "avatarUrl": "/avatars/agents/sales-manager.png",
++      "sortOrder": 20,
++      "isActive": true,
++      "personality": {
++        "summary": "Direct, energetic, commercially sharp.",
++        "traits": [ "persistent", "concise", "target-driven" ]
++      },
++      "objectives": {
++        "primary": [ "Increase qualified pipeline", "Improve conversion velocity", "Protect forecast quality" ]
++      },
++      "kpis": {
++        "targets": [ "weekly_sqls", "stage_conversion_rate", "forecast_accuracy" ]
++      },
++      "tools": {
++        "allowed": [ "crm", "email", "calendar", "proposal" ]
++      },
++      "scopes": {
++        "read": [ "accounts", "contacts", "opportunities" ],
++        "write": [ "opportunity_notes", "followup_tasks", "pipeline_updates" ]
++      },
++      "thresholds": {
++        "discount": {
++          "maxPercent": 10
++        }
++      },
++      "escalationRules": {
++        "critical": [ "deal_risk_over_50000", "forecast_slip_over_20_percent" ],
++        "escalateTo": "founder"
++      }
++    },
++    {
++      "templateId": "marketing",
++      "roleName": "Marketing Manager",
++      "department": "Marketing",
++      "personaSummary": "Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.",
++      "defaultSeniority": "senior",
++      "avatarUrl": "/avatars/agents/marketing-manager.png",
++      "sortOrder": 30,
++      "isActive": true,
++      "personality": {
++        "summary": "Creative, analytical, and outcome-focused.",
++        "traits": [ "experimental", "brand-aware", "data-literate" ]
++      },
++      "objectives": {
++        "primary": [ "Grow qualified demand", "Improve campaign efficiency", "Increase content output consistency" ]
++      },
++      "kpis": {
++        "targets": [ "mql_volume", "cost_per_qualified_lead", "content_publish_cadence" ]
++      },
++      "tools": {
++        "allowed": [ "analytics", "cms", "email_marketing", "ads_manager" ]
++      },
++      "scopes": {
++        "read": [ "campaigns", "analytics", "content_calendar" ],
++        "write": [ "campaign_briefs", "draft_copy", "weekly_reports" ]
++      },
++      "thresholds": {
++        "budget": {
++          "monthlyPaidSpendUsd": 15000
++        }
++      },
++      "escalationRules": {
++        "critical": [ "cac_spike_over_25_percent", "brand_incident" ],
++        "escalateTo": "founder"
++      }
++    },
++    {
++      "templateId": "support",
++      "roleName": "Support Lead",
++      "department": "Support",
++      "personaSummary": "Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.",
++      "defaultSeniority": "lead",
++      "avatarUrl": "/avatars/agents/support-lead.png",
++      "sortOrder": 40,
++      "isActive": true,
++      "personality": {
++        "summary": "Empathetic, calm under pressure, and operationally disciplined.",
++        "traits": [ "patient", "service-oriented", "clear" ]
++      },
++      "objectives": {
++        "primary": [ "Protect first-response SLA", "Raise resolution quality", "Reduce repeat-contact drivers" ]
++      },
++      "kpis": {
++        "targets": [ "first_response_time", "resolution_time", "csat", "reopen_rate" ]
++      },
++      "tools": {
++        "allowed": [ "ticketing", "knowledge_base", "chat", "incident_tracking" ]
++      },
++      "scopes": {
++        "read": [ "tickets", "customer_history", "knowledge_base" ],
++        "write": [ "ticket_replies", "macro_updates", "triage_tags" ]
++      },
++      "thresholds": {
++        "sla": {
++          "firstResponseMinutes": 30,
++          "resolutionHours": 24
++        }
++      },
++      "escalationRules": {
++        "critical": [ "sev1_incident", "vip_customer_blocked", "csat_below_80" ],
++        "escalateTo": "operations"
++      }
++    },
++    {
++      "templateId": "operations",
++      "roleName": "Operations Manager",
++      "department": "Operations",
++      "personaSummary": "Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.",
++      "defaultSeniority": "lead",
++      "avatarUrl": "/avatars/agents/operations-manager.png",
++      "sortOrder": 50,
++      "isActive": true,
++      "personality": {
++        "summary": "Systematic, decisive, and accountability-heavy.",
++        "traits": [ "process-minded", "reliable", "cross-functional" ]
++      },
++      "objectives": {
++        "primary": [ "Reduce operational friction", "Improve handoff quality", "Surface delivery blockers early" ]
++      },
++      "kpis": {
++        "targets": [ "sla_adherence", "handoff_error_rate", "cycle_time", "backlog_age" ]
++      },
++      "tools": {
++        "allowed": [ "project_management", "docs", "incident_tracking", "calendar" ]
++      },
++      "scopes": {
++        "read": [ "workflows", "projects", "operational_metrics" ],
++        "write": [ "runbooks", "task_assignments", "retrospective_notes" ]
++      },
++      "thresholds": {
++        "delivery": {
++          "blockedDays": 2
++        }
++      },
++      "escalationRules": {
++        "critical": [ "missed_customer_deadline", "systemic_handoff_failure" ],
++        "escalateTo": "founder"
++      }
++    },
++    {
++      "templateId": "executive-assistant",
++      "roleName": "Executive Assistant",
++      "department": "Executive",
++      "personaSummary": "Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.",
++      "defaultSeniority": "executive",
++      "avatarUrl": "/avatars/agents/executive-assistant.png",
++      "sortOrder": 60,
++      "isActive": true,
++      "personality": {
++        "summary": "Polished, anticipatory, and extremely organized.",
++        "traits": [ "discreet", "proactive", "detail-oriented" ]
++      },
++      "objectives": {
++        "primary": [ "Protect executive focus time", "Track commitments to completion", "Improve meeting quality" ]
++      },
++      "kpis": {
++        "targets": [ "calendar_conflict_rate", "followup_completion_rate", "meeting_preparation_coverage" ]
++      },
++      "tools": {
++        "allowed": [ "calendar", "email", "docs", "task_management" ]
++      },
++      "scopes": {
++        "read": [ "calendar", "meeting_notes", "priority_projects" ],
++        "write": [ "agenda_drafts", "followup_lists", "calendar_holds" ]
++      },
++      "thresholds": {
++        "calendar": {
++          "maxBackToBackMeetings": 4
++        }
++      },
++      "escalationRules": {
++        "critical": [ "board_meeting_change", "executive_deadline_at_risk" ],
++        "escalateTo": "founder"
++      }
++    }
++  ]
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -18,6 +18,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
++    public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
++    public DbSet<Agent> Agents => Set<Agent>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -30,5 +32,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyOwnedNote>()
+             .HasQueryFilter(note =>
+                 CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Agent>()
++            .HasQueryFilter(agent =>
++                CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -10,6 +10,7 @@
+ 
+   <ItemGroup>
+     <EmbeddedResource Include="Persistence\SeedData\onboarding-templates.json" />
++    <EmbeddedResource Include="Persistence\SeedData\agent-templates.json" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -16,6 +16,11 @@
+                 <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="agents">
++                <span class="bi bi-people" aria-hidden="true"></span> Agents
++            </NavLink>
++        </div>
+     </nav>
+ </div>
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -0,0 +1,311 @@
++@page "/agents"
++@using System.ComponentModel.DataAnnotations
++@using Microsoft.AspNetCore.Components
++@inject OnboardingApiClient OnboardingApiClient
++@inject AgentApiClient AgentApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Agents</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Agent management</h1>
++        <p class="text-body-secondary mb-0">Loading template catalog and company roster...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary">Choose the company where you want to browse templates and hire agents.</p>
++
++            @if (activeMemberships.Count == 0)
++            {
++                <p class="mb-0">No active company memberships are available yet.</p>
++            }
++            else
++            {
++                <div class="template-grid">
++                    @foreach (var membership in activeMemberships)
++                    {
++                        <a class="template-card text-decoration-none text-reset" href="@($"/agents?companyId={membership.CompanyId}")">
++                            <strong>@membership.CompanyName</strong>
++                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
++                        </a>
++                    }
++                </div>
++            }
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="agent-layout">
++            <div class="wizard-card">
++                <span class="dashboard-kicker">Template catalog</span>
++                <h1>Hire agents for @(companyAccess?.CompanyName ?? "your company")</h1>
++                <p class="text-body-secondary">Start from seeded templates, customize identity fields, and create an active company-owned roster entry.</p>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger">@errorMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(successMessage))
++                {
++                    <div class="alert alert-success">@successMessage</div>
++                }
++
++                <div class="agent-template-grid mt-4">
++                    @foreach (var template in templates)
++                    {
++                        var isSelected = string.Equals(selectedTemplateId, template.TemplateId, StringComparison.OrdinalIgnoreCase);
++                        <button class="template-card agent-template-card @(isSelected ? "is-selected" : null)"
++                                type="button"
++                                @onclick="@(() => SelectTemplate(template.TemplateId))">
++                            <div class="agent-template-header">
++                                <strong>@template.RoleName</strong>
++                                <span class="badge text-bg-light">@template.DefaultSeniority</span>
++                            </div>
++                            <div class="text-body-secondary">@template.Department</div>
++                            <p class="mb-0 mt-3">@template.PersonaSummary</p>
++                        </button>
++                    }
++                </div>
++            </div>
++
++            <div class="wizard-card">
++                <h2 class="h4 mb-3">Hire selected agent</h2>
++
++                @if (selectedTemplate is null)
++                {
++                    <p class="text-body-secondary mb-0">Select a template to prepare the hire form.</p>
++                }
++                else
++                {
++                    <EditForm Model="@hireModel" OnValidSubmit="@HandleHireAsync">
++                        <DataAnnotationsValidator />
++                        <ValidationSummary />
++
++                        <div class="mb-3">
++                            <label class="form-label" for="display-name">Name</label>
++                            <InputText id="display-name" class="form-control" @bind-Value="hireModel.DisplayName" />
++                            <ValidationMessage For="@(() => hireModel.DisplayName)" />
++                        </div>
++
++                        <div class="mb-3">
++                            <label class="form-label" for="avatar-url">Avatar URL</label>
++                            <InputText id="avatar-url" class="form-control" @bind-Value="hireModel.AvatarUrl" />
++                            <ValidationMessage For="@(() => hireModel.AvatarUrl)" />
++                        </div>
++
++                        <div class="mb-3">
++                            <label class="form-label" for="department">Department</label>
++                            <InputText id="department" class="form-control" @bind-Value="hireModel.Department" />
++                            <ValidationMessage For="@(() => hireModel.Department)" />
++                        </div>
++
++                        <div class="mb-3">
++                            <label class="form-label" for="role-name">Role</label>
++                            <InputText id="role-name" class="form-control" @bind-Value="hireModel.RoleName" />
++                            <ValidationMessage For="@(() => hireModel.RoleName)" />
++                        </div>
++
++                        <div class="mb-3">
++                            <label class="form-label" for="seniority">Seniority</label>
++                            <InputSelect id="seniority" class="form-select" @bind-Value="hireModel.Seniority">
++                                @foreach (var option in seniorityOptions)
++                                {
++                                    <option value="@option">@option</option>
++                                }
++                            </InputSelect>
++                            <ValidationMessage For="@(() => hireModel.Seniority)" />
++                        </div>
++
++                        <div class="mb-3">
++                            <label class="form-label" for="personality">Personality summary</label>
++                            <InputTextArea id="personality" class="form-control" rows="4" @bind-Value="hireModel.PersonalitySummary" />
++                            <ValidationMessage For="@(() => hireModel.PersonalitySummary)" />
++                        </div>
++
++                        <div class="dashboard-actions">
++                            <button class="btn btn-primary" type="submit" disabled="@isSubmitting">Hire agent</button>
++                            <button class="btn btn-outline-secondary" type="button" @onclick="@ResetSelectedTemplate">Reset defaults</button>
++                        </div>
++                    </EditForm>
++                }
++            </div>
++        </div>
++
++        <div class="wizard-card mt-4">
++            <div class="agent-roster-header">
++                <div>
++                    <span class="dashboard-kicker">Company roster</span>
++                    <h2 class="h4 mb-0 mt-2">Active agents</h2>
++                </div>
++                <span class="badge text-bg-light">@roster.Count total</span>
++            </div>
++
++            @if (roster.Count == 0)
++            {
++                <p class="text-body-secondary mb-0 mt-3">No agents have been hired for this company yet.</p>
++            }
++            else
++            {
++                <div class="agent-roster-grid mt-4">
++                    @foreach (var agent in roster)
++                    {
++                        <article class="template-card">
++                            <div class="agent-template-header">
++                                <strong>@agent.DisplayName</strong>
++                                <span class="badge text-bg-success">@agent.Status</span>
++                            </div>
++                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
++                            <div class="text-body-secondary">@agent.Seniority</div>
++                            @if (!string.IsNullOrWhiteSpace(agent.PersonalitySummary))
++                            {
++                                <p class="mb-0 mt-3">@agent.PersonalitySummary</p>
++                            }
++                        </article>
++                    }
++                </div>
++            }
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
++    private bool isLoading = true;
++    private bool isSubmitting;
++    private string? errorMessage;
++    private string? successMessage;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private List<AgentTemplateCatalogItemViewModel> templates = [];
++    private List<CompanyAgentSummaryViewModel> roster = [];
++    private HireAgentFormModel hireModel = new();
++    private string? selectedTemplateId;
++
++    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
++        currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
++        ?? [];
++
++    private AgentTemplateCatalogItemViewModel? selectedTemplate =>
++        templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo($"/agents?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++                if (companyAccess is null)
++                {
++                    errorMessage = "The selected company could not be loaded.";
++                    templates = [];
++                    roster = [];
++                }
++                else
++                {
++                    templates = (await AgentApiClient.GetTemplatesAsync(companyId)).ToList();
++                    roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
++
++                    if (selectedTemplateId is null || templates.All(x => !string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase)))
++                    {
++                        selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
++                        ResetSelectedTemplate();
++                    }
++                }
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private void SelectTemplate(string templateId)
++    {
++        selectedTemplateId = templateId;
++        ResetSelectedTemplate();
++    }
++
++    private void ResetSelectedTemplate()
++    {
++        if (selectedTemplate is null)
++        {
++            hireModel = new HireAgentFormModel();
++            return;
++        }
++
++        hireModel = new HireAgentFormModel
++        {
++            TemplateId = selectedTemplate.TemplateId,
++            DisplayName = selectedTemplate.RoleName,
++            AvatarUrl = selectedTemplate.AvatarUrl,
++            Department = selectedTemplate.Department,
++            RoleName = selectedTemplate.RoleName,
++            PersonalitySummary = selectedTemplate.PersonaSummary,
++            Seniority = selectedTemplate.DefaultSeniority
++        };
++    }
++
++    private async Task HandleHireAsync()
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        isSubmitting = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            var result = await AgentApiClient.HireAgentAsync(companyId, hireModel.ToRequest());
++            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
++            successMessage = $"{result.Agent.DisplayName} was added to the company roster.";
++            ResetSelectedTemplate();
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private sealed class HireAgentFormModel
++    {
++        [Required, StringLength(100)]
++        public string TemplateId { get; set; } = string.Empty;
++
++        [Required, StringLength(200)]
++        public string DisplayName { get; set; } = string.Empty;
++
++        [StringLength(2048)]
++        public string? AvatarUrl { get; set; }
++
++        [StringLength(100)]
++        public string? Department { get; set; }
++
++        [StringLength(100)]
++        public string? RoleName { get; set; }
++
++        [StringLength(1000)]
++        public string? PersonalitySummary { get; set; }
++
++        [StringLength(32)]
++        public string? Seniority { get; set; }
++
++        public HireAgentRequest ToRequest() =>
++            new()
++            {
++                TemplateId = TemplateId,
++                DisplayName = DisplayName,
++                AvatarUrl = AvatarUrl,
++                Department = Department,
++                RoleName = RoleName,
++                PersonalitySummary = PersonalitySummary,
++                Seniority = Seniority
++            };
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -15,6 +15,10 @@ builder.Services.AddScoped(_ => new HttpClient
+ }.ApplyDevelopmentAuth(developmentAuth));
+ builder.Services.AddScoped(sp => new OnboardingApiClient(
+     sp.GetRequiredService<HttpClient>(),
++    useOfflineMode));
++builder.Services.AddScoped(sp => new AgentApiClient(
++    sp.GetRequiredService<HttpClient>(),
+     useOfflineMode));
+ 
+ await builder.Build().RunAsync();
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -0,0 +1,224 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class AgentApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly OfflineAgentStore OfflineStore = new();
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public AgentApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<IReadOnlyList<AgentTemplateCatalogItemViewModel>>(OfflineStore.GetTemplates())
++            : GetAsync<IReadOnlyList<AgentTemplateCatalogItemViewModel>>($"api/companies/{companyId}/agents/templates", cancellationToken);
++
++    public Task<IReadOnlyList<CompanyAgentSummaryViewModel>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<IReadOnlyList<CompanyAgentSummaryViewModel>>(OfflineStore.GetRoster(companyId))
++            : GetAsync<IReadOnlyList<CompanyAgentSummaryViewModel>>($"api/companies/{companyId}/agents", cancellationToken);
++
++    public Task<HireAgentResultViewModel> HireAgentAsync(Guid companyId, HireAgentRequest request, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(OfflineStore.Hire(companyId, request))
++            : SendAsync<HireAgentResultViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents", request, cancellationToken);
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                var result = await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++                if (result is null)
++                {
++                    throw new OnboardingApiException("The server returned an empty response.");
++                }
++
++                return result;
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri)
++            {
++                Content = JsonContent.Create(payload)
++            };
++
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                var result = await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++                if (result is null)
++                {
++                    throw new OnboardingApiException("The server returned an empty response.");
++                }
++
++                return result;
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var contentType = response.Content.Headers.ContentType?.MediaType;
++        if (!string.Equals(contentType, "application/json", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(contentType, "application/problem+json", StringComparison.OrdinalIgnoreCase))
++        {
++            await response.Content.ReadAsStringAsync(cancellationToken);
++            return new OnboardingApiException($"The request failed with status code {(int)response.StatusCode}.");
++        }
++
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        if (problem?.Errors is { Count: > 0 })
++        {
++            return new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
++        }
++
++        return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++
++    private sealed class OfflineAgentStore
++    {
++        private readonly object _sync = new();
++        private readonly Dictionary<Guid, List<CompanyAgentSummaryViewModel>> _agentsByCompany = [];
++        private readonly List<AgentTemplateCatalogItemViewModel> _templates =
++        [
++            new() { TemplateId = "finance", RoleName = "Finance Manager", Department = "Finance", PersonaSummary = "Cash-focused operator who keeps books clean and escalates anomalies early.", DefaultSeniority = "senior", AvatarUrl = "/avatars/agents/finance-manager.png" },
++            new() { TemplateId = "sales", RoleName = "Sales Manager", Department = "Sales", PersonaSummary = "Pipeline builder who keeps follow-up tight and qualification clear.", DefaultSeniority = "senior", AvatarUrl = "/avatars/agents/sales-manager.png" },
++            new() { TemplateId = "marketing", RoleName = "Marketing Manager", Department = "Marketing", PersonaSummary = "Demand-generation lead who ties campaigns to revenue outcomes.", DefaultSeniority = "senior", AvatarUrl = "/avatars/agents/marketing-manager.png" },
++            new() { TemplateId = "support", RoleName = "Support Lead", Department = "Support", PersonaSummary = "Customer advocate who protects SLA health and improves resolution quality.", DefaultSeniority = "lead", AvatarUrl = "/avatars/agents/support-lead.png" },
++            new() { TemplateId = "operations", RoleName = "Operations Manager", Department = "Operations", PersonaSummary = "Execution owner who keeps workflows stable and handoffs clear.", DefaultSeniority = "lead", AvatarUrl = "/avatars/agents/operations-manager.png" },
++            new() { TemplateId = "executive-assistant", RoleName = "Executive Assistant", Department = "Executive", PersonaSummary = "Founder support partner who protects calendar focus and tracks commitments.", DefaultSeniority = "executive", AvatarUrl = "/avatars/agents/executive-assistant.png" }
++        ];
++
++        public IReadOnlyList<AgentTemplateCatalogItemViewModel> GetTemplates() => _templates;
++
++        public IReadOnlyList<CompanyAgentSummaryViewModel> GetRoster(Guid companyId)
++        {
++            lock (_sync)
++            {
++                return _agentsByCompany.TryGetValue(companyId, out var agents) ? agents.ToList() : [];
++            }
++        }
++
++        public HireAgentResultViewModel Hire(Guid companyId, HireAgentRequest request)
++        {
++            if (string.IsNullOrWhiteSpace(request.TemplateId))
++            {
++                throw new OnboardingApiException("TemplateId is required.");
++            }
++
++            if (string.IsNullOrWhiteSpace(request.DisplayName))
++            {
++                throw new OnboardingApiException("DisplayName is required.");
++            }
++
++            var template = _templates.SingleOrDefault(x => string.Equals(x.TemplateId, request.TemplateId, StringComparison.OrdinalIgnoreCase));
++            if (template is null)
++            {
++                throw new OnboardingApiException("The selected template was not found.");
++            }
++
++            var agent = new CompanyAgentSummaryViewModel
++            {
++                Id = Guid.NewGuid(),
++                CompanyId = companyId,
++                TemplateId = template.TemplateId,
++                DisplayName = request.DisplayName.Trim(),
++                AvatarUrl = string.IsNullOrWhiteSpace(request.AvatarUrl) ? template.AvatarUrl : request.AvatarUrl.Trim(),
++                Department = string.IsNullOrWhiteSpace(request.Department) ? template.Department : request.Department.Trim(),
++                RoleName = string.IsNullOrWhiteSpace(request.RoleName) ? template.RoleName : request.RoleName.Trim(),
++                PersonalitySummary = string.IsNullOrWhiteSpace(request.PersonalitySummary) ? template.PersonaSummary : request.PersonalitySummary.Trim(),
++                Seniority = string.IsNullOrWhiteSpace(request.Seniority) ? template.DefaultSeniority : request.Seniority.Trim(),
++                Status = "active"
++            };
++
++            lock (_sync)
++            {
++                if (!_agentsByCompany.TryGetValue(companyId, out var agents))
++                {
++                    agents = [];
++                    _agentsByCompany[companyId] = agents;
++                }
++
++                agents.Add(agent);
++            }
++
++            return new HireAgentResultViewModel { Agent = agent };
++        }
++    }
++}
++
++public sealed class AgentTemplateCatalogItemViewModel
++{
++    public string TemplateId { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string PersonaSummary { get; set; } = string.Empty;
++    public string DefaultSeniority { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++}
++
++public sealed class CompanyAgentSummaryViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string TemplateId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Seniority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public string PersonalitySummary { get; set; } = string.Empty;
++}
++
++public sealed class HireAgentRequest
++{
++    public string TemplateId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public string? Department { get; set; }
++    public string? RoleName { get; set; }
++    public string? PersonalitySummary { get; set; }
++    public string? Seniority { get; set; }
++}
++
++public sealed class HireAgentResultViewModel
++{
++    public CompanyAgentSummaryViewModel Agent { get; set; } = new();
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -205,3 +205,40 @@ code {
+ .dashboard-actions .btn {
+     min-width: 14rem;
+ }
++
++.agent-layout {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);
++}
++
++.agent-template-grid,
++.agent-roster-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++}
++
++.agent-template-card {
++    border: 0;
++    cursor: pointer;
++    width: 100%;
++}
++
++.agent-template-header,
++.agent-roster-header {
++    align-items: center;
++    display: flex;
++    gap: 0.75rem;
++    justify-content: space-between;
++}
++
++@media (max-width: 991.98px) {
++    .agent-layout {
++        grid-template-columns: 1fr;
++    }
++}
++
++@media (max-width: 575.98px) {
++    .agent-template-header,
++    .agent-roster-header {
++        align-items: flex-start;
++        flex-direction: column;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -0,0 +1,213 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentManagementIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Template_catalog_returns_seeded_roles_for_active_company()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var templates = await client.GetFromJsonAsync<List<AgentTemplateResponse>>($"/api/companies/{ids.CompanyId}/agents/templates");
++
++        Assert.NotNull(templates);
++        Assert.Contains(templates!, x => x.TemplateId == "finance");
++        Assert.Contains(templates!, x => x.TemplateId == "sales");
++        Assert.Contains(templates!, x => x.TemplateId == "marketing");
++        Assert.Contains(templates!, x => x.TemplateId == "support");
++        Assert.Contains(templates!, x => x.TemplateId == "operations");
++        Assert.Contains(templates!, x => x.TemplateId == "executive-assistant");
++    }
++
++    [Fact]
++    public async Task Hiring_from_template_creates_company_owned_active_agent_with_copied_defaults_and_overrides()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents", new
++        {
++            templateId = "finance",
++            displayName = "Nora Ledger",
++            avatarUrl = "https://cdn.example.com/avatars/nora.png",
++            department = "Strategic Finance",
++            roleName = "Head of Finance",
++            personalitySummary = "Sharp, calm, and relentless about runway discipline.",
++            seniority = "lead"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<HireAgentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("active", payload!.Agent.Status);
++        Assert.Equal("lead", payload.Agent.Seniority);
++        Assert.Equal("Nora Ledger", payload.Agent.DisplayName);
++        Assert.Equal("Strategic Finance", payload.Agent.Department);
++        Assert.Equal("Head of Finance", payload.Agent.RoleName);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(ids.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == payload.Agent.Id);
++        var template = await dbContext.AgentTemplates.AsNoTracking().SingleAsync(x => x.TemplateId == "finance");
++
++        Assert.Equal(ids.CompanyId, agent.CompanyId);
++        Assert.Equal("finance", agent.TemplateId);
++        Assert.Equal(AgentStatus.Active, agent.Status);
++        Assert.Equal(AgentSeniority.Lead, agent.Seniority);
++        Assert.Equal("Nora Ledger", agent.DisplayName);
++        Assert.Equal("Strategic Finance", agent.Department);
++        Assert.Equal("Head of Finance", agent.RoleName);
++        Assert.Equal("Sharp, calm, and relentless about runway discipline.", agent.Personality["summary"]!.GetValue<string>());
++        Assert.NotEmpty(agent.Objectives);
++        Assert.NotEmpty(agent.Kpis);
++        Assert.NotEmpty(agent.Tools);
++        Assert.NotEmpty(agent.Scopes);
++        Assert.NotEmpty(agent.Thresholds);
++        Assert.NotEmpty(agent.EscalationRules);
++        Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
++        Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
++    }
++
++    [Fact]
++    public async Task Roster_is_company_scoped_and_cross_tenant_access_is_blocked()
++    {
++        var ids = await SeedMembershipsWithOtherCompanyAgentAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var roster = await client.GetFromJsonAsync<List<CompanyAgentResponse>>($"/api/companies/{ids.CompanyId}/agents");
++
++        Assert.NotNull(roster);
++        Assert.Single(roster!);
++        Assert.Equal(ids.CompanyId, roster[0].CompanyId);
++        Assert.Equal("Company A Finance", roster[0].DisplayName);
++
++        var forbiddenResponse = await client.GetAsync($"/api/companies/{ids.OtherCompanyId}/agents");
++        Assert.Equal(HttpStatusCode.Forbidden, forbiddenResponse.StatusCode);
++
++        var invalidTemplateResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents", new
++        {
++            templateId = "does-not-exist",
++            displayName = "Ghost Agent"
++        });
++        Assert.Equal(HttpStatusCode.NotFound, invalidTemplateResponse.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<SeedIds> SeedMembershipAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(companyId, Guid.Empty);
++    }
++
++    private async Task<SeedIds> SeedMembershipsWithOtherCompanyAgentAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Company A"),
++                new Company(otherCompanyId, "Company B"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(
++                    Guid.NewGuid(),
++                    companyId,
++                    "finance",
++                    "Company A Finance",
++                    "Finance Manager",
++                    "Finance",
++                    null,
++                    AgentSeniority.Senior,
++                    AgentStatus.Active),
++                new Agent(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    "support",
++                    "Company B Support",
++                    "Support Lead",
++                    "Support",
++                    null,
++                    AgentSeniority.Lead,
++                    AgentStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(companyId, otherCompanyId);
++    }
++
++    private sealed record SeedIds(Guid CompanyId, Guid OtherCompanyId);
++
++    private sealed class AgentTemplateResponse
++    {
++        public string TemplateId { get; set; } = string.Empty;
++    }
++
++    private sealed class CompanyAgentResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string DisplayName { get; set; } = string.Empty;
++    }
++
++    private sealed class HireAgentResponse
++    {
++        public CompanyAgentHireSummary Agent { get; set; } = new();
++    }
++
++    private sealed class CompanyAgentHireSummary
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string DisplayName { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public string RoleName { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public string Seniority { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

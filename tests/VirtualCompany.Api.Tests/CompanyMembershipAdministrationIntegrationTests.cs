@@ -76,6 +76,9 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
             x.Topic == "company.invitation.created"));
         Assert.Equal(0, deliveryOutbox.AttemptCount);
         Assert.Null(deliveryOutbox.ProcessedUtc);
+        Assert.Equal(typeof(CompanyInvitationDeliveryRequestedMessage).FullName, deliveryOutbox.MessageType);
+        Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.IdempotencyKey));
+        Assert.Equal(deliveryOutbox.CreatedUtc, deliveryOutbox.OccurredUtc);
         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.CorrelationId));
 
         var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
@@ -304,6 +307,8 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
             Assert.Equal(CompanyInvitationDeliveryStatus.Failed, invitation.DeliveryStatus);
             Assert.NotNull(invitation.DeliveryError);
             Assert.Equal(1, deliveryMessage.AttemptCount);
+            Assert.NotNull(deliveryMessage.LastAttemptUtc);
+            Assert.False(string.IsNullOrWhiteSpace(deliveryMessage.IdempotencyKey));
             Assert.Null(deliveryMessage.ProcessedUtc);
             Assert.NotNull(deliveryMessage.LastError);
             Assert.Equal(1, sender.AttemptCount);
@@ -327,9 +332,48 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Null(deliveredInvitation.DeliveryError);
         Assert.NotNull(deliveredInvitation.DeliveredUtc);
         Assert.NotNull(processedMessage.ProcessedUtc);
+        Assert.NotNull(processedMessage.LastAttemptUtc);
         Assert.Equal(1, processedMessage.AttemptCount);
+        Assert.Equal(typeof(CompanyInvitationDeliveryRequestedMessage).FullName, processedMessage.MessageType);
         Assert.Equal(2, sender.AttemptCount);
         Assert.Single(sender.Sent);
+    }
+
+    [Fact]
+    public async Task OutboxProcessor_marks_unsupported_messages_as_terminal_failure()
+    {
+        var companyId = Guid.NewGuid();
+        var outboxMessageId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Companies.Add(new Company(companyId, "Company A"));
+            dbContext.CompanyOutboxMessages.Add(new CompanyOutboxMessage(
+                outboxMessageId,
+                companyId,
+                "company.unsupported",
+                "{}",
+                correlationId: "unsupported-correlation",
+                messageType: "company.unsupported",
+                idempotencyKey: "company.unsupported:test"));
+
+            return Task.CompletedTask;
+        });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+            await processor.DispatchPendingAsync(CancellationToken.None);
+        }
+
+        using var assertionScope = _factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var failedMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);
+
+        Assert.Equal(1, failedMessage.AttemptCount);
+        Assert.NotNull(failedMessage.LastAttemptUtc);
+        Assert.NotNull(failedMessage.ProcessedUtc);
+        Assert.Contains("Unsupported company outbox topic", failedMessage.LastError);
     }
 
     [Fact]

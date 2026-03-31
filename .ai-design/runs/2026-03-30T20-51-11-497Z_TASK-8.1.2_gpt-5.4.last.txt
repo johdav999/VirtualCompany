@@ -1,0 +1,558 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -67,6 +67,33 @@ public sealed class AgentTemplate
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public Agent CreateCompanyAgent(
++        Guid companyId,
++        string displayName,
++        string? roleName,
++        string? department,
++        string? avatarUrl,
++        string? personality,
++        AgentSeniority? seniority = null)
++    {
++        var resolvedSeniority = seniority ?? DefaultSeniority;
++        AgentSeniorityValues.EnsureSupported(resolvedSeniority, nameof(seniority));
++
++        return new Agent(
++            Guid.NewGuid(),
++            companyId,
++            TemplateId,
++            NormalizeRequired(displayName, nameof(displayName), 200),
++            FirstNonEmpty(roleName, RoleName)!,
++            FirstNonEmpty(department, Department)!,
++            FirstNonEmpty(avatarUrl, AvatarUrl),
++            resolvedSeniority,
++            AgentStatus.Active,
++            MergePersonality(personality),
++            CloneNodes(Objectives),
++            CloneNodes(Kpis),
++            CloneNodes(Tools),
++            CloneNodes(Scopes),
++            CloneNodes(Thresholds),
++            CloneNodes(EscalationRules));
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -93,6 +120,31 @@ public sealed class AgentTemplate
+         return trimmed;
+     }
+ 
++    private Dictionary<string, JsonNode?> MergePersonality(string? personality)
++    {
++        var merged = CloneNodes(Personality);
++        var summary = FirstNonEmpty(personality, ResolvePersonalitySummary(merged), PersonaSummary);
++
++        if (!string.IsNullOrWhiteSpace(summary))
++        {
++            merged["summary"] = JsonValue.Create(summary);
++        }
++
++        return merged;
++    }
++
++    private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
++    {
++        if (!personality.TryGetValue("summary", out var node) || node is null)
++        {
++            return string.Empty;
++        }
++
++        return node is JsonValue value && value.TryGetValue<string>(out var summary)
++            ? NormalizeOptional(summary, nameof(personality), PersonaSummaryMaxLength) ?? string.Empty
++            : node.ToJsonString();
++    }
++
++    private static string? FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
+     {
+         if (nodes is null || nodes.Count == 0)
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -29,20 +29,20 @@ public sealed record CompanyAgentSummaryDto(
+     string Seniority,
+     string Status,
+     string? AvatarUrl,
+-    string PersonalitySummary);
++    string Personality);
+ 
+-public sealed record HireAgentCommand(
++public sealed record CreateAgentFromTemplateCommand(
+     string TemplateId,
+     string DisplayName,
+     string? AvatarUrl,
+     string? Department,
+     string? RoleName,
+-    string? PersonalitySummary,
++    string? Personality,
+     string? Seniority);
+ 
+-public sealed record HireAgentResultDto(CompanyAgentSummaryDto Agent);
++public sealed record CreateAgentFromTemplateResultDto(CompanyAgentSummaryDto Agent);
+ 
+ public interface ICompanyAgentService
+ {
+     Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
+-    Task<HireAgentResultDto> HireAsync(Guid companyId, HireAgentCommand command, CancellationToken cancellationToken);
++    Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -67,7 +67,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return agents.Select(ToSummaryDto).ToList();
+     }
+ 
+-    public async Task<HireAgentResultDto> HireAsync(Guid companyId, HireAgentCommand command, CancellationToken cancellationToken)
++    public async Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken)
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         Validate(command);
+@@ -83,22 +83,13 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             ? template.DefaultSeniority
+             : AgentSeniorityValues.Parse(command.Seniority);
+ 
+-        var agent = new Agent(
+-            Guid.NewGuid(),
++        var agent = template.CreateCompanyAgent(
+             companyId,
+-            template.TemplateId,
+             NormalizeRequired(command.DisplayName),
+-            FirstNonEmpty(command.RoleName, template.RoleName)!,
+-            FirstNonEmpty(command.Department, template.Department)!,
+-            FirstNonEmpty(command.AvatarUrl, template.AvatarUrl),
+-            seniority,
+-            AgentStatus.Active,
+-            MergePersonality(template, command.PersonalitySummary),
+-            CloneNodes(template.Objectives),
+-            CloneNodes(template.Kpis),
+-            CloneNodes(template.Tools),
+-            CloneNodes(template.Scopes),
+-            CloneNodes(template.Thresholds),
+-            CloneNodes(template.EscalationRules));
++            command.RoleName,
++            command.Department,
++            command.AvatarUrl,
++            command.Personality,
++            seniority);
+ 
+         _dbContext.Agents.Add(agent);
+ 
+@@ -120,7 +111,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        return new HireAgentResultDto(ToSummaryDto(agent));
++        return new CreateAgentFromTemplateResultDto(ToSummaryDto(agent));
+     }
+ 
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -141,20 +132,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.Department,
+             agent.Seniority.ToStorageValue(),
+             agent.Status.ToStorageValue(),
+-            agent.AvatarUrl,
+-            ResolvePersonalitySummary(agent.Personality));
+-
+-    private static Dictionary<string, JsonNode?> MergePersonality(AgentTemplate template, string? personalitySummary)
+-    {
+-        var personality = CloneNodes(template.Personality);
+-        var summary = FirstNonEmpty(personalitySummary, ResolvePersonalitySummary(personality), template.PersonaSummary);
+-
+-        if (!string.IsNullOrWhiteSpace(summary))
+-        {
+-            personality["summary"] = JsonValue.Create(summary);
+-        }
+-
+-        return personality;
+-    }
++            agent.AvatarUrl, ResolvePersonalitySummary(agent.Personality));
+ 
+     private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
+     {
+@@ -191,7 +169,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private static string? NormalizeOptional(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+ 
+-    private static void Validate(HireAgentCommand command)
++    private static void Validate(CreateAgentFromTemplateCommand command)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
+@@ -200,7 +178,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
+         AddOptional(errors, nameof(command.RoleName), command.RoleName, RoleNameMaxLength);
+         AddOptional(errors, nameof(command.AvatarUrl), command.AvatarUrl, AvatarUrlMaxLength);
+-        AddOptional(errors, nameof(command.PersonalitySummary), command.PersonalitySummary, PersonalitySummaryMaxLength);
++        AddOptional(errors, nameof(command.Personality), command.Personality, PersonalitySummaryMaxLength);
+ 
+         if (!string.IsNullOrWhiteSpace(command.Seniority) && !AgentSeniorityValues.TryParse(command.Seniority, out _))
+         {
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -51,13 +51,24 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
+-    [HttpPost]
+-    public async Task<ActionResult<HireAgentResultDto>> HireAsync(
++    [HttpPost("from-template")]
++    public async Task<ActionResult<CreateAgentFromTemplateResultDto>> CreateFromTemplateAsync(
+         Guid companyId,
+-        [FromBody] HireAgentCommand command,
++        [FromBody] CreateAgentFromTemplateCommand command,
+         CancellationToken cancellationToken)
+     {
+         try
++        {
++            var result = await _agentService.CreateFromTemplateAsync(companyId, command, cancellationToken);
++            return Ok(result);
++        }
++        catch (AgentValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
+         {
+-            var result = await _agentService.HireAsync(companyId, command, cancellationToken);
+-            return Ok(result);
++            return null!;
+         }
+         catch (AgentValidationException ex)
+         {
+@@ -74,4 +85,12 @@ public sealed class AgentsController : ControllerBase
+             return Forbid();
+         }
+     }
++
++    [HttpPost]
++    public Task<ActionResult<CreateAgentFromTemplateResultDto>> HireAsync(
++        Guid companyId,
++        [FromBody] CreateAgentFromTemplateCommand command,
++        CancellationToken cancellationToken)
++    {
++        return CreateFromTemplateAsync(companyId, command, cancellationToken);
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -22,10 +22,15 @@ public sealed class AgentApiClient
+             ? Task.FromResult<IReadOnlyList<CompanyAgentSummaryViewModel>>(OfflineStore.GetRoster(companyId))
+             : GetAsync<IReadOnlyList<CompanyAgentSummaryViewModel>>($"api/companies/{companyId}/agents", cancellationToken);
+ 
+-    public Task<HireAgentResultViewModel> HireAgentAsync(Guid companyId, HireAgentRequest request, CancellationToken cancellationToken = default) =>
++    public Task<CreateAgentFromTemplateResultViewModel> CreateAgentFromTemplateAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+-            ? Task.FromResult(OfflineStore.Hire(companyId, request))
+-            : SendAsync<HireAgentResultViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents", request, cancellationToken);
++            ? Task.FromResult(OfflineStore.CreateFromTemplate(companyId, request))
++            : SendAsync<CreateAgentFromTemplateResultViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/from-template", request, cancellationToken);
++
++    public Task<CreateAgentFromTemplateResultViewModel> HireAgentAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
++        CreateAgentFromTemplateAsync(companyId, request, cancellationToken);
++
++    public Task<CreateAgentFromTemplateResultViewModel> HireAgentAsync(Guid companyId, HireAgentRequest request, CancellationToken cancellationToken = default) =>
++        CreateAgentFromTemplateAsync(companyId, request.ToCreateAgentFromTemplateRequest(), cancellationToken);
+ 
+     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
+     {
+@@ -130,7 +135,7 @@ public sealed class AgentApiClient
+             }
+         }
+ 
+-        public HireAgentResultViewModel Hire(Guid companyId, HireAgentRequest request)
++        public CreateAgentFromTemplateResultViewModel CreateFromTemplate(Guid companyId, CreateAgentFromTemplateRequest request)
+         {
+             if (string.IsNullOrWhiteSpace(request.TemplateId))
+             {
+@@ -156,16 +161,16 @@ public sealed class AgentApiClient
+                 DisplayName = request.DisplayName.Trim(),
+                 AvatarUrl = string.IsNullOrWhiteSpace(request.AvatarUrl) ? template.AvatarUrl : request.AvatarUrl.Trim(),
+                 Department = string.IsNullOrWhiteSpace(request.Department) ? template.Department : request.Department.Trim(),
+-                RoleName = string.IsNullOrWhiteSpace(request.RoleName) ? template.RoleName : request.RoleName.Trim(),
+-                PersonalitySummary = string.IsNullOrWhiteSpace(request.PersonalitySummary) ? template.PersonaSummary : request.PersonalitySummary.Trim(),
++                RoleName = string.IsNullOrWhiteSpace(request.RoleName) ? template.RoleName : request.RoleName.Trim(),
++                Personality = string.IsNullOrWhiteSpace(request.Personality) ? template.PersonaSummary : request.Personality.Trim(),
+                 Seniority = string.IsNullOrWhiteSpace(request.Seniority) ? template.DefaultSeniority : request.Seniority.Trim(),
+                 Status = "active"
+             };
+ 
+             lock (_sync)
+             {
+                 if (!_agentsByCompany.TryGetValue(companyId, out var agents))
+-                {
++                { 
+                     agents = [];
+                     _agentsByCompany[companyId] = agents;
+                 }
+@@ -173,7 +178,7 @@ public sealed class AgentApiClient
+                 agents.Add(agent);
+             }
+ 
+-            return new HireAgentResultViewModel { Agent = agent };
++            return new CreateAgentFromTemplateResultViewModel { Agent = agent };
+         }
+     }
+ }
+@@ -196,18 +201,29 @@ public sealed class CompanyAgentSummaryViewModel
+     public string Seniority { get; set; } = string.Empty;
+     public string Status { get; set; } = string.Empty;
+     public string? AvatarUrl { get; set; }
+-    public string PersonalitySummary { get; set; } = string.Empty;
++    public string Personality { get; set; } = string.Empty;
+ }
+ 
+-public sealed class HireAgentRequest
++public sealed class CreateAgentFromTemplateRequest
+ {
+     public string TemplateId { get; set; } = string.Empty;
+     public string DisplayName { get; set; } = string.Empty;
+     public string? AvatarUrl { get; set; }
+     public string? Department { get; set; }
+     public string? RoleName { get; set; }
+-    public string? PersonalitySummary { get; set; }
++    public string? Personality { get; set; }
+     public string? Seniority { get; set; }
+ }
+ 
+-public sealed class HireAgentResultViewModel
++public sealed class HireAgentRequest : CreateAgentFromTemplateRequest
++{
++    public string? PersonalitySummary
++    {
++        get => Personality;
++        set => Personality = value;
++    }
++
++    public CreateAgentFromTemplateRequest ToCreateAgentFromTemplateRequest() => this;
++}
++
++public sealed class CreateAgentFromTemplateResultViewModel
+ {
+     public CompanyAgentSummaryViewModel Agent { get; set; } = new();
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -59,7 +59,7 @@ else
+             </div>
+ 
+             <div class="wizard-card">
+-                <h2 class="h4 mb-3">Hire selected agent</h2>
++                <h2 class="h4 mb-3">Customize and hire</h2>
+ 
+                 @if (selectedTemplate is null)
+                 {
+@@ -124,9 +124,9 @@ else
+                         </div>
+ 
+                         <div class="mb-3">
+-                            <label class="form-label" for="personality">Personality summary</label>
+-                            <InputTextArea id="personality" class="form-control" rows="4" @bind-Value="hireModel.PersonalitySummary" />
+-                            <ValidationMessage For="@(() => hireModel.PersonalitySummary)" />
++                            <label class="form-label" for="personality">Personality</label>
++                            <InputTextArea id="personality" class="form-control" rows="4" @bind-Value="hireModel.Personality" />
++                            <ValidationMessage For="@(() => hireModel.Personality)" />
+                         </div>
+ 
+                         <div class="dashboard-actions">
+@@ -165,9 +165,9 @@ else
+                                 <strong>@agent.DisplayName</strong>
+                                 <span class="badge text-bg-success">@agent.Status</span>
+                             </div>
+-                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
++                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
+                             <div class="text-body-secondary">@agent.Seniority</div>
+-                            @if (!string.IsNullOrWhiteSpace(agent.PersonalitySummary))
++                            @if (!string.IsNullOrWhiteSpace(agent.Personality))
+                             {
+-                                <p class="mb-0 mt-3">@agent.PersonalitySummary</p>
++                                <p class="mb-0 mt-3">@agent.Personality</p>
+                             }
+                         </article>
+                     }
+@@ -269,7 +269,7 @@ else
+             AvatarUrl = selectedTemplate.AvatarUrl,
+             Department = selectedTemplate.Department,
+             RoleName = selectedTemplate.RoleName,
+-            PersonalitySummary = selectedTemplate.PersonaSummary,
++            Personality = selectedTemplate.PersonaSummary,
+             Seniority = selectedTemplate.DefaultSeniority
+         };
+     }
+@@ -286,9 +286,9 @@ else
+ 
+         try
+         {
+-            var result = await AgentApiClient.HireAgentAsync(companyId, hireModel.ToRequest());
++            var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
+             roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+-            successMessage = $"{result.Agent.DisplayName} was added to the company roster.";
++            successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
+             ResetSelectedTemplate();
+         }
+         catch (OnboardingApiException ex)
+@@ -319,18 +319,18 @@ else
+         public string? RoleName { get; set; }
+ 
+         [StringLength(1000)]
+-        public string? PersonalitySummary { get; set; }
++        public string? Personality { get; set; }
+ 
+         [StringLength(32)]
+         public string? Seniority { get; set; }
+ 
+-        public HireAgentRequest ToRequest() =>
++        public CreateAgentFromTemplateRequest ToRequest() =>
+             new()
+             {
+                 TemplateId = TemplateId,
+                 DisplayName = DisplayName,
+                 AvatarUrl = AvatarUrl,
+                 Department = Department,
+                 RoleName = RoleName,
+-                PersonalitySummary = PersonalitySummary,
++                Personality = Personality,
+                 Seniority = Seniority
+             };
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -72,14 +72,14 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     {
+         var ids = await SeedMembershipAsync();
+ 
+-        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
+-        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents", new
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
+         {
+             templateId = "finance",
+             displayName = "Nora Ledger",
+             avatarUrl = "https://cdn.example.com/avatars/nora.png",
+             department = "Strategic Finance",
+             roleName = "Head of Finance",
+-            personalitySummary = "Sharp, calm, and relentless about runway discipline.",
++            personality = "Sharp, calm, and relentless about runway discipline.",
+             seniority = "lead"
+         });
+ 
+@@ -114,6 +114,42 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
+     }
+ 
++    [Fact]
++    public async Task Hiring_from_template_uses_template_defaults_when_optional_customizations_are_omitted()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "support",
++            displayName = "Casey Support"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<HireAgentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("active", payload!.Agent.Status);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(ids.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == payload.Agent.Id);
++        var template = await dbContext.AgentTemplates.AsNoTracking().SingleAsync(x => x.TemplateId == "support");
++
++        Assert.Equal(ids.CompanyId, agent.CompanyId);
++        Assert.Equal(template.TemplateId, agent.TemplateId);
++        Assert.Equal(template.Department, agent.Department);
++        Assert.Equal(template.RoleName, agent.RoleName);
++        Assert.Equal(template.AvatarUrl, agent.AvatarUrl);
++        Assert.Equal(template.DefaultSeniority, agent.Seniority);
++        Assert.Equal(AgentStatus.Active, agent.Status);
++        Assert.Equal(template.Personality["summary"]!.ToJsonString(), agent.Personality["summary"]!.ToJsonString());
++        Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
++        Assert.Equal("Casey Support", agent.DisplayName);
++    }
++
+     [Fact]
+     public async Task Roster_is_company_scoped_and_cross_tenant_access_is_blocked()
+     {
+@@ -129,7 +165,14 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         var forbiddenResponse = await client.GetAsync($"/api/companies/{ids.OtherCompanyId}/agents");
+         Assert.Equal(HttpStatusCode.Forbidden, forbiddenResponse.StatusCode);
+ 
+-        var invalidTemplateResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents", new
++        var forbiddenCreateResponse = await client.PostAsJsonAsync($"/api/companies/{ids.OtherCompanyId}/agents/from-template", new
++        {
++            templateId = "support",
++            displayName = "Blocked Agent"
++        });
++        Assert.Equal(HttpStatusCode.Forbidden, forbiddenCreateResponse.StatusCode);
++
++        var invalidTemplateResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
+         {
+             templateId = "does-not-exist",
+             displayName = "Ghost Agent"
+@@ -137,6 +180,28 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(HttpStatusCode.NotFound, invalidTemplateResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Creating_from_template_returns_field_level_validation_errors()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "",
++            displayName = "",
++            personality = new string('x', 1001),
++            seniority = "principal"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(payload);
++        Assert.Contains("TemplateId", payload!.Errors.Keys);
++        Assert.Contains("DisplayName", payload.Errors.Keys);
++        Assert.Contains("Personality", payload.Errors.Keys);
++        Assert.Contains("Seniority", payload.Errors.Keys);
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -257,4 +322,10 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public string Status { get; set; } = string.Empty;
+         public string Seniority { get; set; } = string.Empty;
+     }
++
++    private sealed class ValidationProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]> Errors { get; set; } = [];
++    }
+ }
+END_OF_PATCH

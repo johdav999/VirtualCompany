@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Infrastructure.Observability;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -17,6 +19,7 @@ public sealed class InvitationsController : ControllerBase
         _membershipAdministrationService = membershipAdministrationService;
     }
 
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
     [HttpPost("accept")]
     public async Task<ActionResult<AcceptCompanyInvitationResultDto>> AcceptInvitationAsync(
         [FromBody] AcceptCompanyInvitationRequest request,

@@ -24,6 +24,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+    public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
+    public DbSet<Agent> Agents => Set<Agent>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
@@ -36,5 +38,8 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyOwnedNote>()
             .HasQueryFilter(note =>
                 CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Agent>()
+            .HasQueryFilter(agent =>
+                CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
     }
 }

@@ -286,7 +286,15 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
     {
     }
 
-    public CompanyOutboxMessage(Guid id, Guid companyId, string topic, string payloadJson, string? correlationId = null, DateTime? availableUtc = null)
+    public CompanyOutboxMessage(
+        Guid id,
+        Guid companyId,
+        string topic,
+        string payloadJson,
+        string? correlationId = null,
+        string? messageType = null,
+        DateTime? availableUtc = null,
+        string? idempotencyKey = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -297,19 +305,26 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         CompanyId = companyId;
         Topic = NormalizeRequired(topic, nameof(topic), 200);
         PayloadJson = string.IsNullOrWhiteSpace(payloadJson) ? "{}" : payloadJson.Trim();
-        CreatedUtc = DateTime.UtcNow;
-        AvailableUtc = availableUtc ?? CreatedUtc;
+        MessageType = NormalizeOptional(messageType, nameof(messageType), 1000) ?? Topic;
+        OccurredUtc = DateTime.UtcNow;
+        CreatedUtc = OccurredUtc;
+        AvailableUtc = availableUtc ?? OccurredUtc;
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        IdempotencyKey = NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 200);
     }
 
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public string Topic { get; private set; } = null!;
+    public string? MessageType { get; private set; }
     public string PayloadJson { get; private set; } = null!;
+    public string? IdempotencyKey { get; private set; }
     public string? CorrelationId { get; private set; }
+    public DateTime OccurredUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime AvailableUtc { get; private set; }
     public int AttemptCount { get; private set; }
+    public DateTime? LastAttemptUtc { get; private set; }
     public string? LastError { get; private set; }
     public DateTime? ClaimedUtc { get; private set; }
     public string? ClaimToken { get; private set; }
@@ -339,6 +354,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
     public void ScheduleRetry(DateTime availableUtc, string error)
     {
         AttemptCount++;
+        LastAttemptUtc = DateTime.UtcNow;
         AvailableUtc = availableUtc;
         LastError = NormalizeRequired(error, nameof(error), 4000);
         ClaimedUtc = null;
@@ -348,6 +364,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
     public void MarkDiscarded(string error)
     {
         AttemptCount++;
+        LastAttemptUtc = DateTime.UtcNow;
         LastError = NormalizeRequired(error, nameof(error), 4000);
         ProcessedUtc = DateTime.UtcNow;
         ClaimedUtc = null;
@@ -356,13 +373,18 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
 
     public void ReleaseClaim()
     {
+        LastAttemptUtc = DateTime.UtcNow;
         ClaimedUtc = null;
         ClaimToken = null;
     }
 
     public void MarkProcessed()
     {
+        LastAttemptUtc = DateTime.UtcNow;
+        LastError = null;
         ProcessedUtc = DateTime.UtcNow;
+        ClaimedUtc = null;
+        ClaimToken = null;
     }
 
     private static string NormalizeRequired(string value, string name, int maxLength)

@@ -1,0 +1,28 @@
+{
+  "taskId": "TASK-8.1.2",
+  "promptPath": ".ai-design/prompts/TASK-8.1.2.prompt.md",
+  "runTests": false,
+  "startedAt": "2026-03-30T20:51:11.497Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-30T20-51-11-497Z_TASK-8.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-30T20-51-11-497Z_TASK-8.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-30T20:54:56.850Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ent.PostAsJsonAsync($\"/api/companies/{ids.CompanyId}/agents/from-template\", new\n         {\n             templateId = \"does-not-exist\",\n             displayName = \"Ghost Agent\"\n@@ -137,6 +180,28 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         Assert.Equal(HttpStatusCode.NotFound, invalidTemplateResponse.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Creating_from_template_returns_field_level_validation_errors()\n+    {\n+        var ids = await SeedMembershipAsync();\n+\n+        using var client = CreateAuthenticatedClient(\"founder\", \"founder@example.com\", \"Founder\");\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{ids.CompanyId}/agents/from-template\", new\n+        {\n+            templateId = \"\",\n+            displayName = \"\",\n+            personality = new string('x', 1001),\n+            seniority = \"principal\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.NotNull(payload);\n+        Assert.Contains(\"TemplateId\", payload!.Errors.Keys);\n+        Assert.Contains(\"DisplayName\", payload.Errors.Keys);\n+        Assert.Contains(\"Personality\", payload.Errors.Keys);\n+        Assert.Contains(\"Seniority\", payload.Errors.Keys);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)\n     {\n         var client = _factory.CreateClient();\n@@ -257,4 +322,10 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         public string Status { get; set; } = string.Empty;\n         public string Seniority { get; set; } = string.Empty;\n     }\n+\n+    private sealed class ValidationProblemResponse\n+    {\n+        public string? Title { get; set; }\n+        public string? Detail { get; set; }\n+        public Dictionary<string, string[]> Errors { get; set; } = [];\n+    }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "($\"/api/companies/{ids.CompanyId}/agents/from-template\", new\n         {\n             templateId = \"does-not-exist\",\n             displayName = \"Ghost Agent\"\n@@ -137,6 +180,28 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         Assert.Equal(HttpStatusCode.NotFound, invalidTemplateResponse.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Creating_from_template_returns_field_level_validation_errors()\n+    {\n+        var ids = await SeedMembershipAsync();\n+\n+        using var client = CreateAuthenticatedClient(\"founder\", \"founder@example.com\", \"Founder\");\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{ids.CompanyId}/agents/from-template\", new\n+        {\n+            templateId = \"\",\n+            displayName = \"\",\n+            personality = new string('x', 1001),\n+            seniority = \"principal\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+\n+        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.NotNull(payload);\n+        Assert.Contains(\"TemplateId\", payload!.Errors.Keys);\n+        Assert.Contains(\"DisplayName\", payload.Errors.Keys);\n+        Assert.Contains(\"Personality\", payload.Errors.Keys);\n+        Assert.Contains(\"Seniority\", payload.Errors.Keys);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)\n     {\n         var client = _factory.CreateClient();\n@@ -257,4 +322,10 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         public string Status { get; set; } = string.Empty;\n         public string Seniority { get; set; } = string.Empty;\n     }\n+\n+    private sealed class ValidationProblemResponse\n+    {\n+        public string? Title { get; set; }\n+        public string? Detail { get; set; }\n+        public Dictionary<string, string[]> Errors { get; set; } = [];\n+    }\n }\nEND_OF_PATCH\ntokens used\n47,424\n",
+  "verbosityMode": "normal"
+}
