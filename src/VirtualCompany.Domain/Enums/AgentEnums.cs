@@ -3,7 +3,9 @@ namespace VirtualCompany.Domain.Enums;
 public enum AgentStatus
 {
     Active = 1,
-    Inactive = 2
+    Paused = 2,
+    Restricted = 3,
+    Archived = 4
 }
 
 public enum AgentSeniority
@@ -18,37 +20,80 @@ public enum AgentSeniority
 public static class AgentStatusValues
 {
     public const string Active = "active";
+    public const string Paused = "paused";
+    public const string Restricted = "restricted";
+    public const string Archived = "archived";
     public const string Inactive = "inactive";
-    public static AgentStatus DefaultStatus => AgentStatus.Active;
 
-    public static string ToStorageValue(this AgentStatus status) =>
-        status switch
+    private static readonly IReadOnlyDictionary<AgentStatus, string> Values = new Dictionary<AgentStatus, string>
+    {
+        [AgentStatus.Active] = Active,
+        [AgentStatus.Paused] = Paused,
+        [AgentStatus.Restricted] = Restricted,
+        [AgentStatus.Archived] = Archived
+    };
+
+    private static readonly IReadOnlyDictionary<string, AgentStatus> ReverseValues =
+        new Dictionary<string, AgentStatus>(StringComparer.OrdinalIgnoreCase)
         {
-            AgentStatus.Active => Active,
-            AgentStatus.Inactive => Inactive,
-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported agent status.")
+            [Active] = AgentStatus.Active,
+            [Paused] = AgentStatus.Paused,
+            [Restricted] = AgentStatus.Restricted,
+            [Archived] = AgentStatus.Archived,
+            [Inactive] = AgentStatus.Paused
         };
+
+    public static AgentStatus DefaultStatus => AgentStatus.Active;
+    public static IReadOnlyList<string> AllowedValues { get; } = [Active, Paused, Restricted, Archived];
+
+    public static string ToStorageValue(this AgentStatus status)
+    {
+        if (Values.TryGetValue(status, out var value))
+        {
+            return value;
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
+    }
+
+    public static bool TryParse(string? value, out AgentStatus status)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            status = default;
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (ReverseValues.TryGetValue(trimmed, out status))
+        {
+            return true;
+        }
+
+        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
+    }
 
     public static AgentStatus Parse(string value)
     {
-        value = value?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(value))
+        if (TryParse(value, out var status))
         {
-            throw new ArgumentException("Agent status is required.", nameof(value));
+            return status;
         }
 
-        return value.ToLowerInvariant() switch
-        {
-            Active => AgentStatus.Active,
-            Inactive => AgentStatus.Inactive,
-            _ when Enum.TryParse<AgentStatus>(value, ignoreCase: true, out var legacyStatus) => legacyStatus,
-            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported agent status value.")
-        };
+        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
     }
 
     public static void EnsureSupported(AgentStatus status, string paramName)
     {
         _ = status.ToStorageValue();
+    }
+
+    public static string BuildValidationMessage(string? attemptedValue = null)
+    {
+        var allowedValues = string.Join(", ", AllowedValues);
+        return string.IsNullOrWhiteSpace(attemptedValue)
+            ? $"Agent status is required. Allowed values: {allowedValues}."
+            : $"Unsupported agent status value '{attemptedValue}'. Allowed values: {allowedValues}.";
     }
 }
 

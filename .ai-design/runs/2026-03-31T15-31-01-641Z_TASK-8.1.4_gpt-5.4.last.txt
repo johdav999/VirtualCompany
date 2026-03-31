@@ -1,0 +1,218 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -125,6 +125,8 @@ public sealed class AgentTemplate
+     {
+         var resolvedSeniority = seniority ?? DefaultSeniority;
+         AgentSeniorityValues.EnsureSupported(resolvedSeniority, nameof(seniority));
++        var configurationSnapshot = CreateConfigurationSnapshot(personality);
++
+ 
+         return new Agent(
+             Guid.NewGuid(),
+@@ -136,17 +138,33 @@ public sealed class AgentTemplate
+             FirstNonEmpty(department, Department)!,
+             FirstNonEmpty(avatarUrl, AvatarUrl),
+             resolvedSeniority,
+             AgentStatusValues.DefaultStatus,
+-            MergePersonality(personality),
+-            CloneNodes(Objectives),
+-            CloneNodes(Kpis),
+-            CloneNodes(Tools),
+-            CloneNodes(Scopes),
+-            CloneNodes(Thresholds),
+-            CloneNodes(EscalationRules));
++            configurationSnapshot.Personality,
++            configurationSnapshot.Objectives,
++            configurationSnapshot.Kpis,
++            configurationSnapshot.Tools,
++            configurationSnapshot.Scopes,
++            configurationSnapshot.Thresholds,
++            configurationSnapshot.EscalationRules);
+     }
+@@ -178,6 +196,23 @@ public sealed class AgentTemplate
+         return trimmed;
+     }
+ 
++    private AgentConfigurationSnapshot CreateConfigurationSnapshot(string? personality)
++    {
++        // Hired agents keep a company-owned snapshot of template defaults so later
++        // template edits do not change persisted agent behavior.
++        return new AgentConfigurationSnapshot(
++            MergePersonality(personality),
++            CloneNodes(Objectives),
++            CloneNodes(Kpis),
++            CloneNodes(Tools),
++            CloneNodes(Scopes),
++            CloneNodes(Thresholds),
++            CloneNodes(EscalationRules));
++    }
++
+     private Dictionary<string, JsonNode?> MergePersonality(string? personality)
+     {
+         var merged = CloneNodes(Personality);
+         var summary = FirstNonEmpty(personality, ResolvePersonalitySummary(merged), PersonaSummary);
+@@ -205,6 +240,15 @@ public sealed class AgentTemplate
+     private static string? FirstNonEmpty(params string?[] values) =>
+         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
+ 
++    private sealed record AgentConfigurationSnapshot(
++        Dictionary<string, JsonNode?> Personality,
++        Dictionary<string, JsonNode?> Objectives,
++        Dictionary<string, JsonNode?> Kpis,
++        Dictionary<string, JsonNode?> Tools,
++        Dictionary<string, JsonNode?> Scopes,
++        Dictionary<string, JsonNode?> Thresholds,
++        Dictionary<string, JsonNode?> EscalationRules);
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
+     {
+         if (nodes is null || nodes.Count == 0)
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -1,6 +1,7 @@
+ using System.Net;
+ using System.Net.Http.Json;
+ using System.Text.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Domain.Entities;
+@@ -128,6 +129,53 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
+     }
+ 
++    [Fact]
++    public void Creating_company_agent_from_template_materializes_a_company_owned_configuration_snapshot()
++    {
++        var personality = Payload(
++            ("summary", JsonValue.Create("Systematic, calm, and operationally disciplined.")),
++            ("traits", new JsonArray(JsonValue.Create("structured"), JsonValue.Create("reliable"))));
++        var objectives = Payload(("primary", new JsonArray(JsonValue.Create("Reduce delivery risk"))));
++        var kpis = Payload(("targets", new JsonArray(JsonValue.Create("sla_adherence"), JsonValue.Create("cycle_time"))));
++        var tools = Payload(("allowed", new JsonArray(JsonValue.Create("project_management"), JsonValue.Create("docs"))));
++        var scopes = Payload(
++            ("read", new JsonArray(JsonValue.Create("workflows"), JsonValue.Create("projects"))),
++            ("write", new JsonArray(JsonValue.Create("runbooks"), JsonValue.Create("handoff_notes"))));
++        var thresholds = Payload(("delivery", new JsonObject { ["blockedDays"] = 2 }));
++        var escalationRules = Payload(
++            ("critical", new JsonArray(JsonValue.Create("missed_customer_deadline"))),
++            ("escalateTo", JsonValue.Create("founder")));
++
++        var template = new AgentTemplate(
++            Guid.NewGuid(),
++            "operations",
++            "Operations Manager",
++            "Operations",
++            "Execution owner who keeps workflows stable.",
++            AgentSeniority.Lead,
++            "/avatars/agents/operations-manager.png",
++            10,
++            true,
++            personality,
++            objectives,
++            kpis,
++            tools,
++            scopes,
++            thresholds,
++            escalationRules);
++
++        var agent = template.CreateCompanyAgent(Guid.NewGuid(), "Alex Ops", null, null, null, null);
++
++        template.UpdateDefinition(
++            "operations",
++            "Operations Director",
++            "Strategy",
++            "Escalates every blocker immediately.",
++            AgentSeniority.Executive,
++            "/avatars/agents/updated-operations-manager.png",
++            10,
++            true,
++            Payload(("summary", JsonValue.Create("Escalates every blocker immediately.")), ("traits", new JsonArray(JsonValue.Create("volatile")))),
++            Payload(("primary", new JsonArray(JsonValue.Create("Restructure operating model")))),
++            Payload(("targets", new JsonArray(JsonValue.Create("board_reporting_cadence")))),
++            Payload(("allowed", new JsonArray(JsonValue.Create("spreadsheet")))),
++            Payload(("read", new JsonArray(JsonValue.Create("board_packets"))), ("write", new JsonArray(JsonValue.Create("strategy_memos")))),
++            Payload(("delivery", new JsonObject { ["blockedDays"] = 1 })),
++            Payload(("critical", new JsonArray(JsonValue.Create("board_meeting_change"))), ("escalateTo", JsonValue.Create("ceo"))));
++
++        Assert.Equal("operations", agent.TemplateId);
++        Assert.Equal("Alex Ops", agent.DisplayName);
++        Assert.Equal("Operations Manager", agent.RoleName);
++        Assert.Equal("Operations", agent.Department);
++        Assert.Equal("/avatars/agents/operations-manager.png", agent.AvatarUrl);
++        Assert.Equal(AgentSeniority.Lead, agent.Seniority);
++        Assert.Equal(AgentStatus.Active, agent.Status);
++        AssertJsonDictionaryEqual(personality, agent.Personality);
++        AssertJsonDictionaryEqual(objectives, agent.Objectives);
++        AssertJsonDictionaryEqual(kpis, agent.Kpis);
++        AssertJsonDictionaryEqual(tools, agent.Tools);
++        AssertJsonDictionaryEqual(scopes, agent.Scopes);
++        AssertJsonDictionaryEqual(thresholds, agent.Thresholds);
++        AssertJsonDictionaryEqual(escalationRules, agent.EscalationRules);
++    }
++
+     [Fact]
+     public async Task Hiring_from_template_uses_template_defaults_when_optional_customizations_are_omitted()
+     {
+@@ -163,10 +211,21 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(template.DefaultSeniority, agent.Seniority);
+         Assert.Equal(AgentStatus.Active, agent.Status);
+         Assert.Equal(template.Personality["summary"]!.ToJsonString(), agent.Personality["summary"]!.ToJsonString());
+-        Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
+         Assert.Equal("Casey Support", agent.DisplayName);
++        AssertJsonDictionaryEqual(template.Personality, agent.Personality);
++        AssertJsonDictionaryEqual(template.Objectives, agent.Objectives);
++        AssertJsonDictionaryEqual(template.Kpis, agent.Kpis);
++        AssertJsonDictionaryEqual(template.Tools, agent.Tools);
++        AssertJsonDictionaryEqual(template.Scopes, agent.Scopes);
++        AssertJsonDictionaryEqual(template.Thresholds, agent.Thresholds);
++        AssertJsonDictionaryEqual(template.EscalationRules, agent.EscalationRules);
++        Assert.NotSame(template.Personality, agent.Personality);
++        Assert.NotSame(template.Objectives, agent.Objectives);
++        Assert.NotSame(template.Kpis, agent.Kpis);
++        Assert.NotSame(template.Tools, agent.Tools);
++        Assert.NotSame(template.Scopes, agent.Scopes);
++        Assert.NotSame(template.Thresholds, agent.Thresholds);
++        Assert.NotSame(template.EscalationRules, agent.EscalationRules);
+     }
+-
+     [Fact]
+     public async Task Hiring_from_template_adds_agent_to_roster_with_active_status_immediately()
+     {
+@@ -328,6 +387,35 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         return new SeedIds(companyId, otherCompanyId);
+     }
+ 
++    private static void AssertJsonDictionaryEqual(
++        IReadOnlyDictionary<string, JsonNode?> expected,
++        IReadOnlyDictionary<string, JsonNode?> actual)
++    {
++        Assert.Equal(expected.Count, actual.Count);
++
++        foreach (var (key, expectedValue) in expected)
++        {
++            Assert.True(actual.TryGetValue(key, out var actualValue), $"Expected JSON property '{key}' to be present.");
++            Assert.Equal(expectedValue?.ToJsonString(), actualValue?.ToJsonString());
++        }
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
+     private static readonly string[] RequiredTemplateIds =
+     [
+         "finance",
+         "sales",
+         "marketing",
+END_OF_PATCH

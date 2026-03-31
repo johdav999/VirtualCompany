@@ -1,0 +1,365 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -68,11 +68,37 @@ public sealed record UpdateAgentOperatingProfileCommand(
+     Dictionary<string, JsonNode?>? TriggerLogic,
+     Dictionary<string, JsonNode?>? WorkingHours);
+ 
++public sealed record AgentRuntimeProfileDto(
++    Guid Id,
++    Guid CompanyId,
++    string TemplateId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    string Seniority,
++    string Status,
++    string? RoleBrief,
++    Dictionary<string, JsonNode?> Objectives,
++    Dictionary<string, JsonNode?> Kpis,
++    Dictionary<string, JsonNode?> ToolPermissions,
++    Dictionary<string, JsonNode?> DataScopes,
++    Dictionary<string, JsonNode?> ApprovalThresholds,
++    Dictionary<string, JsonNode?> EscalationRules,
++    Dictionary<string, JsonNode?> TriggerLogic,
++    Dictionary<string, JsonNode?> WorkingHours,
++    bool CanReceiveAssignments,
++    DateTime UpdatedUtc);
++
+ public interface ICompanyAgentService
+ {
+     Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
+     Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+     Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken);
+ }
++
++public interface IAgentRuntimeProfileResolver
++{
++    Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken);
++}
++
+ public sealed class AgentValidationException : Exception
+ {
+     public AgentValidationException(IDictionary<string, string[]> errors)
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -404,7 +404,7 @@ public sealed class Agent : ICompanyOwnedEntity
+ 
+     public bool CanReceiveAssignments => Status != AgentStatus.Archived;
+ 
+-    public void UpdateOperatingProfile(
++    public bool UpdateOperatingProfile(
+         string? roleBrief,
+         AgentStatus status,
+         IDictionary<string, JsonNode?>? objectives,
+@@ -417,18 +417,39 @@ public sealed class Agent : ICompanyOwnedEntity
+     {
+         AgentStatusValues.EnsureSupported(status, nameof(status));
+ 
+-        RoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
++        var normalizedRoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
++        var updatedObjectives = CloneNodes(objectives);
++        var updatedKpis = CloneNodes(kpis);
++        var updatedTools = CloneNodes(tools);
++        var updatedScopes = CloneNodes(scopes);
++        var updatedThresholds = CloneNodes(thresholds);
++        var updatedEscalationRules = CloneNodes(escalationRules);
++        var updatedTriggerLogic = CloneNodes(triggerLogic);
++        var updatedWorkingHours = CloneNodes(workingHours);
++
++        if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
++            Status == status &&
++            JsonDictionariesEqual(Objectives, updatedObjectives) &&
++            JsonDictionariesEqual(Kpis, updatedKpis) &&
++            JsonDictionariesEqual(Tools, updatedTools) &&
++            JsonDictionariesEqual(Scopes, updatedScopes) &&
++            JsonDictionariesEqual(Thresholds, updatedThresholds) &&
++            JsonDictionariesEqual(EscalationRules, updatedEscalationRules) &&
++            JsonDictionariesEqual(TriggerLogic, updatedTriggerLogic) &&
++            JsonDictionariesEqual(WorkingHours, updatedWorkingHours))
++        {
++            return false;
++        }
++
++        RoleBrief = normalizedRoleBrief;
+         Status = status;
+-        Objectives = CloneNodes(objectives);
+-        Kpis = CloneNodes(kpis);
+-        Tools = CloneNodes(tools);
+-        Scopes = CloneNodes(scopes);
+-        Thresholds = CloneNodes(thresholds);
+-        EscalationRules = CloneNodes(escalationRules);
+-        TriggerLogic = CloneNodes(triggerLogic);
+-        WorkingHours = CloneNodes(workingHours);
++        Objectives = updatedObjectives;
++        Kpis = updatedKpis;
++        Tools = updatedTools;
++        Scopes = updatedScopes;
++        Thresholds = updatedThresholds;
++        EscalationRules = updatedEscalationRules;
++        TriggerLogic = updatedTriggerLogic;
++        WorkingHours = updatedWorkingHours;
+         UpdatedUtc = DateTime.UtcNow;
++        return true;
+     }
+ 
+     public void EnsureCanReceiveAssignments()
+@@ -459,6 +480,24 @@ public sealed class Agent : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
++    private static bool JsonDictionariesEqual(
++        IReadOnlyDictionary<string, JsonNode?> left,
++        IReadOnlyDictionary<string, JsonNode?> right)
++    {
++        if (left.Count != right.Count)
++        {
++            return false;
++        }
++
++        foreach (var (key, leftValue) in left)
++        {
++            if (!right.TryGetValue(key, out var rightValue) ||
++                !string.Equals(leftValue?.ToJsonString(), rightValue?.ToJsonString(), StringComparison.Ordinal))
++            {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
+     {
+         if (nodes is null || nodes.Count == 0)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -106,31 +106,34 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             throw new KeyNotFoundException("Agent not found.");
+         }
+ 
+-        agent.UpdateOperatingProfile(
++        var changed = agent.UpdateOperatingProfile(
+             command.RoleBrief,
+             AgentStatusValues.Parse(command.Status),
+             command.Objectives,
+             command.Kpis,
+             command.ToolPermissions,
+-            command.DataScopes,
++            command.DataScopes, 
+             command.ApprovalThresholds,
+             command.EscalationRules,
+             command.TriggerLogic,
+             command.WorkingHours);
+ 
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                companyId,
+-                AuditActorTypes.User,
+-                membership.UserId,
+-                AuditEventActions.AgentOperatingProfileUpdated,
+-                AuditTargetTypes.Agent,
+-                agent.Id.ToString("N"),
+-                AuditEventOutcomes.Succeeded,
+-                Metadata: new Dictionary<string, string?>
+-                {
+-                    ["status"] = agent.Status.ToStorageValue(),
+-                    ["displayName"] = agent.DisplayName
+-                }),
+-            cancellationToken);
++        if (changed)
++        {
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    companyId,
++                    AuditActorTypes.User,
++                    membership.UserId,
++                    AuditEventActions.AgentOperatingProfileUpdated,
++                    AuditTargetTypes.Agent,
++                    agent.Id.ToString("N"),
++                    AuditEventOutcomes.Succeeded,
++                    Metadata: new Dictionary<string, string?>
++                    {
++                        ["status"] = agent.Status.ToStorageValue(),
++                        ["displayName"] = agent.DisplayName
++                    }),
++                cancellationToken);
+ 
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
+         return ToOperatingProfileDto(agent);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+@@ -0,0 +1,65 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileResolver
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public PersistedAgentRuntimeProfileResolver(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        // Runtime resolution must re-read persisted agent state so later orchestration
++        // runs pick up profile edits without depending on request-scoped tenant context.
++        var agent = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        return new AgentRuntimeProfileDto(
++            agent.Id,
++            agent.CompanyId,
++            agent.TemplateId,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Department,
++            agent.Seniority.ToStorageValue(),
++            agent.Status.ToStorageValue(),
++            agent.RoleBrief,
++            CloneNodes(agent.Objectives),
++            CloneNodes(agent.Kpis),
++            CloneNodes(agent.Tools),
++            CloneNodes(agent.Scopes),
++            CloneNodes(agent.Thresholds),
++            CloneNodes(agent.EscalationRules),
++            CloneNodes(agent.TriggerLogic),
++            CloneNodes(agent.WorkingHours),
++            agent.CanReceiveAssignments,
++            agent.UpdatedUtc);
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -55,6 +55,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanySetupTemplateSeeder>();
+         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
++        services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -4,6 +4,7 @@ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -505,7 +506,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+         Assert.NotNull(payload);
+         Assert.Equal("archived", payload!.Status);
+         Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", payload.RoleBrief);
+-        Assert.True(payload.UpdatedUtc >= before.UpdatedUtc);
++        Assert.True(payload.UpdatedUtc > before.UpdatedUtc);
+         Assert.False(payload.CanReceiveAssignments);
+         Assert.Equal(JsonValueKind.Array, payload.Objectives["primary"].ValueKind);
+         Assert.Equal("Europe/Stockholm", payload.WorkingHours["timezone"].GetString());
+@@ -524,11 +525,53 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
+         Assert.Equal(AgentStatus.Archived, agent.Status);
+         Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", agent.RoleBrief);
+-        Assert.True(agent.UpdatedUtc >= seed.OriginalUpdatedUtc);
++        Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
+         Assert.Equal("\"Europe/Stockholm\"", agent.WorkingHours["timezone"]!.ToJsonString());
+         Assert.Equal("[\"forecast_accuracy\",\"approval_latency\"]", agent.Kpis["targets"]!.ToJsonString());
+     }
+ 
++    [Fact]
++    public async Task Runtime_profile_resolution_reads_latest_persisted_profile_after_operating_profile_update()
++    {
++        var seed = await SeedMembershipWithExistingAgentAsync();
++
++        using var runtimeScope = _factory.Services.CreateScope();
++        var runtimeResolver = runtimeScope.ServiceProvider.GetRequiredService<IAgentRuntimeProfileResolver>();
++
++        var before = await runtimeResolver.GetCurrentProfileAsync(seed.CompanyId, seed.AgentId, CancellationToken.None);
++        Assert.Equal("active", before.Status);
++        Assert.Equal("Original finance operating profile.", before.RoleBrief);
++        Assert.Equal("[\"Protect cash flow\"]", before.Objectives["primary"]!.ToJsonString());
++        Assert.Equal("[\"erp\"]", before.ToolPermissions["allowed"]!.ToJsonString());
++        Assert.Equal("[\"finance\"]", before.DataScopes["read"]!.ToJsonString());
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
++        {
++            status = "restricted",
++            roleBrief = "Escalation-heavy finance profile for exception handling.",
++            objectives = new { primary = new[] { "Reduce spend leakage", "Tighten exception approvals" } },
++            kpis = new { targets = new[] { "approval_latency", "forecast_accuracy" } },
++            toolPermissions = new { allowed = new[] { "erp", "spreadsheets", "approvals_console" }, denied = new[] { "wire_transfer" } },
++            dataScopes = new { read = new[] { "finance", "vendors", "contracts" }, write = new[] { "approval_notes", "exception_decisions" } },
++            approvalThresholds = new { approval = new { expenseUsd = 2500 } },
++            escalationRules = new { critical = new[] { "failed_payment", "cash_runway_under_90_days" }, escalateTo = "owner" },
++            triggerLogic = new { enabled = true, conditions = new[] { new { @event = "invoice_created", source = "erp" } } },
++            workingHours = new { timezone = "Europe/Stockholm", windows = new[] { new { day = "monday", start = "09:00", end = "17:00" } } }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var after = await runtimeResolver.GetCurrentProfileAsync(seed.CompanyId, seed.AgentId, CancellationToken.None);
++        Assert.Equal("restricted", after.Status);
++        Assert.Equal("Escalation-heavy finance profile for exception handling.", after.RoleBrief);
++        Assert.True(after.UpdatedUtc > before.UpdatedUtc);
++        Assert.True(after.CanReceiveAssignments);
++        Assert.Equal("[\"Reduce spend leakage\",\"Tighten exception approvals\"]", after.Objectives["primary"]!.ToJsonString());
++        Assert.Equal("[\"erp\",\"spreadsheets\",\"approvals_console\"]", after.ToolPermissions["allowed"]!.ToJsonString());
++        Assert.Equal("[\"wire_transfer\"]", after.ToolPermissions["denied"]!.ToJsonString());
++        Assert.Equal("[\"finance\",\"vendors\",\"contracts\"]", after.DataScopes["read"]!.ToJsonString());
++        Assert.Equal("[\"approval_notes\",\"exception_decisions\"]", after.DataScopes["write"]!.ToJsonString());
++        Assert.Equal("\"Europe/Stockholm\"", after.WorkingHours["timezone"]!.ToJsonString());
++    }
++
+     [Fact]
+     public async Task Updating_operating_profile_returns_field_level_validation_errors()
+     {
+END_OF_PATCH

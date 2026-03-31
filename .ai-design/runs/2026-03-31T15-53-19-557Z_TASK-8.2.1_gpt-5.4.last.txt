@@ -1,0 +1,400 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+index 307054d..ee8a263 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -401,6 +401,8 @@ public sealed class Agent : ICompanyOwnedEntity
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
++    public bool CanReceiveAssignments => Status != AgentStatus.Archived;
++
+     public void UpdateOperatingProfile(
+         string? roleBrief,
+         AgentStatus status,
+@@ -431,7 +433,7 @@ public sealed class Agent : ICompanyOwnedEntity
+ 
+     public void EnsureCanReceiveAssignments()
+     {
+-        if (Status == AgentStatus.Archived)
++        if (!CanReceiveAssignments)
+         {
+             throw new InvalidOperationException("Archived agents cannot receive new assignments.");
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index d8e3988..85d5fbf 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -15,6 +15,16 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private const int AvatarUrlMaxLength = 2048;
+     private const int PersonalitySummaryMaxLength = 1000;
+ 
++    private static readonly HashSet<string> SupportedWorkingDays = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "monday",
++        "tuesday",
++        "wednesday",
++        "thursday",
++        "friday",
++        "saturday",
++        "sunday"
++    };
++
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
+@@ -213,7 +223,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             CloneNodes(agent.EscalationRules),
+             CloneNodes(agent.TriggerLogic),
+             CloneNodes(agent.WorkingHours),
+-            agent.UpdatedUtc,
+-            agent.Status != AgentStatus.Archived);
++            agent.UpdatedUtc,
++            agent.CanReceiveAssignments);
+ 
+     private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
+     {
+@@ -288,6 +298,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         ValidateStringArray(errors, nameof(command.DataScopes), command.DataScopes, "write");
+         ValidateStringArray(errors, nameof(command.EscalationRules), command.EscalationRules, "critical");
+         ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds);
++        ValidateEscalationRules(errors, nameof(command.EscalationRules), command.EscalationRules);
+         ValidateTriggerLogic(errors, nameof(command.TriggerLogic), command.TriggerLogic);
+         ValidateWorkingHours(errors, nameof(command.WorkingHours), command.WorkingHours);
+ 
+@@ -415,6 +426,45 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         }
+     }
+ 
++    private static void ValidateEscalationRules(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null || payload.Count == 0)
++        {
++            return;
++        }
++
++        var hasRoute = false;
++
++        if (payload.TryGetValue("critical", out var criticalNode))
++        {
++            ValidateStringArray(errors, key, payload, "critical");
++            hasRoute = criticalNode is JsonArray criticalArray && criticalArray.Count > 0;
++        }
++
++        if (payload.TryGetValue("escalateTo", out var escalateToNode))
++        {
++            if (!TryGetNonEmptyString(escalateToNode, out _))
++            {
++                AddError(errors, key, $"{key}.escalateTo must be a non-empty string.");
++            }
++            else
++            {
++                hasRoute = true;
++            }
++        }
++
++        if (payload.TryGetValue("notifyAfterMinutes", out var notifyAfterNode) &&
++            !TryGetNonNegativeNumber(notifyAfterNode, out _))
++        {
++            AddError(errors, key, $"{key}.notifyAfterMinutes must be a non-negative number.");
++        }
++
++        if (!hasRoute)
++        {
++            AddError(errors, key, $"{key} must define at least one escalation route.");
++        }
++    }
++
+     private static void ValidateTriggerLogic(
+         IDictionary<string, List<string>> errors,
+         string key,
+@@ -423,19 +473,29 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         {
+             return;
+         }
+ 
++        var isEnabled = false;
+         if (payload.TryGetValue("enabled", out var enabledNode) &&
+-            enabledNode is not null &&
+-            (enabledNode is not JsonValue enabledValue || !enabledValue.TryGetValue<bool>(out _)))
++            enabledNode is not null)
+         {
+-            AddError(errors, key, $"{key}.enabled must be a boolean.");
++            if (enabledNode is not JsonValue enabledValue || !enabledValue.TryGetValue<bool>(out isEnabled))
++            {
++                AddError(errors, key, $"{key}.enabled must be a boolean.");
++            }
+         }
+ 
+-        if (!payload.TryGetValue("conditions", out var conditionsNode) || conditionsNode is null)
++        if (!payload.TryGetValue("conditions", out var conditionsNode) || conditionsNode is null)
+         {
++            if (isEnabled)
++            {
++                AddError(errors, key, $"{key}.conditions must contain at least one condition when enabled is true.");
++            }
++
+             return;
+         }
+ 
+         if (conditionsNode is not JsonArray conditions)
+         {
+             AddError(errors, key, $"{key}.conditions must be an array.");
+@@ -443,6 +503,11 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         }
+ 
++        if (isEnabled && conditions.Count == 0)
++        {
++            AddError(errors, key, $"{key}.conditions must contain at least one condition when enabled is true.");
++        }
++
+         foreach (var condition in conditions)
+         {
+             if (condition is not JsonObject conditionObject)
+@@ -450,6 +515,12 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 AddError(errors, key, $"{key}.conditions must contain objects.");
+                 return;
+             }
++
++            if (conditionObject.Any(property => string.IsNullOrWhiteSpace(property.Key)))
++            {
++                AddError(errors, key, $"{key}.conditions entries cannot contain empty property names.");
++                return;
++            }
+ 
+             var eventName = conditionObject["event"]?.GetValue<string>();
+             var typeName = conditionObject["type"]?.GetValue<string>();
+@@ -480,10 +551,18 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             AddError(errors, key, $"{key}.timezone is required.");
+         }
++        else if (!IsValidTimeZoneId(timezone))
++        {
++            AddError(errors, key, $"{key}.timezone must be a valid timezone identifier.");
++        }
+ 
+         if (!payload.TryGetValue("windows", out var windowsNode) || windowsNode is null)
+         {
+             AddError(errors, key, $"{key}.windows is required.");
+             return;
+         }
+ 
++        var windowsByDay = new Dictionary<string, List<(TimeOnly Start, TimeOnly End)>>(StringComparer.OrdinalIgnoreCase);
++
+         if (windowsNode is not JsonArray windows || windows.Count == 0)
+         {
+             AddError(errors, key, $"{key}.windows must contain at least one time window.");
+@@ -504,6 +583,12 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 return;
+             }
+ 
++            var normalizedDay = day.Trim();
++            if (!SupportedWorkingDays.Contains(normalizedDay))
++            {
++                AddError(errors, key, $"{key}.windows.day must be a valid weekday.");
++                return;
++            }
++
+             if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var startTime) ||
+                 !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var endTime))
+             {
+@@ -516,6 +601,18 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             {
+                 AddError(errors, key, $"{key}.windows end must be later than start.");
+                 return;
++            }
++
++            if (!windowsByDay.TryGetValue(normalizedDay, out var dayWindows))
++            {
++                dayWindows = [];
++                windowsByDay[normalizedDay] = dayWindows;
++            }
++
++            if (dayWindows.Any(existing => startTime < existing.End && endTime > existing.Start))
++            {
++                AddError(errors, key, $"{key}.windows cannot contain overlapping intervals for the same day.");
++                return;
+             }
++
++            dayWindows.Add((startTime, endTime));
+         }
+     }
+@@ -561,4 +658,53 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         messages.Add(message);
+     }
++
++    private static bool TryGetNonEmptyString(JsonNode? node, out string value)
++    {
++        value = string.Empty;
++
++        if (node is not JsonValue jsonValue ||
++            !jsonValue.TryGetValue<string>(out var text) ||
++            string.IsNullOrWhiteSpace(text))
++        {
++            return false;
++        }
++
++        value = text.Trim();
++        return true;
++    }
++
++    private static bool TryGetNonNegativeNumber(JsonNode? node, out decimal value)
++    {
++        value = 0;
++
++        if (node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        if (jsonValue.TryGetValue<decimal>(out var decimalValue))
++        {
++            value = decimalValue;
++            return decimalValue >= 0;
++        }
++
++        if (jsonValue.TryGetValue<double>(out var doubleValue))
++        {
++            value = (decimal)doubleValue;
++            return doubleValue >= 0;
++        }
++
++        return false;
++    }
++
++    private static bool IsValidTimeZoneId(string timezone)
++    {
++        try
++        {
++            _ = TimeZoneInfo.FindSystemTimeZoneById(timezone);
++            return true;
++        }
++        catch (TimeZoneNotFoundException)
++        {
++            return string.Equals(timezone, "UTC", StringComparison.OrdinalIgnoreCase) ||
++                   (timezone.Contains('/', StringComparison.Ordinal) && timezone.All(ch => char.IsLetterOrDigit(ch) || ch is '/' or '_' or '-' or '+'));
++        }
++        catch (InvalidTimeZoneException)
++        {
++            return false;
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 2fa7b56..d0a8957 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -186,6 +186,7 @@ else
+                                 }
+                             </InputSelect>
+                             <ValidationMessage For="@(() => profileModel.Status)" />
++                            <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
+                             @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+                             {
+                                 <div class="text-danger small mt-1">@error</div>
+@@ -392,14 +393,14 @@ else
+         };
+     }
+ 
+-    private async Task HandleHireAsync()
++    private async Task SelectAgentAsync(Guid agentId)
+     {
+         if (CompanyId is not Guid companyId)
+         {
+             return;
+         }
+ 
+-        selectedAgentId = agentId;
++        selectedAgentId = agentId;
+         profileErrorMessage = null;
+         profileSuccessMessage = null;
+         profileErrors.Clear();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 6558077..8ed1d58 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -478,7 +478,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     [Fact]
+     public async Task Owner_can_get_and_update_agent_operating_profile_with_round_trip_persistence()
+     {
+         var seed = await SeedMembershipWithExistingAgentAsync();
+@@ -490,7 +490,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
+         {
+-            status = "restricted",
++            status = "archived",
+             roleBrief = "Owns exception approvals, escalations, and finance tool access policy.",
+             objectives = new { primary = new[] { "Protect margin", "Reduce spend leakage" } },
+             kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
+@@ -504,7 +504,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+         Assert.NotNull(payload);
+-        Assert.Equal("restricted", payload!.Status);
++        Assert.Equal("archived", payload!.Status);
+         Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", payload.RoleBrief);
+         Assert.True(payload.UpdatedUtc >= before.UpdatedUtc);
+         Assert.False(payload.CanReceiveAssignments);
+@@ -513,13 +513,13 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         var after = await client.GetFromJsonAsync<AgentOperatingProfileResponse>($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
+         Assert.NotNull(after);
+-        Assert.Equal("restricted", after!.Status);
++        Assert.Equal("archived", after!.Status);
+         Assert.Equal(payload.RoleBrief, after.RoleBrief);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
+         companyContextAccessor.SetCompanyId(seed.CompanyId);
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+ 
+         var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
+-        Assert.Equal(AgentStatus.Restricted, agent.Status);
++        Assert.Equal(AgentStatus.Archived, agent.Status);
+         Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", agent.RoleBrief);
+         Assert.True(agent.UpdatedUtc >= seed.OriginalUpdatedUtc);
+         Assert.Equal("\"Europe/Stockholm\"", agent.WorkingHours["timezone"]!.ToJsonString());
+@@ -558,10 +558,38 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         using var founderClient = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
+         Assert.Equal(
+             HttpStatusCode.Forbidden,
+             (await founderClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/agents/{seed.OtherCompanyAgentId}/profile")).StatusCode);
++
++        Assert.Equal(
++            HttpStatusCode.NotFound,
++            (await founderClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.OtherCompanyAgentId}/profile")).StatusCode);
++
++        var crossTenantUpdate = await founderClient.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.OtherCompanyAgentId}/profile", new
++        {
++            status = "active",
++            roleBrief = "Scoped update should not cross tenant boundaries.",
++            objectives = new { primary = new[] { "Protect cash flow" } },
++            kpis = new { targets = new[] { "forecast_accuracy" } },
++            toolPermissions = new { allowed = new[] { "erp" } },
++            dataScopes = new { read = new[] { "finance" } },
++            approvalThresholds = new { approval = new { expenseUsd = 5000 } },
++            escalationRules = new { critical = new[] { "cash_runway_under_90_days" }, escalateTo = "founder" },
++            triggerLogic = new { enabled = false },
++            workingHours = new
++            {
++                timezone = "UTC",
++                windows = new[]
++                {
++                    new { day = "monday", start = "08:00", end = "16:00" }
++                }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantUpdate.StatusCode);
+     }
+ 
+     [Fact]
+     public void Archived_agents_are_blocked_from_future_assignment_paths()
+     {
+         var agent = new Agent(
+             Guid.NewGuid(),
+             Guid.NewGuid(),
+END_OF_PATCH

@@ -94,6 +94,7 @@ dotnet run --project src/VirtualCompany.Api
 ```
 
 The API applies EF Core migrations automatically on startup for relational providers.
+Baseline `agent_templates` catalog records are seeded through EF Core model seeding and migrations, not API startup writes.
 
 ## Local Development Authentication
 
@@ -175,3 +176,5 @@ Company-scoped endpoints:
 - SQL Server startup can take a short time on first boot; if API startup fails immediately after `docker compose up -d`, check the container logs and retry once the server is ready.
 - Local development is standardized on SQL Server in Docker. The intended production target is Azure SQL.
 - The API applies EF Core migrations at startup when using a relational provider.
+- Baseline hiring templates in `agent_templates` are versioned in source and delivered through EF Core migrations.
+- The web offline hiring/catalog fallback reads bundled template JSON from `src/VirtualCompany.Web/wwwroot/offline/agent-templates.json` instead of hardcoded role defaults in code.

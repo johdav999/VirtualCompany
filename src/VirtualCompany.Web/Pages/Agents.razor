@@ -1,5 +1,7 @@
 @page "/agents"
 @using System.ComponentModel.DataAnnotations
+@using System.Text.Json
+@using System.Text.Json.Nodes
 @using Microsoft.AspNetCore.Components
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
@@ -47,7 +49,7 @@ else
             <div class="wizard-card">
                 <span class="dashboard-kicker">Template catalog</span>
                 <h1>Hire agents for @(companyAccess?.CompanyName ?? "your company")</h1>
-                <p class="text-body-secondary">Start from seeded templates, customize identity fields, and create an active company-owned roster entry.</p>
+                <p class="text-body-secondary">Start from seeded templates, customize identity fields and avatar references, and create an active company-owned roster entry.</p>
 
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
@@ -97,8 +99,9 @@ else
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="avatar-url">Avatar URL</label>
+                            <label class="form-label" for="avatar-url">Avatar URL or file reference</label>
                             <InputText id="avatar-url" class="form-control" @bind-Value="hireModel.AvatarUrl" />
+                            <div class="form-text">Use an external <code>https://</code> URL or a file/object-storage reference. Uploads and inline image data are not supported.</div>
                             <ValidationMessage For="@(() => hireModel.AvatarUrl)" />
                         </div>
 
@@ -143,6 +146,86 @@ else
         <div class="wizard-card mt-4">
             <div class="agent-roster-header">
                 <div>
+                    <span class="dashboard-kicker">Operating profile</span>
+                    <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+                </div>
+            </div>
+
+            @if (!CanManageProfiles)
+            {
+                <p class="text-body-secondary mb-0 mt-3">Owner or admin membership is required to manage operating profiles.</p>
+            }
+            else if (selectedAgentProfile is null)
+            {
+                <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
+            }
+            else
+            {
+                @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
+                {
+                    <div class="alert alert-danger mt-3">@profileErrorMessage</div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
+                {
+                    <div class="alert alert-success mt-3">@profileSuccessMessage</div>
+                }
+
+                <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
+                    <DataAnnotationsValidator />
+                    <ValidationSummary />
+
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="profile-status">Status</label>
+                            <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
+                                @foreach (var status in statusOptions)
+                                {
+                                    <option value="@status">@status</option>
+                                }
+                            </InputSelect>
+                            <ValidationMessage For="@(() => profileModel.Status)" />
+                            <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
+                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+                            {
+                                <div class="text-danger small mt-1">@error</div>
+                            }
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="profile-updated">Last updated</label>
+                            <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <label class="form-label" for="role-brief">Role brief</label>
+                        <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
+                        <ValidationMessage For="@(() => profileModel.RoleBrief)" />
+                        @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
+                        {
+                            <div class="text-danger small mt-1">@error</div>
+                        }
+                    </div>
+
+                    @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
+                    @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
+                    @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
+                    @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
+                    @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
+                    @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
+                    @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
+                    @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
+
+                    <div class="dashboard-actions mt-3">
+                        <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
+                    </div>
+                </EditForm>
+            }
+        </div>
+
+        <div class="wizard-card mt-4">
+            <div class="agent-roster-header">
+                <div>
                     <span class="dashboard-kicker">Company roster</span>
                     <h2 class="h4 mb-0 mt-2">Active agents</h2>
                 </div>
@@ -158,22 +241,29 @@ else
                 <div class="agent-roster-grid mt-4">
                     @foreach (var agent in roster)
                     {
-                        <article class="template-card">
+                        <button type="button"
+                                class="template-card text-start @(selectedAgentId == agent.Id ? "is-selected" : null)"
+                                disabled="@(!CanManageProfiles && selectedAgentId != agent.Id)"
+                                @onclick="@(() => SelectAgentAsync(agent.Id))">
                             <div class="agent-template-header">
                                 <strong>@agent.DisplayName</strong>
                                 <span class="badge text-bg-success">@agent.Status</span>
                             </div>
                             <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
                             <div class="text-body-secondary">@agent.Seniority</div>
+                            @if (!string.IsNullOrWhiteSpace(agent.AvatarUrl))
+                            {
+                                <div class="text-body-secondary small mt-2">Avatar reference: @agent.AvatarUrl</div>
+                            }
                             @if (!string.IsNullOrWhiteSpace(agent.Personality))
                             {
                                 <p class="mb-0 mt-3">@agent.Personality</p>
                             }
-                        </article>
+                        </button>
                     }
                 </div>
             }
-        </div>
+        </div>        
     </section>
 }
 
@@ -181,16 +271,25 @@ else
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
+    private static readonly JsonSerializerOptions JsonEditorOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
+    private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
     private bool isLoading = true;
     private bool isSubmitting;
+    private bool isSavingProfile;
     private string? errorMessage;
     private string? successMessage;
+    private string? profileErrorMessage;
+    private string? profileSuccessMessage;
     private CurrentUserContextViewModel? currentUser;
     private CompanyAccessViewModel? companyAccess;
     private List<AgentTemplateCatalogItemViewModel> templates = [];
     private List<CompanyAgentSummaryViewModel> roster = [];
     private HireAgentFormModel hireModel = new();
+    private AgentOperatingProfileViewModel? selectedAgentProfile;
+    private AgentOperatingProfileFormModel profileModel = new();
+    private Dictionary<string, string[]> profileErrors = new(StringComparer.OrdinalIgnoreCase);
+    private Guid? selectedAgentId;
     private string? selectedTemplateId;
 
     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
@@ -199,6 +298,11 @@ else
 
     private AgentTemplateCatalogItemViewModel? selectedTemplate =>
         templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
+
+    private bool CanManageProfiles =>
+        string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
+
 
     protected override async Task OnParametersSetAsync()
     {
@@ -234,6 +338,21 @@ else
                     {
                         selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
                         ResetSelectedTemplate();
+                    }
+
+                    if (CanManageProfiles && roster.Count > 0)
+                    {
+                        var nextSelectedAgent = selectedAgentId.HasValue
+                            ? roster.FirstOrDefault(x => x.Id == selectedAgentId.Value) ?? roster[0]
+                            : roster[0];
+
+                        await SelectAgentAsync(nextSelectedAgent.Id);
+                    }
+                    else
+                    {
+                        selectedAgentId = null;
+                        selectedAgentProfile = null;
+                        profileModel = new AgentOperatingProfileFormModel();
                     }
                 }
             }
@@ -274,6 +393,135 @@ else
         };
     }
 
+    private async Task SelectAgentAsync(Guid agentId)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        selectedAgentId = agentId;
+        profileErrorMessage = null;
+        profileSuccessMessage = null;
+        profileErrors.Clear();
+
+        if (!CanManageProfiles)
+        {
+            return;
+        }
+
+        try
+        {
+            selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
+            profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+        }
+        catch (OnboardingApiException ex)
+        {
+            selectedAgentProfile = null;
+            profileModel = new AgentOperatingProfileFormModel();
+            profileErrorMessage = ex.Message;
+        }
+    }
+
+    private async Task HandleProfileSaveAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId)
+        {
+            return;
+        }
+
+        if (!profileModel.TryCreateRequest(out var request, out var localErrors))
+        {
+            profileErrors = localErrors;
+            profileErrorMessage = "Fix the highlighted operating profile fields and try again.";
+            profileSuccessMessage = null;
+            return;
+        }
+
+        isSavingProfile = true;
+        profileErrorMessage = null;
+        profileSuccessMessage = null;
+        profileErrors.Clear();
+
+        try
+        {
+            selectedAgentProfile = await AgentApiClient.UpdateOperatingProfileAsync(companyId, agentId, request);
+            profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+            profileSuccessMessage = $"{selectedAgentProfile.DisplayName} operating profile was saved.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            profileErrorMessage = ex.Message;
+            profileErrors = ex.Errors.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            isSavingProfile = false;
+        }
+    }
+
+    private IReadOnlyList<string> GetProfileErrors(string key)
+    {
+        var matched = profileErrors
+            .Where(entry =>
+                string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase) ||
+                entry.Key.StartsWith($"{key}.", StringComparison.OrdinalIgnoreCase) ||
+                entry.Key.StartsWith($"{key}[", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(entry => entry.Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return matched.Length == 0
+            ? []
+            : matched;
+    }
+
+    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
+    {
+        var sequence = 0;
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "mt-3");
+
+        builder.OpenElement(sequence++, "label");
+        builder.AddAttribute(sequence++, "class", "form-label");
+        builder.AddAttribute(sequence++, "for", fieldName);
+        builder.AddContent(sequence++, label);
+        builder.CloseElement();
+
+        builder.OpenElement(sequence++, "textarea");
+        builder.AddAttribute(sequence++, "id", fieldName);
+        builder.AddAttribute(sequence++, "class", "form-control");
+        builder.AddAttribute(sequence++, "rows", "8");
+        builder.AddAttribute(sequence++, "value", valueAccessor());
+        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string>(this, value =>
+        {
+            switch (fieldName)
+            {
+                case "Objectives": profileModel.ObjectivesJson = value; break;
+                case "Kpis": profileModel.KpisJson = value; break;
+                case "ToolPermissions": profileModel.ToolPermissionsJson = value; break;
+                case "DataScopes": profileModel.DataScopesJson = value; break;
+                case "ApprovalThresholds": profileModel.ApprovalThresholdsJson = value; break;
+                case "EscalationRules": profileModel.EscalationRulesJson = value; break;
+                case "TriggerLogic": profileModel.TriggerLogicJson = value; break;
+                case "WorkingHours": profileModel.WorkingHoursJson = value; break;
+            }
+        }, valueAccessor()));
+        builder.CloseElement();
+
+        foreach (var error in GetProfileErrors(fieldName))
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "text-danger small mt-1");
+            builder.AddContent(sequence++, error);
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    };
+
     private async Task HandleHireAsync()
     {
         if (CompanyId is not Guid companyId)
@@ -290,6 +538,16 @@ else
             var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
             roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
             successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
+
+            if (CanManageProfiles)
+            {
+                await SelectAgentAsync(result.Agent.Id);
+            }
+            else
+            {
+                selectedAgentId = result.Agent.Id;
+            }
+
             ResetSelectedTemplate();
         }
         catch (OnboardingApiException ex)
@@ -302,7 +560,7 @@ else
         }
     }
 
-    private sealed class HireAgentFormModel
+    private sealed class HireAgentFormModel : IValidatableObject
     {
         [Required, StringLength(100)]
         public string TemplateId { get; set; } = string.Empty;
@@ -325,6 +583,36 @@ else
         [StringLength(32)]
         public string? Seniority { get; set; }
 
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (string.IsNullOrWhiteSpace(AvatarUrl))
+            {
+                yield break;
+            }
+
+            var trimmed = AvatarUrl.Trim();
+            if (trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("blob:", StringComparison.OrdinalIgnoreCase) ||
+                (trimmed.Length >= 256 &&
+                 !trimmed.Contains("/", StringComparison.Ordinal) &&
+                 !trimmed.Contains("\\", StringComparison.Ordinal) &&
+                 !trimmed.Contains(".", StringComparison.Ordinal) &&
+                 (trimmed.StartsWith("iVBORw0KGgo", StringComparison.Ordinal) ||
+                  trimmed.StartsWith("/9j/", StringComparison.Ordinal) ||
+                  trimmed.StartsWith("R0lGOD", StringComparison.Ordinal) ||
+                  trimmed.StartsWith("PHN2Zy", StringComparison.Ordinal))))
+            {
+                yield return new ValidationResult("AvatarUrl must be an external http/https URL or a file/storage reference, not inline image data.", [nameof(AvatarUrl)]);
+                yield break;
+            }
+
+            if ((trimmed.Contains("://", StringComparison.Ordinal) || trimmed.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("https:", StringComparison.OrdinalIgnoreCase)) &&
+                (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
+            {
+                yield return new ValidationResult("AvatarUrl must be a valid absolute http/https URL or a file/storage reference.", [nameof(AvatarUrl)]);
+            }
+        }
+
         public CreateAgentFromTemplateRequest ToRequest() =>
             new()
             {
@@ -336,5 +624,118 @@ else
                 Personality = Personality,
                 Seniority = Seniority
             };
+    }
+
+    private sealed class AgentOperatingProfileFormModel
+    {
+        [Required, StringLength(32)]
+        public string Status { get; set; } = "active";
+
+        [StringLength(4000)]
+        public string? RoleBrief { get; set; }
+
+        public string ObjectivesJson { get; set; } = "{}";
+        public string KpisJson { get; set; } = "{}";
+        public string ToolPermissionsJson { get; set; } = "{}";
+        public string DataScopesJson { get; set; } = "{}";
+        public string ApprovalThresholdsJson { get; set; } = "{}";
+        public string EscalationRulesJson { get; set; } = "{}";
+        public string TriggerLogicJson { get; set; } = "{}";
+        public string WorkingHoursJson { get; set; } = "{}";
+
+        public static AgentOperatingProfileFormModel FromViewModel(AgentOperatingProfileViewModel model) =>
+            new()
+            {
+                Status = model.Status,
+                RoleBrief = model.RoleBrief,
+                ObjectivesJson = Serialize(model.Objectives),
+                KpisJson = Serialize(model.Kpis),
+                ToolPermissionsJson = Serialize(model.ToolPermissions),
+                DataScopesJson = Serialize(model.DataScopes),
+                ApprovalThresholdsJson = Serialize(model.ApprovalThresholds),
+                EscalationRulesJson = Serialize(model.EscalationRules),
+                TriggerLogicJson = Serialize(model.TriggerLogic),
+                WorkingHoursJson = Serialize(model.WorkingHours)
+            };
+
+        public bool TryCreateRequest(out UpdateAgentOperatingProfileRequest request, out Dictionary<string, string[]> errors)
+        {
+            var collectedErrors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            var objectives = ParseJson("Objectives", ObjectivesJson, collectedErrors);
+            var kpis = ParseJson("Kpis", KpisJson, collectedErrors);
+            var toolPermissions = ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors);
+            var dataScopes = ParseJson("DataScopes", DataScopesJson, collectedErrors);
+            var approvalThresholds = ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors);
+            var escalationRules = ParseJson("EscalationRules", EscalationRulesJson, collectedErrors);
+            var triggerLogic = ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors);
+            var workingHours = ParseJson("WorkingHours", WorkingHoursJson, collectedErrors);
+
+            if (collectedErrors.Count > 0)
+            {
+                request = new UpdateAgentOperatingProfileRequest();
+                errors = collectedErrors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+                return false;
+            }
+
+            request = new UpdateAgentOperatingProfileRequest
+            {
+                Status = Status,
+                RoleBrief = RoleBrief,
+                Objectives = objectives,
+                Kpis = kpis,
+                ToolPermissions = toolPermissions,
+                DataScopes = dataScopes,
+                ApprovalThresholds = approvalThresholds,
+                EscalationRules = escalationRules,
+                TriggerLogic = triggerLogic,
+                WorkingHours = workingHours
+            };
+
+            errors = new Dictionary<string, string[]>();
+            return true;
+        }
+
+        private static Dictionary<string, JsonNode?> ParseJson(
+            string fieldName,
+            string value,
+            IDictionary<string, List<string>> errors)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            try
+            {
+                var payload = JsonSerializer.Deserialize<Dictionary<string, JsonNode?>>(value, JsonEditorOptions);
+                if (payload is null)
+                {
+                    AddError(errors, fieldName, $"{fieldName} must be a JSON object.");
+                    return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                return new Dictionary<string, JsonNode?>(payload, StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException)
+            {
+                AddError(errors, fieldName, $"{fieldName} must be valid JSON.");
+                return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static string Serialize(IDictionary<string, JsonNode?> payload) =>
+            JsonSerializer.Serialize(payload, JsonEditorOptions);
+
+        private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
+        {
+            if (!errors.TryGetValue(key, out var messages))
+            {
+                messages = [];
+                errors[key] = messages;
+            }
+
+            messages.Add(message);
+        }
     }
 }

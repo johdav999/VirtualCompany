@@ -1,0 +1,361 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -100,7 +100,7 @@ public sealed class AgentTemplate
+         TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
+         RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
+         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
+         PersonaSummary = NormalizeOptional(personaSummary, nameof(personaSummary), PersonaSummaryMaxLength);
+-        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
++        AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+         DefaultSeniority = defaultSeniority;
+         SortOrder = sortOrder;
+         IsActive = isActive;
+@@ -286,7 +286,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
+         DisplayName = NormalizeRequired(displayName, nameof(displayName), DisplayNameMaxLength);
+         RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
+         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
+-        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
++        AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+         Seniority = seniority;
+         Status = resolvedStatus;
+         Personality = CloneNodes(personality);
+@@ -337,3 +337,56 @@ public sealed class Agent : ICompanyOwnedEntity
+         return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+     }
+ }
++
++public static class AvatarReferenceRules
++{
++    private static readonly string[] InlinePrefixes = ["data:", "blob:"];
++    private static readonly string[] Base64Prefixes = ["iVBORw0KGgo", "/9j/", "R0lGOD", "PHN2Zy"];
++
++    public static string? Normalize(string? value, string fieldName, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (!TryValidate(trimmed, fieldName, maxLength, out var error))
++        {
++            throw error!.Contains("characters or fewer", StringComparison.Ordinal)
++                ? new ArgumentOutOfRangeException(fieldName, error)
++                : new ArgumentException(error, fieldName);
++        }
++
++        return trimmed;
++    }
++
++    public static bool TryValidate(string? value, string fieldName, int maxLength, out string? error)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            error = null;
++            return true;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            error = $"{fieldName} must be {maxLength} characters or fewer.";
++            return false;
++        }
++
++        if (IsInlinePayload(trimmed))
++        {
++            error = $"{fieldName} must be an external http/https URL or a file/storage reference, not inline image data.";
++            return false;
++        }
++
++        if (LooksLikeAbsoluteUrl(trimmed) &&
++            (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) ||
++             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
++        {
++            error = $"{fieldName} must be a valid absolute http/https URL or a file/storage reference.";
++            return false;
++        }
++
++        error = null;
++        return true;
++    }
++
++    private static bool IsInlinePayload(string value) =>
++        InlinePrefixes.Any(prefix => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) ||
++        (value.Length >= 256 &&
++         !value.Contains("/", StringComparison.Ordinal) &&
++         !value.Contains("\\", StringComparison.Ordinal) &&
++         !value.Contains(".", StringComparison.Ordinal) &&
++         Base64Prefixes.Any(prefix => value.StartsWith(prefix, StringComparison.Ordinal)));
++
++    private static bool LooksLikeAbsoluteUrl(string value) =>
++        value.Contains("://", StringComparison.Ordinal) ||
++        value.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
++        value.StartsWith("https:", StringComparison.OrdinalIgnoreCase) ||
++        value.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
++        value.StartsWith("blob:", StringComparison.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -197,7 +197,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         AddRequired(errors, nameof(command.TemplateId), command.TemplateId, "TemplateId is required.", TemplateIdMaxLength);
+         AddRequired(errors, nameof(command.DisplayName), command.DisplayName, "DisplayName is required.", DisplayNameMaxLength);
+         AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
+         AddOptional(errors, nameof(command.RoleName), command.RoleName, RoleNameMaxLength);
+-        AddOptional(errors, nameof(command.AvatarUrl), command.AvatarUrl, AvatarUrlMaxLength);
++        AddAvatarReference(errors, nameof(command.AvatarUrl), command.AvatarUrl);
+         AddOptional(errors, nameof(command.Personality), command.Personality, PersonalitySummaryMaxLength);
+ 
+         if (!string.IsNullOrWhiteSpace(command.Seniority) && !AgentSeniorityValues.TryParse(command.Seniority, out _))
+@@ -233,6 +233,17 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         }
+     }
+ 
++    private static void AddAvatarReference(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string? value)
++    {
++        if (!AvatarReferenceRules.TryValidate(value, key, AvatarUrlMaxLength, out var error))
++        {
++            AddError(errors, key, error!);
++        }
++    }
++
+     private static void AddError(
+         IDictionary<string, List<string>> errors,
+         string key,
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -43,7 +43,7 @@ else
+             <div class="wizard-card">
+                 <span class="dashboard-kicker">Template catalog</span>
+                 <h1>Hire agents for @(companyAccess?.CompanyName ?? "your company")</h1>
+-                <p class="text-body-secondary">Start from seeded templates, customize identity fields, and create an active company-owned roster entry.</p>
++                <p class="text-body-secondary">Start from seeded templates, customize identity fields and avatar references, and create an active company-owned roster entry.</p>
+ 
+                 @if (!string.IsNullOrWhiteSpace(errorMessage))
+                 {
+@@ -97,8 +97,9 @@ else
+                         </div>
+ 
+                         <div class="mb-3">
+-                            <label class="form-label" for="avatar-url">Avatar URL</label>
++                            <label class="form-label" for="avatar-url">Avatar URL or file reference</label>
+                             <InputText id="avatar-url" class="form-control" @bind-Value="hireModel.AvatarUrl" />
++                            <div class="form-text">Use an external <code>https://</code> URL or a file/object-storage reference. Uploads and inline image data are not supported.</div>
+                             <ValidationMessage For="@(() => hireModel.AvatarUrl)" />
+                         </div>
+ 
+@@ -158,6 +159,10 @@ else
+                             </div>
+                             <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
+                             <div class="text-body-secondary">@agent.Seniority</div>
++                            @if (!string.IsNullOrWhiteSpace(agent.AvatarUrl))
++                            {
++                                <div class="text-body-secondary small mt-2">Avatar reference: @agent.AvatarUrl</div>
++                            }
+                             @if (!string.IsNullOrWhiteSpace(agent.Personality))
+                             {
+                                 <p class="mb-0 mt-3">@agent.Personality</p>
+@@ -302,7 +307,7 @@ else
+         }
+     }
+ 
+-    private sealed class HireAgentFormModel
++    private sealed class HireAgentFormModel : IValidatableObject
+     {
+         [Required, StringLength(100)]
+         public string TemplateId { get; set; } = string.Empty;
+@@ -322,6 +327,35 @@ else
+         [StringLength(32)]
+         public string? Seniority { get; set; }
+ 
++        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
++        {
++            if (string.IsNullOrWhiteSpace(AvatarUrl))
++            {
++                yield break;
++            }
++
++            var trimmed = AvatarUrl.Trim();
++            if (trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
++                trimmed.StartsWith("blob:", StringComparison.OrdinalIgnoreCase) ||
++                (trimmed.Length >= 256 &&
++                 !trimmed.Contains("/", StringComparison.Ordinal) &&
++                 !trimmed.Contains("\\", StringComparison.Ordinal) &&
++                 !trimmed.Contains(".", StringComparison.Ordinal) &&
++                 (trimmed.StartsWith("iVBORw0KGgo", StringComparison.Ordinal) ||
++                  trimmed.StartsWith("/9j/", StringComparison.Ordinal) ||
++                  trimmed.StartsWith("R0lGOD", StringComparison.Ordinal) ||
++                  trimmed.StartsWith("PHN2Zy", StringComparison.Ordinal))))
++            {
++                yield return new ValidationResult("AvatarUrl must be an external http/https URL or a file/storage reference, not inline image data.", [nameof(AvatarUrl)]);
++                yield break;
++            }
++
++            if ((trimmed.Contains("://", StringComparison.Ordinal) || trimmed.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("https:", StringComparison.OrdinalIgnoreCase)) &&
++                (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
++            {
++                yield return new ValidationResult("AvatarUrl must be a valid absolute http/https URL or a file/storage reference.", [nameof(AvatarUrl)]);
++            }
++        }
++
+         public CreateAgentFromTemplateRequest ToRequest() =>
+             new()
+             {
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -157,6 +157,11 @@ public sealed class AgentApiClient
+                 throw new OnboardingApiException("DisplayName is required.");
+             }
+ 
++            if (!TryValidateAvatarReference(request.AvatarUrl, out var avatarError))
++            {
++                throw new OnboardingApiException(avatarError!);
++            }
++
+             var template = _templates.SingleOrDefault(x => string.Equals(x.TemplateId, request.TemplateId, StringComparison.OrdinalIgnoreCase));
+             if (template is null)
+             {
+@@ -191,6 +196,34 @@ public sealed class AgentApiClient
+ 
+             return new CreateAgentFromTemplateResultViewModel { Agent = agent };
+         }
++
++        private static bool TryValidateAvatarReference(string? value, out string? error)
++        {
++            if (string.IsNullOrWhiteSpace(value))
++            {
++                error = null;
++                return true;
++            }
++
++            var trimmed = value.Trim();
++            if (trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
++                trimmed.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
++            {
++                error = "AvatarUrl must be an external http/https URL or a file/storage reference, not inline image data.";
++                return false;
++            }
++
++            if ((trimmed.Contains("://", StringComparison.Ordinal) ||
++                 trimmed.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
++                 trimmed.StartsWith("https:", StringComparison.OrdinalIgnoreCase)) &&
++                (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) ||
++                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
++            {
++                error = "AvatarUrl must be a valid absolute http/https URL or a file/storage reference.";
++                return false;
++            }
++
++            error = null;
++            return true;
++        }
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -116,6 +116,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal("Nora Ledger", agent.DisplayName);
+         Assert.Equal("Strategic Finance", agent.Department);
+         Assert.Equal("Head of Finance", agent.RoleName);
++        Assert.Equal("https://cdn.example.com/avatars/nora.png", agent.AvatarUrl);
+         Assert.Equal("Sharp, calm, and relentless about runway discipline.", agent.Personality["summary"]!.GetValue<string>());
+         Assert.NotEmpty(agent.Objectives);
+         Assert.NotEmpty(agent.Kpis);
+@@ -238,6 +239,59 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotSame(template.Thresholds, agent.Thresholds);
+         Assert.NotSame(template.EscalationRules, agent.EscalationRules);
+     }
++
++    [Fact]
++    public async Task Hiring_from_template_accepts_storage_avatar_references_and_returns_them_in_results()
++    {
++        var ids = await SeedMembershipAsync();
++        const string avatarReference = "avatars/company-123/agent-abc.png";
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "sales",
++            displayName = "Avery Pipeline",
++            avatarUrl = avatarReference
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<HireAgentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(avatarReference, payload!.Agent.AvatarUrl);
++
++        var roster = await client.GetFromJsonAsync<List<CompanyAgentResponse>>($"/api/companies/{ids.CompanyId}/agents");
++        var rosterAgent = Assert.Single(roster!, x => x.Id == payload.Agent.Id);
++        Assert.Equal(avatarReference, rosterAgent.AvatarUrl);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(ids.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == payload.Agent.Id);
++        Assert.Equal(avatarReference, agent.AvatarUrl);
++    }
++
++    [Fact]
++    public async Task Creating_from_template_rejects_inline_avatar_payloads_and_malformed_absolute_urls()
++    {
++        var ids = await SeedMembershipAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var inlineResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "finance",
++            displayName = "Inline Avatar",
++            avatarUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, inlineResponse.StatusCode);
++        var inlinePayload = await inlineResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(inlinePayload);
++        Assert.Contains("AvatarUrl", inlinePayload!.Errors.Keys);
++
++        var malformedUrlResponse = await client.PostAsJsonAsync($"/api/companies/{ids.CompanyId}/agents/from-template", new
++        {
++            templateId = "finance",
++            displayName = "Broken Url",
++            avatarUrl = "https//cdn.example.com/avatar.png"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, malformedUrlResponse.StatusCode);
++        var malformedUrlPayload = await malformedUrlResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(malformedUrlPayload);
++        Assert.Contains("AvatarUrl", malformedUrlPayload!.Errors.Keys);
++    }
++
+     [Fact]
+     public async Task Hiring_from_template_adds_agent_to_roster_with_active_status_immediately()
+     {
+@@ -466,6 +520,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public string Department { get; set; } = string.Empty;
+         public string RoleName { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
++        public string? AvatarUrl { get; set; }
+         public string Seniority { get; set; } = string.Empty;
+     }
+ 
+@@ -475,6 +530,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public Guid Id { get; set; }
+         public Guid CompanyId { get; set; }
+         public string DisplayName { get; set; } = string.Empty;
++        public string? AvatarUrl { get; set; }
+         public string Status { get; set; } = string.Empty;
+     }
+ 
+END_OF_PATCH

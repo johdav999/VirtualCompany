@@ -58,8 +58,8 @@ public static class DependencyInjection
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
-        services.AddScoped<AgentTemplateSeeder>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+        services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();

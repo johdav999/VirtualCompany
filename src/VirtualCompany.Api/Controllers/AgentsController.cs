@@ -88,4 +88,57 @@ public sealed class AgentsController : ControllerBase
     {
         return CreateFromTemplateAsync(companyId, command, cancellationToken);
     }
+
+    [HttpGet("{agentId:guid}/profile")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<AgentOperatingProfileDto>> GetOperatingProfileAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var profile = await _agentService.GetOperatingProfileAsync(companyId, agentId, cancellationToken);
+            return Ok(profile);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPut("{agentId:guid}/profile")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<AgentOperatingProfileDto>> UpdateOperatingProfileAsync(
+        Guid companyId,
+        Guid agentId,
+        [FromBody] UpdateAgentOperatingProfileCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var profile = await _agentService.UpdateOperatingProfileAsync(companyId, agentId, command, cancellationToken);
+            return Ok(profile);
+        }
+        catch (AgentValidationException ex)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+            {
+                Title = "Validation failed",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
 }

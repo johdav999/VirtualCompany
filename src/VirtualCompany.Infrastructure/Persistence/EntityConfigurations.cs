@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence;
@@ -102,6 +103,7 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
             .HasConversion(status => status.ToStorageValue(), value => CompanyOnboardingStatusValues.Parse(value))
             .HasMaxLength(32)
             .HasDefaultValue(CompanyOnboardingStatus.NotStarted)
+            .HasSentinel((CompanyOnboardingStatus)0)
             .IsRequired();
         builder.Property(x => x.OnboardingLastSavedUtc);
         builder.Property(x => x.OnboardingCompletedUtc);
@@ -211,6 +213,9 @@ internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<Agen
         builder.Property(x => x.UpdatedUtc).IsRequired();
         builder.HasIndex(x => x.TemplateId).IsUnique();
         builder.HasIndex(x => new { x.IsActive, x.SortOrder });
+
+        // Template default changes should ship in new EF migrations so historical revisions stay reviewable.
+        builder.HasData(AgentTemplateSeedData.GetModelSeeds());
     }
 }
 
@@ -275,6 +280,7 @@ internal sealed class CompanyInvitationConfiguration : IEntityTypeConfiguration<
             .HasConversion(status => status.ToStorageValue(), value => CompanyInvitationDeliveryStatusValues.Parse(value))
             .HasMaxLength(32)
             .HasDefaultValue(CompanyInvitationDeliveryStatus.Pending)
+            .HasSentinel((CompanyInvitationDeliveryStatus)0)
             .IsRequired();
         builder.Property(x => x.ExpiresAtUtc).IsRequired();
         builder.Property(x => x.LastSentUtc);
@@ -401,6 +407,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
         builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
         builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
         builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.RoleBrief).HasMaxLength(4000).HasColumnName("role_brief");
         builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
         builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
         builder.Property(x => x.Seniority)
@@ -411,6 +418,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
             .HasConversion(value => value.ToStorageValue(), value => AgentStatusValues.Parse(value))
             .HasMaxLength(32)
             .HasDefaultValue(AgentStatusValues.DefaultStatus)
+            .HasSentinel((AgentStatus)0)
             .IsRequired();
         builder.Property(x => x.Personality)
             .HasColumnName("personality_json")
@@ -444,6 +452,16 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
             .IsRequired();
         builder.Property(x => x.EscalationRules)
             .HasColumnName("escalation_rules_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.TriggerLogic)
+            .HasColumnName("trigger_logic_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.WorkingHours)
+            .HasColumnName("working_hours_json")
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();

@@ -1,0 +1,1046 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -94,6 +94,7 @@ Once the container is running, start the API from the solution root:
+ ```
+ 
+ The API applies EF Core migrations automatically on startup for relational providers.
++Baseline `agent_templates` catalog records are seeded through EF Core model seeding and migrations, not API startup writes.
+ 
+ ## Local Development Authentication
+ 
+@@ -175,3 +176,4 @@ On first authenticated request, the API provisions or updates the internal `User
+ - SQL Server startup can take a short time on first boot; if API startup fails immediately after `docker compose up -d`, check the container logs and retry once the server is ready.
+ - Local development is standardized on SQL Server in Docker. The intended production target is Azure SQL.
+ - The API applies EF Core migrations at startup when using a relational provider.
++- Baseline hiring templates in `agent_templates` are versioned in source and delivered through EF Core migrations.
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -63,7 +63,6 @@ using (var scope = app.Services.CreateScope())
+ {
+     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
+-    var agentTemplateSeeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
+ 
+     if (dbContext.Database.IsRelational())
+     {
+@@ -77,7 +76,6 @@ using (var scope = app.Services.CreateScope())
+     }
+ 
+     await templateSeeder.SeedAsync();
+-    await agentTemplateSeeder.SeedAsync();
+ }
+ 
+ app.MapVirtualCompanyHealthEndpoints();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs
+deleted file mode 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedCatalogReader.cs
++++ /dev/null
+@@ -1,121 +0,0 @@
+-using System.Reflection;
+-using System.Text.Json;
+-using System.Text.Json.Nodes;
+-
+-namespace VirtualCompany.Infrastructure.Companies;
+-
+-internal static class AgentTemplateSeedCatalogReader
+-{
+-    private const string ResourceName = "VirtualCompany.Infrastructure.Persistence.SeedData.agent-templates.json";
+-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+-
+-    public static async Task<AgentTemplateSeedCatalog> LoadAsync(CancellationToken cancellationToken = default)
+-    {
+-        var assembly = typeof(AgentTemplateSeedCatalogReader).Assembly;
+-        await using var stream = assembly.GetManifestResourceStream(ResourceName)
+-            ?? throw new InvalidOperationException($"Embedded agent template seed '{ResourceName}' was not found.");
+-
+-        using var reader = new StreamReader(stream);
+-        var json = await reader.ReadToEndAsync(cancellationToken);
+-        var catalog = JsonSerializer.Deserialize<AgentTemplateSeedCatalog>(json, SerializerOptions) ?? new AgentTemplateSeedCatalog();
+-        Validate(catalog);
+-        return catalog;
+-    }
+-
+-    private static void Validate(AgentTemplateSeedCatalog catalog)
+-    {
+-        if (catalog.Version <= 0)
+-        {
+-            throw new InvalidOperationException("Agent template seed catalog version must be greater than zero.");
+-        }
+-
+-        if (catalog.Templates.Count == 0)
+-        {
+-            throw new InvalidOperationException("Agent template seed catalog must contain at least one template.");
+-        }
+-
+-        var ids = new HashSet<Guid>();
+-        var templateIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+-
+-        foreach (var template in catalog.Templates)
+-        {
+-            ValidateTemplate(template);
+-
+-            if (!ids.Add(template.Id))
+-            {
+-                throw new InvalidOperationException($"Agent template seed contains duplicate id '{template.Id}'.");
+-            }
+-
+-            if (!templateIds.Add(template.TemplateId))
+-            {
+-                throw new InvalidOperationException($"Agent template seed contains duplicate templateId '{template.TemplateId}'.");
+-            }
+-        }
+-    }
+-
+-    private static void ValidateTemplate(AgentTemplateSeedDefinition template)
+-    {
+-        if (template.Id == Guid.Empty)
+-        {
+-            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a stable id.");
+-        }
+-
+-        if (template.TemplateVersion <= 0)
+-        {
+-            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a templateVersion greater than zero.");
+-        }
+-
+-        if (string.IsNullOrWhiteSpace(template.TemplateId))
+-        {
+-            throw new InvalidOperationException("Agent template seed must declare a templateId.");
+-        }
+-
+-        if (string.IsNullOrWhiteSpace(template.RoleName))
+-        {
+-            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a roleName.");
+-        }
+-
+-        if (string.IsNullOrWhiteSpace(template.Department))
+-        {
+-            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a department.");
+-        }
+-
+-        if (string.IsNullOrWhiteSpace(template.DefaultSeniority))
+-        {
+-            throw new InvalidOperationException($"Agent template '{template.TemplateId}' must declare a defaultSeniority.");
+-        }
+-
+-        ValidatePayload(template.TemplateId, nameof(template.Personality), template.Personality);
+-        ValidatePayload(template.TemplateId, nameof(template.Objectives), template.Objectives);
+-        ValidatePayload(template.TemplateId, nameof(template.Kpis), template.Kpis);
+-        ValidatePayload(template.TemplateId, nameof(template.Tools), template.Tools);
+-        ValidatePayload(template.TemplateId, nameof(template.Scopes), template.Scopes);
+-        ValidatePayload(template.TemplateId, nameof(template.Thresholds), template.Thresholds);
+-        ValidatePayload(template.TemplateId, nameof(template.EscalationRules), template.EscalationRules);
+-    }
+-
+-    private static void ValidatePayload(string templateId, string payloadName, Dictionary<string, JsonNode?> payload)
+-    {
+-        if (payload.Count == 0)
+-        {
+-            throw new InvalidOperationException($"Agent template '{templateId}' must declare a non-empty {payloadName} payload.");
+-        }
+-    }
+-}
+-
+-internal sealed class AgentTemplateSeedCatalog
+-{
+-    public int Version { get; set; }
+-    public List<AgentTemplateSeedDefinition> Templates { get; set; } = [];
+-}
+-
+-internal sealed class AgentTemplateSeedDefinition
+-{
+-    public Guid Id { get; set; }
+-    public int TemplateVersion { get; set; } = 1;
+-    public string TemplateId { get; set; } = string.Empty;
+-    public string RoleName { get; set; } = string.Empty;
+-    public string Department { get; set; } = string.Empty;
+-    public string? PersonaSummary { get; set; }
+-    public string DefaultSeniority { get; set; } = string.Empty;
+-    public string? AvatarUrl { get; set; }
+-    public int SortOrder { get; set; }
+-    public bool IsActive { get; set; } = true;
+-    public Dictionary<string, JsonNode?> Personality { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Tools { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Scopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Thresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedData.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedData.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeedData.cs
+@@ -0,0 +1,246 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++internal static class AgentTemplateSeedData
++{
++    internal const string FinanceTemplateId = "finance";
++    internal const string SalesTemplateId = "sales";
++    internal const string MarketingTemplateId = "marketing";
++    internal const string SupportTemplateId = "support";
++    internal const string OperationsTemplateId = "operations";
++    internal const string ExecutiveAssistantTemplateId = "executive-assistant";
++    internal const int BaselineTemplateVersion = 1;
++
++    private static readonly DateTime SeededUtc = new(2026, 3, 31, 0, 0, 0, DateTimeKind.Utc);
++
++    private static readonly IReadOnlyDictionary<string, int> TemplateVersions =
++        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++        {
++            [FinanceTemplateId] = BaselineTemplateVersion,
++            [SalesTemplateId] = BaselineTemplateVersion,
++            [MarketingTemplateId] = BaselineTemplateVersion,
++            [SupportTemplateId] = BaselineTemplateVersion,
++            [OperationsTemplateId] = BaselineTemplateVersion,
++            [ExecutiveAssistantTemplateId] = BaselineTemplateVersion
++        };
++
++    public static object[] GetModelSeeds() =>
++    [
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30101"),
++            FinanceTemplateId,
++            "Finance Manager",
++            "Finance",
++            "Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.",
++            AgentSeniority.Senior,
++            "/avatars/agents/finance-manager.png",
++            10,
++            Payload(
++                ("summary", JsonValue.Create("Calm, precise, audit-ready communicator.")),
++                ("traits", StringArray("detail-oriented", "risk-aware", "structured"))),
++            Payload(("primary", StringArray("Protect cash flow", "Maintain accurate books", "Reduce avoidable spend leakage"))),
++            Payload(("targets", StringArray("monthly_close_under_5_days", "forecast_variance_under_3_percent", "late_invoices_under_2_percent"))),
++            Payload(("allowed", StringArray("erp", "accounting", "spreadsheets", "billing"))),
++            Payload(
++                ("read", StringArray("finance", "payments", "vendors")),
++                ("write", StringArray("forecast_drafts", "invoice_followups"))),
++            Payload(("approval", JsonObject(("expenseUsd", JsonValue.Create(5000)), ("wireTransferUsd", JsonValue.Create(2500))))),
++            Payload(
++                ("critical", StringArray("cash_runway_under_90_days", "failed_payroll_run")),
++                ("escalateTo", JsonValue.Create("founder")))),
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30102"),
++            SalesTemplateId,
++            "Sales Manager",
++            "Sales",
++            "Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.",
++            AgentSeniority.Senior,
++            "/avatars/agents/sales-manager.png",
++            20,
++            Payload(
++                ("summary", JsonValue.Create("Direct, energetic, commercially sharp.")),
++                ("traits", StringArray("persistent", "concise", "target-driven"))),
++            Payload(("primary", StringArray("Increase qualified pipeline", "Improve conversion velocity", "Protect forecast quality"))),
++            Payload(("targets", StringArray("weekly_sqls", "stage_conversion_rate", "forecast_accuracy"))),
++            Payload(("allowed", StringArray("crm", "email", "calendar", "proposal"))),
++            Payload(
++                ("read", StringArray("accounts", "contacts", "opportunities")),
++                ("write", StringArray("opportunity_notes", "followup_tasks", "pipeline_updates"))),
++            Payload(("discount", JsonObject(("maxPercent", JsonValue.Create(10))))),
++            Payload(
++                ("critical", StringArray("deal_risk_over_50000", "forecast_slip_over_20_percent")),
++                ("escalateTo", JsonValue.Create("founder")))),
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30103"),
++            MarketingTemplateId,
++            "Marketing Manager",
++            "Marketing",
++            "Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.",
++            AgentSeniority.Senior,
++            "/avatars/agents/marketing-manager.png",
++            30,
++            Payload(
++                ("summary", JsonValue.Create("Creative, analytical, and outcome-focused.")),
++                ("traits", StringArray("experimental", "brand-aware", "data-literate"))),
++            Payload(("primary", StringArray("Grow qualified demand", "Improve campaign efficiency", "Increase content output consistency"))),
++            Payload(("targets", StringArray("mql_volume", "cost_per_qualified_lead", "content_publish_cadence"))),
++            Payload(("allowed", StringArray("analytics", "cms", "email_marketing", "ads_manager"))),
++            Payload(
++                ("read", StringArray("campaigns", "analytics", "content_calendar")),
++                ("write", StringArray("campaign_briefs", "draft_copy", "weekly_reports"))),
++            Payload(("budget", JsonObject(("monthlyPaidSpendUsd", JsonValue.Create(15000))))),
++            Payload(
++                ("critical", StringArray("cac_spike_over_25_percent", "brand_incident")),
++                ("escalateTo", JsonValue.Create("founder")))),
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30104"),
++            SupportTemplateId,
++            "Support Lead",
++            "Support",
++            "Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.",
++            AgentSeniority.Lead,
++            "/avatars/agents/support-lead.png",
++            40,
++            Payload(
++                ("summary", JsonValue.Create("Empathetic, calm under pressure, and operationally disciplined.")),
++                ("traits", StringArray("patient", "service-oriented", "clear"))),
++            Payload(("primary", StringArray("Protect first-response SLA", "Raise resolution quality", "Reduce repeat-contact drivers"))),
++            Payload(("targets", StringArray("first_response_time", "resolution_time", "csat", "reopen_rate"))),
++            Payload(("allowed", StringArray("ticketing", "knowledge_base", "chat", "incident_tracking"))),
++            Payload(
++                ("read", StringArray("tickets", "customer_history", "knowledge_base")),
++                ("write", StringArray("ticket_replies", "macro_updates", "triage_tags"))),
++            Payload(("sla", JsonObject(("firstResponseMinutes", JsonValue.Create(30)), ("resolutionHours", JsonValue.Create(24))))),
++            Payload(
++                ("critical", StringArray("sev1_incident", "vip_customer_blocked", "csat_below_80")),
++                ("escalateTo", JsonValue.Create("operations")))),
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30105"),
++            OperationsTemplateId,
++            "Operations Manager",
++            "Operations",
++            "Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.",
++            AgentSeniority.Lead,
++            "/avatars/agents/operations-manager.png",
++            50,
++            Payload(
++                ("summary", JsonValue.Create("Systematic, decisive, and accountability-heavy.")),
++                ("traits", StringArray("process-minded", "reliable", "cross-functional"))),
++            Payload(("primary", StringArray("Reduce operational friction", "Improve handoff quality", "Surface delivery blockers early"))),
++            Payload(("targets", StringArray("sla_adherence", "handoff_error_rate", "cycle_time", "backlog_age"))),
++            Payload(("allowed", StringArray("project_management", "docs", "incident_tracking", "calendar"))),
++            Payload(
++                ("read", StringArray("workflows", "projects", "operational_metrics")),
++                ("write", StringArray("runbooks", "task_assignments", "retrospective_notes"))),
++            Payload(("delivery", JsonObject(("blockedDays", JsonValue.Create(2))))),
++            Payload(
++                ("critical", StringArray("missed_customer_deadline", "systemic_handoff_failure")),
++                ("escalateTo", JsonValue.Create("founder")))),
++        CreateSeed(
++            new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30106"),
++            ExecutiveAssistantTemplateId,
++            "Executive Assistant",
++            "Executive",
++            "Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.",
++            AgentSeniority.Executive,
++            "/avatars/agents/executive-assistant.png",
++            60,
++            Payload(
++                ("summary", JsonValue.Create("Polished, anticipatory, and extremely organized.")),
++                ("traits", StringArray("discreet", "proactive", "detail-oriented"))),
++            Payload(("primary", StringArray("Protect executive focus time", "Track commitments to completion", "Improve meeting quality"))),
++            Payload(("targets", StringArray("calendar_conflict_rate", "followup_completion_rate", "meeting_preparation_coverage"))),
++            Payload(("allowed", StringArray("calendar", "email", "docs", "task_management"))),
++            Payload(
++                ("read", StringArray("calendar", "meeting_notes", "priority_projects")),
++                ("write", StringArray("agenda_drafts", "followup_lists", "calendar_holds"))),
++            Payload(("calendar", JsonObject(("maxBackToBackMeetings", JsonValue.Create(4))))),
++            Payload(
++                ("critical", StringArray("board_meeting_change", "executive_deadline_at_risk")),
++                ("escalateTo", JsonValue.Create("founder"))))
++    ];
++
++    public static bool TryGetTemplateVersion(string templateId, out int version) =>
++        TemplateVersions.TryGetValue(templateId, out version);
++
++    private static object CreateSeed(
++        Guid id,
++        string templateId,
++        string roleName,
++        string department,
++        string personaSummary,
++        AgentSeniority defaultSeniority,
++        string avatarUrl,
++        int sortOrder,
++        Dictionary<string, JsonNode?> personality,
++        Dictionary<string, JsonNode?> objectives,
++        Dictionary<string, JsonNode?> kpis,
++        Dictionary<string, JsonNode?> tools,
++        Dictionary<string, JsonNode?> scopes,
++        Dictionary<string, JsonNode?> thresholds,
++        Dictionary<string, JsonNode?> escalationRules) =>
++        new
++        {
++            Id = id,
++            TemplateId = templateId,
++            RoleName = roleName,
++            Department = department,
++            PersonaSummary = personaSummary,
++            DefaultSeniority = defaultSeniority,
++            AvatarUrl = avatarUrl,
++            SortOrder = sortOrder,
++            IsActive = true,
++            Personality = ClonePayload(personality),
++            Objectives = ClonePayload(objectives),
++            Kpis = ClonePayload(kpis),
++            Tools = ClonePayload(tools),
++            Scopes = ClonePayload(scopes),
++            Thresholds = ClonePayload(thresholds),
++            EscalationRules = ClonePayload(escalationRules),
++            CreatedUtc = SeededUtc,
++            UpdatedUtc = SeededUtc
++        };
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private static JsonArray StringArray(params string[] values) =>
++        new(values.Select(value => JsonValue.Create(value)).ToArray());
++
++    private static JsonObject JsonObject(params (string Key, JsonNode? Value)[] properties)
++    {
++        var jsonObject = new JsonObject();
++
++        foreach (var (key, value) in properties)
++        {
++            jsonObject[key] = value?.DeepClone();
++        }
++
++        return jsonObject;
++    }
++
++    private static Dictionary<string, JsonNode?> ClonePayload(IDictionary<string, JsonNode?> payload) =>
++        payload.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs b/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
+deleted file mode 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentTemplateSeeder.cs
++++ /dev/null
+@@ -1,71 +0,0 @@
+-using Microsoft.EntityFrameworkCore;
+-using VirtualCompany.Domain.Entities;
+-using VirtualCompany.Domain.Enums;
+-using VirtualCompany.Infrastructure.Persistence;
+-
+-namespace VirtualCompany.Infrastructure.Companies;
+-
+-public sealed class AgentTemplateSeeder
+-{
+-    private readonly VirtualCompanyDbContext _dbContext;
+-
+-    public AgentTemplateSeeder(VirtualCompanyDbContext dbContext)
+-    {
+-        _dbContext = dbContext;
+-    }
+-
+-    public async Task SeedAsync(CancellationToken cancellationToken = default)
+-    {
+-        var catalog = await AgentTemplateSeedCatalogReader.LoadAsync(cancellationToken);
+-        if (catalog.Templates.Count == 0)
+-        {
+-            return;
+-        }
+-
+-        var existingTemplates = await _dbContext.AgentTemplates
+-            .ToDictionaryAsync(x => x.TemplateId, StringComparer.OrdinalIgnoreCase, cancellationToken);
+-
+-        foreach (var seed in catalog.Templates)
+-        {
+-            var defaultSeniority = AgentSeniorityValues.Parse(seed.DefaultSeniority);
+-
+-            if (existingTemplates.TryGetValue(seed.TemplateId, out var existing))
+-            {
+-                existing.UpdateDefinition(
+-                    seed.TemplateId,
+-                    seed.RoleName,
+-                    seed.Department,
+-                    seed.PersonaSummary,
+-                    defaultSeniority,
+-                    seed.AvatarUrl,
+-                    seed.SortOrder,
+-                    seed.IsActive,
+-                    seed.Personality,
+-                    seed.Objectives,
+-                    seed.Kpis,
+-                    seed.Tools,
+-                    seed.Scopes,
+-                    seed.Thresholds,
+-                    seed.EscalationRules);
+-            }
+-            else
+-            {
+-                _dbContext.AgentTemplates.Add(new AgentTemplate(
+-                    seed.Id,
+-                    seed.TemplateId,
+-                    seed.RoleName,
+-                    seed.Department,
+-                    seed.PersonaSummary,
+-                    defaultSeniority,
+-                    seed.AvatarUrl,
+-                    seed.SortOrder,
+-                    seed.IsActive,
+-                    seed.Personality,
+-                    seed.Objectives,
+-                    seed.Kpis,
+-                    seed.Tools,
+-                    seed.Scopes,
+-                    seed.Thresholds,
+-                    seed.EscalationRules));
+-            }
+-        }
+-
+-        await _dbContext.SaveChangesAsync(cancellationToken);
+-    }
+-}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -36,8 +36,6 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     public async Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+-        var catalog = await AgentTemplateSeedCatalogReader.LoadAsync(cancellationToken);
+-        var versionsByTemplateId = catalog.Templates.ToDictionary(x => x.TemplateId, x => x.TemplateVersion, StringComparer.OrdinalIgnoreCase);
+ 
+         var templates = await _dbContext.AgentTemplates
+             .AsNoTracking()
+@@ -48,7 +46,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return templates
+             .Select(x => new AgentTemplateCatalogItemDto(
+                 x.TemplateId,
+-                versionsByTemplateId.TryGetValue(x.TemplateId, out var version) ? version : catalog.Version,
++                AgentTemplateSeedData.TryGetTemplateVersion(x.TemplateId, out var version) ? version : AgentTemplateSeedData.BaselineTemplateVersion,
+                 x.RoleName,
+                 x.Department,
+                 x.PersonaSummary ?? string.Empty,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -58,7 +58,6 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+         services.AddScoped<CompanySetupTemplateSeeder>();
+         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+-        services.AddScoped<AgentTemplateSeeder>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
+ using Microsoft.EntityFrameworkCore.ChangeTracking;
+ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+@@ -202,6 +203,10 @@ internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<Agen
+         builder.HasIndex(x => x.TemplateId).IsUnique();
+         builder.HasIndex(x => new { x.IsActive, x.SortOrder });
++
++        // Template default changes should ship in new EF migrations so historical revisions stay reviewable.
++        builder.HasData(AgentTemplateSeedData.GetModelSeeds());
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331120000_SeedAgentTemplateCatalog.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331120000_SeedAgentTemplateCatalog.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331120000_SeedAgentTemplateCatalog.cs
+@@ -0,0 +1,59 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260331120000_SeedAgentTemplateCatalog")]
++public partial class SeedAgentTemplateCatalog : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.Sql(
++            """
++            MERGE [agent_templates] AS target
++            USING (VALUES
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30101' AS uniqueidentifier), N'finance', N'Finance Manager', N'Finance', N'Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.', N'senior', N'/avatars/agents/finance-manager.png', 10, CAST(1 AS bit), N'{"summary":"Calm, precise, audit-ready communicator.","traits":["detail-oriented","risk-aware","structured"]}', N'{"primary":["Protect cash flow","Maintain accurate books","Reduce avoidable spend leakage"]}', N'{"targets":["monthly_close_under_5_days","forecast_variance_under_3_percent","late_invoices_under_2_percent"]}', N'{"allowed":["erp","accounting","spreadsheets","billing"]}', N'{"read":["finance","payments","vendors"],"write":["forecast_drafts","invoice_followups"]}', N'{"approval":{"expenseUsd":5000,"wireTransferUsd":2500}}', N'{"critical":["cash_runway_under_90_days","failed_payroll_run"],"escalateTo":"founder"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2)),
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30102' AS uniqueidentifier), N'sales', N'Sales Manager', N'Sales', N'Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.', N'senior', N'/avatars/agents/sales-manager.png', 20, CAST(1 AS bit), N'{"summary":"Direct, energetic, commercially sharp.","traits":["persistent","concise","target-driven"]}', N'{"primary":["Increase qualified pipeline","Improve conversion velocity","Protect forecast quality"]}', N'{"targets":["weekly_sqls","stage_conversion_rate","forecast_accuracy"]}', N'{"allowed":["crm","email","calendar","proposal"]}', N'{"read":["accounts","contacts","opportunities"],"write":["opportunity_notes","followup_tasks","pipeline_updates"]}', N'{"discount":{"maxPercent":10}}', N'{"critical":["deal_risk_over_50000","forecast_slip_over_20_percent"],"escalateTo":"founder"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2)),
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30103' AS uniqueidentifier), N'marketing', N'Marketing Manager', N'Marketing', N'Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.', N'senior', N'/avatars/agents/marketing-manager.png', 30, CAST(1 AS bit), N'{"summary":"Creative, analytical, and outcome-focused.","traits":["experimental","brand-aware","data-literate"]}', N'{"primary":["Grow qualified demand","Improve campaign efficiency","Increase content output consistency"]}', N'{"targets":["mql_volume","cost_per_qualified_lead","content_publish_cadence"]}', N'{"allowed":["analytics","cms","email_marketing","ads_manager"]}', N'{"read":["campaigns","analytics","content_calendar"],"write":["campaign_briefs","draft_copy","weekly_reports"]}', N'{"budget":{"monthlyPaidSpendUsd":15000}}', N'{"critical":["cac_spike_over_25_percent","brand_incident"],"escalateTo":"founder"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2)),
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30104' AS uniqueidentifier), N'support', N'Support Lead', N'Support', N'Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.', N'lead', N'/avatars/agents/support-lead.png', 40, CAST(1 AS bit), N'{"summary":"Empathetic, calm under pressure, and operationally disciplined.","traits":["patient","service-oriented","clear"]}', N'{"primary":["Protect first-response SLA","Raise resolution quality","Reduce repeat-contact drivers"]}', N'{"targets":["first_response_time","resolution_time","csat","reopen_rate"]}', N'{"allowed":["ticketing","knowledge_base","chat","incident_tracking"]}', N'{"read":["tickets","customer_history","knowledge_base"],"write":["ticket_replies","macro_updates","triage_tags"]}', N'{"sla":{"firstResponseMinutes":30,"resolutionHours":24}}', N'{"critical":["sev1_incident","vip_customer_blocked","csat_below_80"],"escalateTo":"operations"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2)),
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30105' AS uniqueidentifier), N'operations', N'Operations Manager', N'Operations', N'Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.', N'lead', N'/avatars/agents/operations-manager.png', 50, CAST(1 AS bit), N'{"summary":"Systematic, decisive, and accountability-heavy.","traits":["process-minded","reliable","cross-functional"]}', N'{"primary":["Reduce operational friction","Improve handoff quality","Surface delivery blockers early"]}', N'{"targets":["sla_adherence","handoff_error_rate","cycle_time","backlog_age"]}', N'{"allowed":["project_management","docs","incident_tracking","calendar"]}', N'{"read":["workflows","projects","operational_metrics"],"write":["runbooks","task_assignments","retrospective_notes"]}', N'{"delivery":{"blockedDays":2}}', N'{"critical":["missed_customer_deadline","systemic_handoff_failure"],"escalateTo":"founder"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2)),
++                (CAST('3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30106' AS uniqueidentifier), N'executive-assistant', N'Executive Assistant', N'Executive', N'Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.', N'executive', N'/avatars/agents/executive-assistant.png', 60, CAST(1 AS bit), N'{"summary":"Polished, anticipatory, and extremely organized.","traits":["discreet","proactive","detail-oriented"]}', N'{"primary":["Protect executive focus time","Track commitments to completion","Improve meeting quality"]}', N'{"targets":["calendar_conflict_rate","followup_completion_rate","meeting_preparation_coverage"]}', N'{"allowed":["calendar","email","docs","task_management"]}', N'{"read":["calendar","meeting_notes","priority_projects"],"write":["agenda_drafts","followup_lists","calendar_holds"]}', N'{"calendar":{"maxBackToBackMeetings":4}}', N'{"critical":["board_meeting_change","executive_deadline_at_risk"],"escalateTo":"founder"}', CAST('2026-03-31T00:00:00.0000000' AS datetime2), CAST('2026-03-31T00:00:00.0000000' AS datetime2))
++            ) AS source ([Id], [TemplateId], [RoleName], [Department], [PersonaSummary], [DefaultSeniority], [AvatarUrl], [SortOrder], [IsActive], [personality_json], [objectives_json], [kpis_json], [tool_permissions_json], [data_scopes_json], [approval_thresholds_json], [escalation_rules_json], [CreatedUtc], [UpdatedUtc])
++            ON target.[TemplateId] = source.[TemplateId]
++            WHEN MATCHED THEN
++                UPDATE SET
++                    target.[Id] = source.[Id],
++                    target.[RoleName] = source.[RoleName],
++                    target.[Department] = source.[Department],
++                    target.[PersonaSummary] = source.[PersonaSummary],
++                    target.[DefaultSeniority] = source.[DefaultSeniority],
++                    target.[AvatarUrl] = source.[AvatarUrl],
++                    target.[SortOrder] = source.[SortOrder],
++                    target.[IsActive] = source.[IsActive],
++                    target.[personality_json] = source.[personality_json],
++                    target.[objectives_json] = source.[objectives_json],
++                    target.[kpis_json] = source.[kpis_json],
++                    target.[tool_permissions_json] = source.[tool_permissions_json],
++                    target.[data_scopes_json] = source.[data_scopes_json],
++                    target.[approval_thresholds_json] = source.[approval_thresholds_json],
++                    target.[escalation_rules_json] = source.[escalation_rules_json],
++                    target.[UpdatedUtc] = source.[UpdatedUtc]
++            WHEN NOT MATCHED BY TARGET THEN
++                INSERT ([Id], [TemplateId], [RoleName], [Department], [PersonaSummary], [DefaultSeniority], [AvatarUrl], [SortOrder], [IsActive], [personality_json], [objectives_json], [kpis_json], [tool_permissions_json], [data_scopes_json], [approval_thresholds_json], [escalation_rules_json], [CreatedUtc], [UpdatedUtc])
++                VALUES (source.[Id], source.[TemplateId], source.[RoleName], source.[Department], source.[PersonaSummary], source.[DefaultSeniority], source.[AvatarUrl], source.[SortOrder], source.[IsActive], source.[personality_json], source.[objectives_json], source.[kpis_json], source.[tool_permissions_json], source.[data_scopes_json], source.[approval_thresholds_json], source.[escalation_rules_json], source.[CreatedUtc], source.[UpdatedUtc]);
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.Sql(
++            """
++            DELETE FROM [agent_templates]
++            WHERE [TemplateId] IN (N'finance', N'sales', N'marketing', N'support', N'operations', N'executive-assistant');
++            """);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -268,6 +268,122 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.HasIndex("TemplateId")
+                         .IsUnique();
+ 
++                    b.HasData(
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30101"),
++                            AvatarUrl = "/avatars/agents/finance-manager.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "senior",
++                            Department = "Finance",
++                            EscalationRules = "{\"critical\":[\"cash_runway_under_90_days\",\"failed_payroll_run\"],\"escalateTo\":\"founder\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"monthly_close_under_5_days\",\"forecast_variance_under_3_percent\",\"late_invoices_under_2_percent\"]}",
++                            Objectives = "{\"primary\":[\"Protect cash flow\",\"Maintain accurate books\",\"Reduce avoidable spend leakage\"]}",
++                            Personality = "{\"summary\":\"Calm, precise, audit-ready communicator.\",\"traits\":[\"detail-oriented\",\"risk-aware\",\"structured\"]}",
++                            PersonaSummary = "Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.",
++                            RoleName = "Finance Manager",
++                            Scopes = "{\"read\":[\"finance\",\"payments\",\"vendors\"],\"write\":[\"forecast_drafts\",\"invoice_followups\"]}",
++                            SortOrder = 10,
++                            TemplateId = "finance",
++                            Thresholds = "{\"approval\":{\"expenseUsd\":5000,\"wireTransferUsd\":2500}}",
++                            Tools = "{\"allowed\":[\"erp\",\"accounting\",\"spreadsheets\",\"billing\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        },
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30102"),
++                            AvatarUrl = "/avatars/agents/sales-manager.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "senior",
++                            Department = "Sales",
++                            EscalationRules = "{\"critical\":[\"deal_risk_over_50000\",\"forecast_slip_over_20_percent\"],\"escalateTo\":\"founder\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"weekly_sqls\",\"stage_conversion_rate\",\"forecast_accuracy\"]}",
++                            Objectives = "{\"primary\":[\"Increase qualified pipeline\",\"Improve conversion velocity\",\"Protect forecast quality\"]}",
++                            Personality = "{\"summary\":\"Direct, energetic, commercially sharp.\",\"traits\":[\"persistent\",\"concise\",\"target-driven\"]}",
++                            PersonaSummary = "Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.",
++                            RoleName = "Sales Manager",
++                            Scopes = "{\"read\":[\"accounts\",\"contacts\",\"opportunities\"],\"write\":[\"opportunity_notes\",\"followup_tasks\",\"pipeline_updates\"]}",
++                            SortOrder = 20,
++                            TemplateId = "sales",
++                            Thresholds = "{\"discount\":{\"maxPercent\":10}}",
++                            Tools = "{\"allowed\":[\"crm\",\"email\",\"calendar\",\"proposal\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        },
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30103"),
++                            AvatarUrl = "/avatars/agents/marketing-manager.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "senior",
++                            Department = "Marketing",
++                            EscalationRules = "{\"critical\":[\"cac_spike_over_25_percent\",\"brand_incident\"],\"escalateTo\":\"founder\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"mql_volume\",\"cost_per_qualified_lead\",\"content_publish_cadence\"]}",
++                            Objectives = "{\"primary\":[\"Grow qualified demand\",\"Improve campaign efficiency\",\"Increase content output consistency\"]}",
++                            Personality = "{\"summary\":\"Creative, analytical, and outcome-focused.\",\"traits\":[\"experimental\",\"brand-aware\",\"data-literate\"]}",
++                            PersonaSummary = "Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.",
++                            RoleName = "Marketing Manager",
++                            Scopes = "{\"read\":[\"campaigns\",\"analytics\",\"content_calendar\"],\"write\":[\"campaign_briefs\",\"draft_copy\",\"weekly_reports\"]}",
++                            SortOrder = 30,
++                            TemplateId = "marketing",
++                            Thresholds = "{\"budget\":{\"monthlyPaidSpendUsd\":15000}}",
++                            Tools = "{\"allowed\":[\"analytics\",\"cms\",\"email_marketing\",\"ads_manager\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        },
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30104"),
++                            AvatarUrl = "/avatars/agents/support-lead.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "lead",
++                            Department = "Support",
++                            EscalationRules = "{\"critical\":[\"sev1_incident\",\"vip_customer_blocked\",\"csat_below_80\"],\"escalateTo\":\"operations\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"first_response_time\",\"resolution_time\",\"csat\",\"reopen_rate\"]}",
++                            Objectives = "{\"primary\":[\"Protect first-response SLA\",\"Raise resolution quality\",\"Reduce repeat-contact drivers\"]}",
++                            Personality = "{\"summary\":\"Empathetic, calm under pressure, and operationally disciplined.\",\"traits\":[\"patient\",\"service-oriented\",\"clear\"]}",
++                            PersonaSummary = "Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.",
++                            RoleName = "Support Lead",
++                            Scopes = "{\"read\":[\"tickets\",\"customer_history\",\"knowledge_base\"],\"write\":[\"ticket_replies\",\"macro_updates\",\"triage_tags\"]}",
++                            SortOrder = 40,
++                            TemplateId = "support",
++                            Thresholds = "{\"sla\":{\"firstResponseMinutes\":30,\"resolutionHours\":24}}",
++                            Tools = "{\"allowed\":[\"ticketing\",\"knowledge_base\",\"chat\",\"incident_tracking\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        },
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30105"),
++                            AvatarUrl = "/avatars/agents/operations-manager.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "lead",
++                            Department = "Operations",
++                            EscalationRules = "{\"critical\":[\"missed_customer_deadline\",\"systemic_handoff_failure\"],\"escalateTo\":\"founder\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"sla_adherence\",\"handoff_error_rate\",\"cycle_time\",\"backlog_age\"]}",
++                            Objectives = "{\"primary\":[\"Reduce operational friction\",\"Improve handoff quality\",\"Surface delivery blockers early\"]}",
++                            Personality = "{\"summary\":\"Systematic, decisive, and accountability-heavy.\",\"traits\":[\"process-minded\",\"reliable\",\"cross-functional\"]}",
++                            PersonaSummary = "Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.",
++                            RoleName = "Operations Manager",
++                            Scopes = "{\"read\":[\"workflows\",\"projects\",\"operational_metrics\"],\"write\":[\"runbooks\",\"task_assignments\",\"retrospective_notes\"]}",
++                            SortOrder = 50,
++                            TemplateId = "operations",
++                            Thresholds = "{\"delivery\":{\"blockedDays\":2}}",
++                            Tools = "{\"allowed\":[\"project_management\",\"docs\",\"incident_tracking\",\"calendar\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        },
++                        new
++                        {
++                            Id = new Guid("3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30106"),
++                            AvatarUrl = "/avatars/agents/executive-assistant.png",
++                            CreatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc),
++                            DefaultSeniority = "executive",
++                            Department = "Executive",
++                            EscalationRules = "{\"critical\":[\"board_meeting_change\",\"executive_deadline_at_risk\"],\"escalateTo\":\"founder\"}",
++                            IsActive = true,
++                            Kpis = "{\"targets\":[\"calendar_conflict_rate\",\"followup_completion_rate\",\"meeting_preparation_coverage\"]}",
++                            Objectives = "{\"primary\":[\"Protect executive focus time\",\"Track commitments to completion\",\"Improve meeting quality\"]}",
++                            Personality = "{\"summary\":\"Polished, anticipatory, and extremely organized.\",\"traits\":[\"discreet\",\"proactive\",\"detail-oriented\"]}",
++                            PersonaSummary = "Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.",
++                            RoleName = "Executive Assistant",
++                            Scopes = "{\"read\":[\"calendar\",\"meeting_notes\",\"priority_projects\"],\"write\":[\"agenda_drafts\",\"followup_lists\",\"calendar_holds\"]}",
++                            SortOrder = 60,
++                            TemplateId = "executive-assistant",
++                            Thresholds = "{\"calendar\":{\"maxBackToBackMeetings\":4}}",
++                            Tools = "{\"allowed\":[\"calendar\",\"email\",\"docs\",\"task_management\"]}",
++                            UpdatedUtc = new DateTime(2026, 3, 31, 0, 0, 0, 0, DateTimeKind.Utc)
++                        });
++
+                     b.ToTable("agent_templates", (string)null);
+                 });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json b/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
+deleted file mode 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SeedData/agent-templates.json
++++ /dev/null
+@@ -1,237 +0,0 @@
+-{
+-  "version": 2,
+-  "templates": [
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30101",
+-      "templateId": "finance",
+-      "templateVersion": 1,
+-      "roleName": "Finance Manager",
+-      "department": "Finance",
+-      "personaSummary": "Cash-focused operator who keeps books clean, tracks runway, and escalates financial anomalies early.",
+-      "defaultSeniority": "senior",
+-      "avatarUrl": "/avatars/agents/finance-manager.png",
+-      "sortOrder": 10,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Calm, precise, audit-ready communicator.",
+-        "traits": [ "detail-oriented", "risk-aware", "structured" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Protect cash flow", "Maintain accurate books", "Reduce avoidable spend leakage" ]
+-      },
+-      "kpis": {
+-        "targets": [ "monthly_close_under_5_days", "forecast_variance_under_3_percent", "late_invoices_under_2_percent" ]
+-      },
+-      "tools": {
+-        "allowed": [ "erp", "accounting", "spreadsheets", "billing" ]
+-      },
+-      "scopes": {
+-        "read": [ "finance", "payments", "vendors" ],
+-        "write": [ "forecast_drafts", "invoice_followups" ]
+-      },
+-      "thresholds": {
+-        "approval": {
+-          "expenseUsd": 5000,
+-          "wireTransferUsd": 2500
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "cash_runway_under_90_days", "failed_payroll_run" ],
+-        "escalateTo": "founder"
+-      }
+-    },
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30102",
+-      "templateId": "sales",
+-      "templateVersion": 1,
+-      "roleName": "Sales Manager",
+-      "department": "Sales",
+-      "personaSummary": "Pipeline builder who keeps follow-up tight, qualification clear, and forecast discipline visible.",
+-      "defaultSeniority": "senior",
+-      "avatarUrl": "/avatars/agents/sales-manager.png",
+-      "sortOrder": 20,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Direct, energetic, commercially sharp.",
+-        "traits": [ "persistent", "concise", "target-driven" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Increase qualified pipeline", "Improve conversion velocity", "Protect forecast quality" ]
+-      },
+-      "kpis": {
+-        "targets": [ "weekly_sqls", "stage_conversion_rate", "forecast_accuracy" ]
+-      },
+-      "tools": {
+-        "allowed": [ "crm", "email", "calendar", "proposal" ]
+-      },
+-      "scopes": {
+-        "read": [ "accounts", "contacts", "opportunities" ],
+-        "write": [ "opportunity_notes", "followup_tasks", "pipeline_updates" ]
+-      },
+-      "thresholds": {
+-        "discount": {
+-          "maxPercent": 10
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "deal_risk_over_50000", "forecast_slip_over_20_percent" ],
+-        "escalateTo": "founder"
+-      }
+-    },
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30103",
+-      "templateId": "marketing",
+-      "templateVersion": 1,
+-      "roleName": "Marketing Manager",
+-      "department": "Marketing",
+-      "personaSummary": "Demand-generation lead who connects campaigns, content, and attribution to revenue outcomes.",
+-      "defaultSeniority": "senior",
+-      "avatarUrl": "/avatars/agents/marketing-manager.png",
+-      "sortOrder": 30,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Creative, analytical, and outcome-focused.",
+-        "traits": [ "experimental", "brand-aware", "data-literate" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Grow qualified demand", "Improve campaign efficiency", "Increase content output consistency" ]
+-      },
+-      "kpis": {
+-        "targets": [ "mql_volume", "cost_per_qualified_lead", "content_publish_cadence" ]
+-      },
+-      "tools": {
+-        "allowed": [ "analytics", "cms", "email_marketing", "ads_manager" ]
+-      },
+-      "scopes": {
+-        "read": [ "campaigns", "analytics", "content_calendar" ],
+-        "write": [ "campaign_briefs", "draft_copy", "weekly_reports" ]
+-      },
+-      "thresholds": {
+-        "budget": {
+-          "monthlyPaidSpendUsd": 15000
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "cac_spike_over_25_percent", "brand_incident" ],
+-        "escalateTo": "founder"
+-      }
+-    },
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30104",
+-      "templateId": "support",
+-      "templateVersion": 1,
+-      "roleName": "Support Lead",
+-      "department": "Support",
+-      "personaSummary": "Customer advocate who protects SLA health, improves resolution quality, and flags systemic issues fast.",
+-      "defaultSeniority": "lead",
+-      "avatarUrl": "/avatars/agents/support-lead.png",
+-      "sortOrder": 40,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Empathetic, calm under pressure, and operationally disciplined.",
+-        "traits": [ "patient", "service-oriented", "clear" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Protect first-response SLA", "Raise resolution quality", "Reduce repeat-contact drivers" ]
+-      },
+-      "kpis": {
+-        "targets": [ "first_response_time", "resolution_time", "csat", "reopen_rate" ]
+-      },
+-      "tools": {
+-        "allowed": [ "ticketing", "knowledge_base", "chat", "incident_tracking" ]
+-      },
+-      "scopes": {
+-        "read": [ "tickets", "customer_history", "knowledge_base" ],
+-        "write": [ "ticket_replies", "macro_updates", "triage_tags" ]
+-      },
+-      "thresholds": {
+-        "sla": {
+-          "firstResponseMinutes": 30,
+-          "resolutionHours": 24
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "sev1_incident", "vip_customer_blocked", "csat_below_80" ],
+-        "escalateTo": "operations"
+-      }
+-    },
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30105",
+-      "templateId": "operations",
+-      "templateVersion": 1,
+-      "roleName": "Operations Manager",
+-      "department": "Operations",
+-      "personaSummary": "Execution owner who keeps workflows stable, handoffs clear, and delivery risks visible across the company.",
+-      "defaultSeniority": "lead",
+-      "avatarUrl": "/avatars/agents/operations-manager.png",
+-      "sortOrder": 50,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Systematic, decisive, and accountability-heavy.",
+-        "traits": [ "process-minded", "reliable", "cross-functional" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Reduce operational friction", "Improve handoff quality", "Surface delivery blockers early" ]
+-      },
+-      "kpis": {
+-        "targets": [ "sla_adherence", "handoff_error_rate", "cycle_time", "backlog_age" ]
+-      },
+-      "tools": {
+-        "allowed": [ "project_management", "docs", "incident_tracking", "calendar" ]
+-      },
+-      "scopes": {
+-        "read": [ "workflows", "projects", "operational_metrics" ],
+-        "write": [ "runbooks", "task_assignments", "retrospective_notes" ]
+-      },
+-      "thresholds": {
+-        "delivery": {
+-          "blockedDays": 2
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "missed_customer_deadline", "systemic_handoff_failure" ],
+-        "escalateTo": "founder"
+-      }
+-    },
+-    {
+-      "id": "3cda0f7c-0cb5-4b4f-9cf2-1a5b25f30106",
+-      "templateId": "executive-assistant",
+-      "templateVersion": 1,
+-      "roleName": "Executive Assistant",
+-      "department": "Executive",
+-      "personaSummary": "Founder support partner who organizes follow-through, protects calendar focus, and keeps leadership commitments moving.",
+-      "defaultSeniority": "executive",
+-      "avatarUrl": "/avatars/agents/executive-assistant.png",
+-      "sortOrder": 60,
+-      "isActive": true,
+-      "personality": {
+-        "summary": "Polished, anticipatory, and extremely organized.",
+-        "traits": [ "discreet", "proactive", "detail-oriented" ]
+-      },
+-      "objectives": {
+-        "primary": [ "Protect executive focus time", "Track commitments to completion", "Improve meeting quality" ]
+-      },
+-      "kpis": {
+-        "targets": [ "calendar_conflict_rate", "followup_completion_rate", "meeting_preparation_coverage" ]
+-      },
+-      "tools": {
+-        "allowed": [ "calendar", "email", "docs", "task_management" ]
+-      },
+-      "scopes": {
+-        "read": [ "calendar", "meeting_notes", "priority_projects" ],
+-        "write": [ "agenda_drafts", "followup_lists", "calendar_holds" ]
+-      },
+-      "thresholds": {
+-        "calendar": {
+-          "maxBackToBackMeetings": 4
+-        }
+-      },
+-      "escalationRules": {
+-        "critical": [ "board_meeting_change", "executive_deadline_at_risk" ],
+-        "escalateTo": "founder"
+-      }
+-    }
+-  ]
+-}
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -10,7 +10,6 @@
+ 
+   <ItemGroup>
+     <EmbeddedResource Include="Persistence\SeedData\onboarding-templates.json" />
+-    <EmbeddedResource Include="Persistence\SeedData\agent-templates.json" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -7,7 +7,6 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+-using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+@@ -47,29 +46,27 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     }
+ 
+     [Fact]
+-    public async Task Agent_template_seed_is_idempotent_and_keeps_single_row_per_template()
++    public async Task Agent_template_catalog_seed_is_idempotent_and_keeps_single_row_per_template()
+     {
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+-        var seeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
+ 
+         await dbContext.Database.EnsureCreatedAsync();
+-        await seeder.SeedAsync();
+ 
+         var baseline = await dbContext.AgentTemplates
+             .AsNoTracking()
+             .OrderBy(x => x.TemplateId)
+             .Select(x => new SeededTemplateSnapshot(x.Id, x.TemplateId))
+             .ToListAsync();
+ 
+-        await seeder.SeedAsync();
++        await dbContext.Database.EnsureCreatedAsync();
+ 
+-        var afterRerun = await dbContext.AgentTemplates
++        var afterSecondInitialization = await dbContext.AgentTemplates
+             .AsNoTracking()
+             .OrderBy(x => x.TemplateId)
+             .Select(x => new SeededTemplateSnapshot(x.Id, x.TemplateId))
+             .ToListAsync();
+ 
+-        Assert.Equal(baseline, afterRerun);
+-        Assert.Equal(RequiredTemplateIds.Length, afterRerun.Count(x => RequiredTemplateIds.Contains(x.TemplateId, StringComparer.OrdinalIgnoreCase)));
+-        Assert.All(RequiredTemplateIds, templateId => Assert.Single(afterRerun, x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase)));
++        Assert.Equal(baseline, afterSecondInitialization);
++        Assert.Equal(RequiredTemplateIds.Length, afterSecondInitialization.Count(x => RequiredTemplateIds.Contains(x.TemplateId, StringComparer.OrdinalIgnoreCase)));
++        Assert.All(RequiredTemplateIds, templateId => Assert.Single(afterSecondInitialization, x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase)));
+     }
+ END_OF_PATCH

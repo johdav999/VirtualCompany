@@ -63,7 +63,6 @@ using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
-    var agentTemplateSeeder = scope.ServiceProvider.GetRequiredService<AgentTemplateSeeder>();
 
     if (dbContext.Database.IsRelational())
     {
@@ -78,7 +77,6 @@ using (var scope = app.Services.CreateScope())
     }
 
     await templateSeeder.SeedAsync();
-    await agentTemplateSeeder.SeedAsync();
 }
 
 app.MapVirtualCompanyHealthEndpoints();

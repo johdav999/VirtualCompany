@@ -100,7 +100,7 @@ public sealed class AgentTemplate
         RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
         PersonaSummary = NormalizeOptional(personaSummary, nameof(personaSummary), PersonaSummaryMaxLength);
-        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+        AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
         DefaultSeniority = defaultSeniority;
         SortOrder = sortOrder;
         IsActive = isActive;
@@ -125,6 +125,8 @@ public sealed class AgentTemplate
     {
         var resolvedSeniority = seniority ?? DefaultSeniority;
         AgentSeniorityValues.EnsureSupported(resolvedSeniority, nameof(seniority));
+        var configurationSnapshot = CreateConfigurationSnapshot(personality);
+
 
         return new Agent(
             Guid.NewGuid(),
@@ -136,13 +138,13 @@ public sealed class AgentTemplate
             FirstNonEmpty(avatarUrl, AvatarUrl),
             resolvedSeniority,
             AgentStatusValues.DefaultStatus,
-            MergePersonality(personality),
-            CloneNodes(Objectives),
-            CloneNodes(Kpis),
-            CloneNodes(Tools),
-            CloneNodes(Scopes),
-            CloneNodes(Thresholds),
-            CloneNodes(EscalationRules));
+            configurationSnapshot.Personality,
+            configurationSnapshot.Objectives,
+            configurationSnapshot.Kpis,
+            configurationSnapshot.Tools,
+            configurationSnapshot.Scopes,
+            configurationSnapshot.Thresholds,
+            configurationSnapshot.EscalationRules);
     }
 
     private static string NormalizeRequired(string value, string name, int maxLength)
@@ -175,6 +177,20 @@ public sealed class AgentTemplate
         }
 
         return trimmed;
+    }
+
+    private AgentConfigurationSnapshot CreateConfigurationSnapshot(string? personality)
+    {
+        // Hired agents keep a company-owned snapshot of template defaults so later
+        // template edits do not change persisted agent behavior.
+        return new AgentConfigurationSnapshot(
+            MergePersonality(personality),
+            CloneNodes(Objectives),
+            CloneNodes(Kpis),
+            CloneNodes(Tools),
+            CloneNodes(Scopes),
+            CloneNodes(Thresholds),
+            CloneNodes(EscalationRules));
     }
 
     private Dictionary<string, JsonNode?> MergePersonality(string? personality)
@@ -205,6 +221,15 @@ public sealed class AgentTemplate
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
 
+    private sealed record AgentConfigurationSnapshot(
+        Dictionary<string, JsonNode?> Personality,
+        Dictionary<string, JsonNode?> Objectives,
+        Dictionary<string, JsonNode?> Kpis,
+        Dictionary<string, JsonNode?> Tools,
+        Dictionary<string, JsonNode?> Scopes,
+        Dictionary<string, JsonNode?> Thresholds,
+        Dictionary<string, JsonNode?> EscalationRules);
+
     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
     {
         if (nodes is null || nodes.Count == 0)
@@ -216,12 +241,85 @@ public sealed class AgentTemplate
     }
 }
 
+public static class AvatarReferenceRules
+{
+    private static readonly string[] InlinePrefixes = ["data:", "blob:"];
+    private static readonly string[] Base64Prefixes = ["iVBORw0KGgo", "/9j/", "R0lGOD", "PHN2Zy"];
+
+    public static string? Normalize(string? value, string fieldName, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (!TryValidate(trimmed, fieldName, maxLength, out var error))
+        {
+            throw error!.Contains("characters or fewer", StringComparison.Ordinal)
+                ? new ArgumentOutOfRangeException(fieldName, error)
+                : new ArgumentException(error, fieldName);
+        }
+
+        return trimmed;
+    }
+
+    public static bool TryValidate(string? value, string fieldName, int maxLength, out string? error)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = null;
+            return true;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > maxLength)
+        {
+            error = $"{fieldName} must be {maxLength} characters or fewer.";
+            return false;
+        }
+
+        if (IsInlinePayload(trimmed))
+        {
+            error = $"{fieldName} must be an external http/https URL or a file/storage reference, not inline image data.";
+            return false;
+        }
+
+        if (LooksLikeAbsoluteUrl(trimmed) &&
+            (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) ||
+             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
+        {
+            error = $"{fieldName} must be a valid absolute http/https URL or a file/storage reference.";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private static bool IsInlinePayload(string value) =>
+        InlinePrefixes.Any(prefix => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) ||
+        (value.Length >= 256 &&
+         !value.Contains("/", StringComparison.Ordinal) &&
+         !value.Contains("\\", StringComparison.Ordinal) &&
+         !value.Contains(".", StringComparison.Ordinal) &&
+         Base64Prefixes.Any(prefix => value.StartsWith(prefix, StringComparison.Ordinal)));
+
+    private static bool LooksLikeAbsoluteUrl(string value) =>
+        value.Contains("://", StringComparison.Ordinal) ||
+        value.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("https:", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("blob:", StringComparison.OrdinalIgnoreCase);
+}
+
 public sealed class Agent : ICompanyOwnedEntity
 {
     private const int TemplateIdMaxLength = 100;
     private const int DisplayNameMaxLength = 200;
     private const int RoleNameMaxLength = 100;
     private const int DepartmentMaxLength = 100;
+    private const int RoleBriefMaxLength = 4000;
     private const int AvatarUrlMaxLength = 2048;
 
     private Agent()
@@ -244,7 +342,10 @@ public sealed class Agent : ICompanyOwnedEntity
         IDictionary<string, JsonNode?>? tools = null,
         IDictionary<string, JsonNode?>? scopes = null,
         IDictionary<string, JsonNode?>? thresholds = null,
-        IDictionary<string, JsonNode?>? escalationRules = null)
+        IDictionary<string, JsonNode?>? escalationRules = null,
+        string? roleBrief = null,
+        IDictionary<string, JsonNode?>? triggerLogic = null,
+        IDictionary<string, JsonNode?>? workingHours = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -260,8 +361,9 @@ public sealed class Agent : ICompanyOwnedEntity
         TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
         DisplayName = NormalizeRequired(displayName, nameof(displayName), DisplayNameMaxLength);
         RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
+        RoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
-        AvatarUrl = NormalizeOptional(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+        AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
         Seniority = seniority;
         Status = resolvedStatus;
         Personality = CloneNodes(personality);
@@ -271,6 +373,8 @@ public sealed class Agent : ICompanyOwnedEntity
         Scopes = CloneNodes(scopes);
         Thresholds = CloneNodes(thresholds);
         EscalationRules = CloneNodes(escalationRules);
+        TriggerLogic = CloneNodes(triggerLogic);
+        WorkingHours = CloneNodes(workingHours);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
     }
@@ -280,6 +384,7 @@ public sealed class Agent : ICompanyOwnedEntity
     public string TemplateId { get; private set; } = null!;
     public string DisplayName { get; private set; } = null!;
     public string RoleName { get; private set; } = null!;
+    public string? RoleBrief { get; private set; }
     public string Department { get; private set; } = null!;
     public string? AvatarUrl { get; private set; }
     public AgentSeniority Seniority { get; private set; }
@@ -291,9 +396,73 @@ public sealed class Agent : ICompanyOwnedEntity
     public Dictionary<string, JsonNode?> Scopes { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Thresholds { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> TriggerLogic { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> WorkingHours { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
+
+    public bool CanReceiveAssignments => Status != AgentStatus.Archived;
+
+    public bool UpdateOperatingProfile(
+        string? roleBrief,
+        AgentStatus status,
+        IDictionary<string, JsonNode?>? objectives,
+        IDictionary<string, JsonNode?>? kpis,
+        IDictionary<string, JsonNode?>? tools,
+        IDictionary<string, JsonNode?>? scopes,
+        IDictionary<string, JsonNode?>? thresholds,
+        IDictionary<string, JsonNode?>? escalationRules,
+        IDictionary<string, JsonNode?>? triggerLogic,
+        IDictionary<string, JsonNode?>? workingHours)
+    {
+        AgentStatusValues.EnsureSupported(status, nameof(status));
+
+        var normalizedRoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
+        var updatedObjectives = CloneNodes(objectives);
+        var updatedKpis = CloneNodes(kpis);
+        var updatedTools = CloneNodes(tools);
+        var updatedScopes = CloneNodes(scopes);
+        var updatedThresholds = CloneNodes(thresholds);
+        var updatedEscalationRules = CloneNodes(escalationRules);
+        var updatedTriggerLogic = CloneNodes(triggerLogic);
+        var updatedWorkingHours = CloneNodes(workingHours);
+
+        if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
+            Status == status &&
+            JsonDictionariesEqual(Objectives, updatedObjectives) &&
+            JsonDictionariesEqual(Kpis, updatedKpis) &&
+            JsonDictionariesEqual(Tools, updatedTools) &&
+            JsonDictionariesEqual(Scopes, updatedScopes) &&
+            JsonDictionariesEqual(Thresholds, updatedThresholds) &&
+            JsonDictionariesEqual(EscalationRules, updatedEscalationRules) &&
+            JsonDictionariesEqual(TriggerLogic, updatedTriggerLogic) &&
+            JsonDictionariesEqual(WorkingHours, updatedWorkingHours))
+        {
+            return false;
+        }
+
+        RoleBrief = normalizedRoleBrief;
+        Status = status;
+        Objectives = updatedObjectives;
+        Kpis = updatedKpis;
+        Tools = updatedTools;
+        Scopes = updatedScopes;
+        Thresholds = updatedThresholds;
+        EscalationRules = updatedEscalationRules;
+        TriggerLogic = updatedTriggerLogic;
+        WorkingHours = updatedWorkingHours;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public void EnsureCanReceiveAssignments()
+    {
+        if (!CanReceiveAssignments)
+        {
+            throw new InvalidOperationException("Archived agents cannot receive new assignments.");
+        }
+    }
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
@@ -325,6 +494,27 @@ public sealed class Agent : ICompanyOwnedEntity
         }
 
         return trimmed;
+    }
+
+    private static bool JsonDictionariesEqual(
+        IReadOnlyDictionary<string, JsonNode?> left,
+        IReadOnlyDictionary<string, JsonNode?> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        foreach (var (key, leftValue) in left)
+        {
+            if (!right.TryGetValue(key, out var rightValue) ||
+                !string.Equals(leftValue?.ToJsonString(), rightValue?.ToJsonString(), StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)

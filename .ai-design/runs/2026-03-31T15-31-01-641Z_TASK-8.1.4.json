@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.1.4",
+  "promptPath": ".ai-design/prompts/TASK-8.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-03-31T15:31:01.641Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-31T15-31-01-641Z_TASK-8.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-31T15-31-01-641Z_TASK-8.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-31T15:33:46.356Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "yEqual(template.Scopes, agent.Scopes);\r\n+        AssertJsonDictionaryEqual(template.Thresholds, agent.Thresholds);\r\n+        AssertJsonDictionaryEqual(template.EscalationRules, agent.EscalationRules);\r\n+        Assert.NotSame(template.Personality, agent.Personality);\r\n+        Assert.NotSame(template.Objectives, agent.Objectives);\r\n+        Assert.NotSame(template.Kpis, agent.Kpis);\r\n+        Assert.NotSame(template.Tools, agent.Tools);\r\n+        Assert.NotSame(template.Scopes, agent.Scopes);\r\n+        Assert.NotSame(template.Thresholds, agent.Thresholds);\r\n+        Assert.NotSame(template.EscalationRules, agent.EscalationRules);\r\n     }\r\n-\r\n     [Fact]\r\n     public async Task Hiring_from_template_adds_agent_to_roster_with_active_status_immediately()\r\n     {\r\n@@ -328,6 +387,35 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         return new SeedIds(companyId, otherCompanyId);\r\n     }\r\n \r\n+    private static void AssertJsonDictionaryEqual(\r\n+        IReadOnlyDictionary<string, JsonNode?> expected,\r\n+        IReadOnlyDictionary<string, JsonNode?> actual)\r\n+    {\r\n+        Assert.Equal(expected.Count, actual.Count);\r\n+\r\n+        foreach (var (key, expectedValue) in expected)\r\n+        {\r\n+            Assert.True(actual.TryGetValue(key, out var actualValue), $\"Expected JSON property '{key}' to be present.\");\r\n+            Assert.Equal(expectedValue?.ToJsonString(), actualValue?.ToJsonString());\r\n+        }\r\n+    }\r\n+\r\n+    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)\r\n+    {\r\n+        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);\r\n+\r\n+        foreach (var (key, value) in properties)\r\n+        {\r\n+            payload[key] = value?.DeepClone();\r\n+        }\r\n+\r\n+        return payload;\r\n+    }\r\n+\r\n     private static readonly string[] RequiredTemplateIds =\r\n     [\r\n         \"finance\",\r\n         \"sales\",\r\n         \"marketing\",\r\nEND_OF_PATCH\n",
+  "stderrTail": "pes, agent.Scopes);\r\n+        AssertJsonDictionaryEqual(template.Thresholds, agent.Thresholds);\r\n+        AssertJsonDictionaryEqual(template.EscalationRules, agent.EscalationRules);\r\n+        Assert.NotSame(template.Personality, agent.Personality);\r\n+        Assert.NotSame(template.Objectives, agent.Objectives);\r\n+        Assert.NotSame(template.Kpis, agent.Kpis);\r\n+        Assert.NotSame(template.Tools, agent.Tools);\r\n+        Assert.NotSame(template.Scopes, agent.Scopes);\r\n+        Assert.NotSame(template.Thresholds, agent.Thresholds);\r\n+        Assert.NotSame(template.EscalationRules, agent.EscalationRules);\r\n     }\r\n-\r\n     [Fact]\r\n     public async Task Hiring_from_template_adds_agent_to_roster_with_active_status_immediately()\r\n     {\r\n@@ -328,6 +387,35 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli\n         return new SeedIds(companyId, otherCompanyId);\r\n     }\r\n \r\n+    private static void AssertJsonDictionaryEqual(\r\n+        IReadOnlyDictionary<string, JsonNode?> expected,\r\n+        IReadOnlyDictionary<string, JsonNode?> actual)\r\n+    {\r\n+        Assert.Equal(expected.Count, actual.Count);\r\n+\r\n+        foreach (var (key, expectedValue) in expected)\r\n+        {\r\n+            Assert.True(actual.TryGetValue(key, out var actualValue), $\"Expected JSON property '{key}' to be present.\");\r\n+            Assert.Equal(expectedValue?.ToJsonString(), actualValue?.ToJsonString());\r\n+        }\r\n+    }\r\n+\r\n+    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)\r\n+    {\r\n+        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);\r\n+\r\n+        foreach (var (key, value) in properties)\r\n+        {\r\n+            payload[key] = value?.DeepClone();\r\n+        }\r\n+\r\n+        return payload;\r\n+    }\r\n+\r\n     private static readonly string[] RequiredTemplateIds =\r\n     [\r\n         \"finance\",\r\n         \"sales\",\r\n         \"marketing\",\r\nEND_OF_PATCH\ntokens used\n64,256\n",
+  "verbosityMode": "normal"
+}

@@ -46,4 +46,5 @@ public static class AuditEventActions
     public const string CompanyInvitationAccepted = "company.invitation.accepted";
     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
     public const string AgentHired = "agent.hired";
+    public const string AgentOperatingProfileUpdated = "agent.operating_profile.updated";
 }

@@ -1,0 +1,1762 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 78c6880..7f7d773 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
+ 
+ namespace VirtualCompany.Application.Agents;
+ 
+@@ -34,11 +35,43 @@ public sealed record CreateAgentFromTemplateCommand(
+ 
+ public sealed record CreateAgentFromTemplateResultDto(CompanyAgentSummaryDto Agent);
+ 
++public sealed record AgentOperatingProfileDto(
++    Guid Id,
++    Guid CompanyId,
++    string TemplateId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    string Seniority,
++    string Status,
++    string? AvatarUrl,
++    string? RoleBrief,
++    Dictionary<string, JsonNode?> Objectives,
++    Dictionary<string, JsonNode?> Kpis,
++    Dictionary<string, JsonNode?> ToolPermissions,
++    Dictionary<string, JsonNode?> DataScopes,
++    Dictionary<string, JsonNode?> ApprovalThresholds,
++    Dictionary<string, JsonNode?> EscalationRules,
++    Dictionary<string, JsonNode?> TriggerLogic,
++    Dictionary<string, JsonNode?> WorkingHours,
++    DateTime UpdatedUtc,
++    bool CanReceiveAssignments);
++
++public sealed record UpdateAgentOperatingProfileCommand(
++    string Status,
++    string? RoleBrief,
++    Dictionary<string, JsonNode?>? Objectives,
++    Dictionary<string, JsonNode?>? Kpis,
++    Dictionary<string, JsonNode?>? ToolPermissions,
++    Dictionary<string, JsonNode?>? DataScopes,
++    Dictionary<string, JsonNode?>? ApprovalThresholds,
++    Dictionary<string, JsonNode?>? EscalationRules,
++    Dictionary<string, JsonNode?>? TriggerLogic,
++    Dictionary<string, JsonNode?>? WorkingHours);
++
+ public interface ICompanyAgentService
+ {
+     Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
++    Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
++    Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken);
+ }
+ 
+ public sealed class AgentValidationException : Exception
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 68f0c73..50bfca3 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -34,4 +34,5 @@ public static class AuditEventActions
+     public const string CompanyInvitationResent = "company.invitation.resent";
+     public const string CompanyInvitationRevoked = "company.invitation.revoked";
+     public const string CompanyInvitationAccepted = "company.invitation.accepted";
+     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
+     public const string AgentHired = "agent.hired";
++    public const string AgentOperatingProfileUpdated = "agent.operating_profile.updated";
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 8cc705e..df5bca5 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -70,4 +70,40 @@ public sealed class AgentsController : ControllerBase
+         CancellationToken cancellationToken)
+     {
+         return CreateFromTemplateAsync(companyId, command, cancellationToken);
+     }
++
++    [HttpGet("{agentId:guid}/profile")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<AgentOperatingProfileDto>> GetOperatingProfileAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var profile = await _agentService.GetOperatingProfileAsync(companyId, agentId, cancellationToken);
++            return Ok(profile);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("{agentId:guid}/profile")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<AgentOperatingProfileDto>> UpdateOperatingProfileAsync(
++        Guid companyId,
++        Guid agentId,
++        [FromBody] UpdateAgentOperatingProfileCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var profile = await _agentService.UpdateOperatingProfileAsync(companyId, agentId, command, cancellationToken);
++            return Ok(profile);
++        }
++        catch (AgentValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+index 84b631c..4ccafe3 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -234,6 +234,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     private const int DisplayNameMaxLength = 200;
+     private const int RoleNameMaxLength = 100;
+     private const int DepartmentMaxLength = 100;
++    private const int RoleBriefMaxLength = 4000;
+     private const int AvatarUrlMaxLength = 2048;
+ 
+     private Agent()
+@@ -252,7 +253,10 @@ public sealed class Agent : ICompanyOwnedEntity
+         IDictionary<string, JsonNode?>? tools = null,
+         IDictionary<string, JsonNode?>? scopes = null,
+         IDictionary<string, JsonNode?>? thresholds = null,
+-        IDictionary<string, JsonNode?>? escalationRules = null)
++        IDictionary<string, JsonNode?>? escalationRules = null,
++        string? roleBrief = null,
++        IDictionary<string, JsonNode?>? triggerLogic = null,
++        IDictionary<string, JsonNode?>? workingHours = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -274,6 +278,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         TemplateId = NormalizeRequired(templateId, nameof(templateId), TemplateIdMaxLength);
+         DisplayName = NormalizeRequired(displayName, nameof(displayName), DisplayNameMaxLength);
+         RoleName = NormalizeRequired(roleName, nameof(roleName), RoleNameMaxLength);
++        RoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
+         Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength);
+         AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+         Seniority = seniority;
+@@ -284,6 +289,8 @@ public sealed class Agent : ICompanyOwnedEntity
+         Scopes = CloneNodes(scopes);
+         Thresholds = CloneNodes(thresholds);
+         EscalationRules = CloneNodes(escalationRules);
++        TriggerLogic = CloneNodes(triggerLogic);
++        WorkingHours = CloneNodes(workingHours);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -294,6 +301,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     public string TemplateId { get; private set; } = null!;
+     public string DisplayName { get; private set; } = null!;
+     public string RoleName { get; private set; } = null!;
++    public string? RoleBrief { get; private set; }
+     public string Department { get; private set; } = null!;
+     public string? AvatarUrl { get; private set; }
+     public AgentSeniority Seniority { get; private set; }
+@@ -304,9 +312,34 @@ public sealed class Agent : ICompanyOwnedEntity
+     public Dictionary<string, JsonNode?> Scopes { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> Thresholds { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> TriggerLogic { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> WorkingHours { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
++
++    public void UpdateOperatingProfile(
++        string? roleBrief,
++        AgentStatus status,
++        IDictionary<string, JsonNode?>? objectives,
++        IDictionary<string, JsonNode?>? kpis,
++        IDictionary<string, JsonNode?>? tools,
++        IDictionary<string, JsonNode?>? scopes,
++        IDictionary<string, JsonNode?>? thresholds,
++        IDictionary<string, JsonNode?>? escalationRules,
++        IDictionary<string, JsonNode?>? triggerLogic,
++        IDictionary<string, JsonNode?>? workingHours)
++    {
++        AgentStatusValues.EnsureSupported(status, nameof(status));
++
++        RoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
++        Status = status;
++        Objectives = CloneNodes(objectives);
++        Kpis = CloneNodes(kpis);
++        Tools = CloneNodes(tools);
++        Scopes = CloneNodes(scopes);
++        Thresholds = CloneNodes(thresholds);
++        EscalationRules = CloneNodes(escalationRules);
++        TriggerLogic = CloneNodes(triggerLogic);
++        WorkingHours = CloneNodes(workingHours);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void EnsureCanReceiveAssignments()
++    {
++        if (Status == AgentStatus.Archived)
++        {
++            throw new InvalidOperationException("Archived agents cannot receive new assignments.");
++        }
++    }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index a716fe2..03efcf7 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -3,7 +3,9 @@ namespace VirtualCompany.Domain.Enums;
+ public enum AgentStatus
+ {
+     Active = 1,
+-    Inactive = 2
++    Paused = 2,
++    Restricted = 3,
++    Archived = 4
+ }
+ 
+ public enum AgentSeniority
+@@ -18,37 +20,65 @@ public enum AgentSeniority
+ public static class AgentStatusValues
+ {
+     public const string Active = "active";
++    public const string Paused = "paused";
++    public const string Restricted = "restricted";
++    public const string Archived = "archived";
+     public const string Inactive = "inactive";
++
++    private static readonly IReadOnlyDictionary<AgentStatus, string> Values = new Dictionary<AgentStatus, string>
++    {
++        [AgentStatus.Active] = Active,
++        [AgentStatus.Paused] = Paused,
++        [AgentStatus.Restricted] = Restricted,
++        [AgentStatus.Archived] = Archived
++    };
++
++    private static readonly IReadOnlyDictionary<string, AgentStatus> ReverseValues =
++        new Dictionary<string, AgentStatus>(StringComparer.OrdinalIgnoreCase)
++        {
++            [Active] = AgentStatus.Active,
++            [Paused] = AgentStatus.Paused,
++            [Restricted] = AgentStatus.Restricted,
++            [Archived] = AgentStatus.Archived,
++            [Inactive] = AgentStatus.Paused
++        };
++
+     public static AgentStatus DefaultStatus => AgentStatus.Active;
++    public static IReadOnlyList<string> AllowedValues { get; } = [Active, Paused, Restricted, Archived];
+ 
+-    public static string ToStorageValue(this AgentStatus status) =>
+-        status switch
+-        {
+-            AgentStatus.Active => Active,
+-            AgentStatus.Inactive => Inactive,
+-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported agent status.")
+-        };
++    public static string ToStorageValue(this AgentStatus status)
++    {
++        if (Values.TryGetValue(status, out var value))
++        {
++            return value;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++    }
+ 
+-    public static AgentStatus Parse(string value)
++    public static bool TryParse(string? value, out AgentStatus status)
+     {
+-        value = value?.Trim() ?? string.Empty;
+         if (string.IsNullOrWhiteSpace(value))
+         {
+-            throw new ArgumentException("Agent status is required.", nameof(value));
++            status = default;
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out status))
++        {
++            return true;
+         }
+ 
+-        return value.ToLowerInvariant() switch
++        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static AgentStatus Parse(string value)
++    {
++        if (TryParse(value, out var status))
+         {
+-            Active => AgentStatus.Active,
+-            Inactive => AgentStatus.Inactive,
+-            _ when Enum.TryParse<AgentStatus>(value, ignoreCase: true, out var legacyStatus) => legacyStatus,
+-            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported agent status value.")
+-        };
++            return status;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
+     }
+ 
+     public static void EnsureSupported(AgentStatus status, string paramName)
+     {
+         _ = status.ToStorageValue();
+     }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Agent status is required. Allowed values: {allowedValues}."
++            : $"Unsupported agent status value '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
+ }
+ 
+ public static class AgentSeniorityValues
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index ebf8115..6f5d749 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -1,3 +1,4 @@
++using System.Globalization;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
+@@ -14,6 +15,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private const int DisplayNameMaxLength = 200;
+     private const int DepartmentMaxLength = 100;
+     private const int RoleNameMaxLength = 100;
++    private const int RoleBriefMaxLength = 4000;
+     private const int AvatarUrlMaxLength = 2048;
+     private const int PersonalitySummaryMaxLength = 1000;
+ 
+@@ -73,6 +75,44 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         return agents.Select(ToSummaryDto).ToList();
+     }
++
++    public async Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++    {
++        await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++
++        var agent = await _dbContext.Agents
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        return ToOperatingProfileDto(agent);
++    }
++
++    public async Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken)
++    {
++        var membership = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var agent = await _dbContext.Agents
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        agent.UpdateOperatingProfile(
++            command.RoleBrief,
++            AgentStatusValues.Parse(command.Status),
++            command.Objectives,
++            command.Kpis,
++            command.ToolPermissions,
++            command.DataScopes,
++            command.ApprovalThresholds,
++            command.EscalationRules,
++            command.TriggerLogic,
++            command.WorkingHours);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.AgentOperatingProfileUpdated,
++                AuditTargetTypes.Agent,
++                agent.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["status"] = agent.Status.ToStorageValue(),
++                    ["displayName"] = agent.DisplayName
++                }),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToOperatingProfileDto(agent);
++    }
+ 
+     public async Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken)
+     {
+@@ -129,6 +169,18 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return membership;
+     }
+ 
++    private async Task<ResolvedCompanyMembershipContext> EnsureAdministrativeAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        if (membership.MembershipRole != CompanyMembershipRole.Owner &&
++            membership.MembershipRole != CompanyMembershipRole.Admin)
++        {
++            throw new UnauthorizedAccessException("Only owner and admin memberships can manage agent operating profiles.");
++        }
++
++        return membership;
++    }
++
+     private static CompanyAgentSummaryDto ToSummaryDto(Agent agent) =>
+         new(
+             agent.Id,
+@@ -143,6 +195,27 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.Status.ToStorageValue(),
+             agent.AvatarUrl, ResolvePersonalitySummary(agent.Personality));
+ 
++    private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent) =>
++        new(
++            agent.Id,
++            agent.CompanyId,
++            agent.TemplateId,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Department,
++            agent.Seniority.ToStorageValue(),
++            agent.Status.ToStorageValue(),
++            agent.AvatarUrl,
++            agent.RoleBrief,
++            CloneNodes(agent.Objectives),
++            CloneNodes(agent.Kpis),
++            CloneNodes(agent.Tools),
++            CloneNodes(agent.Scopes),
++            CloneNodes(agent.Thresholds),
++            CloneNodes(agent.EscalationRules),
++            CloneNodes(agent.TriggerLogic),
++            CloneNodes(agent.WorkingHours),
++            agent.UpdatedUtc,
++            agent.Status != AgentStatus.Archived);
++
+     private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
+     {
+         if (!personality.TryGetValue("summary", out var node) || node is null)
+@@ -188,6 +261,142 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
+         }
+     }
++
++    private static void Validate(UpdateAgentOperatingProfileCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        if (!AgentStatusValues.TryParse(command.Status, out _))
++        {
++            AddError(errors, nameof(command.Status), AgentStatusValues.BuildValidationMessage(command.Status));
++        }
++
++        AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
++        ValidateJsonObject(errors, nameof(command.Objectives), command.Objectives, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.Kpis), command.Kpis, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.ToolPermissions), command.ToolPermissions, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.DataScopes), command.DataScopes, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.EscalationRules), command.EscalationRules, requireNonEmpty: true);
++        ValidateJsonObject(errors, nameof(command.TriggerLogic), command.TriggerLogic, requireNonEmpty: false);
++        ValidateJsonObject(errors, nameof(command.WorkingHours), command.WorkingHours, requireNonEmpty: false);
++
++        ValidateStringArray(errors, nameof(command.ToolPermissions), command.ToolPermissions, "allowed");
++        ValidateStringArray(errors, nameof(command.ToolPermissions), command.ToolPermissions, "denied");
++        ValidateStringArray(errors, nameof(command.DataScopes), command.DataScopes, "read");
++        ValidateStringArray(errors, nameof(command.DataScopes), command.DataScopes, "write");
++        ValidateStringArray(errors, nameof(command.EscalationRules), command.EscalationRules, "critical");
++        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds);
++        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), command.TriggerLogic);
++        ValidateWorkingHours(errors, nameof(command.WorkingHours), command.WorkingHours);
++
++        if (errors.Count > 0)
++        {
++            throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static void ValidateJsonObject(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? value,
++        bool requireNonEmpty)
++    {
++        if (value is null || value.Count == 0)
++        {
++            if (requireNonEmpty)
++            {
++                AddError(errors, key, $"{key} must contain at least one entry.");
++            }
++
++            return;
++        }
++
++        foreach (var (entryKey, entryValue) in value)
++        {
++            if (string.IsNullOrWhiteSpace(entryKey))
++            {
++                AddError(errors, key, $"{key} contains an empty property name.");
++            }
++
++            if (entryValue is null)
++            {
++                AddError(errors, key, $"{key}.{entryKey} cannot be null.");
++            }
++        }
++    }
++
++    private static void ValidateStringArray(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload,
++        string propertyName)
++    {
++        if (payload is null ||
++            !payload.TryGetValue(propertyName, out var node) ||
++            node is null)
++        {
++            return;
++        }
++
++        if (node is not JsonArray array)
++        {
++            AddError(errors, key, $"{key}.{propertyName} must be an array of strings.");
++            return;
++        }
++
++        foreach (var item in array)
++        {
++            if (item is null || item is not JsonValue value || !value.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
++            {
++                AddError(errors, key, $"{key}.{propertyName} must contain non-empty string values.");
++                return;
++            }
++        }
++    }
++
++    private static void ValidateApprovalThresholds(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null)
++        {
++            return;
++        }
++
++        foreach (var (entryKey, node) in payload)
++        {
++            ValidateThresholdNode(errors, key, $"{key}.{entryKey}", node);
++        }
++    }
++
++    private static void ValidateThresholdNode(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string path,
++        JsonNode? node)
++    {
++        if (node is null)
++        {
++            AddError(errors, key, $"{path} cannot be null.");
++            return;
++        }
++
++        if (node is JsonObject jsonObject)
++        {
++            foreach (var property in jsonObject)
++            {
++                ValidateThresholdNode(errors, key, $"{path}.{property.Key}", property.Value);
++            }
++
++            return;
++        }
++
++        if (node is JsonArray jsonArray)
++        {
++            foreach (var item in jsonArray)
++            {
++                ValidateThresholdNode(errors, key, path, item);
++            }
++
++            return;
++        }
++
++        if (node is JsonValue jsonValue)
++        {
++            if (jsonValue.TryGetValue<decimal>(out var decimalValue) && decimalValue < 0)
++            {
++                AddError(errors, key, $"{path} must be non-negative.");
++            }
++            else if (jsonValue.TryGetValue<double>(out var doubleValue) && doubleValue < 0)
++            {
++                AddError(errors, key, $"{path} must be non-negative.");
++            }
++        }
++    }
++
++    private static void ValidateTriggerLogic(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null || payload.Count == 0)
++        {
++            return;
++        }
++
++        if (payload.TryGetValue("enabled", out var enabledNode) &&
++            enabledNode is not null &&
++            (enabledNode is not JsonValue enabledValue || !enabledValue.TryGetValue<bool>(out _)))
++        {
++            AddError(errors, key, $"{key}.enabled must be a boolean.");
++        }
++
++        if (!payload.TryGetValue("conditions", out var conditionsNode) || conditionsNode is null)
++        {
++            return;
++        }
++
++        if (conditionsNode is not JsonArray conditions)
++        {
++            AddError(errors, key, $"{key}.conditions must be an array.");
++            return;
++        }
++
++        foreach (var condition in conditions)
++        {
++            if (condition is not JsonObject conditionObject)
++            {
++                AddError(errors, key, $"{key}.conditions must contain objects.");
++                return;
++            }
++
++            var eventName = conditionObject["event"]?.GetValue<string>();
++            var typeName = conditionObject["type"]?.GetValue<string>();
++            if (string.IsNullOrWhiteSpace(eventName) && string.IsNullOrWhiteSpace(typeName))
++            {
++                AddError(errors, key, $"{key}.conditions entries must define either 'event' or 'type'.");
++                return;
++            }
++        }
++    }
++
++    private static void ValidateWorkingHours(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null || payload.Count == 0)
++        {
++            return;
++        }
++
++        if (!payload.TryGetValue("timezone", out var timezoneNode) ||
++            timezoneNode is not JsonValue timezoneValue ||
++            !timezoneValue.TryGetValue<string>(out var timezone) ||
++            string.IsNullOrWhiteSpace(timezone))
++        {
++            AddError(errors, key, $"{key}.timezone is required.");
++        }
++
++        if (!payload.TryGetValue("windows", out var windowsNode) || windowsNode is null)
++        {
++            AddError(errors, key, $"{key}.windows is required.");
++            return;
++        }
++
++        if (windowsNode is not JsonArray windows || windows.Count == 0)
++        {
++            AddError(errors, key, $"{key}.windows must contain at least one time window.");
++            return;
++        }
++
++        foreach (var window in windows)
++        {
++            if (window is not JsonObject windowObject)
++            {
++                AddError(errors, key, $"{key}.windows must contain objects.");
++                return;
++            }
++
++            var day = windowObject["day"]?.GetValue<string>();
++            var start = windowObject["start"]?.GetValue<string>();
++            var end = windowObject["end"]?.GetValue<string>();
++
++            if (string.IsNullOrWhiteSpace(day))
++            {
++                AddError(errors, key, $"{key}.windows.day is required.");
++                return;
++            }
++
++            if (!TimeOnly.TryParseExact(start, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var startTime) ||
++                !TimeOnly.TryParseExact(end, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var endTime))
++            {
++                AddError(errors, key, $"{key}.windows start and end must use HH:mm format.");
++                return;
++            }
++
++            if (endTime <= startTime)
++            {
++                AddError(errors, key, $"{key}.windows end must be later than start.");
++                return;
++            }
++        }
++    }
+ 
+     private static void AddRequired(
+         IDictionary<string, List<string>> errors,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 5023c42..37d3798 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -368,6 +368,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
+         builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
+         builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.RoleBrief).HasMaxLength(4000).HasColumnName("role_brief");
+         builder.Property(x => x.Department).HasMaxLength(100).IsRequired();
+         builder.Property(x => x.AvatarUrl).HasMaxLength(2048);
+         builder.Property(x => x.Seniority)
+@@ -401,6 +402,14 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+             .HasColumnName("escalation_rules_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.TriggerLogic)
++            .HasColumnName("trigger_logic_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.WorkingHours)
++            .HasColumnName("working_hours_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331173000_AddAgentOperatingProfiles.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331173000_AddAgentOperatingProfiles.cs
+new file mode 100644
+index 0000000..51c373a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331173000_AddAgentOperatingProfiles.cs
+@@ -0,0 +1,52 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddAgentOperatingProfiles : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "role_brief",
++                table: "agents",
++                type: "nvarchar(4000)",
++                maxLength: 4000,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "trigger_logic_json",
++                table: "agents",
++                type: "nvarchar(max)",
++                nullable: false,
++                defaultValueSql: "N'{}'");
++
++            migrationBuilder.AddColumn<string>(
++                name: "working_hours_json",
++                table: "agents",
++                type: "nvarchar(max)",
++                nullable: false,
++                defaultValueSql: "N'{}'");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "role_brief",
++                table: "agents");
++
++            migrationBuilder.DropColumn(
++                name: "trigger_logic_json",
++                table: "agents");
++
++            migrationBuilder.DropColumn(
++                name: "working_hours_json",
++                table: "agents");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 9a1df61..2510eaf 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -1,5 +1,7 @@
+ @page "/agents"
+ @using System.ComponentModel.DataAnnotations
++@using System.Text.Json
++@using System.Text.Json.Nodes
+ @using Microsoft.AspNetCore.Components
+ @inject OnboardingApiClient OnboardingApiClient
+ @inject AgentApiClient AgentApiClient
+@@ -135,6 +137,73 @@ else
+                 }
+             </div>
+         </div>
++
++        <div class="wizard-card mt-4">
++            <div class="agent-roster-header">
++                <div>
++                    <span class="dashboard-kicker">Operating profile</span>
++                    <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
++                </div>
++            </div>
++
++            @if (!CanManageProfiles)
++            {
++                <p class="text-body-secondary mb-0 mt-3">Owner or admin membership is required to manage operating profiles.</p>
++            }
++            else if (selectedAgentProfile is null)
++            {
++                <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
++            }
++            else
++            {
++                @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
++                {
++                    <div class="alert alert-danger mt-3">@profileErrorMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
++                {
++                    <div class="alert alert-success mt-3">@profileSuccessMessage</div>
++                }
++
++                <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
++                    <DataAnnotationsValidator />
++                    <ValidationSummary />
++
++                    <div class="row g-3">
++                        <div class="col-md-6">
++                            <label class="form-label" for="profile-status">Status</label>
++                            <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
++                                @foreach (var status in statusOptions)
++                                {
++                                    <option value="@status">@status</option>
++                                }
++                            </InputSelect>
++                            <ValidationMessage For="@(() => profileModel.Status)" />
++                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
++                            {
++                                <div class="text-danger small mt-1">@error</div>
++                            }
++                        </div>
++                        <div class="col-md-6">
++                            <label class="form-label" for="profile-updated">Last updated</label>
++                            <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
++                        </div>
++                    </div>
++
++                    <div class="mt-3">
++                        <label class="form-label" for="role-brief">Role brief</label>
++                        <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
++                        <ValidationMessage For="@(() => profileModel.RoleBrief)" />
++                        @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
++                        {
++                            <div class="text-danger small mt-1">@error</div>
++                        }
++                    </div>
++
++                    @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
++                    @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
++                    @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
++                    @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
++                    @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
++                    @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
++                    @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
++                    @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
++
++                    <div class="dashboard-actions mt-3">
++                        <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
++                    </div>
++                </EditForm>
++            }
++        </div>
+ 
+         <div class="wizard-card mt-4">
+             <div class="agent-roster-header">
+@@ -151,7 +220,10 @@ else
+                 <div class="agent-roster-grid mt-4">
+                     @foreach (var agent in roster)
+                     {
+-                        <article class="template-card">
++                        <button type="button"
++                                class="template-card text-start @(selectedAgentId == agent.Id ? "is-selected" : null)"
++                                disabled="@(!CanManageProfiles && selectedAgentId != agent.Id)"
++                                @onclick="@(() => SelectAgentAsync(agent.Id))">
+                             <div class="agent-template-header">
+                                 <strong>@agent.DisplayName</strong>
+                                 <span class="badge text-bg-success">@agent.Status</span>
+@@ -164,11 +236,11 @@ else
+                             {
+                                 <p class="mb-0 mt-3">@agent.Personality</p>
+                             }
+-                        </article>
++                        </button>
+                     }
+                 </div>
+             }
+-        </div>
++        </div>        
+     </section>
+ }
+ 
+@@ -176,14 +248,22 @@ else
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    private static readonly JsonSerializerOptions JsonEditorOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+     private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
++    private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
+     private bool isLoading = true;
+     private bool isSubmitting;
++    private bool isSavingProfile;
+     private string? errorMessage;
+     private string? successMessage;
++    private string? profileErrorMessage;
++    private string? profileSuccessMessage;
+     private CurrentUserContextViewModel? currentUser;
+     private CompanyAccessViewModel? companyAccess;
+     private List<AgentTemplateCatalogItemViewModel> templates = [];
+     private List<CompanyAgentSummaryViewModel> roster = [];
+     private HireAgentFormModel hireModel = new();
++    private AgentOperatingProfileViewModel? selectedAgentProfile;
++    private AgentOperatingProfileFormModel profileModel = new();
++    private Dictionary<string, string[]> profileErrors = new(StringComparer.OrdinalIgnoreCase);
++    private Guid? selectedAgentId;
+     private string? selectedTemplateId;
+ 
+     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+@@ -193,6 +273,11 @@ else
+     private AgentTemplateCatalogItemViewModel? selectedTemplate =>
+         templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
+ 
++    private bool CanManageProfiles =>
++        string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
++
++
+     protected override async Task OnParametersSetAsync()
+     {
+         isLoading = true;
+@@ -219,6 +304,17 @@ else
+                     {
+                         selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
+                         ResetSelectedTemplate();
++                    }
++
++                    if (CanManageProfiles && roster.Count > 0)
++                    {
++                        var nextSelectedAgent = selectedAgentId.HasValue
++                            ? roster.FirstOrDefault(x => x.Id == selectedAgentId.Value) ?? roster[0]
++                            : roster[0];
++
++                        await SelectAgentAsync(nextSelectedAgent.Id);
++                    }
++                    else
++                    {
++                        selectedAgentId = null;
++                        selectedAgentProfile = null;
++                        profileModel = new AgentOperatingProfileFormModel();
+                     }
+                 }
+             }
+@@ -259,10 +355,107 @@ else
+     {
+         if (CompanyId is not Guid companyId)
+         {
+             return;
+         }
+ 
++        selectedAgentId = agentId;
++        profileErrorMessage = null;
++        profileSuccessMessage = null;
++        profileErrors.Clear();
++
++        if (!CanManageProfiles)
++        {
++            return;
++        }
++
++        try
++        {
++            selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
++            profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
++        }
++        catch (OnboardingApiException ex)
++        {
++            selectedAgentProfile = null;
++            profileModel = new AgentOperatingProfileFormModel();
++            profileErrorMessage = ex.Message;
++        }
++    }
++
++    private async Task HandleProfileSaveAsync()
++    {
++        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId)
++        {
++            return;
++        }
++
++        if (!profileModel.TryCreateRequest(out var request, out var localErrors))
++        {
++            profileErrors = localErrors;
++            profileErrorMessage = "Fix the highlighted operating profile fields and try again.";
++            profileSuccessMessage = null;
++            return;
++        }
++
++        isSavingProfile = true;
++        profileErrorMessage = null;
++        profileSuccessMessage = null;
++        profileErrors.Clear();
++
++        try
++        {
++            selectedAgentProfile = await AgentApiClient.UpdateOperatingProfileAsync(companyId, agentId, request);
++            profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
++            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
++            profileSuccessMessage = $"{selectedAgentProfile.DisplayName} operating profile was saved.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            profileErrorMessage = ex.Message;
++            profileErrors = ex.Errors.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
++        }
++        finally
++        {
++            isSavingProfile = false;
++        }
++    }
++
++    private IReadOnlyList<string> GetProfileErrors(string key) =>
++        profileErrors.TryGetValue(key, out var errors) ? errors : [];
++
++    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
++    {
++        var sequence = 0;
++
++        builder.OpenElement(sequence++, "div");
++        builder.AddAttribute(sequence++, "class", "mt-3");
++
++        builder.OpenElement(sequence++, "label");
++        builder.AddAttribute(sequence++, "class", "form-label");
++        builder.AddAttribute(sequence++, "for", fieldName);
++        builder.AddContent(sequence++, label);
++        builder.CloseElement();
++
++        builder.OpenElement(sequence++, "textarea");
++        builder.AddAttribute(sequence++, "id", fieldName);
++        builder.AddAttribute(sequence++, "class", "form-control");
++        builder.AddAttribute(sequence++, "rows", "8");
++        builder.AddAttribute(sequence++, "value", valueAccessor());
++        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string>(this, value =>
++        {
++            switch (fieldName)
++            {
++                case "Objectives": profileModel.ObjectivesJson = value; break;
++                case "Kpis": profileModel.KpisJson = value; break;
++                case "ToolPermissions": profileModel.ToolPermissionsJson = value; break;
++                case "DataScopes": profileModel.DataScopesJson = value; break;
++                case "ApprovalThresholds": profileModel.ApprovalThresholdsJson = value; break;
++                case "EscalationRules": profileModel.EscalationRulesJson = value; break;
++                case "TriggerLogic": profileModel.TriggerLogicJson = value; break;
++                case "WorkingHours": profileModel.WorkingHoursJson = value; break;
++            }
++        }, valueAccessor()));
++        builder.CloseElement();
++
++        foreach (var error in GetProfileErrors(fieldName))
++        {
++            builder.OpenElement(sequence++, "div");
++            builder.AddAttribute(sequence++, "class", "text-danger small mt-1");
++            builder.AddContent(sequence++, error);
++            builder.CloseElement();
++        }
++
++        builder.CloseElement();
++    };
++
++    private async Task HandleHireAsync()
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
+         isSubmitting = true;
+         errorMessage = null;
+         successMessage = null;
+@@ -274,6 +467,14 @@ else
+             var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
+             roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+             successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
++
++            if (CanManageProfiles)
++            {
++                await SelectAgentAsync(result.Agent.Id);
++            }
++            else
++            {
++                selectedAgentId = result.Agent.Id;
++            }
++
+             ResetSelectedTemplate();
+         }
+         catch (OnboardingApiException ex)
+@@ -328,4 +529,116 @@ else
+                 Seniority = Seniority
+             };
+     }
++
++    private sealed class AgentOperatingProfileFormModel
++    {
++        [Required, StringLength(32)]
++        public string Status { get; set; } = "active";
++
++        [StringLength(4000)]
++        public string? RoleBrief { get; set; }
++
++        public string ObjectivesJson { get; set; } = "{}";
++        public string KpisJson { get; set; } = "{}";
++        public string ToolPermissionsJson { get; set; } = "{}";
++        public string DataScopesJson { get; set; } = "{}";
++        public string ApprovalThresholdsJson { get; set; } = "{}";
++        public string EscalationRulesJson { get; set; } = "{}";
++        public string TriggerLogicJson { get; set; } = "{}";
++        public string WorkingHoursJson { get; set; } = "{}";
++
++        public static AgentOperatingProfileFormModel FromViewModel(AgentOperatingProfileViewModel model) =>
++            new()
++            {
++                Status = model.Status,
++                RoleBrief = model.RoleBrief,
++                ObjectivesJson = Serialize(model.Objectives),
++                KpisJson = Serialize(model.Kpis),
++                ToolPermissionsJson = Serialize(model.ToolPermissions),
++                DataScopesJson = Serialize(model.DataScopes),
++                ApprovalThresholdsJson = Serialize(model.ApprovalThresholds),
++                EscalationRulesJson = Serialize(model.EscalationRules),
++                TriggerLogicJson = Serialize(model.TriggerLogic),
++                WorkingHoursJson = Serialize(model.WorkingHours)
++            };
++
++        public bool TryCreateRequest(out UpdateAgentOperatingProfileRequest request, out Dictionary<string, string[]> errors)
++        {
++            var collectedErrors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++            var objectives = ParseJson("Objectives", ObjectivesJson, collectedErrors);
++            var kpis = ParseJson("Kpis", KpisJson, collectedErrors);
++            var toolPermissions = ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors);
++            var dataScopes = ParseJson("DataScopes", DataScopesJson, collectedErrors);
++            var approvalThresholds = ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors);
++            var escalationRules = ParseJson("EscalationRules", EscalationRulesJson, collectedErrors);
++            var triggerLogic = ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors);
++            var workingHours = ParseJson("WorkingHours", WorkingHoursJson, collectedErrors);
++
++            if (collectedErrors.Count > 0)
++            {
++                request = new UpdateAgentOperatingProfileRequest();
++                errors = collectedErrors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
++                return false;
++            }
++
++            request = new UpdateAgentOperatingProfileRequest
++            {
++                Status = Status,
++                RoleBrief = RoleBrief,
++                Objectives = objectives,
++                Kpis = kpis,
++                ToolPermissions = toolPermissions,
++                DataScopes = dataScopes,
++                ApprovalThresholds = approvalThresholds,
++                EscalationRules = escalationRules,
++                TriggerLogic = triggerLogic,
++                WorkingHours = workingHours
++            };
++
++            errors = new Dictionary<string, string[]>();
++            return true;
++        }
++
++        private static Dictionary<string, JsonNode?> ParseJson(
++            string fieldName,
++            string value,
++            IDictionary<string, List<string>> errors)
++        {
++            if (string.IsNullOrWhiteSpace(value))
++            {
++                return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++            }
++
++            try
++            {
++                var payload = JsonSerializer.Deserialize<Dictionary<string, JsonNode?>>(value, JsonEditorOptions);
++                if (payload is null)
++                {
++                    AddError(errors, fieldName, $"{fieldName} must be a JSON object.");
++                    return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++                }
++
++                return new Dictionary<string, JsonNode?>(payload, StringComparer.OrdinalIgnoreCase);
++            }
++            catch (JsonException)
++            {
++                AddError(errors, fieldName, $"{fieldName} must be valid JSON.");
++                return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++            }
++        }
++
++        private static string Serialize(IDictionary<string, JsonNode?> payload) =>
++            JsonSerializer.Serialize(payload, JsonEditorOptions);
++
++        private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++        {
++            if (!errors.TryGetValue(key, out var messages))
++            {
++                messages = [];
++                errors[key] = messages;
++            }
++
++            messages.Add(message);
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 89695d5..552881a 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -31,6 +31,14 @@ public sealed class AgentApiClient
+     public Task<CreateAgentFromTemplateResultViewModel> HireAgentAsync(Guid companyId, HireAgentRequest request, CancellationToken cancellationToken = default) =>
+         CreateAgentFromTemplateAsync(companyId, request.ToCreateAgentFromTemplateRequest(), cancellationToken);
+ 
++    public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? OfflineStore.GetOperatingProfileAsync(companyId, agentId, cancellationToken)
++            : GetAsync<AgentOperatingProfileViewModel>($"api/companies/{companyId}/agents/{agentId}/profile", cancellationToken);
++
++    public Task<AgentOperatingProfileViewModel> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileRequest request, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? OfflineStore.UpdateOperatingProfileAsync(companyId, agentId, request, cancellationToken)
++            : SendAsync<AgentOperatingProfileViewModel>(HttpMethod.Put, $"api/companies/{companyId}/agents/{agentId}/profile", request, cancellationToken);
++
+     private const string OfflineTemplateCatalogPath = "offline/agent-templates.json";
+ 
+     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
+@@ -119,6 +127,7 @@ public sealed class AgentApiClient
+     {
+         private readonly object _sync = new();
+         private readonly Dictionary<Guid, List<CompanyAgentSummaryViewModel>> _agentsByCompany = [];
++        private readonly Dictionary<Guid, AgentOperatingProfileViewModel> _profilesByAgentId = [];
+         private Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>>? _templatesTask;
+ 
+         public Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>> GetTemplatesAsync(HttpClient httpClient, CancellationToken cancellationToken)
+@@ -139,6 +148,55 @@ public sealed class AgentApiClient
+                     : [];
+             }
+         }
++
++        public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++        {
++            lock (_sync)
++            {
++                if (_profilesByAgentId.TryGetValue(agentId, out var profile) && profile.CompanyId == companyId)
++                {
++                    return Task.FromResult(CloneProfile(profile));
++                }
++
++                throw new OnboardingApiException("The selected agent profile could not be loaded.");
++            }
++        }
++
++        public Task<AgentOperatingProfileViewModel> UpdateOperatingProfileAsync(
++            Guid companyId,
++            Guid agentId,
++            UpdateAgentOperatingProfileRequest request,
++            CancellationToken cancellationToken)
++        {
++            lock (_sync)
++            {
++                if (!_profilesByAgentId.TryGetValue(agentId, out var existing) || existing.CompanyId != companyId)
++                {
++                    throw new OnboardingApiException("The selected agent profile could not be loaded.");
++                }
++
++                existing.Status = request.Status.Trim();
++                existing.RoleBrief = string.IsNullOrWhiteSpace(request.RoleBrief) ? null : request.RoleBrief.Trim();
++                existing.Objectives = CloneNodes(request.Objectives);
++                existing.Kpis = CloneNodes(request.Kpis);
++                existing.ToolPermissions = CloneNodes(request.ToolPermissions);
++                existing.DataScopes = CloneNodes(request.DataScopes);
++                existing.ApprovalThresholds = CloneNodes(request.ApprovalThresholds);
++                existing.EscalationRules = CloneNodes(request.EscalationRules);
++                existing.TriggerLogic = CloneNodes(request.TriggerLogic);
++                existing.WorkingHours = CloneNodes(request.WorkingHours);
++                existing.UpdatedUtc = DateTime.UtcNow;
++                existing.CanReceiveAssignments = !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
++
++                if (_agentsByCompany.TryGetValue(companyId, out var roster))
++                {
++                    var agent = roster.SingleOrDefault(x => x.Id == agentId);
++                    if (agent is not null)
++                    {
++                        agent.Status = existing.Status;
++                    }
++                }
++
++                return Task.FromResult(CloneProfile(existing));
++            }
++        }
+ 
+         public async Task<CreateAgentFromTemplateResultViewModel> CreateFromTemplateAsync(
+             Guid companyId,
+@@ -177,6 +235,29 @@ public sealed class AgentApiClient
+                 AvatarUrl = string.IsNullOrWhiteSpace(request.AvatarUrl) ? template.AvatarUrl : request.AvatarUrl.Trim(),
+                 Department = string.IsNullOrWhiteSpace(request.Department) ? template.Department : request.Department.Trim(),
+                 RoleName = string.IsNullOrWhiteSpace(request.RoleName) ? template.RoleName : request.RoleName.Trim(),
+                 Personality = string.IsNullOrWhiteSpace(request.Personality) ? template.PersonaSummary : request.Personality.Trim(),
+                 Seniority = string.IsNullOrWhiteSpace(request.Seniority) ? template.DefaultSeniority : request.Seniority.Trim(),
+                 Status = "active"
+             };
++
++            var profile = new AgentOperatingProfileViewModel
++            {
++                Id = agent.Id,
++                CompanyId = companyId,
++                TemplateId = agent.TemplateId,
++                DisplayName = agent.DisplayName,
++                RoleName = agent.RoleName,
++                Department = agent.Department,
++                Seniority = agent.Seniority,
++                Status = agent.Status,
++                AvatarUrl = agent.AvatarUrl,
++                RoleBrief = request.Personality,
++                Objectives = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                Kpis = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                ToolPermissions = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                DataScopes = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                ApprovalThresholds = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                EscalationRules = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                TriggerLogic = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                WorkingHours = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                UpdatedUtc = DateTime.UtcNow,
++                CanReceiveAssignments = true
++            };
+ 
+             lock (_sync)
+             {
+@@ -187,9 +268,44 @@ public sealed class AgentApiClient
+                 }
+ 
+                 agents.Add(agent);
++                _profilesByAgentId[agent.Id] = CloneProfile(profile);
+             }
+ 
+             return new CreateAgentFromTemplateResultViewModel { Agent = agent };
+         }
++
++        private static AgentOperatingProfileViewModel CloneProfile(AgentOperatingProfileViewModel profile) =>
++            new()
++            {
++                Id = profile.Id,
++                CompanyId = profile.CompanyId,
++                TemplateId = profile.TemplateId,
++                DisplayName = profile.DisplayName,
++                RoleName = profile.RoleName,
++                Department = profile.Department,
++                Seniority = profile.Seniority,
++                Status = profile.Status,
++                AvatarUrl = profile.AvatarUrl,
++                RoleBrief = profile.RoleBrief,
++                Objectives = CloneNodes(profile.Objectives),
++                Kpis = CloneNodes(profile.Kpis),
++                ToolPermissions = CloneNodes(profile.ToolPermissions),
++                DataScopes = CloneNodes(profile.DataScopes),
++                ApprovalThresholds = CloneNodes(profile.ApprovalThresholds),
++                EscalationRules = CloneNodes(profile.EscalationRules),
++                TriggerLogic = CloneNodes(profile.TriggerLogic),
++                WorkingHours = CloneNodes(profile.WorkingHours),
++                UpdatedUtc = profile.UpdatedUtc,
++                CanReceiveAssignments = profile.CanReceiveAssignments
++            };
++
++        private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++        {
++            if (nodes is null || nodes.Count == 0)
++            {
++                return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++            }
++
++            return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++        }
+ 
+         private static CompanyAgentSummaryViewModel CloneAgent(CompanyAgentSummaryViewModel agent) =>
+             new()
+@@ -288,6 +404,38 @@ public sealed class CompanyAgentSummaryViewModel
+     public string Personality { get; set; } = string.Empty;
+ }
+ 
++public sealed class AgentOperatingProfileViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string TemplateId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Seniority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public string? RoleBrief { get; set; }
++    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime UpdatedUtc { get; set; }
++    public bool CanReceiveAssignments { get; set; }
++}
++
++public sealed class UpdateAgentOperatingProfileRequest
++{
++    public string Status { get; set; } = "active";
++    public string? RoleBrief { get; set; }
++    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++}
++
+ public sealed class CreateAgentFromTemplateRequest
+ {
+     public string TemplateId { get; set; } = string.Empty;
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 65c407f..1f71f2e 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -1,6 +1,7 @@
+ using System.Net;
+ using System.Net.Http.Json;
+ using System.Text.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Domain.Entities;
+@@ -425,6 +426,143 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         Assert.Contains("DisplayName", payload.Errors.Keys);
+         Assert.Contains("Personality", payload.Errors.Keys);
+         Assert.Contains("Seniority", payload.Errors.Keys);
++    }
++
++    [Fact]
++    public async Task Owner_can_get_and_update_agent_operating_profile_with_round_trip_persistence()
++    {
++        var seed = await SeedMembershipWithExistingAgentAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var before = await client.GetFromJsonAsync<AgentOperatingProfileResponse>($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
++
++        Assert.NotNull(before);
++        Assert.Equal("active", before!.Status);
++        Assert.Equal("Finance Manager", before.RoleName);
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
++        {
++            status = "restricted",
++            roleBrief = "Owns exception approvals, escalations, and finance tool access policy.",
++            objectives = new { primary = new[] { "Protect margin", "Reduce spend leakage" } },
++            kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
++            toolPermissions = new { allowed = new[] { "erp", "spreadsheets" }, denied = new[] { "wire_transfer" } },
++            dataScopes = new { read = new[] { "finance", "vendors" }, write = new[] { "approval_notes" } },
++            approvalThresholds = new { approval = new { expenseUsd = 1200, wireTransferUsd = 0 } },
++            escalationRules = new { critical = new[] { "failed_payment" }, escalateTo = "owner" },
++            triggerLogic = new { enabled = true, conditions = new[] { new { @event = "invoice_created", source = "erp" } } },
++            workingHours = new { timezone = "Europe/Stockholm", windows = new[] { new { day = "monday", start = "09:00", end = "17:00" } } }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("restricted", payload!.Status);
++        Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", payload.RoleBrief);
++        Assert.True(payload.UpdatedUtc >= before.UpdatedUtc);
++        Assert.False(payload.CanReceiveAssignments);
++        Assert.Equal(JsonValueKind.Array, payload.Objectives["primary"].ValueKind);
++        Assert.Equal("Europe/Stockholm", payload.WorkingHours["timezone"].GetString());
++
++        var after = await client.GetFromJsonAsync<AgentOperatingProfileResponse>($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
++        Assert.NotNull(after);
++        Assert.Equal("restricted", after!.Status);
++        Assert.Equal(payload.RoleBrief, after.RoleBrief);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
++        Assert.Equal(AgentStatus.Restricted, agent.Status);
++        Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", agent.RoleBrief);
++        Assert.True(agent.UpdatedUtc >= seed.OriginalUpdatedUtc);
++        Assert.Equal("\"Europe/Stockholm\"", agent.WorkingHours["timezone"]!.ToJsonString());
++        Assert.Equal("[\"forecast_accuracy\",\"approval_latency\"]", agent.Kpis["targets"]!.ToJsonString());
++    }
++
++    [Fact]
++    public async Task Updating_operating_profile_returns_field_level_validation_errors()
++    {
++        var seed = await SeedMembershipWithExistingAgentAsync();
++
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
++        {
++            status = "sleeping",
++            roleBrief = new string('x', 4001),
++            objectives = new { },
++            kpis = new { },
++            toolPermissions = new { allowed = new object[] { "", 42 } },
++            dataScopes = new { read = new[] { "finance" } },
++            approvalThresholds = new { approval = new { expenseUsd = -1 } },
++            escalationRules = new { },
++            triggerLogic = new { enabled = "sometimes", conditions = new[] { new { source = "erp" } } },
++            workingHours = new { timezone = "", windows = new[] { new { day = "monday", start = "18:00", end = "09:00" } } }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(payload);
++        Assert.Contains("Status", payload!.Errors.Keys);
++        Assert.Contains("RoleBrief", payload.Errors.Keys);
++        Assert.Contains("Objectives", payload.Errors.Keys);
++        Assert.Contains("Kpis", payload.Errors.Keys);
++        Assert.Contains("ToolPermissions", payload.Errors.Keys);
++        Assert.Contains("ApprovalThresholds", payload.Errors.Keys);
++        Assert.Contains("EscalationRules", payload.Errors.Keys);
++        Assert.Contains("TriggerLogic", payload.Errors.Keys);
++        Assert.Contains("WorkingHours", payload.Errors.Keys);
++    }
++
++    [Fact]
++    public async Task Operating_profile_endpoints_require_admin_access_and_stay_company_scoped()
++    {
++        var seed = await SeedEmployeeAndCrossCompanyAgentAsync();
++
++        using var employeeClient = CreateAuthenticatedClient("employee", "employee@example.com", "Employee");
++        Assert.Equal(
++            HttpStatusCode.Forbidden,
++            (await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile")).StatusCode);
++
++        using var founderClient = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        Assert.Equal(
++            HttpStatusCode.Forbidden,
++            (await founderClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/agents/{seed.OtherCompanyAgentId}/profile")).StatusCode);
++    }
++
++    [Fact]
++    public void Archived_agents_are_blocked_from_future_assignment_paths()
++    {
++        var agent = new Agent(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "operations",
++            "Archived Ops",
++            "Operations Manager",
++            "Operations",
++            null,
++            AgentSeniority.Lead,
++            AgentStatus.Archived,
++            objectives: Payload(("primary", new JsonArray(JsonValue.Create("Keep workflow stable")))),
++            kpis: Payload(("targets", new JsonArray(JsonValue.Create("cycle_time")))),
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("project_management")))),
++            scopes: Payload(("read", new JsonArray(JsonValue.Create("projects")))),
++            thresholds: Payload(("delivery", new JsonObject { ["blockedDays"] = 2 })),
++            escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("missed_deadline")))),
++            roleBrief: "Do not assign new work.",
++            triggerLogic: Payload(("enabled", JsonValue.Create(false))),
++            workingHours: Payload(
++                ("timezone", JsonValue.Create("Europe/Stockholm")),
++                ("windows", new JsonArray(new JsonObject
++                {
++                    ["day"] = "monday",
++                    ["start"] = "09:00",
++                    ["end"] = "17:00"
++                }))));
++
++        var exception = Assert.Throws<InvalidOperationException>(() => agent.EnsureCanReceiveAssignments());
++        Assert.Contains("Archived agents cannot receive new assignments.", exception.Message);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+@@ -462,6 +600,68 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+ 
+         return new SeedIds(companyId, Guid.Empty);
+     }
++
++    private async Task<EditableAgentSeed> SeedMembershipWithExistingAgentAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var originalUpdatedUtc = DateTime.UtcNow.AddMinutes(-30);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "finance",
++                "Nora Ledger",
++                "Finance Manager",
++                "Finance",
++                null,
++                AgentSeniority.Senior,
++                AgentStatus.Active,
++                objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++                kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++                tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++                scopes: Payload(("read", new JsonArray(JsonValue.Create("finance"))), ("write", new JsonArray(JsonValue.Create("forecast_drafts")))),
++                thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++                escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("cash_runway_under_90_days"))), ("escalateTo", JsonValue.Create("founder"))),
++                roleBrief: "Original finance operating profile.",
++                triggerLogic: Payload(("enabled", JsonValue.Create(true))),
++                workingHours: Payload(
++                    ("timezone", JsonValue.Create("UTC")),
++                    ("windows", new JsonArray(new JsonObject
++                    {
++                        ["day"] = "monday",
++                        ["start"] = "08:00",
++                        ["end"] = "16:00"
++                    })))));
++
++            return Task.CompletedTask;
++        });
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            var agent = await dbContext.Agents.SingleAsync(x => x.Id == agentId);
++            typeof(Agent).GetProperty(nameof(Agent.UpdatedUtc))!.SetValue(agent, originalUpdatedUtc);
++        });
++
++        return new EditableAgentSeed(companyId, agentId, originalUpdatedUtc);
++    }
++
++    private async Task<CrossCompanyAgentSeed> SeedEmployeeAndCrossCompanyAgentAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var employeeUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(ownerUserId, "founder@example.com", "Founder", "dev-header", "founder"),
++                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Company A"),
++                new Company(otherCompanyId, "Company B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(agentId, companyId, "finance", "Company A Finance", "Finance Manager", "Finance", null, AgentSeniority.Senior, AgentStatus.Active),
++                new Agent(otherCompanyAgentId, otherCompanyId, "support", "Company B Support", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new CrossCompanyAgentSeed(companyId, otherCompanyId, agentId, otherCompanyAgentId);
++    }
+@@ -525,6 +725,23 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+ 
+     private sealed record SeedIds(Guid CompanyId, Guid OtherCompanyId);
+     private sealed record SeededTemplateSnapshot(Guid Id, string TemplateId);
++    private sealed record EditableAgentSeed(Guid CompanyId, Guid AgentId, DateTime OriginalUpdatedUtc);
++    private sealed record CrossCompanyAgentSeed(Guid CompanyId, Guid OtherCompanyId, Guid AgentId, Guid OtherCompanyAgentId);
++
++    private sealed class AgentOperatingProfileResponse
++    {
++        public Guid Id { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string RoleName { get; set; } = string.Empty;
++        public string? RoleBrief { get; set; }
++        public DateTime UpdatedUtc { get; set; }
++        public bool CanReceiveAssignments { get; set; }
++        public Dictionary<string, JsonElement> Objectives { get; set; } = [];
++        public Dictionary<string, JsonElement> Kpis { get; set; } = [];
++        public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
++    }
+ 
+     private sealed class AgentTemplateResponse
+     {
+         public string TemplateId { get; set; } = string.Empty;
+END_OF_PATCH
