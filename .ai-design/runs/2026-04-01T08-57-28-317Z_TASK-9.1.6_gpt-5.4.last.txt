@@ -1,0 +1,1183 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -144,7 +144,7 @@ Form fields:
+ 
+ Supported upload formats for the initial rollout are `.txt`, `.md`, `.pdf`, `.doc`, and `.docx`.
+ Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
+-Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and expose `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting. Unsupported uploads are rejected up front with actionable validation guidance.
++Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and pass through an explicit virus-scan gate before downstream processing. The current infrastructure registers a placeholder scanner implementation so new documents move through `uploaded`, `pending_scan`, and usually `scan_clean` without requiring a real antivirus product yet. Future processing workers must only continue from `scan_clean`. The API exposes `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting, and scan metadata is stored in the document metadata payload to keep the pipeline extension point explicit.
+ 
+ ## Authorization Behavior
+ 
+diff --git a/src/VirtualCompany.Application/Documents/DocumentContracts.cs b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+--- a/src/VirtualCompany.Application/Documents/DocumentContracts.cs
++++ b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
+ 
+ namespace VirtualCompany.Application.Documents;
+ 
+@@ -45,6 +46,9 @@ public interface ICompanyDocumentService
+ 
+ public interface ICompanyDocumentIngestionStatusService
+ {
++    Task MarkPendingScanAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
++    Task MarkScanCleanAsync(Guid companyId, Guid documentId, CompanyDocumentVirusScanResult result, CancellationToken cancellationToken);
++    Task MarkBlockedAsync(Guid companyId, Guid documentId, CompanyDocumentVirusScanResult result, CancellationToken cancellationToken);
+     Task MarkProcessingAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+     Task MarkProcessedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+     Task MarkFailedAsync(Guid companyId, Guid documentId, CompanyDocumentIngestionFailure failure, CancellationToken cancellationToken);
+@@ -67,14 +71,67 @@ public interface ICompanyDocumentStorage
+ {
+     Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken);
+     Task DeleteAsync(string storageKey, CancellationToken cancellationToken);
+ }
+ 
++public enum CompanyDocumentVirusScanOutcome
++{
++    Clean = 1,
++    Blocked = 2,
++    Error = 3
++}
++
++public static class CompanyDocumentVirusScanOutcomeValues
++{
++    public const string Clean = "clean";
++    public const string Blocked = "blocked";
++    public const string Error = "error";
++
++    private static readonly IReadOnlyDictionary<CompanyDocumentVirusScanOutcome, string> Values =
++        new Dictionary<CompanyDocumentVirusScanOutcome, string>
++        {
++            [CompanyDocumentVirusScanOutcome.Clean] = Clean,
++            [CompanyDocumentVirusScanOutcome.Blocked] = Blocked,
++            [CompanyDocumentVirusScanOutcome.Error] = Error
++        };
++
++    public static string ToStorageValue(this CompanyDocumentVirusScanOutcome outcome) =>
++        Values.TryGetValue(outcome, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "Unsupported virus scan outcome.");
++}
++
+ public sealed record CompanyDocumentVirusScanRequest(
+     Guid CompanyId,
+     Guid DocumentId,
+-    string FileName,
++    string StorageKey,
++    string? StorageUrl,
++    string OriginalFileName,
+     string? ContentType,
+-    long Length,
+-    Stream Content);
++    long FileSizeBytes,
++    IReadOnlyDictionary<string, JsonNode?> Metadata);
+ 
+ public sealed record CompanyDocumentVirusScanResult(
+-    bool Accepted,
+-    string? FailureCode,
+-    string? FailureMessage)
++    CompanyDocumentVirusScanOutcome Outcome,
++    string ScannerName,
++    string? ScannerVersion,
++    DateTime ScannedUtc,
++    string? FailureCode = null,
++    string? Message = null)
+ {
+-    public static CompanyDocumentVirusScanResult Clean { get; } = new(true, null, null);
++    public static CompanyDocumentVirusScanResult CleanPlaceholder(
++        string scannerName = "no_op_placeholder",
++        string? scannerVersion = "1.0",
++        string? message = "Placeholder virus scan completed. Replace the registered scanner to enforce real malware inspection.") =>
++        new(
++            CompanyDocumentVirusScanOutcome.Clean,
++            scannerName,
++            scannerVersion,
++            DateTime.UtcNow,
++            null,
++            message);
++
++    public static CompanyDocumentVirusScanResult Blocked(
++        string scannerName,
++        string? scannerVersion,
++        string failureCode,
++        string message) =>
++        new(CompanyDocumentVirusScanOutcome.Blocked, scannerName, scannerVersion, DateTime.UtcNow, failureCode, message);
++
++    public static CompanyDocumentVirusScanResult Error(
++        string scannerName,
++        string? scannerVersion,
++        string failureCode,
++        string message) =>
++        new(CompanyDocumentVirusScanOutcome.Error, scannerName, scannerVersion, DateTime.UtcNow, failureCode, message);
+ }
+ 
+ public interface ICompanyDocumentVirusScanner
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -91,6 +91,19 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         return true;
+     }
+ 
++    public bool MarkPendingScan()
++    {
++        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.PendingScan)
++        {
++            return false;
++        }
++
++        EnsureStatus(nameof(MarkPendingScan), CompanyKnowledgeDocumentIngestionStatus.Uploaded);
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.PendingScan;
++        ClearFailure();
++        UpdatedUtc = DateTime.UtcNow;
++        return true;
++    }
++
+     public bool MarkProcessing()
+     {
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+@@ -98,7 +111,20 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+             return false;
+         }
+ 
+-        EnsureCanTransitionFromUploaded(nameof(MarkProcessing));
++        EnsureStatus(nameof(MarkProcessing), CompanyKnowledgeDocumentIngestionStatus.ScanClean);
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
++        ProcessingStartedUtc ??= DateTime.UtcNow;
++        ProcessedUtc = null;
++        ClearFailure();
++        UpdatedUtc = DateTime.UtcNow;
++        return true;
++    }
++
++    public bool MarkScanClean()
++    {
++        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean)
++        {
++            return false;
++        }
++
++        EnsureStatus(nameof(MarkScanClean), CompanyKnowledgeDocumentIngestionStatus.Uploaded, CompanyKnowledgeDocumentIngestionStatus.PendingScan);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
+         ProcessingStartedUtc ??= DateTime.UtcNow;
+         ProcessedUtc = null;
+@@ -106,6 +132,44 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+         return true;
+     }
+ 
++    public bool MarkBlocked(
++        string failureCode,
++        string failureMessage,
++        string failureAction,
++        string? failureTechnicalDetail = null,
++        bool canRetry = false)
++    {
++        var normalizedFailureCode = NormalizeRequired(failureCode, nameof(failureCode), 100);
++        var normalizedFailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), 2000);
++        var normalizedFailureAction = NormalizeRequired(failureAction, nameof(failureAction), 500);
++        var normalizedFailureTechnicalDetail = NormalizeOptional(failureTechnicalDetail, nameof(failureTechnicalDetail), 4000);
++
++        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Blocked)
++        {
++            var changed =
++                !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
++                !string.Equals(FailureMessage, normalizedFailureMessage, StringComparison.Ordinal) ||
++                !string.Equals(FailureAction, normalizedFailureAction, StringComparison.Ordinal) ||
++                !string.Equals(FailureTechnicalDetail, normalizedFailureTechnicalDetail, StringComparison.Ordinal) ||
++                CanRetry != canRetry;
++
++            if (!changed)
++            {
++                return false;
++            }
++        }
++        else
++        {
++            EnsureStatus(nameof(MarkBlocked),
++                CompanyKnowledgeDocumentIngestionStatus.Uploaded,
++                CompanyKnowledgeDocumentIngestionStatus.PendingScan,
++                CompanyKnowledgeDocumentIngestionStatus.ScanClean);
++            IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Blocked;
++        }
++
++        FailureCode = normalizedFailureCode;
++        FailureMessage = normalizedFailureMessage;
++        FailureAction = normalizedFailureAction;
++        FailureTechnicalDetail = normalizedFailureTechnicalDetail;
++        CanRetry = canRetry;
++        FailedUtc = DateTime.UtcNow;
++        UpdatedUtc = FailedUtc.Value;
++        return true;
++    }
++
+     public bool MarkProcessed()
+     {
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed)
+@@ -113,11 +177,10 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+             return false;
+         }
+ 
+-        EnsureCanTransitionToTerminal(CompanyKnowledgeDocumentIngestionStatus.Processed);
++        EnsureStatus(nameof(MarkProcessed), CompanyKnowledgeDocumentIngestionStatus.Processing);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processed;
+-        ProcessingStartedUtc ??= DateTime.UtcNow;
+         ProcessedUtc = DateTime.UtcNow;
+         ClearFailure();
+         UpdatedUtc = ProcessedUtc.Value;
+         return true;
+     }
+@@ -139,7 +202,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         {
+             throw new InvalidOperationException("Processed documents cannot transition to failed.");
+         }
+ 
+-        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Failed)
++        if (IngestionStatus is CompanyKnowledgeDocumentIngestionStatus.Failed)
+         {
+             var changed =
+                 !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
+@@ -163,7 +226,11 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+             return true;
+         }
+ 
+-        EnsureCanTransitionToTerminal(CompanyKnowledgeDocumentIngestionStatus.Failed);
++        EnsureStatus(
++            nameof(MarkFailed),
++            CompanyKnowledgeDocumentIngestionStatus.Uploaded,
++            CompanyKnowledgeDocumentIngestionStatus.PendingScan,
++            CompanyKnowledgeDocumentIngestionStatus.ScanClean,
++            CompanyKnowledgeDocumentIngestionStatus.Processing);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Failed;
+         FailureCode = normalizedFailureCode;
+         FailureMessage = normalizedFailureMessage;
+@@ -175,21 +242,20 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         return true;
+     }
+ 
+-    private void EnsureCanTransitionFromUploaded(string operationName)
++    private void EnsureStatus(string operationName, params CompanyKnowledgeDocumentIngestionStatus[] allowedStatuses)
+     {
+-        if (IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Uploaded)
++        if (allowedStatuses.Contains(IngestionStatus))
+         {
+-            throw new InvalidOperationException(
+-                $"Document ingestion status cannot execute '{operationName}' from '{IngestionStatus.ToStorageValue()}'.");
++            return;
+         }
+-    }
+ 
+-    private void EnsureCanTransitionToTerminal(CompanyKnowledgeDocumentIngestionStatus targetStatus)
+-    {
+-        if (IngestionStatus is not CompanyKnowledgeDocumentIngestionStatus.Uploaded and not CompanyKnowledgeDocumentIngestionStatus.Processing)
+-        {
+-            throw new InvalidOperationException(
+-                $"Document ingestion status cannot transition from '{IngestionStatus.ToStorageValue()}' to '{targetStatus.ToStorageValue()}'.");
+-        }
++        throw new InvalidOperationException(
++            $"Document ingestion status cannot execute '{operationName}' from '{IngestionStatus.ToStorageValue()}'.");
++    }
+ 
+-        ProcessingStartedUtc ??= DateTime.UtcNow;
++    public void SetMetadataValue(string key, JsonNode? value)
++    {
++        var normalizedKey = NormalizeRequired(key, nameof(key), 200);
++        Metadata[normalizedKey] = value?.DeepClone();
++        UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+     private void ClearFailure()
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -111,11 +111,10 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         }
+ 
+         EnsureStatus(nameof(MarkScanClean), CompanyKnowledgeDocumentIngestionStatus.Uploaded, CompanyKnowledgeDocumentIngestionStatus.PendingScan);
+-        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
+-        ProcessingStartedUtc ??= DateTime.UtcNow;
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.ScanClean;
++        ProcessingStartedUtc = null;
+         ProcessedUtc = null;
+         ClearFailure();
+-        UpdatedUtc = DateTime.UtcNow;
++        UpdatedUtc = DateTime.UtcNow;
+         return true;
+     }
+diff --git a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+@@ -17,9 +17,12 @@ public enum CompanyKnowledgeDocumentSourceType
+ public enum CompanyKnowledgeDocumentIngestionStatus
+ {
+     Uploaded = 1,
+-    Processing = 2,
+-    Processed = 3,
+-    Failed = 4
++    PendingScan = 2,
++    ScanClean = 3,
++    Processing = 4,
++    Processed = 5,
++    Blocked = 6,
++    Failed = 7
+ }
+ 
+ public static class CompanyKnowledgeDocumentTypeValues
+@@ -115,6 +118,9 @@ public static class CompanyKnowledgeDocumentSourceTypeValues
+ public static class CompanyKnowledgeDocumentIngestionStatusValues
+ {
+     public const string Uploaded = "uploaded";
++    public const string PendingScan = "pending_scan";
++    public const string ScanClean = "scan_clean";
+     public const string Processing = "processing";
+     public const string Processed = "processed";
++    public const string Blocked = "blocked";
+     public const string Failed = "failed";
+ 
+     private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentIngestionStatus, string> Values =
+@@ -122,8 +128,11 @@ public static class CompanyKnowledgeDocumentIngestionStatusValues
+         {
+             [CompanyKnowledgeDocumentIngestionStatus.Uploaded] = Uploaded,
++            [CompanyKnowledgeDocumentIngestionStatus.PendingScan] = PendingScan,
++            [CompanyKnowledgeDocumentIngestionStatus.ScanClean] = ScanClean,
+             [CompanyKnowledgeDocumentIngestionStatus.Processing] = Processing,
+             [CompanyKnowledgeDocumentIngestionStatus.Processed] = Processed,
++            [CompanyKnowledgeDocumentIngestionStatus.Blocked] = Blocked,
+             [CompanyKnowledgeDocumentIngestionStatus.Failed] = Failed
+         };
+ 
+@@ -133,7 +142,10 @@ public static class CompanyKnowledgeDocumentIngestionStatusValues
+         new Dictionary<string, CompanyKnowledgeDocumentIngestionStatus>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["unsupported"] = CompanyKnowledgeDocumentIngestionStatus.Failed
++            ,["queued_for_processing"] = CompanyKnowledgeDocumentIngestionStatus.ScanClean
+         };
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
+ 
+-    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
+-
+     public static string ToStorageValue(this CompanyKnowledgeDocumentIngestionStatus value) =>
+         Values.TryGetValue(value, out var storageValue)
+             ? storageValue
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Documents;
+@@ -25,6 +26,75 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+         _logger = logger;
+     }
+ 
++    public async Task MarkPendingScanAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
++        if (!document.MarkPendingScan())
++        {
++            return;
++        }
++
++        _logger.LogInformation(
++            "Company document queued for virus scan. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}.",
++            companyId,
++            documentId,
++            _correlationContextAccessor.CorrelationId);
++
++        document.SetMetadataValue(
++            "virus_scan",
++            new JsonObject
++            {
++                ["outcome"] = CompanyKnowledgeDocumentIngestionStatusValues.PendingScan,
++                ["message"] = "Awaiting virus scan."
++            });
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    public async Task MarkScanCleanAsync(
++        Guid companyId,
++        Guid documentId,
++        CompanyDocumentVirusScanResult result,
++        CancellationToken cancellationToken)
++    {
++        var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
++        if (!document.MarkScanClean())
++        {
++            return;
++        }
++
++        ApplyVirusScanMetadata(document, result);
++
++        _logger.LogInformation(
++            "Company document cleared by virus scan. CompanyId: {CompanyId}, DocumentId: {DocumentId}, Scanner: {ScannerName}, CorrelationId: {CorrelationId}.",
++            companyId,
++            documentId,
++            result.ScannerName,
++            _correlationContextAccessor.CorrelationId);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    public async Task MarkBlockedAsync(
++        Guid companyId,
++        Guid documentId,
++        CompanyDocumentVirusScanResult result,
++        CancellationToken cancellationToken)
++    {
++        var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
++        if (!document.MarkBlocked(
++            result.FailureCode ?? "virus_scan_blocked",
++            result.Message ?? "The document was blocked by the virus scanning policy.",
++            "Remove the unsafe content and upload a clean file.",
++            canRetry: false))
++        {
++            return;
++        }
++
++        ApplyVirusScanMetadata(document, result);
++
++        await WriteDocumentAuditEventAsync(
++            companyId,
++            documentId,
++            AuditEventActions.CompanyDocumentFailed,
++            AuditEventOutcomes.Denied,
++            document.FailureMessage,
++            document,
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
+     public async Task MarkProcessingAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+         var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
+@@ -59,16 +129,11 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             documentId.ToString("D"),
+             AuditEventOutcomes.Succeeded,
+             null,
+             ["knowledge_documents"],
+             BuildAuditMetadata(document),
+             _correlationContextAccessor.CorrelationId),
+             cancellationToken);
+ 
+-        _logger.LogWarning(
+-            "Company document ingestion failed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}, FailureCode: {FailureCode}, Retryable: {CanRetry}, TechnicalDetail: {TechnicalDetail}.",
+-            companyId,
+-            documentId,
+-            _correlationContextAccessor.CorrelationId,
+-            failure.Code,
+-            failure.CanRetry,
+-            failure.TechnicalDetail);
++        _logger.LogInformation(
++            "Company document processing completed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}.",
++            companyId,
++            documentId,
++            _correlationContextAccessor.CorrelationId);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+@@ -87,27 +152,23 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             return;
+         }
+ 
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                companyId,
+-                AuditActorTypes.System,
+-                null,
+-                AuditEventActions.CompanyDocumentFailed,
+-            new AuditEventWriteRequest(
+-                companyId,
+-                AuditActorTypes.System,
+-                null,
+-                AuditEventActions.CompanyDocumentFailed,
+-                AuditTargetTypes.CompanyDocument,
+-                documentId.ToString("D"),
+-                AuditEventOutcomes.Failed,
+-                document.FailureMessage,
+-                ["knowledge_documents"],
+-                BuildAuditMetadata(document),
+-                _correlationContextAccessor.CorrelationId),
++        await WriteDocumentAuditEventAsync(
++            companyId,
++            documentId,
++            AuditEventActions.CompanyDocumentFailed,
++            AuditEventOutcomes.Failed,
++            document.FailureMessage,
++            document,
+             cancellationToken);
+ 
++        _logger.LogWarning(
++            "Company document ingestion failed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}, FailureCode: {FailureCode}, Retryable: {CanRetry}, TechnicalDetail: {TechnicalDetail}.",
++            companyId,
++            documentId,
++            _correlationContextAccessor.CorrelationId,
++            failure.Code,
++            failure.CanRetry,
++            failure.TechnicalDetail);
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
+@@ -121,6 +182,35 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+         return document ?? throw new KeyNotFoundException(
+             $"Company knowledge document '{documentId:D}' was not found for company '{companyId:D}'.");
+     }
++
++    private async Task WriteDocumentAuditEventAsync(
++        Guid companyId,
++        Guid documentId,
++        string action,
++        string outcome,
++        string? rationaleSummary,
++        CompanyKnowledgeDocument document,
++        CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.System,
++                null,
++                action,
++                AuditTargetTypes.CompanyDocument,
++                documentId.ToString("D"),
++                outcome,
++                rationaleSummary,
++                ["knowledge_documents"],
++                BuildAuditMetadata(document),
++                _correlationContextAccessor.CorrelationId),
++            cancellationToken);
++    }
++
++    private static void ApplyVirusScanMetadata(CompanyKnowledgeDocument document, CompanyDocumentVirusScanResult result)
++    {
++        document.SetMetadataValue("virus_scan", BuildVirusScanMetadata(result));
++    }
+ 
+     private static IReadOnlyDictionary<string, string?> BuildAuditMetadata(CompanyKnowledgeDocument document)
+     {
+@@ -136,6 +226,12 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             metadata["storageUrl"] = document.StorageUrl;
+         }
+ 
++        if (TryGetVirusScanStringValue(document.Metadata, "outcome", out var scanOutcome))
++        {
++            metadata["scanOutcome"] = scanOutcome;
++            metadata["virusScanner"] = TryGetVirusScanStringValue(document.Metadata, "scanner_name", out var scannerName) ? scannerName : null;
++        }
++
+         if (TryGetStringValue(document.AccessScope, "visibility", out var visibility))
+         {
+             metadata["visibility"] = visibility;
+@@ -143,6 +239,35 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+ 
+         return metadata;
+     }
++
++    private static JsonObject BuildVirusScanMetadata(CompanyDocumentVirusScanResult result)
++    {
++        var metadata = new JsonObject
++        {
++            ["outcome"] = result.Outcome.ToStorageValue(),
++            ["scanner_name"] = result.ScannerName,
++            ["scanner_version"] = result.ScannerVersion,
++            ["scanned_utc"] = result.ScannedUtc
++        };
++
++        if (!string.IsNullOrWhiteSpace(result.Message))
++        {
++            metadata["message"] = result.Message;
++        }
++
++        if (!string.IsNullOrWhiteSpace(result.FailureCode))
++        {
++            metadata["failure_code"] = result.FailureCode;
++        }
++
++        return metadata;
++    }
++
++    private static bool TryGetVirusScanStringValue(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        string key,
++        out string value) =>
++        metadata.TryGetValue("virus_scan", out var node) &&
++        node is JsonObject virusScan &&
++        TryGetStringValue(virusScan, key, out value);
+ 
+     private static bool TryGetStringValue(
+         IReadOnlyDictionary<string, JsonNode?> values,
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+@@ -1,6 +1,5 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+-using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Domain.Entities;
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -20,7 +20,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly ICompanyDocumentStorage _documentStorage;
+-    private readonly ICompanyDocumentVirusScanner _virusScanner;
+     private readonly IDocumentIngestionOrchestrator _ingestionOrchestrator;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly IAuditEventWriter _auditEventWriter;
+@@ -33,7 +32,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     public CompanyDocumentService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         ICompanyDocumentStorage documentStorage,
+-        ICompanyDocumentVirusScanner virusScanner,
+         ICurrentUserAccessor currentUserAccessor,
+         IAuditEventWriter auditEventWriter,
+         ICorrelationContextAccessor correlationContextAccessor,
+@@ -45,7 +43,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _documentStorage = documentStorage;
+-        _virusScanner = virusScanner;
+         _currentUserAccessor = currentUserAccessor;
+         _auditEventWriter = auditEventWriter;
+         _correlationContextAccessor = correlationContextAccessor;
+@@ -70,47 +67,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             command.Length,
+             checksumSha256);
+ 
+-        var scanResult = await _virusScanner.ScanAsync(
+-            new CompanyDocumentVirusScanRequest(
+-                companyId,
+-                documentId,
+-                normalizedFileName,
+-                normalizedContentType,
+-                command.Length,
+-                command.Content),
+-            cancellationToken);
+-
+-        RewindStream(command.Content);
+-
+-        if (!scanResult.Accepted)
+-        {
+-            await EnqueueAuditEventAsync(
+-                companyId,
+-                documentId,
+-                AuditEventActions.CompanyDocumentUploadFailed,
+-                AuditEventOutcomes.Denied,
+-                scanResult.FailureMessage ?? "The uploaded document was rejected by the security scan.",
+-                BuildAuditMetadata(
+-                    documentType.ToStorageValue(),
+-                    normalizedFileName,
+-                    CompanyKnowledgeDocumentIngestionStatusValues.Failed,
+-                    scanResult.FailureCode ?? "virus_scan_rejected",
+-                    normalizedAccessScope,
+-                    storageKey),
+-                cancellationToken);
+-
+-            await TrySaveAuditEventAsync(cancellationToken);
+-            throw new CompanyDocumentValidationException(
+-                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+-                {
+-                    ["File"] = [scanResult.FailureMessage ?? "The uploaded document was rejected."]
+-                });
+-        }
+-
+         DocumentStorageWriteResult storageResult;
+         try
+         {
+@@ -179,6 +135,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+                 ex);
+         }
+ 
++        // Upload persistence stops at the virus-scan gate. Downstream processing starts only after scan clearance.
+         await _ingestionOrchestrator.ProcessUploadedAsync(companyId, documentId, cancellationToken);
+         await EnqueueAuditEventAsync(
+             companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+@@ -1,20 +1,101 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Documents;
+ 
+ public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngestionOrchestrator
+ {
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyDocumentIngestionStatusService _ingestionStatusService;
++    private readonly ICompanyDocumentVirusScanner _virusScanner;
++    private readonly ILogger<InlineCompanyDocumentIngestionOrchestrator> _logger;
++
++    public InlineCompanyDocumentIngestionOrchestrator(
++        VirtualCompanyDbContext dbContext,
++        ICompanyDocumentIngestionStatusService ingestionStatusService,
++        ICompanyDocumentVirusScanner virusScanner,
++        ILogger<InlineCompanyDocumentIngestionOrchestrator> logger)
++    {
++        _dbContext = dbContext;
++        _ingestionStatusService = ingestionStatusService;
++        _virusScanner = virusScanner;
++        _logger = logger;
++    }
++
+     public async Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+-        // Upload persistence stops at the uploaded state. Later workers should use
+-        // ICompanyDocumentIngestionStatusService to move documents to terminal outcomes.
+-        await Task.CompletedTask;
++        await _ingestionStatusService.MarkPendingScanAsync(companyId, documentId, cancellationToken);
++
++        var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
++        CompanyDocumentVirusScanResult scanResult;
++
++        try
++        {
++            scanResult = await _virusScanner.ScanAsync(
++                new CompanyDocumentVirusScanRequest(
++                    document.CompanyId,
++                    document.Id,
++                    document.StorageKey,
++                    document.StorageUrl,
++                    document.OriginalFileName,
++                    document.ContentType,
++                    document.FileSizeBytes,
++                    document.Metadata),
++                cancellationToken);
++        }
++        catch (Exception ex)
++        {
++            _logger.LogError(
++                ex,
++                "Virus scan step failed unexpectedly. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
++                companyId,
++                documentId);
++
++            await _ingestionStatusService.MarkFailedAsync(
++                companyId,
++                documentId,
++                new CompanyDocumentIngestionFailure(
++                    "virus_scan_error",
++                    "The document could not be cleared by the virus scanning step.",
++                    "Retry the scan or upload the document again when the scanning service is available.",
++                    ex.Message,
++                    CanRetry: true),
++                cancellationToken);
++            return;
++        }
++
++        switch (scanResult.Outcome)
++        {
++            case CompanyDocumentVirusScanOutcome.Clean:
++                await _ingestionStatusService.MarkScanCleanAsync(companyId, documentId, scanResult, cancellationToken);
++                break;
++            case CompanyDocumentVirusScanOutcome.Blocked:
++                await _ingestionStatusService.MarkBlockedAsync(companyId, documentId, scanResult, cancellationToken);
++                break;
++            case CompanyDocumentVirusScanOutcome.Error:
++                await _ingestionStatusService.MarkFailedAsync(
++                    companyId,
++                    documentId,
++                    new CompanyDocumentIngestionFailure(
++                        scanResult.FailureCode ?? "virus_scan_error",
++                        scanResult.Message ?? "The document could not be cleared by the virus scanning step.",
++                        "Retry the scan or upload the document again when the scanning service is available.",
++                        canRetry: true),
++                    cancellationToken);
++                break;
++            default:
++                throw new InvalidOperationException($"Unsupported virus scan outcome '{scanResult.Outcome}'.");
++        }
++    }
++
++    private async Task<CompanyKnowledgeDocument> GetDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        return await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+     }
+ }
+ 
+ public sealed class NoOpCompanyDocumentVirusScanner : ICompanyDocumentVirusScanner
+ {
+     public Task<CompanyDocumentVirusScanResult> ScanAsync(CompanyDocumentVirusScanRequest request, CancellationToken cancellationToken)
+     {
+-        return Task.FromResult(CompanyDocumentVirusScanResult.Clean);
++        return Task.FromResult(CompanyDocumentVirusScanResult.CleanPlaceholder());
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401193000_AddKnowledgeDocumentVirusScanStatuses.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401193000_AddKnowledgeDocumentVirusScanStatuses.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401193000_AddKnowledgeDocumentVirusScanStatuses.cs
+@@ -0,0 +1,66 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddKnowledgeDocumentVirusScanStatuses : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    DROP CONSTRAINT IF EXISTS "CK_knowledge_documents_ingestion_status";
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    ADD CONSTRAINT "CK_knowledge_documents_ingestion_status"
++                    CHECK ("IngestionStatus" IN ('uploaded', 'pending_scan', 'scan_clean', 'processing', 'processed', 'blocked', 'failed'));
++                    """);
++
++                return;
++            }
++
++            if (ActiveProvider == "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    DROP CONSTRAINT [CK_knowledge_documents_ingestion_status];
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    ADD CONSTRAINT [CK_knowledge_documents_ingestion_status]
++                    CHECK ([IngestionStatus] IN ('uploaded', 'pending_scan', 'scan_clean', 'processing', 'processed', 'blocked', 'failed'));
++                    """);
++            }
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    DROP CONSTRAINT IF EXISTS "CK_knowledge_documents_ingestion_status";
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    ADD CONSTRAINT "CK_knowledge_documents_ingestion_status"
++                    CHECK ("IngestionStatus" IN ('uploaded', 'processing', 'processed', 'failed'));
++                    """);
++
++                return;
++            }
++
++            if (ActiveProvider == "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    DROP CONSTRAINT [CK_knowledge_documents_ingestion_status];
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    ADD CONSTRAINT [CK_knowledge_documents_ingestion_status]
++                    CHECK ([IngestionStatus] IN ('uploaded', 'processing', 'processed', 'failed'));
++                    """);
++            }
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -14,7 +14,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         _factory = factory;
+     }
+ 
+     [Fact]
+-    public async Task Upload_persists_metadata_stores_file_and_marks_document_uploaded()
++    public async Task Upload_persists_metadata_stores_file_and_marks_document_scan_clean_via_placeholder_scanner()
+     {
+         _factory.DocumentStorage.Reset();
++        _factory.DocumentVirusScanner.Reset();
+         var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
+ 
+         using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+@@ -33,7 +33,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.NotNull(payload);
+         Assert.Equal(seed.CompanyId, payload!.CompanyId);
+         Assert.Equal("Operations Handbook", payload.Title);
+         Assert.Equal("reference", payload.DocumentType);
+-        Assert.Equal("uploaded", payload.IngestionStatus);
++        Assert.Equal("scan_clean", payload.IngestionStatus);
+         Assert.Null(payload.FailureCode);
+         Assert.True(payload.StorageKey.StartsWith($"companies/{seed.CompanyId:N}/knowledge/", StringComparison.OrdinalIgnoreCase));
+ 
+@@ -42,7 +42,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var document = await dbContext.CompanyKnowledgeDocuments
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Id == payload.Id);
+ 
+-        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Uploaded, document.IngestionStatus);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.ScanClean, document.IngestionStatus);
+         Assert.Equal("company", document.AccessScope["visibility"]!.GetValue<string>());
+         Assert.Equal(seed.CompanyId.ToString("D"), document.AccessScope["company_id"]!.GetValue<string>());
+         Assert.Equal("ops-handbook.txt", document.OriginalFileName);
+@@ -52,8 +52,12 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.Equal(document.FileSizeBytes, document.Metadata["file_size_bytes"]!.GetValue<long>());
+         Assert.Equal("text/plain", document.Metadata["content_type"]!.GetValue<string>());
+         Assert.False(string.IsNullOrWhiteSpace(document.Metadata["checksum_sha256"]!.GetValue<string>()));
++        Assert.Equal("clean", document.Metadata["virus_scan"]!["outcome"]!.GetValue<string>());
++        Assert.Equal("no_op_placeholder", document.Metadata["virus_scan"]!["scanner_name"]!.GetValue<string>());
+         Assert.Null(document.ProcessedUtc);
++        Assert.Null(document.ProcessingStartedUtc);
+         Assert.True(_factory.DocumentStorage.StoredObjects.TryGetValue(document.StorageKey, out var storedBytes));
++        Assert.Equal(1, _factory.DocumentVirusScanner.ScanCount);
+         Assert.Equal("Important internal operating guidance.", Encoding.UTF8.GetString(storedBytes));
+ 
+         var auditEvent = await dbContext.AuditEvents
+@@ -89,7 +93,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var payload = await response.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
+         Assert.NotNull(payload);
+-        Assert.Equal("uploaded", payload!.IngestionStatus);
++        Assert.Equal("scan_clean", payload!.IngestionStatus);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -311,7 +315,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         using (var scope = _factory.Services.CreateScope())
+         {
+             var ingestionStatusService = scope.ServiceProvider.GetRequiredService<ICompanyDocumentIngestionStatusService>();
++            await ingestionStatusService.MarkScanCleanAsync(seed.CompanyId, seed.DocumentId, CompanyDocumentVirusScanResult.CleanPlaceholder(), CancellationToken.None);
+             await ingestionStatusService.MarkProcessingAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
+         }
+ 
+@@ -323,7 +327,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.NotNull(document.ProcessingStartedUtc);
+     }
+ 
+     [Fact]
+     public async Task Ingestion_status_service_marks_document_processed()
+@@ -331,6 +335,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         using (var scope = _factory.Services.CreateScope())
+         {
+             var ingestionStatusService = scope.ServiceProvider.GetRequiredService<ICompanyDocumentIngestionStatusService>();
++            await ingestionStatusService.MarkScanCleanAsync(seed.CompanyId, seed.DocumentId, CompanyDocumentVirusScanResult.CleanPlaceholder(), CancellationToken.None);
+             await ingestionStatusService.MarkProcessingAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
+             await ingestionStatusService.MarkProcessedAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
+         }
+@@ -408,6 +413,44 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.Equal("InvalidDataException: Unexpected EOF while reading the document.", document.FailureTechnicalDetail);
+     }
+ 
++    [Fact]
++    public async Task Upload_marks_document_blocked_when_scan_result_is_blocked()
++    {
++        _factory.DocumentStorage.Reset();
++        _factory.DocumentVirusScanner.Reset();
++        _factory.DocumentVirusScanner.EnqueueResult(
++            CompanyDocumentVirusScanResult.Blocked(
++                "test_scanner",
++                "2026.04",
++                "virus_scan_blocked",
++                "The uploaded document matched the blocking policy."));
++
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Blocked Example",
++            "reference",
++            "blocked.txt",
++            "text/plain",
++            "blocked content",
++            """{"visibility":"company"}""",
++            null);
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("blocked", payload!.IngestionStatus);
++        Assert.Equal("virus_scan_blocked", payload.FailureCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == payload.Id);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Blocked, document.IngestionStatus);
++        Assert.Null(document.ProcessingStartedUtc);
++        Assert.Equal("blocked", document.Metadata["virus_scan"]!["outcome"]!.GetValue<string>());
++    }
++
+     private MultipartFormDataContent CreateUploadContent(
+         string title,
+         string documentType,
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+@@ -16,17 +16,30 @@ public sealed class CompanyKnowledgeDocumentTests
+         Assert.Null(document.FailedUtc);
+     }
+ 
+     [Fact]
+-    public void Uploaded_document_can_transition_to_processing()
++    public void Uploaded_document_can_transition_to_pending_scan()
+     {
+         var document = CreateDocument();
+ 
+-        var changed = document.MarkProcessing();
++        var changed = document.MarkPendingScan();
+ 
+         Assert.True(changed);
+-        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processing, document.IngestionStatus);
+-        Assert.NotNull(document.ProcessingStartedUtc);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.PendingScan, document.IngestionStatus);
++    }
++
++    [Fact]
++    public void Scan_clean_document_can_transition_to_processing()
++    {
++        var document = CreateDocument();
++        document.MarkPendingScan();
++        document.MarkScanClean();
++
++        var changed = document.MarkProcessing();
++
++        Assert.True(changed);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processing, document.IngestionStatus);
++        Assert.NotNull(document.ProcessingStartedUtc);
+     }
+ 
+     [Fact]
+     public void Uploaded_document_can_transition_to_processed()
+     {
+         var document = CreateDocument();
++        document.MarkPendingScan();
++        document.MarkScanClean();
++        document.MarkProcessing();
+ 
+         var changed = document.MarkProcessed();
+ 
+@@ -56,6 +69,19 @@ public sealed class CompanyKnowledgeDocumentTests
+         Assert.NotNull(document.FailedUtc);
+     }
+ 
++    [Fact]
++    public void Uploaded_document_cannot_transition_to_processing_before_scan_clearance()
++    {
++        var document = CreateDocument();
++
++        var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessing());
++
++        Assert.Contains("cannot execute", exception.Message, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public void Pending_scan_document_can_transition_to_blocked()
++    {
++        var document = CreateDocument();
++        document.MarkPendingScan();
++
++        var changed = document.MarkBlocked("virus_scan_blocked", "The document was blocked by the scanner.", "Remove the unsafe content and upload a clean file.");
++
++        Assert.True(changed);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Blocked, document.IngestionStatus);
++    }
++
+     [Fact]
+     public void Failed_document_cannot_transition_to_processed()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -45,8 +45,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             services.RemoveAll<ICompanyDocumentStorage>();
+             services.AddSingleton<TestCompanyDocumentStorage>();
+             services.AddSingleton<ICompanyDocumentStorage>(provider => provider.GetRequiredService<TestCompanyDocumentStorage>());
++            services.RemoveAll<ICompanyDocumentVirusScanner>();
++            services.AddSingleton<TestCompanyDocumentVirusScanner>();
++            services.AddSingleton<ICompanyDocumentVirusScanner>(provider => provider.GetRequiredService<TestCompanyDocumentVirusScanner>());
+ 
+             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
+         });
+     }
+@@ -60,6 +65,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+     public TestCompanyDocumentStorage DocumentStorage =>
+         Services.GetRequiredService<TestCompanyDocumentStorage>();
+ 
++    public TestCompanyDocumentVirusScanner DocumentVirusScanner =>
++        Services.GetRequiredService<TestCompanyDocumentVirusScanner>();
++
+     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
+     {
+         using var scope = Services.CreateScope();
+@@ -200,4 +208,48 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             }
+         }
+     }
++
++    public sealed class TestCompanyDocumentVirusScanner : ICompanyDocumentVirusScanner
++    {
++        private readonly ConcurrentQueue<CompanyDocumentVirusScanResult> _results = new();
++        private Exception? _nextException;
++        private int _scanCount;
++
++        public int ScanCount => Volatile.Read(ref _scanCount);
++
++        public void Reset()
++        {
++            while (_results.TryDequeue(out _))
++            {
++            }
++
++            _nextException = null;
++            Interlocked.Exchange(ref _scanCount, 0);
++        }
++
++        public void EnqueueResult(CompanyDocumentVirusScanResult result) =>
++            _results.Enqueue(result);
++
++        public void ThrowNext(Exception exception) =>
++            _nextException = exception;
++
++        public Task<CompanyDocumentVirusScanResult> ScanAsync(CompanyDocumentVirusScanRequest request, CancellationToken cancellationToken)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++            Interlocked.Increment(ref _scanCount);
++
++            var exception = Interlocked.Exchange(ref _nextException, null);
++            if (exception is not null)
++            {
++                throw exception;
++            }
++
++            if (_results.TryDequeue(out var configuredResult))
++            {
++                return Task.FromResult(configuredResult);
++            }
++
++            return Task.FromResult(
++                CompanyDocumentVirusScanResult.CleanPlaceholder(
++                    "test_placeholder_scanner",
++                    "1.0",
++                    "Test placeholder virus scan completed."));
++        }
++    }
+ }
+END_OF_PATCH

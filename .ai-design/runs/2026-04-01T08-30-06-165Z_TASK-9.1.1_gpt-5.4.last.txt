@@ -1,0 +1,422 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -28,6 +28,7 @@ public static class AuditTargetTypes
+     public const string CompanyMembership = "company_membership";
+     public const string Agent = "agent";
+     public const string AgentToolExecution = "agent_tool_execution";
++    public const string CompanyDocument = "company_document";
+     public const string ApprovalRequest = "approval_request";
+ }
+ 
+@@ -36,6 +37,7 @@ public static class AuditEventOutcomes
+     public const string Succeeded = "succeeded";
+     public const string Denied = "denied";
+     public const string Pending = "pending";
++    public const string Failed = "failed";
+ }
+ 
+ public static class AuditEventActions
+@@ -49,4 +51,6 @@ public static class AuditEventActions
+     public const string AgentStatusUpdated = "agent.status.updated";
+     public const string AgentToolExecutionDenied = "agent.tool_execution.denied";
+     public const string AgentToolExecutionExecuted = "agent.tool_execution.executed";
++    public const string CompanyDocumentUploaded = "company.document.uploaded";
++    public const string CompanyDocumentUploadFailed = "company.document.upload_failed";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -4,9 +4,12 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+-using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Documents;
+ 
+@@ -27,6 +30,9 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private readonly ICompanyDocumentStorage _documentStorage;
+     private readonly ICompanyDocumentVirusScanner _virusScanner;
+     private readonly IDocumentIngestionOrchestrator _ingestionOrchestrator;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+     private readonly CompanyDocumentOptions _options;
+ 
+     public CompanyDocumentService(
+@@ -34,12 +40,18 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         ICompanyDocumentStorage documentStorage,
+         ICompanyDocumentVirusScanner virusScanner,
++        ICurrentUserAccessor currentUserAccessor,
++        IAuditEventWriter auditEventWriter,
++        ICorrelationContextAccessor correlationContextAccessor,
+         IDocumentIngestionOrchestrator ingestionOrchestrator,
+         IOptions<CompanyDocumentOptions> options)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _documentStorage = documentStorage;
++        _currentUserAccessor = currentUserAccessor;
++        _auditEventWriter = auditEventWriter;
++        _correlationContextAccessor = correlationContextAccessor;
+         _virusScanner = virusScanner;
+         _ingestionOrchestrator = ingestionOrchestrator;
+         _options = options.Value;
+@@ -50,7 +62,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         await EnsureManagementAccessAsync(companyId, cancellationToken);
+ 
+         var validationErrors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+-        var documentType = ValidateCommand(command, validationErrors);
++        var documentType = ValidateCommand(companyId, command, validationErrors);
+         if (validationErrors.Count > 0)
+         {
+             throw new CompanyDocumentValidationException(validationErrors);
+@@ -60,6 +72,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         var normalizedFileName = Path.GetFileName(command.OriginalFileName.Trim());
+         var fileExtension = Path.GetExtension(normalizedFileName).ToLowerInvariant();
+         var storageKey = BuildStorageKey(companyId, documentId, normalizedFileName);
++        var normalizedAccessScope = NormalizeAccessScope(companyId, command.AccessScope);
+ 
+         var document = new CompanyKnowledgeDocument(
+             documentId,
+@@ -71,7 +84,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             command.ContentType,
+             fileExtension,
+             command.Length,
+-            CloneDictionary(command.Metadata),
++            CloneDictionary(command.Metadata),
+             CloneDictionary(command.AccessScope));
+ 
+         _dbContext.CompanyKnowledgeDocuments.Add(document);
+@@ -90,6 +103,16 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+                 scanResult.FailureCode ?? "virus_scan_rejected",
+                 scanResult.FailureMessage ?? "The uploaded document was rejected by the security scan.");
+ 
++            await EnqueueAuditEventAsync(
++                companyId,
++                documentId,
++                AuditEventActions.CompanyDocumentUploadFailed,
++                AuditEventOutcomes.Denied,
++                document.FailureMessage,
++                BuildAuditMetadata(document),
++                cancellationToken);
++
++            document = new CompanyKnowledgeDocument(
++                document.Id, document.CompanyId, document.Title, document.DocumentType, document.StorageKey, document.OriginalFileName, document.ContentType, document.FileExtension, document.FileSizeBytes, CloneDictionary(document.Metadata), normalizedAccessScope, document.SourceRef);
+             await SaveChangesOrThrowAsync(
+                 "Document metadata could not be updated after the security scan failure.",
+                 cancellationToken);
+@@ -130,6 +153,15 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+                 "storage_failed",
+                 "The document could not be stored. Retry the upload or contact support if the problem persists.");
+ 
++            await EnqueueAuditEventAsync(
++                companyId,
++                documentId,
++                AuditEventActions.CompanyDocumentUploadFailed,
++                AuditEventOutcomes.Failed,
++                document.FailureMessage,
++                BuildAuditMetadata(document),
++                cancellationToken);
++
+             await TrySaveFailureStateAsync(cancellationToken);
+ 
+             throw new CompanyDocumentOperationException(
+@@ -141,6 +173,16 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         }
+ 
+         await _ingestionOrchestrator.ProcessUploadedAsync(companyId, documentId, cancellationToken);
++        await EnqueueAuditEventAsync(
++            companyId,
++            documentId,
++            AuditEventActions.CompanyDocumentUploaded,
++            AuditEventOutcomes.Succeeded,
++            null,
++            BuildAuditMetadata(document),
++            cancellationToken);
++
++        await TrySaveAuditEventAsync(cancellationToken);
+         return MapDto(document);
+     }
+ 
+@@ -197,11 +239,13 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         }
+     }
+ 
+     private CompanyKnowledgeDocumentType ValidateCommand(
++        Guid companyId,
+         UploadCompanyDocumentCommand command,
+         IDictionary<string, string[]> errors)
+     {
+         var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+         AddRequiredStringValidation(result, "Title", command.Title, 200);
+         AddRequiredStringValidation(result, "DocumentType", command.DocumentType, 64);
++        ValidateAccessScope(companyId, command.AccessScope, result);
+ 
+         if (!CompanyKnowledgeDocumentTypeValues.TryParse(command.DocumentType, out var documentType))
+         {
+@@ -267,6 +311,73 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             messages = new List<string>();
+             errors[key] = messages;
+         }
+ 
+         messages.Add(message);
+     }
++
++    private static void ValidateAccessScope(
++        Guid companyId,
++        Dictionary<string, JsonNode?>? accessScope,
++        IDictionary<string, List<string>> errors)
++    {
++        if (accessScope is null || accessScope.Count == 0)
++        {
++            AddError(errors, "AccessScope", "AccessScope is required and must include a visibility value.");
++            return;
++        }
++
++        if (!TryGetStringValue(accessScope, "visibility", out _))
++        {
++            AddError(errors, "AccessScope", "AccessScope.visibility is required.");
++        }
++
++        if (!accessScope.TryGetValue("company_id", out var companyIdNode) || companyIdNode is null)
++        {
++            return;
++        }
++
++        if (!TryGetStringValue(accessScope, "company_id", out var scopedCompanyId) ||
++            !Guid.TryParse(scopedCompanyId, out var parsedCompanyId) ||
++            parsedCompanyId != companyId)
++        {
++            AddError(errors, "AccessScope", "AccessScope.company_id must match the company route value.");
++        }
++    }
++
++    private static Dictionary<string, JsonNode?> NormalizeAccessScope(Guid companyId, Dictionary<string, JsonNode?>? accessScope)
++    {
++        var normalized = CloneDictionary(accessScope);
++        normalized["company_id"] = JsonValue.Create(companyId.ToString("D"));
++        return normalized;
++    }
++
++    private static bool TryGetStringValue(
++        IReadOnlyDictionary<string, JsonNode?> values,
++        string key,
++        out string value)
++    {
++        value = string.Empty;
++        if (!values.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var rawValue))
++        {
++            return false;
++        }
++
++        if (string.IsNullOrWhiteSpace(rawValue))
++        {
++            return false;
++        }
++
++        value = rawValue.Trim();
++        return true;
++    }
++
++    private Task EnqueueAuditEventAsync(
++        Guid companyId,
++        Guid documentId,
++        string action,
++        string outcome,
++        string? rationaleSummary,
++        IReadOnlyDictionary<string, string?> metadata,
++        CancellationToken cancellationToken) =>
++        _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                _currentUserAccessor.UserId,
++                action,
++                AuditTargetTypes.CompanyDocument,
++                documentId.ToString("D"),
++                outcome,
++                Truncate(rationaleSummary, 512),
++                ["knowledge_documents", "object_storage"],
++                metadata,
++                _correlationContextAccessor.CorrelationId),
++            cancellationToken);
+ 
+     private static string BuildStorageKey(Guid companyId, Guid documentId, string originalFileName)
+     {
+@@ -316,6 +427,31 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             clone[pair.Key] = pair.Value?.DeepClone();
+         }
+ 
+         return clone;
+     }
++
++    private static IReadOnlyDictionary<string, string?> BuildAuditMetadata(CompanyKnowledgeDocument document)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["documentType"] = document.DocumentType.ToStorageValue(),
++            ["fileName"] = document.OriginalFileName,
++            ["ingestionStatus"] = document.IngestionStatus.ToStorageValue(),
++            ["failureCode"] = document.FailureCode
++        };
++
++        if (TryGetStringValue(document.AccessScope, "visibility", out var visibility))
++        {
++            metadata["visibility"] = visibility;
++        }
++
++        return metadata;
++    }
++
++    private async Task TrySaveAuditEventAsync(CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch
++        {
++        }
++    }
++
++    private static string? Truncate(string? value, int maxLength) =>
++        string.IsNullOrWhiteSpace(value)
++            ? null
++            : value.Trim().Length <= maxLength
++                ? value.Trim()
++                : value.Trim()[..maxLength];
+ 
+     private async Task SaveChangesOrThrowAsync(string detail, CancellationToken cancellationToken)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -2,10 +2,12 @@ using System.Net;
+ using System.Net.Http.Headers;
+ using System.Text;
+ using System.Text.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -56,12 +58,22 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+             .SingleAsync(x => x.Id == payload.Id);
+ 
+         Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
++        Assert.Equal("company", document.AccessScope["visibility"]!.GetValue<string>());
++        Assert.Equal(seed.CompanyId.ToString("D"), document.AccessScope["company_id"]!.GetValue<string>());
+         Assert.Equal("ops-handbook.txt", document.OriginalFileName);
+         Assert.Equal(".txt", document.FileExtension);
+         Assert.Equal("text/plain", document.ContentType);
+         Assert.True(_factory.DocumentStorage.StoredObjects.TryGetValue(document.StorageKey, out var storedBytes));
+         Assert.Equal("Important internal operating guidance.", Encoding.UTF8.GetString(storedBytes));
+-    }
++
++        var auditEvent = await dbContext.AuditEvents
++            .SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.TargetType == AuditTargetTypes.CompanyDocument &&
++                x.TargetId == payload.Id.ToString("D") &&
++                x.Action == AuditEventActions.CompanyDocumentUploaded);
++
++        Assert.Equal(AuditEventOutcomes.Succeeded, auditEvent.Outcome);
++   }
+ 
+     [Fact]
+     public async Task Upload_rejects_unsupported_file_types_with_actionable_validation_errors()
+@@ -100,6 +112,61 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
+     }
+ 
++    [Fact]
++    public async Task Upload_requires_access_scope_metadata_with_visibility()
++    {
++        _factory.DocumentStorage.Reset();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = new MultipartFormDataContent
++        {
++            { new StringContent("Operations Handbook"), "title" },
++            { new StringContent("reference"), "document_type" }
++        };
++
++        var fileContent = new ByteArrayContent(Encoding.UTF8.GetBytes("Important internal operating guidance."));
++        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("text/plain");
++        content.Add(fileContent, "file", "ops-handbook.txt");
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Contains("AccessScope", payload!.Errors.Keys);
++        Assert.Contains("visibility", payload.Errors["AccessScope"][0], StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task Upload_rejects_access_scope_company_id_that_crosses_tenants()
++    {
++        _factory.DocumentStorage.Reset();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++        var foreignCompanyId = Guid.NewGuid();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Operations Handbook",
++            "reference",
++            "ops-handbook.txt",
++            "text/plain",
++            "Important internal operating guidance.",
++            $"{{\"visibility\":\"company\",\"company_id\":\"{foreignCompanyId:D}\"}}",
++            null);
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Contains("AccessScope", payload!.Errors.Keys);
++        Assert.Contains("must match", payload.Errors["AccessScope"][0], StringComparison.OrdinalIgnoreCase);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
++    }
++
+     [Fact]
+     public async Task List_and_get_are_company_scoped()
+     {
+@@ -179,6 +246,14 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
+         Assert.Equal("storage_failed", document.FailureCode);
+         Assert.Contains("Retry the upload", document.FailureMessage!, StringComparison.OrdinalIgnoreCase);
++
++        var auditEvent = await dbContext.AuditEvents
++            .SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.TargetType == AuditTargetTypes.CompanyDocument &&
++                x.TargetId == document.Id.ToString("D") &&
++                x.Action == AuditEventActions.CompanyDocumentUploadFailed);
++
++        Assert.Equal(AuditEventOutcomes.Failed, auditEvent.Outcome);
+     }
+ 
+     private MultipartFormDataContent CreateUploadContent(
+END_OF_PATCH

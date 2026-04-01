@@ -1,0 +1,369 @@
+diff --git a/README.md b/README.md
+index 5f6f2d1..c34eb2c 100644
+--- a/README.md
++++ b/README.md
+@@ -136,6 +136,7 @@ Form fields:
+ - `metadata` as an optional JSON object string
+ - `file`
+ 
++Supported upload formats for the initial rollout are `.txt`, `.md`, `.pdf`, `.doc`, and `.docx`.
+ Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
+ Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and expose `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting. Unsupported uploads are rejected up front with actionable validation guidance.
+ 
+diff --git a/src/VirtualCompany.Application/Documents/CompanyDocumentFileRules.cs b/src/VirtualCompany.Application/Documents/CompanyDocumentFileRules.cs
+new file mode 100644
+index 0000000..ec8f2ef
+--- /dev/null
++++ b/src/VirtualCompany.Application/Documents/CompanyDocumentFileRules.cs
+@@ -0,0 +1,82 @@
++namespace VirtualCompany.Application.Documents;
++
++public static class CompanyDocumentFileRules
++{
++    private const string UnsupportedFileAction =
++        "Upload a TXT, MD, PDF, DOC, or DOCX file, or export the document to PDF or DOCX and try again.";
++
++    private static readonly (string Extension, string[] ContentTypes)[] SupportedFormats =
++    [
++        (".txt", ["text/plain"]),
++        (".md", ["text/markdown", "text/plain"]),
++        (".pdf", ["application/pdf"]),
++        (".doc", ["application/msword", "application/octet-stream"]),
++        (".docx",
++        [
++            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++            "application/octet-stream",
++            "application/zip"
++        ])
++    ];
++
++    private static readonly IReadOnlyDictionary<string, string[]> SupportedFileTypes =
++        SupportedFormats.ToDictionary(x => x.Extension, x => x.ContentTypes, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> SupportedExtensions { get; } = SupportedFormats.Select(x => x.Extension).ToArray();
++    public static string SupportedFormatsDisplay { get; } = string.Join(", ", SupportedExtensions);
++    public static string FileInputAcceptValue { get; } = string.Join(",", SupportedExtensions);
++
++    public static bool TryValidate(string? fileName, string? contentType, out CompanyDocumentIngestionFailure? failure)
++    {
++        if (string.IsNullOrWhiteSpace(fileName))
++        {
++            failure = new CompanyDocumentIngestionFailure(
++                "missing_file_name",
++                $"A file name with a supported extension is required. Supported formats: {SupportedFormatsDisplay}.",
++                UnsupportedFileAction);
++            return false;
++        }
++
++        var normalizedFileName = Path.GetFileName(fileName.Trim());
++        var extension = Path.GetExtension(normalizedFileName);
++        if (string.IsNullOrWhiteSpace(extension) || !SupportedFileTypes.TryGetValue(extension, out var allowedContentTypes))
++        {
++            failure = new CompanyDocumentIngestionFailure(
++                "unsupported_file_format",
++                $"Unsupported file format. Supported formats: {SupportedFormatsDisplay}.",
++                UnsupportedFileAction);
++            return false;
++        }
++
++        var normalizedContentType = NormalizeContentType(contentType);
++        if (normalizedContentType is null || string.Equals(normalizedContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
++        {
++            failure = null;
++            return true;
++        }
++
++        if (allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
++        {
++            failure = null;
++            return true;
++        }
++
++        failure = new CompanyDocumentIngestionFailure(
++            "unsupported_content_type",
++            $"Content type '{normalizedContentType}' does not match the supported types for '{extension.ToLowerInvariant()}'.",
++            $"Verify the file is a valid document, then re-save it as {SupportedFormatsDisplay} before uploading again.");
++        return false;
++    }
++
++    public static string FormatValidationMessage(CompanyDocumentIngestionFailure failure) =>
++        $"{failure.Message} {failure.Action}";
++
++    public static CompanyDocumentIngestionFailure CreateProcessingFailure(Exception exception) =>
++        new(
++            "parser_failed",
++            "We could not read the document during ingestion.",
++            "Re-save or export the file to PDF, DOCX, TXT, or MD and upload it again.",
++            NormalizeTechnicalDetail(exception),
++            CanRetry: false);
++
++    private static string? NormalizeContentType(string? contentType) =>
++        string.IsNullOrWhiteSpace(contentType) ? null : contentType.Trim();
++
++    private static string NormalizeTechnicalDetail(Exception exception) =>
++        $"{exception.GetType().Name}: {exception.Message}".Trim();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs
+deleted file mode 100644
+index 31368d4..0000000
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs
++++ /dev/null
+@@ -1,60 +0,0 @@
+-using VirtualCompany.Application.Documents;
+-
+-namespace VirtualCompany.Infrastructure.Documents;
+-
+-internal static class CompanyDocumentFileTypePolicy
+-{
+-    private const string UnsupportedFileAction =
+-        "Upload a PDF, DOC, DOCX, TXT, or MD file, or export the document to PDF or DOCX and try again.";
+-
+-    private static readonly IReadOnlyDictionary<string, string[]> SupportedFileTypes =
+-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            [".txt"] = ["text/plain"],
+-            [".md"] = ["text/markdown", "text/plain"],
+-            [".pdf"] = ["application/pdf"],
+-            [".doc"] = ["application/msword", "application/octet-stream"],
+-            [".docx"] =
+-            [
+-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+-                "application/octet-stream",
+-                "application/zip"
+-            ]
+-        };
+-
+-    public static IReadOnlyList<string> SupportedExtensions { get; } =
+-        SupportedFileTypes.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+-
+-    public static bool TryValidate(string fileName, string? contentType, out CompanyDocumentIngestionFailure? failure)
+-    {
+-        var extension = Path.GetExtension(fileName).ToLowerInvariant();
+-        if (!SupportedFileTypes.TryGetValue(extension, out var allowedContentTypes))
+-        {
+-            failure = new CompanyDocumentIngestionFailure(
+-                "unsupported_file_type",
+-                $"Unsupported file type '{extension}'. Supported extensions: {string.Join(", ", SupportedExtensions)}.",
+-                UnsupportedFileAction);
+-            return false;
+-        }
+-
+-        var normalizedContentType = NormalizeContentType(contentType);
+-        if (normalizedContentType is null || string.Equals(normalizedContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
+-        {
+-            failure = null;
+-            return true;
+-        }
+-
+-        if (allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
+-        {
+-            failure = null;
+-            return true;
+-        }
+-
+-        failure = new CompanyDocumentIngestionFailure(
+-            "unsupported_content_type",
+-            $"Content type '{normalizedContentType}' does not match the supported types for '{extension}'.",
+-            "Verify the file is a valid document, then re-export or save it as PDF, DOCX, TXT, or MD before uploading again.");
+-        return false;
+-    }
+-
+-    public static string FormatValidationMessage(CompanyDocumentIngestionFailure failure) =>
+-        $"{failure.Message} {failure.Action}";
+-
+-    public static CompanyDocumentIngestionFailure CreateProcessingFailure(Exception exception) =>
+-        new(
+-            "parser_failed",
+-            "We could not read the document during ingestion.",
+-            "Re-save or export the file to PDF or DOCX and upload it again.",
+-            NormalizeTechnicalDetail(exception),
+-            CanRetry: false);
+-
+-    private static string? NormalizeTechnicalDetail(string? contentType) =>
+-        string.IsNullOrWhiteSpace(contentType) ? null : contentType.Trim();
+-
+-    private static string NormalizeTechnicalDetail(Exception exception) =>
+-        $"{exception.GetType().Name}: {exception.Message}".Trim();
+-}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index c2c9abd..366d1d3 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -293,10 +293,9 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+ 
+     private static void ValidateSupportedFileType(string fileName, string? contentType, IDictionary<string, List<string>> errors)
+     {
+-        var extension = Path.GetExtension(fileName).ToLowerInvariant();
+-        if (!CompanyDocumentFileTypePolicy.TryValidate(fileName, contentType, out var failure))
++        if (!CompanyDocumentFileRules.TryValidate(fileName, contentType, out var failure))
+         {
+-            AddError(errors, "File", CompanyDocumentFileTypePolicy.FormatValidationMessage(failure!));
++            AddError(errors, "File", CompanyDocumentFileRules.FormatValidationMessage(failure!));
+             return;
+         }
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentFileRulesTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentFileRulesTests.cs
+new file mode 100644
+index 0000000..bb8d8ca
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentFileRulesTests.cs
+@@ -0,0 +1,67 @@
++using VirtualCompany.Application.Documents;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanyDocumentFileRulesTests
++{
++    [Theory]
++    [InlineData("notes.txt", "text/plain")]
++    [InlineData("handbook.md", "text/markdown")]
++    [InlineData("policy.pdf", "application/pdf")]
++    [InlineData("legacy.doc", "application/msword")]
++    [InlineData("playbook.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")]
++    [InlineData("POLICY.PDF", "application/pdf")]
++    [InlineData("PLAYBOOK.DOCX", "application/octet-stream")]
++    public void TryValidate_accepts_supported_formats_case_insensitively(string fileName, string contentType)
++    {
++        var valid = CompanyDocumentFileRules.TryValidate(fileName, contentType, out var failure);
++
++        Assert.True(valid);
++        Assert.Null(failure);
++    }
++
++    [Theory]
++    [InlineData("spreadsheet.xls")]
++    [InlineData("spreadsheet.xlsx")]
++    [InlineData("deck.pptx")]
++    [InlineData("image.png")]
++    [InlineData("archive.zip")]
++    public void TryValidate_rejects_formats_outside_the_initial_allowlist(string fileName)
++    {
++        var valid = CompanyDocumentFileRules.TryValidate(fileName, "application/octet-stream", out var failure);
++
++        Assert.False(valid);
++        Assert.NotNull(failure);
++        Assert.Equal("unsupported_file_format", failure!.Code);
++        Assert.Contains("Unsupported file format.", failure.Message, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains(CompanyDocumentFileRules.SupportedFormatsDisplay, failure.Message, StringComparison.Ordinal);
++    }
++
++    [Theory]
++    [InlineData(null)]
++    [InlineData("")]
++    [InlineData("document")]
++    public void TryValidate_rejects_missing_or_extensionless_file_names(string? fileName)
++    {
++        var valid = CompanyDocumentFileRules.TryValidate(fileName, "text/plain", out var failure);
++
++        Assert.False(valid);
++        Assert.NotNull(failure);
++        Assert.Contains(CompanyDocumentFileRules.SupportedFormatsDisplay, failure!.Message, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Supported_extensions_match_the_v1_document_upload_allowlist()
++    {
++        Assert.Equal(
++            [".txt", ".md", ".pdf", ".doc", ".docx"],
++            CompanyDocumentFileRules.SupportedExtensions);
++        Assert.Equal(".txt,.md,.pdf,.doc,.docx", CompanyDocumentFileRules.FileInputAcceptValue);
++    }
++
++    [Fact]
++    public void TryValidate_rejects_supported_extension_with_mismatched_content_type()
++    {
++        var valid = CompanyDocumentFileRules.TryValidate("policy.pdf", "image/png", out var failure);
++
++        Assert.False(valid);
++        Assert.NotNull(failure);
++        Assert.Equal("unsupported_content_type", failure!.Code);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+index 987c176..63f9fe0 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -6,6 +6,7 @@ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Documents;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+@@ -77,6 +78,43 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.Equal(AuditEventOutcomes.Succeeded, auditEvent.Outcome);
+    }
+ 
++    [Fact]
++    public async Task Upload_accepts_supported_docx_files_with_case_insensitive_extension_checks()
++    {
++        _factory.DocumentStorage.Reset();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Policy Playbook",
++            "policy",
++            "playbook.DOCX",
++            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++            "Supported document upload.",
++            """{"visibility":"company"}""",
++            """{"category":"policy"}""");
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("uploaded", payload!.IngestionStatus);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == payload.Id);
++
++        Assert.Equal(".docx", document.FileExtension);
++        Assert.Equal("playbook.DOCX", document.OriginalFileName);
++        Assert.Equal(
++            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++            document.ContentType);
++        Assert.True(_factory.DocumentStorage.StoredObjects.ContainsKey(document.StorageKey));
++    }
++
+     [Fact]
+     public async Task Upload_rejects_unsupported_file_types_with_actionable_validation_errors()
+     {
+@@ -87,8 +125,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+         using var content = CreateUploadContent(
+             "Malware",
+-            "general",
+-            "payload.exe",
++            "report",
++            "spreadsheet.xlsx",
+             "application/octet-stream",
+             "not allowed",
+             """{"visibility":"company"}""",
+@@ -101,13 +139,15 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+         Assert.NotNull(payload);
+         Assert.Contains("File", payload!.Errors.Keys);
+-        Assert.Contains("Unsupported file type", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
+-        Assert.Contains("Upload a PDF, DOC, DOCX, TXT, or MD file", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("Unsupported file format", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains(CompanyDocumentFileRules.SupportedFormatsDisplay, payload.Errors["File"][0], StringComparison.Ordinal);
++        Assert.Contains("Upload a TXT, MD, PDF, DOC, or DOCX file", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
++        Assert.Empty(_factory.DocumentStorage.StoredObjects);
+     }
+ 
+     [Fact]
+     public async Task Upload_requires_access_scope_metadata_with_visibility()
+END_OF_PATCH

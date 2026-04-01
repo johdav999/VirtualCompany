@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Documents;
 
 namespace VirtualCompany.Infrastructure.Observability;
 
@@ -98,6 +99,12 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         exception switch
         {
             CompanyOnboardingValidationException validationException => ValidationFailure(validationException.Errors),
+            CompanyDocumentValidationException validationException => ValidationFailure(validationException.Errors),
+            CompanyDocumentOperationException operationException => new ExceptionHandlingResult(
+                operationException.StatusCode,
+                operationException.Title,
+                operationException.Detail),
+
             CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),
             UnauthorizedAccessException => new ExceptionHandlingResult(
                 StatusCodes.Status403Forbidden,

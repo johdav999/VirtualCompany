@@ -24,6 +24,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+    public DbSet<CompanyKnowledgeDocument> CompanyKnowledgeDocuments => Set<CompanyKnowledgeDocument>();
     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
     public DbSet<Agent> Agents => Set<Agent>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
@@ -49,5 +50,8 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyKnowledgeDocument>()
+            .HasQueryFilter(document =>
+                CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
     }
 }

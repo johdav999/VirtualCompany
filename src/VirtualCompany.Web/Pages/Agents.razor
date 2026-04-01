@@ -451,7 +451,7 @@ else
 
             if (CompanyId is null && currentUser?.ActiveCompany is not null)
             {
-                Navigation.NavigateTo($"/agents/manage?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                NavigateIfChanged($"/agents/manage?companyId={currentUser.ActiveCompany.CompanyId}");
                 return;
             }
 
@@ -552,7 +552,7 @@ else
         {
             selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
-            Navigation.NavigateTo(BuildAgentsUri(companyId, Department, Status, agentId), replace: true);
+            NavigateIfChanged(BuildAgentsUri(companyId, Department, Status, agentId));
         }
         catch (OnboardingApiException ex)
         {
@@ -701,6 +701,19 @@ else
         }
 
         return $"/agents/manage?{string.Join("&", query)}";
+    }
+
+    private void NavigateIfChanged(string targetUri)
+    {
+        var currentRelativeUri = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var targetRelativeUri = Navigation.ToBaseRelativePath(Navigation.ToAbsoluteUri(targetUri).ToString());
+
+        if (string.Equals(currentRelativeUri, targetRelativeUri, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Navigation.NavigateTo(targetUri, replace: true);
     }
 
     private void OpenEditor(Guid agentId) => Navigation.NavigateTo(BuildAgentsUri(CompanyId!.Value, Department, Status, agentId));

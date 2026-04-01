@@ -24,6 +24,7 @@ public interface IAuditEventWriter
 public static class AuditActorTypes
 {
     public const string User = "user";
+    public const string System = "system";
     public const string Agent = "agent";
 }
 
@@ -33,6 +34,7 @@ public static class AuditTargetTypes
     public const string CompanyMembership = "company_membership";
     public const string Agent = "agent";
     public const string AgentToolExecution = "agent_tool_execution";
+    public const string CompanyDocument = "company_document";
     public const string ApprovalRequest = "approval_request";
 }
 
@@ -41,6 +43,7 @@ public static class AuditEventOutcomes
     public const string Succeeded = "succeeded";
     public const string Denied = "denied";
     public const string Pending = "pending";
+    public const string Failed = "failed";
 }
 
 public static class AuditEventActions
@@ -55,5 +58,9 @@ public static class AuditEventActions
     public const string AgentStatusUpdated = "agent.status.updated";
     public const string AgentToolExecutionDenied = "agent.tool_execution.denied";
     public const string AgentToolExecutionExecuted = "agent.tool_execution.executed";
+    public const string CompanyDocumentUploaded = "company.document.uploaded";
+    public const string CompanyDocumentUploadFailed = "company.document.upload_failed";
+    public const string CompanyDocumentProcessed = "company.document.processed";
+    public const string CompanyDocumentFailed = "company.document.failed";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
 }

@@ -1,0 +1,807 @@
+diff --git a/src/VirtualCompany.Application/Documents/DocumentContracts.cs b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+index 0bc1d2f..c5193be 100644
+--- a/src/VirtualCompany.Application/Documents/DocumentContracts.cs
++++ b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+@@ -24,6 +24,7 @@ public sealed record CompanyKnowledgeDocumentDto(
+     string? ContentType,
+     string FileExtension,
+     long FileSizeBytes,
+     string StorageKey,
++    string? StorageUrl,
+     IReadOnlyDictionary<string, JsonNode?> Metadata,
+     IReadOnlyDictionary<string, JsonNode?> AccessScope,
+     string IngestionStatus,
+@@ -51,10 +52,11 @@ public sealed record DocumentStorageWriteRequest(
+     string? ContentType,
+     Stream Content);
+ 
+-public sealed record DocumentStorageWriteResult(string StorageKey);
++public sealed record DocumentStorageWriteResult(string StorageKey, string? StorageUrl);
+ 
+ public interface ICompanyDocumentStorage
+ {
+     Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken);
++    Task DeleteAsync(string storageKey, CancellationToken cancellationToken);
+ }
+ 
+ public sealed record CompanyDocumentVirusScanRequest(
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+index d57f175..97f1c9f 100644
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -15,6 +15,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         string title,
+         CompanyKnowledgeDocumentType documentType,
+         string storageKey,
++        string? storageUrl,
+         string originalFileName,
+         string? contentType,
+         string fileExtension,
+@@ -42,15 +43,16 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         SourceType = CompanyKnowledgeDocumentSourceType.Upload;
+         SourceRef = NormalizeOptional(sourceRef, nameof(sourceRef), 512);
+         StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
++        StorageUrl = NormalizeOptional(storageUrl, nameof(storageUrl), 2048);
+         OriginalFileName = NormalizeRequired(originalFileName, nameof(originalFileName), 255);
+         ContentType = NormalizeOptional(contentType, nameof(contentType), 255);
+         FileExtension = NormalizeRequired(fileExtension, nameof(fileExtension), 16).ToLowerInvariant();
+         FileSizeBytes = fileSizeBytes;
+         Metadata = NormalizeJsonDictionary(metadata);
+         AccessScope = NormalizeJsonDictionary(accessScope);
+-        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+-        ProcessingStartedUtc = CreatedUtc;
++        UploadedUtc = CreatedUtc;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -59,6 +61,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public CompanyKnowledgeDocumentType DocumentType { get; private set; }
+     public CompanyKnowledgeDocumentSourceType SourceType { get; private set; }
+     public string? SourceRef { get; private set; }
+     public string StorageKey { get; private set; } = null!;
++    public string? StorageUrl { get; private set; }
+     public string OriginalFileName { get; private set; } = null!;
+     public string? ContentType { get; private set; }
+     public string FileExtension { get; private set; } = null!;
+@@ -76,9 +79,10 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public DateTime? ProcessedUtc { get; private set; }
+     public DateTime? FailedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+-    public void MarkUploaded(string storageKey)
++    public void MarkUploaded(string storageKey, string? storageUrl = null)
+     {
+         StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
++        StorageUrl = NormalizeOptional(storageUrl, nameof(storageUrl), 2048);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
+         UploadedUtc = DateTime.UtcNow;
+         ClearFailure();
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index 2a93a65..c1f05dc 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -1,5 +1,6 @@
+ using System.Text;
++using System.Security.Cryptography;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Documents;
+@@ -9,6 +10,7 @@ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
++using Microsoft.Extensions.Logging;
+ 
+ namespace VirtualCompany.Infrastructure.Documents;
+ 
+@@ -36,6 +38,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+     private readonly CompanyDocumentOptions _options;
++    private readonly ILogger<CompanyDocumentService> _logger;
+ 
+     public CompanyDocumentService(
+         VirtualCompanyDbContext dbContext,
+@@ -46,7 +49,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         ICurrentUserAccessor currentUserAccessor,
+         IAuditEventWriter auditEventWriter,
+         ICorrelationContextAccessor correlationContextAccessor,
+         IDocumentIngestionOrchestrator ingestionOrchestrator,
+-        IOptions<CompanyDocumentOptions> options)
++        IOptions<CompanyDocumentOptions> options,
++        ILogger<CompanyDocumentService> logger)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -57,6 +61,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         _correlationContextAccessor = correlationContextAccessor;
+         _ingestionOrchestrator = ingestionOrchestrator;
+         _options = options.Value;
++        _logger = logger;
+     }
+ 
+     public async Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken)
+@@ -74,31 +79,48 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         var documentId = Guid.NewGuid();
+         var normalizedFileName = Path.GetFileName(command.OriginalFileName.Trim());
+         var fileExtension = Path.GetExtension(normalizedFileName).ToLowerInvariant();
++        var normalizedContentType = NormalizeContentType(command.ContentType);
+         var storageKey = BuildStorageKey(companyId, documentId, normalizedFileName);
+         var normalizedAccessScope = NormalizeAccessScope(companyId, command.AccessScope);
+-
+-        var document = new CompanyKnowledgeDocument(
+-            documentId,
+-            companyId,
+-            command.Title,
+-            documentType,
+-            storageKey,
+-            normalizedFileName,
+-            NormalizeContentType(command.ContentType),
+-            fileExtension,
+-            command.Length,
+-            CloneDictionary(command.Metadata),
+-            CloneDictionary(command.AccessScope));
+-
+-        _dbContext.CompanyKnowledgeDocuments.Add(document);
+-        await SaveChangesOrThrowAsync(
+-            "Document metadata could not be created. Retry the upload or contact support if the problem persists.",
+-            cancellationToken);
++        var checksumSha256 = await TryComputeSha256Async(command.Content, cancellationToken);
++        var normalizedMetadata = NormalizeMetadata(
++            command.Metadata,
++            normalizedFileName,
++            normalizedContentType,
++            fileExtension,
++            command.Length,
++            checksumSha256);
+ 
+         var scanResult = await _virusScanner.ScanAsync(
+             new CompanyDocumentVirusScanRequest(
+                 companyId,
+                 documentId,
+                 normalizedFileName,
+-                command.ContentType,
++                normalizedContentType,
+                 command.Length,
+                 command.Content),
+             cancellationToken);
+@@ -107,42 +129,68 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+ 
+         if (!scanResult.Accepted)
+         {
+-            document.MarkFailed(
+-                scanResult.FailureCode ?? "virus_scan_rejected",
+-                scanResult.FailureMessage ?? "The uploaded document was rejected by the security scan.");
+-
+             await EnqueueAuditEventAsync(
+                 companyId,
+                 documentId,
+                 AuditEventActions.CompanyDocumentUploadFailed,
+                 AuditEventOutcomes.Denied,
+-                document.FailureMessage,
+-                BuildAuditMetadata(document),
++                scanResult.FailureMessage ?? "The uploaded document was rejected by the security scan.",
++                BuildAuditMetadata(
++                    documentType.ToStorageValue(),
++                    normalizedFileName,
++                    CompanyKnowledgeDocumentIngestionStatusValues.Failed,
++                    scanResult.FailureCode ?? "virus_scan_rejected",
++                    normalizedAccessScope,
++                    storageKey),
+                 cancellationToken);
+ 
+-            document = new CompanyKnowledgeDocument(
+-                document.Id, document.CompanyId, document.Title, document.DocumentType, document.StorageKey, document.OriginalFileName, document.ContentType, document.FileExtension, document.FileSizeBytes, CloneDictionary(document.Metadata), normalizedAccessScope, document.SourceRef);
+-            await SaveChangesOrThrowAsync(
+-                "Document metadata could not be updated after the security scan failure.",
+-                cancellationToken);
+-
++            await TrySaveAuditEventAsync(cancellationToken);
+             throw new CompanyDocumentValidationException(
+                 new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                 {
+-                    ["File"] = [document.FailureMessage ?? "The uploaded document was rejected."]
++                    ["File"] = [scanResult.FailureMessage ?? "The uploaded document was rejected."]
+                 });
+         }
+ 
++        DocumentStorageWriteResult storageResult;
+         try
+         {
+-            var storageResult = await _documentStorage.WriteAsync(
++            storageResult = await _documentStorage.WriteAsync(
+                 new DocumentStorageWriteRequest(
+                     companyId,
+                     documentId,
+                     storageKey,
+                     normalizedFileName,
+-                    command.ContentType,
++                    normalizedContentType,
+                     command.Content),
+                 cancellationToken);
++        }
++        catch (Exception ex)
++        {
++            await EnqueueAuditEventAsync(
++                companyId,
++                documentId,
++                AuditEventActions.CompanyDocumentUploadFailed,
++                AuditEventOutcomes.Failed,
++                "The document could not be stored. Retry the upload or contact support if the problem persists.",
++                BuildAuditMetadata(
++                    documentType.ToStorageValue(),
++                    normalizedFileName,
++                    CompanyKnowledgeDocumentIngestionStatusValues.Failed,
++                    "storage_failed",
++                    normalizedAccessScope,
++                    storageKey),
++                cancellationToken);
++
++            await TrySaveAuditEventAsync(cancellationToken);
++
++            throw new CompanyDocumentOperationException(
++                "Document upload failed",
++                "The document could not be stored. Retry the upload or contact support if the problem persists.",
++                503,
++                ex);
++        }
+ 
+-            document.MarkUploaded(storageResult.StorageKey);
+-            await SaveChangesOrThrowAsync(
+-                "Document metadata could not be updated after the file was stored.",
+-                cancellationToken);
++        var document = new CompanyKnowledgeDocument(
++            documentId,
++            companyId,
++            command.Title,
++            documentType,
++            storageResult.StorageKey,
++            storageResult.StorageUrl,
++            normalizedFileName,
++            normalizedContentType,
++            fileExtension,
++            command.Length,
++            normalizedMetadata,
++            normalizedAccessScope);
++
++        _dbContext.CompanyKnowledgeDocuments.Add(document);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+-        catch (Exception ex)
++        catch (DbUpdateException ex)
+         {
+-            document.MarkFailed(
+-                "storage_failed",
+-                "The document could not be stored. Retry the upload or contact support if the problem persists.");
+-
+-            await EnqueueAuditEventAsync(
+-                companyId,
+-                documentId,
+-                AuditEventActions.CompanyDocumentUploadFailed,
+-                AuditEventOutcomes.Failed,
+-                document.FailureMessage,
+-                BuildAuditMetadata(document),
+-                cancellationToken);
+-
+-            await TrySaveFailureStateAsync(cancellationToken);
++            _dbContext.CompanyKnowledgeDocuments.Remove(document);
++            await TryDeleteStoredObjectAsync(storageResult.StorageKey, cancellationToken);
+ 
+             throw new CompanyDocumentOperationException(
+-                "Document upload failed",
+-                "The document could not be stored. Retry the upload or contact support if the problem persists.",
++                "Document metadata update failed",
++                "The document was stored, but the metadata record could not be saved. Retry the upload or contact support if the problem persists.",
+                 503,
+                 ex);
+         }
+@@ -381,6 +429,44 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         return normalized;
+     }
+ 
++    private static Dictionary<string, JsonNode?> NormalizeMetadata(
++        Dictionary<string, JsonNode?>? metadata,
++        string originalFileName,
++        string? contentType,
++        string fileExtension,
++        long fileSizeBytes,
++        string? checksumSha256)
++    {
++        var normalized = CloneDictionary(metadata);
++        normalized["original_file_name"] = JsonValue.Create(originalFileName);
++        normalized["file_extension"] = JsonValue.Create(fileExtension);
++        normalized["file_size_bytes"] = JsonValue.Create(fileSizeBytes);
++
++        if (string.IsNullOrWhiteSpace(contentType))
++        {
++            normalized.Remove("content_type");
++        }
++        else
++        {
++            normalized["content_type"] = JsonValue.Create(contentType);
++        }
++
++        if (!string.IsNullOrWhiteSpace(checksumSha256))
++        {
++            normalized["checksum_sha256"] = JsonValue.Create(checksumSha256);
++        }
++
++        return normalized;
++    }
++
++    private static async Task<string?> TryComputeSha256Async(Stream content, CancellationToken cancellationToken)
++    {
++        if (!content.CanSeek)
++        {
++            return null;
++        }
++
++        RewindStream(content);
++        using var sha256 = SHA256.Create();
++        var hash = await sha256.ComputeHashAsync(content, cancellationToken);
++        RewindStream(content);
++        return Convert.ToHexString(hash).ToLowerInvariant();
++    }
++
+     private static bool TryGetStringValue(
+         IReadOnlyDictionary<string, JsonNode?> values,
+         string key,
+@@ -434,16 +520,41 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private static IReadOnlyDictionary<string, string?> BuildAuditMetadata(CompanyKnowledgeDocument document)
+     {
++        return BuildAuditMetadata(
++            document.DocumentType.ToStorageValue(),
++            document.OriginalFileName,
++            document.IngestionStatus.ToStorageValue(),
++            document.FailureCode,
++            document.AccessScope,
++            document.StorageKey,
++            document.StorageUrl);
++    }
++
++    private static IReadOnlyDictionary<string, string?> BuildAuditMetadata(
++        string documentType,
++        string fileName,
++        string ingestionStatus,
++        string? failureCode,
++        IReadOnlyDictionary<string, JsonNode?> accessScope,
++        string? storageKey,
++        string? storageUrl = null)
++    {
+         var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+         {
+-            ["documentType"] = document.DocumentType.ToStorageValue(),
+-            ["fileName"] = document.OriginalFileName,
+-            ["ingestionStatus"] = document.IngestionStatus.ToStorageValue(),
+-            ["failureCode"] = document.FailureCode
++            ["documentType"] = documentType,
++            ["fileName"] = fileName,
++            ["ingestionStatus"] = ingestionStatus,
++            ["failureCode"] = failureCode,
++            ["storageKey"] = storageKey
+         };
+ 
+-        if (TryGetStringValue(document.AccessScope, "visibility", out var visibility))
++        if (!string.IsNullOrWhiteSpace(storageUrl))
++        {
++            metadata["storageUrl"] = storageUrl;
++        }
++
++        if (TryGetStringValue(accessScope, "visibility", out var visibility))
+         {
+             metadata["visibility"] = visibility;
+         }
+ 
+         return metadata;
+@@ -467,18 +578,19 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+                 ? value.Trim()
+                 : value.Trim()[..maxLength];
+ 
+-    private async Task SaveChangesOrThrowAsync(string detail, CancellationToken cancellationToken)
++    private async Task TryDeleteStoredObjectAsync(string storageKey, CancellationToken cancellationToken)
+     {
+         try
+         {
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            await _documentStorage.DeleteAsync(storageKey, cancellationToken);
+         }
+-        catch (DbUpdateException ex)
++        catch (Exception ex)
+         {
+-            throw new CompanyDocumentOperationException("Document metadata update failed", detail, 503, ex);
++            _logger.LogWarning(ex, "Best-effort cleanup failed for stored document object {StorageKey}.", storageKey);
+         }
+     }
+ 
+-    private async Task TrySaveFailureStateAsync(CancellationToken cancellationToken)
++    private static CompanyKnowledgeDocumentDto MapDto(CompanyKnowledgeDocument document) =>
++        new(
++            document.Id,
++            document.CompanyId,
++            document.Title,
++            document.DocumentType.ToStorageValue(),
++            document.SourceType.ToStorageValue(),
++            document.OriginalFileName,
++            document.ContentType,
++            document.FileExtension,
++            document.FileSizeBytes,
++            document.StorageKey,
++            document.StorageUrl,
++            CloneDictionary(document.Metadata),
++            CloneDictionary(document.AccessScope),
++            document.IngestionStatus.ToStorageValue(),
++            document.FailureCode,
++            document.FailureMessage,
++            document.CreatedUtc,
++            document.UpdatedUtc,
++            document.UploadedUtc,
++            document.ProcessingStartedUtc,
++            document.ProcessedUtc,
++            document.FailedUtc);
+-    {
+-        try
+-        {
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-        }
+-        catch
+-        {
+-        }
+-    }
+-
+-    private static CompanyKnowledgeDocumentDto MapDto(CompanyKnowledgeDocument document) =>
+-        new(
+-            document.Id,
+-            document.CompanyId,
+-            document.Title,
+-            document.DocumentType.ToStorageValue(),
+-            document.SourceType.ToStorageValue(),
+-            document.OriginalFileName,
+-            document.ContentType,
+-            document.FileExtension,
+-            document.FileSizeBytes,
+-            document.StorageKey,
+-            CloneDictionary(document.Metadata),
+-            CloneDictionary(document.AccessScope),
+-            document.IngestionStatus.ToStorageValue(),
+-            document.FailureCode,
+-            document.FailureMessage,
+-            document.CreatedUtc,
+-            document.UpdatedUtc,
+-            document.UploadedUtc,
+-            document.ProcessingStartedUtc,
+-            document.ProcessedUtc,
+-            document.FailedUtc);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+index 1f2a0e1..bc8f2f2 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+@@ -1,38 +1,15 @@
+-using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Documents;
+-using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Documents;
+ 
+ public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngestionOrchestrator
+ {
+-    private readonly VirtualCompanyDbContext _dbContext;
+-
+-    public InlineCompanyDocumentIngestionOrchestrator(VirtualCompanyDbContext dbContext)
+-    {
+-        _dbContext = dbContext;
+-    }
+-
+     public async Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+-        // This stays inline for ST-301 and can be replaced with queue-backed orchestration in ST-302.
+-        var document = await _dbContext.CompanyKnowledgeDocuments
+-            .IgnoreQueryFilters()
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+-
+-        if (document is null)
+-        {
+-            throw new KeyNotFoundException("Document not found.");
+-        }
+-
+-        if (string.IsNullOrWhiteSpace(document.StorageKey))
+-        {
+-            document.MarkFailed(
+-                "storage_reference_missing",
+-                "The document storage reference is missing, so processing could not continue.");
+-
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-            return;
+-        }
+-
+-        document.MarkProcessing();
+-        await _dbContext.SaveChangesAsync(cancellationToken);
+-
+-        document.MarkProcessed();
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++        // ST-301 stops at persisted upload metadata. Later stages can replace this
++        // implementation with queue-backed orchestration without changing the upload flow.
++        await Task.CompletedTask;
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+index 82f4919..8728ad8 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+@@ -18,16 +18,30 @@ public sealed class LocalCompanyDocumentStorage : ICompanyDocumentStorage
+         {
+             request.Content.Position = 0;
+         }
+ 
+-        var rootPath = ResolveRootPath();
+-        var fullRootPath = Path.GetFullPath(rootPath);
+-        var segments = request.StorageKey
+-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+-            .Select(SanitizePathSegment)
+-            .ToArray();
+-
+-        var fullPath = Path.GetFullPath(Path.Combine(fullRootPath, Path.Combine(segments)));
+-        if (!fullPath.StartsWith(fullRootPath, StringComparison.OrdinalIgnoreCase))
++        var fullPath = ResolveFullPath(request.StorageKey);
++        var directoryPath = Path.GetDirectoryName(fullPath);
++        if (!string.IsNullOrWhiteSpace(directoryPath))
+         {
+-            throw new InvalidOperationException("The resolved storage path is outside the configured document storage root.");
++            Directory.CreateDirectory(directoryPath);
+         }
+ 
++        await using var output = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
++        await request.Content.CopyToAsync(output, cancellationToken);
++        await output.FlushAsync(cancellationToken);
++
++        return new DocumentStorageWriteResult(request.StorageKey, BuildStorageUrl(request.StorageKey));
++    }
++
++    public Task DeleteAsync(string storageKey, CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++        var fullPath = ResolveFullPath(storageKey);
++        if (File.Exists(fullPath))
++        {
++            File.Delete(fullPath);
++        }
++
++        return Task.CompletedTask;
++    }
++
++    private string ResolveFullPath(string storageKey)
++    {
++        var rootPath = ResolveRootPath();
++        var fullRootPath = Path.GetFullPath(rootPath);
++        var segments = storageKey
++            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .Select(SanitizePathSegment)
++            .ToArray();
++
++        var fullPath = Path.GetFullPath(Path.Combine(fullRootPath, Path.Combine(segments)));
++        if (!fullPath.StartsWith(fullRootPath, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new InvalidOperationException("The resolved storage path is outside the configured document storage root.");
++        }
++
++        return fullPath;
++    }
++
++    private string? BuildStorageUrl(string storageKey)
++    {
++        if (string.IsNullOrWhiteSpace(_options.Storage.BaseUri))
++        {
++            return null;
++        }
++
++        var normalizedBaseUri = _options.Storage.BaseUri.TrimEnd('/') + "/";
++        var relativePath = string.Join(
++            '/',
++            storageKey
++                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++                .Select(Uri.EscapeDataString));
++
++        return new Uri(new Uri(normalizedBaseUri, UriKind.Absolute), relativePath).ToString();
++    }
++
+-        var directoryPath = Path.GetDirectoryName(fullPath);
+-        if (!string.IsNullOrWhiteSpace(directoryPath))
+-        {
+-            Directory.CreateDirectory(directoryPath);
+-        }
+-
+-        await using var output = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+-        await request.Content.CopyToAsync(output, cancellationToken);
+-        await output.FlushAsync(cancellationToken);
+-
+-        return new DocumentStorageWriteResult(request.StorageKey);
+-    }
+-
+     private string ResolveRootPath()
+     {
+         var configuredPath = string.IsNullOrWhiteSpace(_options.Storage.RootPath)
+             ? "App_Data/object-storage"
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0b0d1f8..4b5b5b6 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -503,6 +503,7 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.SourceRef).HasMaxLength(512);
+         builder.Property(x => x.StorageKey).HasMaxLength(1024).IsRequired();
++        builder.Property(x => x.StorageUrl).HasMaxLength(2048);
+         builder.Property(x => x.OriginalFileName).HasMaxLength(255).IsRequired();
+         builder.Property(x => x.ContentType).HasMaxLength(255);
+         builder.Property(x => x.FileExtension).HasMaxLength(16).IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401143000_AddKnowledgeDocumentStorageUrl.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401143000_AddKnowledgeDocumentStorageUrl.cs
+new file mode 100644
+index 0000000..af2d866
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401143000_AddKnowledgeDocumentStorageUrl.cs
+@@ -0,0 +1,36 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddKnowledgeDocumentStorageUrl : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                migrationBuilder.AddColumn<string>(
++                    name: "StorageUrl",
++                    table: "knowledge_documents",
++                    type: "nvarchar(2048)",
++                    maxLength: 2048,
++                    nullable: true);
++            }
++            else
++            {
++                migrationBuilder.AddColumn<string>(
++                    name: "StorageUrl",
++                    table: "knowledge_documents",
++                    maxLength: 2048,
++                    nullable: true);
++            }
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "StorageUrl",
++                table: "knowledge_documents");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+index 72cb1a2..67a4c35 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -18,7 +18,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         _factory = factory;
+     }
+ 
+     [Fact]
+-    public async Task Upload_persists_metadata_stores_file_and_marks_document_processed()
++    public async Task Upload_persists_metadata_stores_file_and_marks_document_uploaded()
+     {
+         _factory.DocumentStorage.Reset();
+         var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
+@@ -38,7 +38,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.NotNull(payload);
+         Assert.Equal(seed.CompanyId, payload!.CompanyId);
+         Assert.Equal("Operations Handbook", payload.Title);
+         Assert.Equal("reference", payload.DocumentType);
+-        Assert.Equal("processed", payload.IngestionStatus);
++        Assert.Equal("uploaded", payload.IngestionStatus);
+         Assert.Null(payload.FailureCode);
+         Assert.True(payload.StorageKey.StartsWith($"companies/{seed.CompanyId:N}/knowledge/", StringComparison.OrdinalIgnoreCase));
+ 
+@@ -48,13 +48,18 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var document = await dbContext.CompanyKnowledgeDocuments
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Id == payload.Id);
+ 
+-        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Uploaded, document.IngestionStatus);
+         Assert.Equal("company", document.AccessScope["visibility"]!.GetValue<string>());
+         Assert.Equal(seed.CompanyId.ToString("D"), document.AccessScope["company_id"]!.GetValue<string>());
+         Assert.Equal("ops-handbook.txt", document.OriginalFileName);
+         Assert.Equal(".txt", document.FileExtension);
+         Assert.Equal("text/plain", document.ContentType);
++        Assert.Equal("ops-handbook.txt", document.Metadata["original_file_name"]!.GetValue<string>());
++        Assert.Equal(".txt", document.Metadata["file_extension"]!.GetValue<string>());
++        Assert.Equal(document.FileSizeBytes, document.Metadata["file_size_bytes"]!.GetValue<long>());
++        Assert.Equal("text/plain", document.Metadata["content_type"]!.GetValue<string>());
++        Assert.False(string.IsNullOrWhiteSpace(document.Metadata["checksum_sha256"]!.GetValue<string>()));
++        Assert.Null(document.ProcessedUtc);
+         Assert.True(_factory.DocumentStorage.StoredObjects.TryGetValue(document.StorageKey, out var storedBytes));
+         Assert.Equal("Important internal operating guidance.", Encoding.UTF8.GetString(storedBytes));
+ 
+@@ -186,6 +191,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+                 "A document",
+                 CompanyKnowledgeDocumentType.Policy,
+                 $"companies/{companyAId:N}/knowledge/{documentAId:N}/a.txt",
++                null,
+                 "a.txt",
+                 "text/plain",
+                 ".txt",
+@@ -200,6 +206,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+                 "B document",
+                 CompanyKnowledgeDocumentType.Reference,
+                 $"companies/{companyBId:N}/knowledge/{documentBId:N}/b.txt",
++                null,
+                 "b.txt",
+                 "text/plain",
+                 ".txt",
+@@ -260,14 +267,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+-        var document = await dbContext.CompanyKnowledgeDocuments
+-            .IgnoreQueryFilters()
+-            .SingleAsync(x => x.CompanyId == seed.CompanyId);
+-
+-        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
+-        Assert.Equal("storage_failed", document.FailureCode);
+-        Assert.Contains("Retry the upload", document.FailureMessage!, StringComparison.OrdinalIgnoreCase);
++        Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
+ 
+         var auditEvent = await dbContext.AuditEvents
+             .SingleAsync(x =>
+                 x.CompanyId == seed.CompanyId &&
+-                x.TargetType == AuditTargetTypes.CompanyDocument &&
+-                x.TargetId == document.Id.ToString("D") &&
++                x.TargetType == AuditTargetTypes.CompanyDocument &&
+                 x.Action == AuditEventActions.CompanyDocumentUploadFailed);
+ 
+         Assert.Equal(AuditEventOutcomes.Failed, auditEvent.Outcome);
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index b8b876e..bd37624 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -204,7 +204,18 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             await using var buffer = new MemoryStream();
+             await request.Content.CopyToAsync(buffer, cancellationToken);
+             _storedObjects[request.StorageKey] = buffer.ToArray();
+-            return new DocumentStorageWriteResult(request.StorageKey);
++            return new DocumentStorageWriteResult(request.StorageKey, null);
++        }
++
++        public Task DeleteAsync(string storageKey, CancellationToken cancellationToken)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++
++            _storedObjects.TryRemove(storageKey, out _);
++            return Task.CompletedTask;
+         }
+ 
+         private bool TryConsumeFailure()
+         {
+diff --git a/README.md b/README.md
+index 6dd18bd..a6992df 100644
+--- a/README.md
++++ b/README.md
+@@ -128,7 +128,8 @@ Form fields:
+ - `metadata` as an optional JSON object string
+ - `file`
+ 
+-Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes` and `CompanyDocuments:Storage:RootPath` in API settings as needed.
++Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
++Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and leave the document in the `uploaded` state so later ingestion stages can pick it up through the existing orchestration seam.
+ ## Authorization Behavior
+ 
+ - Active membership is required for company-scoped access.
+END_OF_PATCH

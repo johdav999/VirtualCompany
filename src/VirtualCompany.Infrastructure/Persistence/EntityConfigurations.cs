@@ -122,6 +122,11 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
             .WithOne(x => x.Company)
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(x => x.Documents)
+            .WithOne(x => x.Company)
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -477,6 +482,57 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
         builder.HasIndex(x => new { x.CompanyId, x.Department });
         builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfiguration<CompanyKnowledgeDocument>
+{
+    public void Configure(EntityTypeBuilder<CompanyKnowledgeDocument> builder)
+    {
+        builder.ToTable("knowledge_documents");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Title).HasMaxLength(200).IsRequired();
+        builder.Property(x => x.DocumentType)
+            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.SourceType)
+            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentSourceTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.SourceRef).HasMaxLength(512);
+        builder.Property(x => x.StorageKey).HasMaxLength(1024).IsRequired();
+        builder.Property(x => x.StorageUrl).HasMaxLength(2048);
+        builder.Property(x => x.OriginalFileName).HasMaxLength(255).IsRequired();
+        builder.Property(x => x.ContentType).HasMaxLength(255);
+        builder.Property(x => x.FileExtension).HasMaxLength(16).IsRequired();
+        builder.Property(x => x.FileSizeBytes).IsRequired();
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.AccessScope)
+            .HasColumnName("access_scope_json")
+            .HasJsonConversion<CompanyKnowledgeDocumentAccessScope>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.IngestionStatus)
+            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentIngestionStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValueSql("'uploaded'")
+            .IsRequired();
+        builder.Property(x => x.FailureCode).HasMaxLength(100);
+        builder.Property(x => x.FailureMessage).HasMaxLength(2000);
+        builder.Property(x => x.FailureAction).HasMaxLength(500);
+        builder.Property(x => x.FailureTechnicalDetail).HasMaxLength(4000);
+        builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.IngestionStatus });
+        builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 

@@ -162,6 +162,22 @@ Company-scoped endpoints:
 - `GET /api/companies/{companyId}/access/admin`
 - `GET /api/companies/{companyId}/notes/{noteId}`
 
+## Company Document Ingestion
+
+Company knowledge documents are uploaded through `POST /api/companies/{companyId}/documents` using `multipart/form-data`.
+
+Form fields:
+
+- `title`
+- `document_type`
+- `access_scope` as a JSON object string with required `visibility`; the server persists the resolved tenant `company_id` and rejects cross-tenant scope references
+- `metadata` as an optional JSON object string
+- `file`
+
+Supported upload formats for the initial rollout are `.txt`, `.md`, `.pdf`, `.doc`, and `.docx`.
+Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
+Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and pass through an explicit virus-scan gate before downstream processing. The current infrastructure registers a placeholder scanner implementation so new documents move through `uploaded`, `pending_scan`, and usually `scan_clean` without requiring a real antivirus product yet. Future processing workers must only continue from `scan_clean`. The API exposes `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting, and scan metadata is stored in the document metadata payload to keep the pipeline extension point explicit.
+
 ## Authorization Behavior
 
 - Active membership is required for company-scoped access.

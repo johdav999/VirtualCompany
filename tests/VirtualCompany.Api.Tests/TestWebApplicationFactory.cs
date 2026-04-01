@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
@@ -48,6 +49,13 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             services.AddSingleton<TestCompanyToolExecutor>();
 
             services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
+            services.RemoveAll<ICompanyDocumentStorage>();
+            services.AddSingleton<TestCompanyDocumentStorage>();
+            services.AddSingleton<ICompanyDocumentStorage>(provider => provider.GetRequiredService<TestCompanyDocumentStorage>());
+            services.RemoveAll<ICompanyDocumentVirusScanner>();
+            services.AddSingleton<TestCompanyDocumentVirusScanner>();
+            services.AddSingleton<ICompanyDocumentVirusScanner>(provider => provider.GetRequiredService<TestCompanyDocumentVirusScanner>());
+
             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
         });
     }
@@ -57,6 +65,12 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
     public TestCompanyToolExecutor ToolExecutor =>
         Services.GetRequiredService<TestCompanyToolExecutor>();
+
+    public TestCompanyDocumentStorage DocumentStorage =>
+        Services.GetRequiredService<TestCompanyDocumentStorage>();
+
+    public TestCompanyDocumentVirusScanner DocumentVirusScanner =>
+        Services.GetRequiredService<TestCompanyDocumentVirusScanner>();
 
     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
     {
@@ -167,6 +181,109 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             return Task.FromResult(new ToolExecutionResult(
                 $"Executed '{request.ToolName}' in the test tool executor.",
                 payload));
+        }
+    }
+
+    public sealed class TestCompanyDocumentStorage : ICompanyDocumentStorage
+    {
+        private readonly ConcurrentDictionary<string, byte[]> _storedObjects = new(StringComparer.OrdinalIgnoreCase);
+        private int _remainingFailures;
+
+        public IReadOnlyDictionary<string, byte[]> StoredObjects => _storedObjects;
+
+        public void Reset()
+        {
+            _storedObjects.Clear();
+            Interlocked.Exchange(ref _remainingFailures, 0);
+        }
+
+        public void FailNext(int count = 1) =>
+            Interlocked.Exchange(ref _remainingFailures, Math.Max(0, count));
+
+        public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (TryConsumeFailure())
+            {
+                throw new IOException("Configured document storage failure.");
+            }
+
+            await using var buffer = new MemoryStream();
+            await request.Content.CopyToAsync(buffer, cancellationToken);
+            _storedObjects[request.StorageKey] = buffer.ToArray();
+            return new DocumentStorageWriteResult(request.StorageKey, null);
+        }
+
+        public Task DeleteAsync(string storageKey, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _storedObjects.TryRemove(storageKey, out _);
+            return Task.CompletedTask;
+        }
+
+        private bool TryConsumeFailure()
+        {
+            while (true)
+            {
+                var remaining = Volatile.Read(ref _remainingFailures);
+                if (remaining <= 0)
+                {
+                    return false;
+                }
+
+                if (Interlocked.CompareExchange(ref _remainingFailures, remaining - 1, remaining) == remaining)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    public sealed class TestCompanyDocumentVirusScanner : ICompanyDocumentVirusScanner
+    {
+        private readonly ConcurrentQueue<CompanyDocumentVirusScanResult> _results = new();
+        private Exception? _nextException;
+        private int _scanCount;
+
+        public int ScanCount => Volatile.Read(ref _scanCount);
+
+        public void Reset()
+        {
+            while (_results.TryDequeue(out _))
+            {
+            }
+
+            _nextException = null;
+            Interlocked.Exchange(ref _scanCount, 0);
+        }
+
+        public void EnqueueResult(CompanyDocumentVirusScanResult result) =>
+            _results.Enqueue(result);
+
+        public void ThrowNext(Exception exception) =>
+            _nextException = exception;
+
+        public Task<CompanyDocumentVirusScanResult> ScanAsync(CompanyDocumentVirusScanRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _scanCount);
+
+            var exception = Interlocked.Exchange(ref _nextException, null);
+            if (exception is not null)
+            {
+                throw exception;
+            }
+
+            if (_results.TryDequeue(out var configuredResult))
+            {
+                return Task.FromResult(configuredResult);
+            }
+
+            return Task.FromResult(
+                CompanyDocumentVirusScanResult.CleanPlaceholder(
+                    "test_placeholder_scanner",
+                    "1.0",
+                    "Test placeholder virus scan completed."));
         }
     }
 }

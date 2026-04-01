@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.1.5",
+  "promptPath": ".ai-design/prompts/TASK-9.1.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T08:53:57.347Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T08-53-57-347Z_TASK-9.1.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T08-53-57-347Z_TASK-9.1.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T08:57:27.882Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ts.ContainsKey(document.StorageKey));\n+    }\n+\n     [Fact]\n     public async Task Upload_rejects_unsupported_file_types_with_actionable_validation_errors()\n     {\n@@ -87,8 +125,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes\n         using var client = CreateAuthenticatedClient(\"manager\", \"manager@example.com\", \"Manager\");\n         using var content = CreateUploadContent(\n             \"Malware\",\n-            \"general\",\n-            \"payload.exe\",\n+            \"report\",\n+            \"spreadsheet.xlsx\",\n             \"application/octet-stream\",\n             \"not allowed\",\n             \"\"\"{\"visibility\":\"company\"}\"\"\",\n@@ -101,13 +139,15 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes\n         var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n         Assert.NotNull(payload);\n         Assert.Contains(\"File\", payload!.Errors.Keys);\n-        Assert.Contains(\"Unsupported file type\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n-        Assert.Contains(\"Upload a PDF, DOC, DOCX, TXT, or MD file\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(\"Unsupported file format\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(CompanyDocumentFileRules.SupportedFormatsDisplay, payload.Errors[\"File\"][0], StringComparison.Ordinal);\n+        Assert.Contains(\"Upload a TXT, MD, PDF, DOC, or DOCX file\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n \n         using var scope = _factory.Services.CreateScope();\n         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n         Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());\n+        Assert.Empty(_factory.DocumentStorage.StoredObjects);\n     }\n \n     [Fact]\n     public async Task Upload_requires_access_scope_metadata_with_visibility()\nEND_OF_PATCH\n",
+  "stderrTail": "ment.StorageKey));\n+    }\n+\n     [Fact]\n     public async Task Upload_rejects_unsupported_file_types_with_actionable_validation_errors()\n     {\n@@ -87,8 +125,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes\n         using var client = CreateAuthenticatedClient(\"manager\", \"manager@example.com\", \"Manager\");\n         using var content = CreateUploadContent(\n             \"Malware\",\n-            \"general\",\n-            \"payload.exe\",\n+            \"report\",\n+            \"spreadsheet.xlsx\",\n             \"application/octet-stream\",\n             \"not allowed\",\n             \"\"\"{\"visibility\":\"company\"}\"\"\",\n@@ -101,13 +139,15 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes\n         var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n         Assert.NotNull(payload);\n         Assert.Contains(\"File\", payload!.Errors.Keys);\n-        Assert.Contains(\"Unsupported file type\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n-        Assert.Contains(\"Upload a PDF, DOC, DOCX, TXT, or MD file\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(\"Unsupported file format\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(CompanyDocumentFileRules.SupportedFormatsDisplay, payload.Errors[\"File\"][0], StringComparison.Ordinal);\n+        Assert.Contains(\"Upload a TXT, MD, PDF, DOC, or DOCX file\", payload.Errors[\"File\"][0], StringComparison.OrdinalIgnoreCase);\n \n         using var scope = _factory.Services.CreateScope();\n         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n         Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());\n+        Assert.Empty(_factory.DocumentStorage.StoredObjects);\n     }\n \n     [Fact]\n     public async Task Upload_requires_access_scope_metadata_with_visibility()\nEND_OF_PATCH\ntokens used\n96,956\n",
+  "verbosityMode": "verbose"
+}

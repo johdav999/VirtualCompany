@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.1.3",
+  "promptPath": ".ai-design/prompts/TASK-9.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T08:40:51.887Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T08-40-51-887Z_TASK-9.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T08-40-51-887Z_TASK-9.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T08:46:38.093Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ". Upload a new copy and retry ingestion.\");\n+\n+        Assert.True(changed);\n+        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);\n+        Assert.Equal(\"file_corrupted\", document.FailureCode);\n+        Assert.Equal(\n+            \"The uploaded file is corrupted and could not be read. Upload a new copy and retry ingestion.\",\n+            document.FailureMessage);\n+        Assert.NotNull(document.FailedUtc);\n+    }\n+\n+    [Fact]\n+    public void Failed_document_cannot_transition_to_processed()\n+    {\n+        var document = CreateDocument();\n+        document.MarkFailed(\n+            \"extraction_failed\",\n+            \"The document contents could not be extracted. Upload a clean copy and retry ingestion.\");\n+\n+        var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());\n+\n+        Assert.Contains(\"cannot transition\", exception.Message, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    private static CompanyKnowledgeDocument CreateDocument()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var documentId = Guid.NewGuid();\n+\n+        return new CompanyKnowledgeDocument(\n+            documentId,\n+            companyId,\n+            \"Operations Handbook\",\n+            CompanyKnowledgeDocumentType.Reference,\n+            $\"companies/{companyId:N}/knowledge/{documentId:N}/operations-handbook.txt\",\n+            null,\n+            \"operations-handbook.txt\",\n+            \"text/plain\",\n+            \".txt\",\n+            128,\n+            metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"checksum_sha256\"] = JsonValue.Create(\"abc123\")\n+            },\n+            accessScope: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"visibility\"] = JsonValue.Create(\"company\"),\n+                [\"company_id\"] = JsonValue.Create(companyId.ToString(\"D\"))\n+            });\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": " and retry ingestion.\");\n+\n+        Assert.True(changed);\n+        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);\n+        Assert.Equal(\"file_corrupted\", document.FailureCode);\n+        Assert.Equal(\n+            \"The uploaded file is corrupted and could not be read. Upload a new copy and retry ingestion.\",\n+            document.FailureMessage);\n+        Assert.NotNull(document.FailedUtc);\n+    }\n+\n+    [Fact]\n+    public void Failed_document_cannot_transition_to_processed()\n+    {\n+        var document = CreateDocument();\n+        document.MarkFailed(\n+            \"extraction_failed\",\n+            \"The document contents could not be extracted. Upload a clean copy and retry ingestion.\");\n+\n+        var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());\n+\n+        Assert.Contains(\"cannot transition\", exception.Message, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    private static CompanyKnowledgeDocument CreateDocument()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var documentId = Guid.NewGuid();\n+\n+        return new CompanyKnowledgeDocument(\n+            documentId,\n+            companyId,\n+            \"Operations Handbook\",\n+            CompanyKnowledgeDocumentType.Reference,\n+            $\"companies/{companyId:N}/knowledge/{documentId:N}/operations-handbook.txt\",\n+            null,\n+            \"operations-handbook.txt\",\n+            \"text/plain\",\n+            \".txt\",\n+            128,\n+            metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"checksum_sha256\"] = JsonValue.Create(\"abc123\")\n+            },\n+            accessScope: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"visibility\"] = JsonValue.Create(\"company\"),\n+                [\"company_id\"] = JsonValue.Create(companyId.ToString(\"D\"))\n+            });\n+    }\n+}\nEND_OF_PATCH\ntokens used\n72,919\n",
+  "verbosityMode": "verbose"
+}

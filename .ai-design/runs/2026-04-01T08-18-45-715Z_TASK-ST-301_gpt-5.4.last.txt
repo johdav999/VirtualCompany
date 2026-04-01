@@ -1,0 +1,1816 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -105,6 +105,18 @@ Company-scoped endpoints:
+ - `GET /api/companies/{companyId}/access/admin`
+ - `GET /api/companies/{companyId}/notes/{noteId}`
+ 
++## Company Document Ingestion
++
++Company knowledge documents are uploaded through `POST /api/companies/{companyId}/documents` using `multipart/form-data`.
++
++Form fields:
++
++- `title`
++- `document_type`
++- `access_scope` as a JSON object string
++- `metadata` as an optional JSON object string
++- `file`
++
++Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes` and `CompanyDocuments:Storage:RootPath` in API settings as needed.
+ ## Authorization Behavior
+ 
+ - Active membership is required for company-scoped access.
+diff --git a/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs b/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs
+@@ -0,0 +1,128 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/documents")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class CompanyDocumentsController : ControllerBase
++{
++    private readonly ICompanyDocumentService _documentService;
++
++    public CompanyDocumentsController(ICompanyDocumentService documentService)
++    {
++        _documentService = documentService;
++    }
++
++    [HttpGet]
++    public Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        _documentService.ListAsync(companyId, cancellationToken);
++
++    [HttpGet("{documentId:guid}")]
++    public async Task<ActionResult<CompanyKnowledgeDocumentDto>> GetAsync(
++        Guid companyId,
++        Guid documentId,
++        CancellationToken cancellationToken)
++    {
++        var document = await _documentService.GetAsync(companyId, documentId, cancellationToken);
++        return document is null ? NotFound() : Ok(document);
++    }
++
++    [HttpPost]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    [Consumes("multipart/form-data")]
++    public async Task<ActionResult<CompanyKnowledgeDocumentDto>> UploadAsync(
++        Guid companyId,
++        [FromForm] UploadCompanyDocumentRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (request.File is null)
++        {
++            throw BuildValidationException("File", "A file upload is required.");
++        }
++
++        await using var stream = request.File.OpenReadStream();
++        var command = new UploadCompanyDocumentCommand(
++            request.Title ?? string.Empty,
++            request.DocumentType ?? string.Empty,
++            ParseJsonDictionary(request.AccessScope, "AccessScope"),
++            ParseJsonDictionary(request.Metadata, "Metadata"),
++            request.File.FileName,
++            request.File.ContentType,
++            request.File.Length,
++            stream);
++
++        var document = await _documentService.UploadAsync(companyId, command, cancellationToken);
++        return CreatedAtAction(
++            nameof(GetAsync),
++            new { companyId, documentId = document.Id },
++            document);
++    }
++
++    private static Dictionary<string, JsonNode?>? ParseJsonDictionary(string? rawValue, string fieldName)
++    {
++        if (string.IsNullOrWhiteSpace(rawValue))
++        {
++            return null;
++        }
++
++        try
++        {
++            var parsed = JsonNode.Parse(rawValue);
++            if (parsed is not JsonObject jsonObject)
++            {
++                throw BuildValidationException(fieldName, $"{fieldName} must be a JSON object.");
++            }
++
++            var result = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++            foreach (var property in jsonObject)
++            {
++                result[property.Key] = property.Value?.DeepClone();
++            }
++
++            return result;
++        }
++        catch (JsonException)
++        {
++            throw BuildValidationException(fieldName, $"{fieldName} must be a valid JSON object.");
++        }
++    }
++
++    private static CompanyDocumentValidationException BuildValidationException(string key, string message) =>
++        new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++        {
++            [key] = [message]
++        });
++
++    public sealed class UploadCompanyDocumentRequest
++    {
++        [FromForm(Name = "title")]
++        public string? Title { get; init; }
++
++        [FromForm(Name = "document_type")]
++        public string? DocumentType { get; init; }
++
++        [FromForm(Name = "access_scope")]
++        public string? AccessScope { get; init; }
++
++        [FromForm(Name = "metadata")]
++        public string? Metadata { get; init; }
++
++        [FromForm(Name = "file")]
++        public IFormFile? File { get; init; }
++    }
++}
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -6,6 +6,14 @@
+   "DatabaseInitialization": {
+     "ApplyMigrationsOnStartup": true
+   },
++  "CompanyDocuments": {
++    "MaxUploadBytes": 10485760,
++    "Storage": {
++      "RootPath": "App_Data/object-storage",
++      "BaseUri": ""
++    }
++  },
++
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+     "BatchSize": 20,
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -6,6 +6,13 @@
+   "DatabaseInitialization": {
+     "ApplyMigrationsOnStartup": false
+   },
++  "CompanyDocuments": {
++    "MaxUploadBytes": 10485760,
++    "Storage": {
++      "RootPath": "App_Data/object-storage",
++      "BaseUri": ""
++    }
++  },
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+     "BatchSize": 20,
+diff --git a/src/VirtualCompany.Application/Documents/DocumentContracts.cs b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+@@ -0,0 +1,105 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Documents;
++
++public sealed record UploadCompanyDocumentCommand(
++    string Title,
++    string DocumentType,
++    Dictionary<string, JsonNode?>? AccessScope,
++    Dictionary<string, JsonNode?>? Metadata,
++    string OriginalFileName,
++    string? ContentType,
++    long Length,
++    Stream Content);
++
++public sealed record CompanyKnowledgeDocumentDto(
++    Guid Id,
++    Guid CompanyId,
++    string Title,
++    string DocumentType,
++    string SourceType,
++    string OriginalFileName,
++    string? ContentType,
++    string FileExtension,
++    long FileSizeBytes,
++    string StorageKey,
++    IReadOnlyDictionary<string, JsonNode?> Metadata,
++    IReadOnlyDictionary<string, JsonNode?> AccessScope,
++    string IngestionStatus,
++    string? FailureCode,
++    string? FailureMessage,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc,
++    DateTime? UploadedUtc,
++    DateTime? ProcessingStartedUtc,
++    DateTime? ProcessedUtc,
++    DateTime? FailedUtc);
++
++public interface ICompanyDocumentService
++{
++    Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken);
++    Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
++}
++
++public sealed record DocumentStorageWriteRequest(
++    Guid CompanyId,
++    Guid DocumentId,
++    string StorageKey,
++    string OriginalFileName,
++    string? ContentType,
++    Stream Content);
++
++public sealed record DocumentStorageWriteResult(string StorageKey);
++
++public interface ICompanyDocumentStorage
++{
++    Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken);
++}
++
++public sealed record CompanyDocumentVirusScanRequest(
++    Guid CompanyId,
++    Guid DocumentId,
++    string FileName,
++    string? ContentType,
++    long Length,
++    Stream Content);
++
++public sealed record CompanyDocumentVirusScanResult(
++    bool Accepted,
++    string? FailureCode,
++    string? FailureMessage)
++{
++    public static CompanyDocumentVirusScanResult Clean { get; } = new(true, null, null);
++}
++
++public interface ICompanyDocumentVirusScanner
++{
++    Task<CompanyDocumentVirusScanResult> ScanAsync(CompanyDocumentVirusScanRequest request, CancellationToken cancellationToken);
++}
++
++public interface IDocumentIngestionOrchestrator
++{
++    Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
++}
++
++public sealed class CompanyDocumentValidationException : Exception
++{
++    public CompanyDocumentValidationException(IDictionary<string, string[]> errors)
++        : base("Company document validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public sealed class CompanyDocumentOperationException : Exception
++{
++    public CompanyDocumentOperationException(string title, string detail, int statusCode = 503, Exception? innerException = null)
++        : base(detail, innerException)
++    {
++        Title = title;
++        Detail = detail;
++        StatusCode = statusCode;
++    }
++
++    public string Title { get; }
++    public string Detail { get; }
++    public int StatusCode { get; }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -0,0 +1,187 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
++{
++    private CompanyKnowledgeDocument()
++    {
++    }
++
++    public CompanyKnowledgeDocument(
++        Guid id,
++        Guid companyId,
++        string title,
++        CompanyKnowledgeDocumentType documentType,
++        string storageKey,
++        string originalFileName,
++        string? contentType,
++        string fileExtension,
++        long fileSizeBytes,
++        Dictionary<string, JsonNode?>? metadata = null,
++        Dictionary<string, JsonNode?>? accessScope = null,
++        string? sourceRef = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (fileSizeBytes <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(fileSizeBytes), "FileSizeBytes must be greater than zero.");
++        }
++
++        CompanyKnowledgeDocumentTypeValues.EnsureSupported(documentType, nameof(documentType));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Title = NormalizeRequired(title, nameof(title), 200);
++        DocumentType = documentType;
++        SourceType = CompanyKnowledgeDocumentSourceType.Upload;
++        SourceRef = NormalizeOptional(sourceRef, nameof(sourceRef), 512);
++        StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
++        OriginalFileName = NormalizeRequired(originalFileName, nameof(originalFileName), 255);
++        ContentType = NormalizeOptional(contentType, nameof(contentType), 255);
++        FileExtension = NormalizeRequired(fileExtension, nameof(fileExtension), 16).ToLowerInvariant();
++        FileSizeBytes = fileSizeBytes;
++        Metadata = NormalizeJsonDictionary(metadata);
++        AccessScope = NormalizeJsonDictionary(accessScope);
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++        ProcessingStartedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Title { get; private set; } = null!;
++    public CompanyKnowledgeDocumentType DocumentType { get; private set; }
++    public CompanyKnowledgeDocumentSourceType SourceType { get; private set; }
++    public string? SourceRef { get; private set; }
++    public string StorageKey { get; private set; } = null!;
++    public string OriginalFileName { get; private set; } = null!;
++    public string? ContentType { get; private set; }
++    public string FileExtension { get; private set; } = null!;
++    public long FileSizeBytes { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> AccessScope { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public CompanyKnowledgeDocumentIngestionStatus IngestionStatus { get; private set; }
++    public string? FailureCode { get; private set; }
++    public string? FailureMessage { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? UploadedUtc { get; private set; }
++    public DateTime? ProcessingStartedUtc { get; private set; }
++    public DateTime? ProcessedUtc { get; private set; }
++    public DateTime? FailedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public void MarkUploaded(string storageKey)
++    {
++        StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
++        UploadedUtc = DateTime.UtcNow;
++        ClearFailure();
++        UpdatedUtc = UploadedUtc.Value;
++    }
++
++    public void MarkProcessing()
++    {
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
++        ProcessingStartedUtc = DateTime.UtcNow;
++        ClearFailure();
++        UpdatedUtc = ProcessingStartedUtc.Value;
++    }
++
++    public void MarkProcessed()
++    {
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processed;
++        ProcessedUtc = DateTime.UtcNow;
++        ClearFailure();
++        UpdatedUtc = ProcessedUtc.Value;
++    }
++
++    public void MarkFailed(string failureCode, string failureMessage)
++    {
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Failed;
++        FailureCode = NormalizeRequired(failureCode, nameof(failureCode), 100);
++        FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), 2000);
++        FailedUtc = DateTime.UtcNow;
++        UpdatedUtc = FailedUtc.Value;
++    }
++
++    public void MarkUnsupported(string failureCode, string failureMessage)
++    {
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Unsupported;
++        FailureCode = NormalizeRequired(failureCode, nameof(failureCode), 100);
++        FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), 2000);
++        FailedUtc = DateTime.UtcNow;
++        UpdatedUtc = FailedUtc.Value;
++    }
++
++    private void ClearFailure()
++    {
++        FailureCode = null;
++        FailureMessage = null;
++        FailedUtc = null;
++    }
++
++    private static Dictionary<string, JsonNode?> NormalizeJsonDictionary(Dictionary<string, JsonNode?>? value)
++    {
++        var normalized = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        if (value is null)
++        {
++            return normalized;
++        }
++
++        foreach (var pair in value)
++        {
++            if (string.IsNullOrWhiteSpace(pair.Key))
++            {
++                continue;
++            }
++
++            normalized[pair.Key.Trim()] = pair.Value?.DeepClone();
++        }
++
++        return normalized;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -92,6 +92,7 @@ public sealed class Company
+     public DateTime UpdatedUtc { get; private set; }
+     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
+     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
++    public ICollection<CompanyKnowledgeDocument> Documents { get; } = new List<CompanyKnowledgeDocument>();
+ 
+     public void Rename(string name)
+     {
+diff --git a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+@@ -0,0 +1,210 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum CompanyKnowledgeDocumentType
++{
++    General = 1,
++    Policy = 2,
++    Procedure = 3,
++    Reference = 4,
++    Report = 5
++}
++
++public enum CompanyKnowledgeDocumentSourceType
++{
++    Upload = 1
++}
++
++public enum CompanyKnowledgeDocumentIngestionStatus
++{
++    Uploaded = 1,
++    Processing = 2,
++    Processed = 3,
++    Failed = 4,
++    Unsupported = 5
++}
++
++public static class CompanyKnowledgeDocumentTypeValues
++{
++    public const string General = "general";
++    public const string Policy = "policy";
++    public const string Procedure = "procedure";
++    public const string Reference = "reference";
++    public const string Report = "report";
++
++    private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentType, string> Values = new Dictionary<CompanyKnowledgeDocumentType, string>
++    {
++        [CompanyKnowledgeDocumentType.General] = General,
++        [CompanyKnowledgeDocumentType.Policy] = Policy,
++        [CompanyKnowledgeDocumentType.Procedure] = Procedure,
++        [CompanyKnowledgeDocumentType.Reference] = Reference,
++        [CompanyKnowledgeDocumentType.Report] = Report
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this CompanyKnowledgeDocumentType value) =>
++        Values.TryGetValue(value, out var storageValue)
++            ? storageValue
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out CompanyKnowledgeDocumentType documentType)
++    {
++        documentType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out documentType))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(value.Trim(), ignoreCase: true, out documentType) && Values.ContainsKey(documentType);
++    }
++
++    public static CompanyKnowledgeDocumentType Parse(string value)
++    {
++        if (TryParse(value, out var documentType))
++        {
++            return documentType;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static void EnsureSupported(CompanyKnowledgeDocumentType value, string paramName)
++    {
++        _ = value.ToStorageValue();
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Document type is required. Allowed values: {allowedValues}."
++            : $"Unsupported document type '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
++
++public static class CompanyKnowledgeDocumentSourceTypeValues
++{
++    public const string Upload = "upload";
++
++    private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentSourceType, string> Values = new Dictionary<CompanyKnowledgeDocumentSourceType, string>
++    {
++        [CompanyKnowledgeDocumentSourceType.Upload] = Upload
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentSourceType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this CompanyKnowledgeDocumentSourceType value) =>
++        Values.TryGetValue(value, out var storageValue)
++            ? storageValue
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document source type.");
++
++    public static CompanyKnowledgeDocumentSourceType Parse(string value) =>
++        ReverseValues.TryGetValue(value.Trim(), out var parsed)
++            ? parsed
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document source type.");
++}
++
++public static class CompanyKnowledgeDocumentIngestionStatusValues
++{
++    public const string Uploaded = "uploaded";
++    public const string Processing = "processing";
++    public const string Processed = "processed";
++    public const string Failed = "failed";
++    public const string Unsupported = "unsupported";
++
++    private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentIngestionStatus, string> Values =
++        new Dictionary<CompanyKnowledgeDocumentIngestionStatus, string>
++        {
++            [CompanyKnowledgeDocumentIngestionStatus.Uploaded] = Uploaded,
++            [CompanyKnowledgeDocumentIngestionStatus.Processing] = Processing,
++            [CompanyKnowledgeDocumentIngestionStatus.Processed] = Processed,
++            [CompanyKnowledgeDocumentIngestionStatus.Failed] = Failed,
++            [CompanyKnowledgeDocumentIngestionStatus.Unsupported] = Unsupported
++        };
++
++    private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentIngestionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this CompanyKnowledgeDocumentIngestionStatus value) =>
++        Values.TryGetValue(value, out var storageValue)
++            ? storageValue
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out CompanyKnowledgeDocumentIngestionStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out status))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(value.Trim(), ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static CompanyKnowledgeDocumentIngestionStatus Parse(string value)
++    {
++        if (TryParse(value, out var status))
++        {
++            return status;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Document ingestion status is required. Allowed values: {allowedValues}."
++            : $"Unsupported document ingestion status '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyQueryService.cs
+@@ -141,7 +141,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+                 x.Company.OnboardingStatus,
+                 x.Company.OnboardingCompletedUtc,
+                 x.Company.Settings,
+-                x.Company.OnboardingStateJson,
++                x.Company.OnboardingStateJson,                
+                 x.Company.Notes.Any()))
+             .SingleOrDefaultAsync(cancellationToken);
+ 
+@@ -258,7 +258,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
+         CompanyOnboardingStatus OnboardingStatus,
+         DateTime? OnboardingCompletedUtc,
+         CompanySettings Settings,
+-        string? OnboardingStateJson,
++        string? OnboardingStateJson,        
+         bool HasKnowledgeArtifacts);
+ 
+     private sealed class OnboardingStateDocument
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -7,11 +7,13 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Authorization;
+ using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -36,6 +38,9 @@ public static class DependencyInjection
+             options.UseNpgsql(
+                 connectionString,
+                 npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+         });
++
++        services.AddOptions<CompanyDocumentOptions>()
++            .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
+ 
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+@@ -61,6 +66,10 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+         services.AddScoped<CompanySetupTemplateSeeder>();
+         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
++        services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
++        services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
++        services.AddScoped<ICompanyDocumentVirusScanner, NoOpCompanyDocumentVirusScanner>();
++        services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+@@ -0,0 +1,16 @@
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class CompanyDocumentOptions
++{
++    public const string SectionName = "CompanyDocuments";
++
++    public long MaxUploadBytes { get; set; } = 10 * 1024 * 1024;
++    public CompanyDocumentStorageOptions Storage { get; set; } = new();
++}
++
++public sealed class CompanyDocumentStorageOptions
++{
++    public string RootPath { get; set; } = "App_Data/object-storage";
++    public string? BaseUri { get; set; }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -0,0 +1,345 @@
++using System.Text;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class CompanyDocumentService : ICompanyDocumentService
++{
++    private static readonly IReadOnlyDictionary<string, string[]> SupportedFileTypes =
++        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++        {
++            [".txt"] = ["text/plain"],
++            [".md"] = ["text/markdown", "text/plain"],
++            [".pdf"] = ["application/pdf"],
++            [".doc"] = ["application/msword", "application/octet-stream"],
++            [".docx"] =
++            [
++                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++                "application/octet-stream",
++                "application/zip"
++            ]
++        };
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly ICompanyDocumentStorage _documentStorage;
++    private readonly ICompanyDocumentVirusScanner _virusScanner;
++    private readonly IDocumentIngestionOrchestrator _ingestionOrchestrator;
++    private readonly CompanyDocumentOptions _options;
++
++    public CompanyDocumentService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        ICompanyDocumentStorage documentStorage,
++        ICompanyDocumentVirusScanner virusScanner,
++        IDocumentIngestionOrchestrator ingestionOrchestrator,
++        IOptions<CompanyDocumentOptions> options)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _documentStorage = documentStorage;
++        _virusScanner = virusScanner;
++        _ingestionOrchestrator = ingestionOrchestrator;
++        _options = options.Value;
++    }
++
++    public async Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken)
++    {
++        await EnsureManagementAccessAsync(companyId, cancellationToken);
++
++        var validationErrors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        var documentType = ValidateCommand(command, validationErrors);
++        if (validationErrors.Count > 0)
++        {
++            throw new CompanyDocumentValidationException(validationErrors);
++        }
++
++        var documentId = Guid.NewGuid();
++        var normalizedFileName = Path.GetFileName(command.OriginalFileName.Trim());
++        var fileExtension = Path.GetExtension(normalizedFileName).ToLowerInvariant();
++        var storageKey = BuildStorageKey(companyId, documentId, normalizedFileName);
++
++        var document = new CompanyKnowledgeDocument(
++            documentId,
++            companyId,
++            command.Title,
++            documentType,
++            storageKey,
++            normalizedFileName,
++            NormalizeContentType(command.ContentType),
++            fileExtension,
++            command.Length,
++            CloneDictionary(command.Metadata),
++            CloneDictionary(command.AccessScope));
++
++        _dbContext.CompanyKnowledgeDocuments.Add(document);
++        await SaveChangesOrThrowAsync(
++            "Document metadata could not be created. Retry the upload or contact support if the problem persists.",
++            cancellationToken);
++
++        var scanResult = await _virusScanner.ScanAsync(
++            new CompanyDocumentVirusScanRequest(
++                companyId,
++                documentId,
++                normalizedFileName,
++                command.ContentType,
++                command.Length,
++                command.Content),
++            cancellationToken);
++
++        RewindStream(command.Content);
++
++        if (!scanResult.Accepted)
++        {
++            document.MarkFailed(
++                scanResult.FailureCode ?? "virus_scan_rejected",
++                scanResult.FailureMessage ?? "The uploaded document was rejected by the security scan.");
++
++            await SaveChangesOrThrowAsync(
++                "Document metadata could not be updated after the security scan failure.",
++                cancellationToken);
++
++            throw new CompanyDocumentValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["File"] = [document.FailureMessage ?? "The uploaded document was rejected."]
++                });
++        }
++
++        try
++        {
++            var storageResult = await _documentStorage.WriteAsync(
++                new DocumentStorageWriteRequest(
++                    companyId,
++                    documentId,
++                    storageKey,
++                    normalizedFileName,
++                    command.ContentType,
++                    command.Content),
++                cancellationToken);
++
++            document.MarkUploaded(storageResult.StorageKey);
++            await SaveChangesOrThrowAsync(
++                "Document metadata could not be updated after the file was stored.",
++                cancellationToken);
++        }
++        catch (Exception ex)
++        {
++            document.MarkFailed(
++                "storage_failed",
++                "The document could not be stored. Retry the upload or contact support if the problem persists.");
++
++            await TrySaveFailureStateAsync(cancellationToken);
++
++            throw new CompanyDocumentOperationException(
++                "Document upload failed",
++                "The document could not be stored. Retry the upload or contact support if the problem persists.",
++                503,
++                ex);
++        }
++
++        await _ingestionOrchestrator.ProcessUploadedAsync(companyId, documentId, cancellationToken);
++        return MapDto(document);
++    }
++
++    public async Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await EnsureReadAccessAsync(companyId, cancellationToken);
++
++        var documents = await _dbContext.CompanyKnowledgeDocuments
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .ThenByDescending(x => x.Id)
++            .ToListAsync(cancellationToken);
++
++        return documents.Select(MapDto).ToArray();
++    }
++
++    public async Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        await EnsureReadAccessAsync(companyId, cancellationToken);
++
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        return document is null ? null : MapDto(document);
++    }
++
++    private async Task EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot access documents for this company.");
++        }
++    }
++
++    private async Task EnsureManagementAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot manage documents for this company.");
++        }
++
++        if (membership.MembershipRole == CompanyMembershipRole.Employee)
++        {
++            throw new UnauthorizedAccessException("Only managers, admins, or owners can upload company documents.");
++        }
++    }
++
++    private CompanyKnowledgeDocumentType ValidateCommand(
++        UploadCompanyDocumentCommand command,
++        IDictionary<string, string[]> errors)
++    {
++        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddRequiredStringValidation(result, "Title", command.Title, 200);
++        AddRequiredStringValidation(result, "DocumentType", command.DocumentType, 64);
++
++        if (!CompanyKnowledgeDocumentTypeValues.TryParse(command.DocumentType, out var documentType))
++        {
++            AddError(result, "DocumentType", CompanyKnowledgeDocumentTypeValues.BuildValidationMessage(command.DocumentType));
++        }
++
++        if (command.Length <= 0)
++        {
++            AddError(result, "File", "The uploaded file cannot be empty.");
++        }
++
++        if (command.Length > _options.MaxUploadBytes)
++        {
++            AddError(result, "File", $"The uploaded file exceeds the {_options.MaxUploadBytes} byte limit.");
++        }
++
++        if (string.IsNullOrWhiteSpace(command.OriginalFileName))
++        {
++            AddError(result, "File", "The uploaded file must include a file name.");
++        }
++        else
++        {
++            ValidateSupportedFileType(Path.GetFileName(command.OriginalFileName.Trim()), command.ContentType, result);
++        }
++
++        foreach (var pair in result)
++        {
++            errors[pair.Key] = pair.Value.ToArray();
++        }
++
++        return documentType;
++    }
++
++    private static void ValidateSupportedFileType(string fileName, string? contentType, IDictionary<string, List<string>> errors)
++    {
++        var extension = Path.GetExtension(fileName).ToLowerInvariant();
++        if (!SupportedFileTypes.TryGetValue(extension, out var allowedContentTypes))
++        {
++            AddError(errors, "File", $"Unsupported file type '{extension}'. Supported extensions: {string.Join(", ", SupportedFileTypes.Keys.OrderBy(x => x))}.");
++            return;
++        }
++
++        if (!string.IsNullOrWhiteSpace(contentType) &&
++            !string.Equals(contentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
++            !allowedContentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase))
++        {
++            AddError(errors, "File", $"Content type '{contentType}' does not match the supported types for '{extension}'.");
++        }
++    }
++
++    private static void AddRequiredStringValidation(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, $"{key} is required.");
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = new List<string>();
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private static string BuildStorageKey(Guid companyId, Guid documentId, string originalFileName)
++    {
++        var extension = Path.GetExtension(originalFileName).ToLowerInvariant();
++        var baseName = Path.GetFileNameWithoutExtension(originalFileName);
++        var safeBaseName = SanitizePathSegment(baseName);
++        var safeExtension = string.IsNullOrWhiteSpace(extension) ? string.Empty : extension;
++        var fileName = $"{safeBaseName}{safeExtension}";
++
++        return $"companies/{companyId:N}/knowledge/{documentId:N}/{fileName}";
++    }
++
++    private static string SanitizePathSegment(string value)
++    {
++        var builder = new StringBuilder(value.Length);
++        foreach (var character in value)
++        {
++            builder.Append(char.IsLetterOrDigit(character) || character is '-' or '_' ? character : '-');
++        }
++
++        var normalized = builder.ToString().Trim('-');
++        return string.IsNullOrWhiteSpace(normalized) ? "document" : normalized;
++    }
++
++    private static void RewindStream(Stream stream)
++    {
++        if (stream.CanSeek)
++        {
++            stream.Position = 0;
++        }
++    }
++
++    private static string? NormalizeContentType(string? contentType) =>
++        string.IsNullOrWhiteSpace(contentType) ? null : contentType.Trim();
++
++    private static Dictionary<string, JsonNode?> CloneDictionary(Dictionary<string, JsonNode?>? value)
++    {
++        var clone = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        if (value is null)
++        {
++            return clone;
++        }
++
++        foreach (var pair in value)
++        {
++            clone[pair.Key] = pair.Value?.DeepClone();
++        }
++
++        return clone;
++    }
++
++    private async Task SaveChangesOrThrowAsync(string detail, CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException ex)
++        {
++            throw new CompanyDocumentOperationException("Document metadata update failed", detail, 503, ex);
++        }
++    }
++
++    private async Task TrySaveFailureStateAsync(CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch
++        {
++        }
++    }
++
++    private static CompanyKnowledgeDocumentDto MapDto(CompanyKnowledgeDocument document) =>
++        new(
++            document.Id,
++            document.CompanyId,
++            document.Title,
++            document.DocumentType.ToStorageValue(),
++            document.SourceType.ToStorageValue(),
++            document.OriginalFileName,
++            document.ContentType,
++            document.FileExtension,
++            document.FileSizeBytes,
++            document.StorageKey,
++            CloneDictionary(document.Metadata),
++            CloneDictionary(document.AccessScope),
++            document.IngestionStatus.ToStorageValue(),
++            document.FailureCode,
++            document.FailureMessage,
++            document.CreatedUtc,
++            document.UpdatedUtc,
++            document.UploadedUtc,
++            document.ProcessingStartedUtc,
++            document.ProcessedUtc,
++            document.FailedUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/InlineCompanyDocumentIngestionOrchestrator.cs
+@@ -0,0 +1,58 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngestionOrchestrator
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public InlineCompanyDocumentIngestionOrchestrator(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        // This stays inline for ST-301 and can be replaced with queue-backed orchestration in ST-302.
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        if (document is null)
++        {
++            throw new KeyNotFoundException("Document not found.");
++        }
++
++        if (string.IsNullOrWhiteSpace(document.StorageKey))
++        {
++            document.MarkFailed(
++                "storage_reference_missing",
++                "The document storage reference is missing, so processing could not continue.");
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return;
++        }
++
++        document.MarkProcessing();
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        document.MarkProcessed();
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++}
++
++public sealed class NoOpCompanyDocumentVirusScanner : ICompanyDocumentVirusScanner
++{
++    public Task<CompanyDocumentVirusScanResult> ScanAsync(CompanyDocumentVirusScanRequest request, CancellationToken cancellationToken)
++    {
++        return Task.FromResult(CompanyDocumentVirusScanResult.Clean);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+@@ -0,0 +1,77 @@
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Documents;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class LocalCompanyDocumentStorage : ICompanyDocumentStorage
++{
++    private readonly IHostEnvironment _hostEnvironment;
++    private readonly CompanyDocumentOptions _options;
++
++    public LocalCompanyDocumentStorage(IHostEnvironment hostEnvironment, IOptions<CompanyDocumentOptions> options)
++    {
++        _hostEnvironment = hostEnvironment;
++        _options = options.Value;
++    }
++
++    public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
++    {
++        if (request.Content.CanSeek)
++        {
++            request.Content.Position = 0;
++        }
++
++        var rootPath = ResolveRootPath();
++        var fullRootPath = Path.GetFullPath(rootPath);
++        var segments = request.StorageKey
++            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .Select(SanitizePathSegment)
++            .ToArray();
++
++        var fullPath = Path.GetFullPath(Path.Combine(fullRootPath, Path.Combine(segments)));
++        if (!fullPath.StartsWith(fullRootPath, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new InvalidOperationException("The resolved storage path is outside the configured document storage root.");
++        }
++
++        var directoryPath = Path.GetDirectoryName(fullPath);
++        if (!string.IsNullOrWhiteSpace(directoryPath))
++        {
++            Directory.CreateDirectory(directoryPath);
++        }
++
++        await using var output = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
++        await request.Content.CopyToAsync(output, cancellationToken);
++        await output.FlushAsync(cancellationToken);
++
++        return new DocumentStorageWriteResult(request.StorageKey);
++    }
++
++    private string ResolveRootPath()
++    {
++        var configuredPath = string.IsNullOrWhiteSpace(_options.Storage.RootPath)
++            ? "App_Data/object-storage"
++            : _options.Storage.RootPath;
++
++        return Path.IsPathRooted(configuredPath)
++            ? configuredPath
++            : Path.GetFullPath(Path.Combine(_hostEnvironment.ContentRootPath, configuredPath));
++    }
++
++    private static string SanitizePathSegment(string value)
++    {
++        var invalidCharacters = Path.GetInvalidFileNameChars();
++        var sanitizedCharacters = value
++            .Select(character => invalidCharacters.Contains(character) ? '-' : character)
++            .ToArray();
++
++        var sanitized = new string(sanitizedCharacters)
++            .Replace("..", "-", StringComparison.Ordinal)
++            .Trim();
++
++        return string.IsNullOrWhiteSpace(sanitized) ? "document" : sanitized;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+--- a/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/GlobalExceptionHandler.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using System.Text.Json;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Documents;
+ 
+ namespace VirtualCompany.Infrastructure.Observability;
+ 
+@@ -97,6 +98,12 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
+         exception switch
+         {
+             CompanyOnboardingValidationException validationException => ValidationFailure(validationException.Errors),
++            CompanyDocumentValidationException validationException => ValidationFailure(validationException.Errors),
++            CompanyDocumentOperationException operationException => new ExceptionHandlingResult(
++                operationException.StatusCode,
++                operationException.Title,
++                operationException.Detail),
++
+             CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),
+             UnauthorizedAccessException => new ExceptionHandlingResult(
+                 StatusCodes.Status403Forbidden,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -108,6 +108,11 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+             .WithOne(x => x.Company)
+             .HasForeignKey(x => x.CompanyId)
+             .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasMany(x => x.Documents)
++            .WithOne(x => x.Company)
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+ 
+@@ -433,3 +438,47 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
++
++internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfiguration<CompanyKnowledgeDocument>
++{
++    public void Configure(EntityTypeBuilder<CompanyKnowledgeDocument> builder)
++    {
++        builder.ToTable("knowledge_documents");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Title).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.DocumentType)
++            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SourceType)
++            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentSourceTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SourceRef).HasMaxLength(512);
++        builder.Property(x => x.StorageKey).HasMaxLength(1024).IsRequired();
++        builder.Property(x => x.OriginalFileName).HasMaxLength(255).IsRequired();
++        builder.Property(x => x.ContentType).HasMaxLength(255);
++        builder.Property(x => x.FileExtension).HasMaxLength(16).IsRequired();
++        builder.Property(x => x.FileSizeBytes).IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.AccessScope)
++            .HasColumnName("access_scope_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.IngestionStatus)
++            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentIngestionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.FailureCode).HasMaxLength(100);
++        builder.Property(x => x.FailureMessage).HasMaxLength(2000);
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.IngestionStatus });
++        builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401110000_AddCompanyKnowledgeDocuments.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401110000_AddCompanyKnowledgeDocuments.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401110000_AddCompanyKnowledgeDocuments.cs
+@@ -0,0 +1,76 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddCompanyKnowledgeDocuments : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "knowledge_documents",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    Title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    DocumentType = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    SourceType = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    SourceRef = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
++                    StorageKey = table.Column<string>(type: "nvarchar(1024)", maxLength: 1024, nullable: false),
++                    OriginalFileName = table.Column<string>(type: "nvarchar(255)", maxLength: 255, nullable: false),
++                    ContentType = table.Column<string>(type: "nvarchar(255)", maxLength: 255, nullable: true),
++                    FileExtension = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
++                    FileSizeBytes = table.Column<long>(type: "bigint", nullable: false),
++                    Metadata = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "metadata_json"),
++                    AccessScope = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "access_scope_json"),
++                    IngestionStatus = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    FailureCode = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
++                    FailureMessage = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                    CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    UploadedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    ProcessingStartedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    ProcessedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    FailedUtc = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_knowledge_documents", x => x.Id);
++                    table.ForeignKey(
++                        name: "FK_knowledge_documents_companies_CompanyId",
++                        column: x => x.CompanyId,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_documents_CompanyId_CreatedUtc",
++                table: "knowledge_documents",
++                columns: new[] { "CompanyId", "CreatedUtc" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_documents_CompanyId_IngestionStatus",
++                table: "knowledge_documents",
++                columns: new[] { "CompanyId", "IngestionStatus" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "knowledge_documents");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -18,6 +18,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
++    public DbSet<CompanyKnowledgeDocument> CompanyKnowledgeDocuments => Set<CompanyKnowledgeDocument>();
+     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
+     public DbSet<Agent> Agents => Set<Agent>();
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+@@ -48,5 +49,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+             .HasQueryFilter(request =>
+                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyKnowledgeDocument>()
++            .HasQueryFilter(document =>
++                CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -0,0 +1,257 @@
++using System.Net;
++using System.Net.Http.Headers;
++using System.Text;
++using System.Text.Json;
++using Microsoft.AspNetCore.Mvc;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public CompanyDocumentIngestionIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Upload_persists_metadata_stores_file_and_marks_document_processed()
++    {
++        _factory.DocumentStorage.Reset();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Operations Handbook",
++            "reference",
++            "ops-handbook.txt",
++            "text/plain",
++            "Important internal operating guidance.",
++            """{"visibility":"company"}""",
++            """{"category":"operations"}""");
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal("Operations Handbook", payload.Title);
++        Assert.Equal("reference", payload.DocumentType);
++        Assert.Equal("processed", payload.IngestionStatus);
++        Assert.Null(payload.FailureCode);
++        Assert.True(payload.StorageKey.StartsWith($"companies/{seed.CompanyId:N}/knowledge/", StringComparison.OrdinalIgnoreCase));
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == payload.Id);
++
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
++        Assert.Equal("ops-handbook.txt", document.OriginalFileName);
++        Assert.Equal(".txt", document.FileExtension);
++        Assert.Equal("text/plain", document.ContentType);
++        Assert.True(_factory.DocumentStorage.StoredObjects.TryGetValue(document.StorageKey, out var storedBytes));
++        Assert.Equal("Important internal operating guidance.", Encoding.UTF8.GetString(storedBytes));
++    }
++
++    [Fact]
++    public async Task Upload_rejects_unsupported_file_types_with_actionable_validation_errors()
++    {
++        _factory.DocumentStorage.Reset();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Malware",
++            "general",
++            "payload.exe",
++            "application/octet-stream",
++            "not allowed",
++            """{"visibility":"company"}""",
++            null);
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Contains("File", payload!.Errors.Keys);
++        Assert.Contains("Unsupported file type", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
++    }
++
++    [Fact]
++    public async Task List_and_get_are_company_scoped()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var documentAId = Guid.NewGuid();
++        var documentBId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            var user = new User(Guid.NewGuid(), "alice@example.com", "Alice", "dev-header", "alice");
++            dbContext.Users.Add(user);
++            dbContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, user.Id, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, user.Id, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var companyADocument = new CompanyKnowledgeDocument(
++                documentAId,
++                companyAId,
++                "A document",
++                CompanyKnowledgeDocumentType.Policy,
++                $"companies/{companyAId:N}/knowledge/{documentAId:N}/a.txt",
++                "a.txt",
++                "text/plain",
++                ".txt",
++                5,
++                accessScope: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase) { ["visibility"] = JsonValue.Create("company") });
++            companyADocument.MarkUploaded(companyADocument.StorageKey);
++            companyADocument.MarkProcessed();
++
++            var companyBDocument = new CompanyKnowledgeDocument(
++                documentBId,
++                companyBId,
++                "B document",
++                CompanyKnowledgeDocumentType.Reference,
++                $"companies/{companyBId:N}/knowledge/{documentBId:N}/b.txt",
++                "b.txt",
++                "text/plain",
++                ".txt",
++                5,
++                accessScope: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase) { ["visibility"] = JsonValue.Create("company") });
++            companyBDocument.MarkUploaded(companyBDocument.StorageKey);
++            companyBDocument.MarkProcessed();
++
++            dbContext.CompanyKnowledgeDocuments.AddRange(companyADocument, companyBDocument);
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("alice", "alice@example.com", "Alice");
++
++        var listResponse = await client.GetFromJsonAsync<List<CompanyDocumentResponse>>($"/api/companies/{companyAId}/documents");
++        Assert.NotNull(listResponse);
++        var listedDocument = Assert.Single(listResponse!);
++        Assert.Equal(documentAId, listedDocument.Id);
++
++        var getResponse = await client.GetAsync($"/api/companies/{companyBId}/documents/{documentAId}");
++        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Upload_marks_document_failed_when_storage_write_fails()
++    {
++        _factory.DocumentStorage.Reset();
++        _factory.DocumentStorage.FailNext();
++        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        using var content = CreateUploadContent(
++            "Storage Failure Example",
++            "report",
++            "incident.txt",
++            "text/plain",
++            "storage should fail",
++            """{"visibility":"company"}""",
++            null);
++
++        var response = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", content);
++
++        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<ProblemDetails>();
++        Assert.NotNull(payload);
++        Assert.Contains("could not be stored", payload!.Detail!, StringComparison.OrdinalIgnoreCase);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == seed.CompanyId);
++
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
++        Assert.Equal("storage_failed", document.FailureCode);
++        Assert.Contains("Retry the upload", document.FailureMessage!, StringComparison.OrdinalIgnoreCase);
++    }
++
++    private MultipartFormDataContent CreateUploadContent(
++        string title,
++        string documentType,
++        string fileName,
++        string contentType,
++        string fileContents,
++        string accessScopeJson,
++        string? metadataJson)
++    {
++        var content = new MultipartFormDataContent
++        {
++            { new StringContent(title), "title" },
++            { new StringContent(documentType), "document_type" },
++            { new StringContent(accessScopeJson), "access_scope" }
++        };
++
++        if (metadataJson is not null)
++        {
++            content.Add(new StringContent(metadataJson), "metadata");
++        }
++
++        var fileContent = new ByteArrayContent(Encoding.UTF8.GetBytes(fileContents));
++        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
++        content.Add(fileContent, "file", fileName);
++        return content;
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeaderName, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeaderName, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeaderName, displayName);
++        return client;
++    }
++
++    private async Task<SeededMembership> SeedSingleMembershipAsync(string subject, string email, CompanyMembershipRole role)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, subject, "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, "Document Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, role, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new SeededMembership(userId, companyId);
++    }
++
++    private sealed record SeededMembership(Guid UserId, Guid CompanyId);
++
++    private sealed class CompanyDocumentResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string DocumentType { get; set; } = string.Empty;
++        public string IngestionStatus { get; set; } = string.Empty;
++        public string StorageKey { get; set; } = string.Empty;
++        public string? FailureCode { get; set; }
++        public string? FailureMessage { get; set; }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
++using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Companies;
+@@ -41,6 +42,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             services.AddSingleton<TestCompanyToolExecutor>();
+ 
+             services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
++            services.RemoveAll<ICompanyDocumentStorage>();
++            services.AddSingleton<TestCompanyDocumentStorage>();
++            services.AddSingleton<ICompanyDocumentStorage>(provider => provider.GetRequiredService<TestCompanyDocumentStorage>());
++
+             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
+         });
+     }
+@@ -50,6 +55,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ 
+     public TestCompanyToolExecutor ToolExecutor =>
+         Services.GetRequiredService<TestCompanyToolExecutor>();
++
++    public TestCompanyDocumentStorage DocumentStorage =>
++        Services.GetRequiredService<TestCompanyDocumentStorage>();
+ 
+     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
+     {
+@@ -132,4 +140,53 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 $"Executed '{request.ToolName}' in the test tool executor.",
+                 payload));
+         }
+     }
++
++    public sealed class TestCompanyDocumentStorage : ICompanyDocumentStorage
++    {
++        private readonly ConcurrentDictionary<string, byte[]> _storedObjects = new(StringComparer.OrdinalIgnoreCase);
++        private int _remainingFailures;
++
++        public IReadOnlyDictionary<string, byte[]> StoredObjects => _storedObjects;
++
++        public void Reset()
++        {
++            _storedObjects.Clear();
++            Interlocked.Exchange(ref _remainingFailures, 0);
++        }
++
++        public void FailNext(int count = 1) =>
++            Interlocked.Exchange(ref _remainingFailures, Math.Max(0, count));
++
++        public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
++        {
++            if (TryConsumeFailure())
++            {
++                throw new IOException("Configured document storage failure.");
++            }
++
++            await using var buffer = new MemoryStream();
++            await request.Content.CopyToAsync(buffer, cancellationToken);
++            _storedObjects[request.StorageKey] = buffer.ToArray();
++            return new DocumentStorageWriteResult(request.StorageKey);
++        }
++
++        private bool TryConsumeFailure()
++        {
++            while (true)
++            {
++                var remaining = Volatile.Read(ref _remainingFailures);
++                if (remaining <= 0)
++                {
++                    return false;
++                }
++
++                if (Interlocked.CompareExchange(ref _remainingFailures, remaining - 1, remaining) == remaining)
++                {
++                    return true;
++                }
++            }
++        }
++    }
+ }
+END_OF_PATCH

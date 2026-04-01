@@ -164,7 +164,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.Company.OnboardingStatus,
                 x.Company.OnboardingCompletedUtc,
                 x.Company.Settings,
-                x.Company.OnboardingStateJson,
+                x.Company.OnboardingStateJson,                
                 x.Company.Notes.Any()))
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -308,7 +308,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         CompanyOnboardingStatus OnboardingStatus,
         DateTime? OnboardingCompletedUtc,
         CompanySettings Settings,
-        string? OnboardingStateJson,
+        string? OnboardingStateJson,        
         bool HasKnowledgeArtifacts);
 
     private sealed class OnboardingStateDocument

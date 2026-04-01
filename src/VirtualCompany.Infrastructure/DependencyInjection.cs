@@ -6,12 +6,14 @@ using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -41,6 +43,9 @@ public static class DependencyInjection
                 npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
         });
 
+        services.AddOptions<CompanyDocumentOptions>()
+            .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
+
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
@@ -66,6 +71,11 @@ public static class DependencyInjection
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+        services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
+        services.AddScoped<ICompanyDocumentIngestionStatusService, CompanyDocumentIngestionStatusService>();
+        services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
+        services.AddScoped<ICompanyDocumentVirusScanner, NoOpCompanyDocumentVirusScanner>();
+        services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();

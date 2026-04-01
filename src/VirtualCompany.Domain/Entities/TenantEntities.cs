@@ -104,6 +104,7 @@ public sealed class Company
     public DateTime UpdatedUtc { get; private set; }
     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
+    public ICollection<CompanyKnowledgeDocument> Documents { get; } = new List<CompanyKnowledgeDocument>();
 
     public void Rename(string name)
     {

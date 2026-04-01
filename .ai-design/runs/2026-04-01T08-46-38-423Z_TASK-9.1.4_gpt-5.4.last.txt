@@ -1,0 +1,793 @@
+diff --git a/src/VirtualCompany.Application/Documents/DocumentContracts.cs b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+--- a/src/VirtualCompany.Application/Documents/DocumentContracts.cs
++++ b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+@@ -11,6 +11,14 @@ public sealed record UploadCompanyDocumentCommand(
+     long Length,
+     Stream Content);
+ 
++public sealed record CompanyDocumentIngestionFailure(
++    string Code,
++    string Message,
++    string Action,
++    string? TechnicalDetail = null,
++    bool CanRetry = false);
++
+ public sealed record CompanyKnowledgeDocumentDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -29,6 +37,8 @@ public sealed record CompanyKnowledgeDocumentDto(
+     string IngestionStatus,
+     string? FailureCode,
+     string? FailureMessage,
++    string? FailureAction,
++    bool CanRetry,
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc,
+     DateTime? UploadedUtc,
+@@ -39,8 +49,9 @@ public sealed record CompanyKnowledgeDocumentDto(
+ 
+ public interface ICompanyDocumentService
+ {
+-    Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken);
+     Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+ }
+ 
+ public interface ICompanyDocumentIngestionStatusService
+ {
++    Task MarkProcessingAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+     Task MarkProcessedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+-    Task MarkFailedAsync(Guid companyId, Guid documentId, string failureCode, string failureMessage, CancellationToken cancellationToken);
++    Task MarkFailedAsync(Guid companyId, Guid documentId, CompanyDocumentIngestionFailure failure, CancellationToken cancellationToken);
+ }
+ 
+ public sealed record DocumentStorageWriteRequest(
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -73,6 +73,9 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public CompanyKnowledgeDocumentIngestionStatus IngestionStatus { get; private set; }
+     public string? FailureCode { get; private set; }
+     public string? FailureMessage { get; private set; }
++    public string? FailureAction { get; private set; }
++    public string? FailureTechnicalDetail { get; private set; }
++    public bool CanRetry { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? UploadedUtc { get; private set; }
+@@ -86,12 +89,28 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         StorageUrl = NormalizeOptional(storageUrl, nameof(storageUrl), 2048);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
+         UploadedUtc = DateTime.UtcNow;
++        ProcessingStartedUtc = null;
+         ProcessedUtc = null;
+         ClearFailure();
+         UpdatedUtc = UploadedUtc.Value;
+         return true;
+     }
+ 
++    public bool MarkProcessing()
++    {
++        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++        {
++            return false;
++        }
++
++        EnsureCanTransitionFromUploaded(nameof(MarkProcessing));
++        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processing;
++        ProcessingStartedUtc ??= DateTime.UtcNow;
++        ProcessedUtc = null;
++        ClearFailure();
++        UpdatedUtc = DateTime.UtcNow;
++        return true;
++    }
++
+     public bool MarkProcessed()
+     {
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed)
+@@ -101,20 +120,27 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+ 
+         EnsureCanTransitionToTerminal(CompanyKnowledgeDocumentIngestionStatus.Processed);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Processed;
++        ProcessingStartedUtc ??= DateTime.UtcNow;
+         ProcessedUtc = DateTime.UtcNow;
+         ClearFailure();
+         UpdatedUtc = ProcessedUtc.Value;
+         return true;
+     }
+ 
+-    public bool MarkFailed(string failureCode, string failureMessage)
++    public bool MarkFailed(
++        string failureCode,
++        string failureMessage,
++        string failureAction,
++        string? failureTechnicalDetail = null,
++        bool canRetry = false)
+     {
+         var normalizedFailureCode = NormalizeRequired(failureCode, nameof(failureCode), 100);
+         var normalizedFailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), 2000);
++        var normalizedFailureAction = NormalizeRequired(failureAction, nameof(failureAction), 500);
++        var normalizedFailureTechnicalDetail = NormalizeOptional(failureTechnicalDetail, nameof(failureTechnicalDetail), 4000);
+ 
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed)
+         {
+-            throw new InvalidOperationException("Processed documents cannot transition back to failed.");
++            throw new InvalidOperationException("Processed documents cannot transition to failed.");
+         }
+ 
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Failed)
+@@ -122,6 +148,9 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+             var changed =
+                 !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
+                 !string.Equals(FailureMessage, normalizedFailureMessage, StringComparison.Ordinal);
++                !string.Equals(FailureAction, normalizedFailureAction, StringComparison.Ordinal) ||
++                !string.Equals(FailureTechnicalDetail, normalizedFailureTechnicalDetail, StringComparison.Ordinal) ||
++                CanRetry != canRetry;
+ 
+             if (!changed)
+             {
+@@ -130,6 +159,9 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+ 
+             FailureCode = normalizedFailureCode;
+             FailureMessage = normalizedFailureMessage;
++            FailureAction = normalizedFailureAction;
++            FailureTechnicalDetail = normalizedFailureTechnicalDetail;
++            CanRetry = canRetry;
+             FailedUtc ??= DateTime.UtcNow;
+             UpdatedUtc = DateTime.UtcNow;
+             return true;
+@@ -139,19 +171,34 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Failed;
+         FailureCode = normalizedFailureCode;
+         FailureMessage = normalizedFailureMessage;
++        FailureAction = normalizedFailureAction;
++        FailureTechnicalDetail = normalizedFailureTechnicalDetail;
++        CanRetry = canRetry;
+         FailedUtc = DateTime.UtcNow;
+         UpdatedUtc = FailedUtc.Value;
+         return true;
+     }
+ 
++    private void EnsureCanTransitionFromUploaded(string operationName)
++    {
++        if (IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Uploaded)
++        {
++            throw new InvalidOperationException(
++                $"Document ingestion status cannot execute '{operationName}' from '{IngestionStatus.ToStorageValue()}'.");
++        }
++    }
++
+     private void EnsureCanTransitionToTerminal(CompanyKnowledgeDocumentIngestionStatus targetStatus)
+     {
+-        if (IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Uploaded)
++        if (IngestionStatus is not CompanyKnowledgeDocumentIngestionStatus.Uploaded and not CompanyKnowledgeDocumentIngestionStatus.Processing)
+         {
+             throw new InvalidOperationException(
+                 $"Document ingestion status cannot transition from '{IngestionStatus.ToStorageValue()}' to '{targetStatus.ToStorageValue()}'.");
+         }
++
++        ProcessingStartedUtc ??= DateTime.UtcNow;
+     }
+ 
+     private void ClearFailure()
+     {
+         FailureCode = null;
+         FailureMessage = null;
++        FailureAction = null;
++        FailureTechnicalDetail = null;
++        CanRetry = false;
+         FailedUtc = null;
+     }
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -145,7 +145,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Failed)
+         {
+             var changed =
+-                !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
++                !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
+                 !string.Equals(FailureMessage, normalizedFailureMessage, StringComparison.Ordinal);
+                 !string.Equals(FailureAction, normalizedFailureAction, StringComparison.Ordinal) ||
+                 !string.Equals(FailureTechnicalDetail, normalizedFailureTechnicalDetail, StringComparison.Ordinal) ||
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -145,9 +145,9 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Failed)
+         {
+             var changed =
+-                !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
+-                !string.Equals(FailureMessage, normalizedFailureMessage, StringComparison.Ordinal);
+-                !string.Equals(FailureAction, normalizedFailureAction, StringComparison.Ordinal) ||
++                !string.Equals(FailureCode, normalizedFailureCode, StringComparison.Ordinal) ||
++                !string.Equals(FailureMessage, normalizedFailureMessage, StringComparison.Ordinal) ||
++                !string.Equals(FailureAction, normalizedFailureAction, StringComparison.Ordinal) ||
+                 !string.Equals(FailureTechnicalDetail, normalizedFailureTechnicalDetail, StringComparison.Ordinal) ||
+                 CanRetry != canRetry;
+diff --git a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+@@ -16,8 +16,9 @@ public enum CompanyKnowledgeDocumentSourceType
+ public enum CompanyKnowledgeDocumentIngestionStatus
+ {
+     Uploaded = 1,
+-    Processed = 2,
+-    Failed = 3
++    Processing = 2,
++    Processed = 3,
++    Failed = 4
+ }
+@@ -114,12 +115,14 @@ public static class CompanyKnowledgeDocumentSourceTypeValues
+ public static class CompanyKnowledgeDocumentIngestionStatusValues
+ {
+     public const string Uploaded = "uploaded";
++    public const string Processing = "processing";
+     public const string Processed = "processed";
+     public const string Failed = "failed";
+ 
+     private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentIngestionStatus, string> Values =
+         new Dictionary<CompanyKnowledgeDocumentIngestionStatus, string>
+         {
+             [CompanyKnowledgeDocumentIngestionStatus.Uploaded] = Uploaded,
++            [CompanyKnowledgeDocumentIngestionStatus.Processing] = Processing,
+             [CompanyKnowledgeDocumentIngestionStatus.Processed] = Processed,
+             [CompanyKnowledgeDocumentIngestionStatus.Failed] = Failed
+         };
+@@ -128,7 +131,6 @@ public static class CompanyKnowledgeDocumentIngestionStatusValues
+         Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+     private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentIngestionStatus> LegacyAliases =
+         new Dictionary<string, CompanyKnowledgeDocumentIngestionStatus>(StringComparer.OrdinalIgnoreCase)
+         {
+-            ["processing"] = CompanyKnowledgeDocumentIngestionStatus.Failed,
+             ["unsupported"] = CompanyKnowledgeDocumentIngestionStatus.Failed
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentFileTypePolicy.cs
+@@ -0,0 +1,75 @@
++using VirtualCompany.Application.Documents;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++internal static class CompanyDocumentFileTypePolicy
++{
++    private const string UnsupportedFileAction =
++        "Upload a PDF, DOC, DOCX, TXT, or MD file, or export the document to PDF or DOCX and try again.";
++
++    private static readonly IReadOnlyDictionary<string, string[]> SupportedFileTypes =
++        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++        {
++            [".txt"] = ["text/plain"],
++            [".md"] = ["text/markdown", "text/plain"],
++            [".pdf"] = ["application/pdf"],
++            [".doc"] = ["application/msword", "application/octet-stream"],
++            [".docx"] =
++            [
++                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++                "application/octet-stream",
++                "application/zip"
++            ]
++        };
++
++    public static IReadOnlyList<string> SupportedExtensions { get; } =
++        SupportedFileTypes.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
++
++    public static bool TryValidate(string fileName, string? contentType, out CompanyDocumentIngestionFailure? failure)
++    {
++        var extension = Path.GetExtension(fileName).ToLowerInvariant();
++        if (!SupportedFileTypes.TryGetValue(extension, out var allowedContentTypes))
++        {
++            failure = new CompanyDocumentIngestionFailure(
++                "unsupported_file_type",
++                $"Unsupported file type '{extension}'. Supported extensions: {string.Join(", ", SupportedExtensions)}.",
++                UnsupportedFileAction);
++            return false;
++        }
++
++        var normalizedContentType = NormalizeContentType(contentType);
++        if (normalizedContentType is null || string.Equals(normalizedContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase))
++        {
++            failure = null;
++            return true;
++        }
++
++        if (allowedContentTypes.Contains(normalizedContentType, StringComparer.OrdinalIgnoreCase))
++        {
++            failure = null;
++            return true;
++        }
++
++        failure = new CompanyDocumentIngestionFailure(
++            "unsupported_content_type",
++            $"Content type '{normalizedContentType}' does not match the supported types for '{extension}'.",
++            "Verify the file is a valid document, then re-export or save it as PDF, DOCX, TXT, or MD before uploading again.");
++        return false;
++    }
++
++    public static string FormatValidationMessage(CompanyDocumentIngestionFailure failure) =>
++        $"{failure.Message} {failure.Action}";
++
++    public static CompanyDocumentIngestionFailure CreateProcessingFailure(Exception exception) =>
++        new(
++            "parser_failed",
++            "We could not read the document during ingestion.",
++            "Re-save or export the file to PDF or DOCX and upload it again.",
++            NormalizeTechnicalDetail(exception),
++            CanRetry: false);
++
++    private static string? NormalizeTechnicalDetail(string? contentType) =>
++        string.IsNullOrWhiteSpace(contentType) ? null : contentType.Trim();
++
++    private static string NormalizeTechnicalDetail(Exception exception) =>
++        $"{exception.GetType().Name}: {exception.Message}".Trim();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using Microsoft.Extensions.Logging;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -13,16 +14,35 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly ILogger<CompanyDocumentIngestionStatusService> _logger;
+ 
+     public CompanyDocumentIngestionStatusService(
+         VirtualCompanyDbContext dbContext,
+         IAuditEventWriter auditEventWriter,
+-        ICorrelationContextAccessor correlationContextAccessor)
++        ICorrelationContextAccessor correlationContextAccessor,
++        ILogger<CompanyDocumentIngestionStatusService> logger)
+     {
+         _dbContext = dbContext;
+         _auditEventWriter = auditEventWriter;
+         _correlationContextAccessor = correlationContextAccessor;
++        _logger = logger;
+     }
++
++    public async Task MarkProcessingAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
++        if (!document.MarkProcessing())
++        {
++            return;
++        }
++
++        _logger.LogInformation(
++            "Company document ingestion started. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}.",
++            companyId,
++            documentId,
++            _correlationContextAccessor.CorrelationId);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
+ 
+     public async Task MarkProcessedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+@@ -50,15 +70,24 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
+-    public async Task MarkFailedAsync(Guid companyId, Guid documentId, string failureCode, string failureMessage, CancellationToken cancellationToken)
++    public async Task MarkFailedAsync(Guid companyId, Guid documentId, CompanyDocumentIngestionFailure failure, CancellationToken cancellationToken)
+     {
+         var document = await GetDocumentAsync(companyId, documentId, cancellationToken);
+-        if (!document.MarkFailed(failureCode, failureMessage))
++        if (!document.MarkFailed(
++            failure.Code,
++            failure.Message,
++            failure.Action,
++            failure.TechnicalDetail,
++            failure.CanRetry))
+         {
+             return;
+         }
+ 
+         await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.CompanyDocumentFailed,
+             new AuditEventWriteRequest(
+                 companyId,
+                 AuditActorTypes.System,
+@@ -75,6 +104,15 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+                 _correlationContextAccessor.CorrelationId),
+             cancellationToken);
+ 
++        _logger.LogWarning(
++            "Company document ingestion failed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, CorrelationId: {CorrelationId}, FailureCode: {FailureCode}, Retryable: {CanRetry}, TechnicalDetail: {TechnicalDetail}.",
++            companyId,
++            documentId,
++            _correlationContextAccessor.CorrelationId,
++            failure.Code,
++            failure.CanRetry,
++            failure.TechnicalDetail);
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+@@ -99,6 +137,8 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             ["documentType"] = document.DocumentType.ToStorageValue(),
+             ["fileName"] = document.OriginalFileName,
+             ["ingestionStatus"] = document.IngestionStatus.ToStorageValue(),
++            ["failureAction"] = document.FailureAction,
++            ["canRetry"] = document.CanRetry ? "true" : "false",
+             ["failureCode"] = document.FailureCode,
+             ["storageKey"] = document.StorageKey
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+@@ -78,13 +78,6 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             return;
+         }
+ 
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                companyId,
+-                AuditActorTypes.System,
+-                null,
+-                AuditEventActions.CompanyDocumentFailed,
+-                AuditTargetTypes.CompanyDocument,
+         await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+                 companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -11,19 +11,6 @@ using Microsoft.Extensions.Logging;
+ 
+ public sealed class CompanyDocumentService : ICompanyDocumentService
+ {
+-    private static readonly IReadOnlyDictionary<string, string[]> SupportedFileTypes =
+-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            [".txt"] = ["text/plain"],
+-            [".md"] = ["text/markdown", "text/plain"],
+-            [".pdf"] = ["application/pdf"],
+-            [".doc"] = ["application/msword", "application/octet-stream"],
+-            [".docx"] =
+-            [
+-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+-                "application/octet-stream",
+-                "application/zip"
+-            ]
+-        };
+-
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly ICompanyDocumentStorage _documentStorage;
+@@ -309,17 +296,10 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         var extension = Path.GetExtension(fileName).ToLowerInvariant();
+-        if (!SupportedFileTypes.TryGetValue(extension, out var allowedContentTypes))
++        if (!CompanyDocumentFileTypePolicy.TryValidate(fileName, contentType, out var failure))
+         {
+-            AddError(errors, "File", $"Unsupported file type '{extension}'. Supported extensions: {string.Join(", ", SupportedFileTypes.Keys.OrderBy(x => x))}.");
++            AddError(errors, "File", CompanyDocumentFileTypePolicy.FormatValidationMessage(failure!));
+             return;
+         }
+-
+-        if (!string.IsNullOrWhiteSpace(contentType) &&
+-            !string.Equals(contentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
+-            !allowedContentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase))
+-        {
+-            AddError(errors, "File", $"Content type '{contentType}' does not match the supported types for '{extension}'.");
+-        }
+     }
+@@ -548,6 +528,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             ["documentType"] = documentType,
+             ["fileName"] = fileName,
+             ["ingestionStatus"] = ingestionStatus,
++            ["failureAction"] = null,
++            ["canRetry"] = "false",
+             ["failureCode"] = failureCode,
+             ["storageKey"] = storageKey
+         };
+@@ -610,6 +592,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             document.IngestionStatus.ToStorageValue(),
+             document.FailureCode,
+             document.FailureMessage,
++            document.FailureAction,
++            document.CanRetry,
+             document.CreatedUtc,
+             document.UpdatedUtc,
+             document.UploadedUtc,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -523,6 +523,9 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+             .HasDefaultValueSql("'uploaded'")
+             .IsRequired();
+         builder.Property(x => x.FailureCode).HasMaxLength(100);
+         builder.Property(x => x.FailureMessage).HasMaxLength(2000);
++        builder.Property(x => x.FailureAction).HasMaxLength(500);
++        builder.Property(x => x.FailureTechnicalDetail).HasMaxLength(4000);
++        builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401183000_AddKnowledgeDocumentFailureActionsAndProcessingStatus.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401183000_AddKnowledgeDocumentFailureActionsAndProcessingStatus.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260401183000_AddKnowledgeDocumentFailureActionsAndProcessingStatus.cs
+@@ -0,0 +1,120 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddKnowledgeDocumentFailureActionsAndProcessingStatus : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "FailureAction",
++                table: "knowledge_documents",
++                maxLength: 500,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "FailureTechnicalDetail",
++                table: "knowledge_documents",
++                maxLength: 4000,
++                nullable: true);
++
++            migrationBuilder.AddColumn<bool>(
++                name: "CanRetry",
++                table: "knowledge_documents",
++                nullable: false,
++                defaultValue: false);
++
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql("""
++                    UPDATE knowledge_documents
++                    SET "FailureAction" = COALESCE(NULLIF("FailureAction", ''), 'Re-save or export the file to PDF or DOCX and upload it again.')
++                    WHERE "IngestionStatus" = 'failed';
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    DROP CONSTRAINT IF EXISTS "CK_knowledge_documents_ingestion_status";
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    ADD CONSTRAINT "CK_knowledge_documents_ingestion_status"
++                    CHECK ("IngestionStatus" IN ('uploaded', 'processing', 'processed', 'failed'));
++                    """);
++
++                return;
++            }
++
++            if (ActiveProvider == "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                migrationBuilder.Sql("""
++                    UPDATE [knowledge_documents]
++                    SET [FailureAction] = COALESCE(NULLIF([FailureAction], ''), 'Re-save or export the file to PDF or DOCX and upload it again.')
++                    WHERE [IngestionStatus] = 'failed';
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    DROP CONSTRAINT [CK_knowledge_documents_ingestion_status];
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    ADD CONSTRAINT [CK_knowledge_documents_ingestion_status]
++                    CHECK ([IngestionStatus] IN ('uploaded', 'processing', 'processed', 'failed'));
++                    """);
++            }
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    DROP CONSTRAINT IF EXISTS "CK_knowledge_documents_ingestion_status";
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE knowledge_documents
++                    ADD CONSTRAINT "CK_knowledge_documents_ingestion_status"
++                    CHECK ("IngestionStatus" IN ('uploaded', 'processed', 'failed'));
++                    """);
++            }
++
++            if (ActiveProvider == "Microsoft.EntityFrameworkCore.SqlServer")
++            {
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    DROP CONSTRAINT [CK_knowledge_documents_ingestion_status];
++                    """);
++
++                migrationBuilder.Sql("""
++                    ALTER TABLE [knowledge_documents]
++                    ADD CONSTRAINT [CK_knowledge_documents_ingestion_status]
++                    CHECK ([IngestionStatus] IN ('uploaded', 'processed', 'failed'));
++                    """);
++            }
++
++            migrationBuilder.DropColumn(
++                name: "FailureAction",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "FailureTechnicalDetail",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "CanRetry",
++                table: "knowledge_documents");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -104,7 +104,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var payload = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+         Assert.NotNull(payload);
+         Assert.Contains("File", payload!.Errors.Keys);
+-        Assert.Contains("Unsupported file type", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("Unsupported file type", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("Upload a PDF, DOC, DOCX, TXT, or MD file", payload.Errors["File"][0], StringComparison.OrdinalIgnoreCase);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -276,6 +277,24 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         Assert.Equal(AuditEventOutcomes.Failed, auditEvent.Outcome);
+     }
+ 
++    [Fact]
++    public async Task Ingestion_status_service_marks_document_processing()
++    {
++        var seed = await SeedUploadedDocumentAsync();
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var ingestionStatusService = scope.ServiceProvider.GetRequiredService<ICompanyDocumentIngestionStatusService>();
++            await ingestionStatusService.MarkProcessingAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
++        }
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == seed.DocumentId);
++
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processing, document.IngestionStatus);
++        Assert.NotNull(document.ProcessingStartedUtc);
++    }
++
+     [Fact]
+     public async Task Ingestion_status_service_marks_document_processed()
+     {
+@@ -316,9 +335,18 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+             var ingestionStatusService = scope.ServiceProvider.GetRequiredService<ICompanyDocumentIngestionStatusService>();
+             await ingestionStatusService.MarkFailedAsync(
+                 seed.CompanyId,
+                 seed.DocumentId,
+-                "extraction_failed",
+-                "The document contents could not be extracted. Upload a clean copy and retry ingestion.",
++                new CompanyDocumentIngestionFailure(
++                    "extraction_failed",
++                    "The document contents could not be extracted.",
++                    "Upload a clean copy and retry ingestion.",
++                    "InvalidDataException: Unexpected EOF while reading the document.",
++                    CanRetry: false),
+                 CancellationToken.None);
+         }
+ 
++        using var client = CreateAuthenticatedClient("ingestion-manager", "ingestion@example.com", "Ingestion Manager");
++        var response = await client.GetFromJsonAsync<CompanyDocumentResponse>($"/api/companies/{seed.CompanyId}/documents/{seed.DocumentId}");
++        Assert.NotNull(response);
++        Assert.Equal("Upload a clean copy and retry ingestion.", response!.FailureAction);
++        Assert.False(response.CanRetry);
++
+         using var verificationScope = _factory.Services.CreateScope();
+         var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         var document = await dbContext.CompanyKnowledgeDocuments
+@@ -327,8 +355,10 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+ 
+         Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
+         Assert.Equal("extraction_failed", document.FailureCode);
+-        Assert.Equal("The document contents could not be extracted. Upload a clean copy and retry ingestion.", document.FailureMessage);
++        Assert.Equal("The document contents could not be extracted.", document.FailureMessage);
++        Assert.Equal("Upload a clean copy and retry ingestion.", document.FailureAction);
+         Assert.NotNull(document.FailedUtc);
++        Assert.Equal("InvalidDataException: Unexpected EOF while reading the document.", document.FailureTechnicalDetail);
+     }
+@@ -430,5 +460,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         public string StorageKey { get; set; } = string.Empty;
+         public string? FailureCode { get; set; }
+         public string? FailureMessage { get; set; }
++        public string? FailureAction { get; set; }
++        public bool CanRetry { get; set; }
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+@@ -20,6 +20,18 @@ public sealed class CompanyKnowledgeDocumentTests
+     }
+ 
+     [Fact]
++    public void Uploaded_document_can_transition_to_processing()
++    {
++        var document = CreateDocument();
++
++        var changed = document.MarkProcessing();
++
++        Assert.True(changed);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processing, document.IngestionStatus);
++        Assert.NotNull(document.ProcessingStartedUtc);
++    }
++
++    [Fact]
+     public void Uploaded_document_can_transition_to_processed()
+     {
+         var document = CreateDocument();
+@@ -41,15 +53,21 @@ public sealed class CompanyKnowledgeDocumentTests
+ 
+         var changed = document.MarkFailed(
+             "file_corrupted",
+-            "The uploaded file is corrupted and could not be read. Upload a new copy and retry ingestion.");
++            "The uploaded file is corrupted and could not be read.",
++            "Upload a new copy and retry ingestion.",
++            "InvalidDataException: PDF header was missing.",
++            canRetry: false);
+ 
+         Assert.True(changed);
+         Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
+         Assert.Equal("file_corrupted", document.FailureCode);
+-        Assert.Equal(
+-            "The uploaded file is corrupted and could not be read. Upload a new copy and retry ingestion.",
+-            document.FailureMessage);
++        Assert.Equal("The uploaded file is corrupted and could not be read.", document.FailureMessage);
++        Assert.Equal("Upload a new copy and retry ingestion.", document.FailureAction);
++        Assert.Equal("InvalidDataException: PDF header was missing.", document.FailureTechnicalDetail);
++        Assert.False(document.CanRetry);
+         Assert.NotNull(document.FailedUtc);
+     }
+ 
+     [Fact]
+     public void Failed_document_cannot_transition_to_processed()
+@@ -57,7 +75,8 @@ public sealed class CompanyKnowledgeDocumentTests
+         var document = CreateDocument();
+         document.MarkFailed(
+             "extraction_failed",
+-            "The document contents could not be extracted. Upload a clean copy and retry ingestion.");
++            "The document contents could not be extracted.",
++            "Upload a clean copy and retry ingestion.");
+ 
+         var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());
+ 
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -175,7 +175,8 @@ Form fields:
+ - `metadata` as an optional JSON object string
+ - `file`
+ 
+-Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
+-Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and leave the document in the `uploaded` state so later ingestion stages can pick it up through the existing orchestration seam.
++Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
++Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and expose `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting. Unsupported uploads are rejected up front with actionable validation guidance.
++
+ ## Authorization Behavior
+ 
+ - Active membership is required for company-scoped access.
+END_OF_PATCH

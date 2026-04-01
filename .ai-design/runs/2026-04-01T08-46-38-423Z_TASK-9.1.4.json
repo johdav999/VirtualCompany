@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.1.4",
+  "promptPath": ".ai-design/prompts/TASK-9.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T08:46:38.423Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T08-46-38-423Z_TASK-9.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T08-46-38-423Z_TASK-9.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T08:53:57.010Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "etail);\n+        Assert.False(document.CanRetry);\n         Assert.NotNull(document.FailedUtc);\n     }\n \n     [Fact]\n     public void Failed_document_cannot_transition_to_processed()\n@@ -57,7 +75,8 @@ public sealed class CompanyKnowledgeDocumentTests\n         var document = CreateDocument();\n         document.MarkFailed(\n             \"extraction_failed\",\n-            \"The document contents could not be extracted. Upload a clean copy and retry ingestion.\");\n+            \"The document contents could not be extracted.\",\n+            \"Upload a clean copy and retry ingestion.\");\n \n         var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());\n \ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -175,7 +175,8 @@ Form fields:\n - `metadata` as an optional JSON object string\n - `file`\n \n-Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.\n-Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and leave the document in the `uploaded` state so later ingestion stages can pick it up through the existing orchestration seam.\n+Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.\n+Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and expose `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting. Unsupported uploads are rejected up front with actionable validation guidance.\n+\n ## Authorization Behavior\n \n - Active membership is required for company-scoped access.\nEND_OF_PATCH\n",
+  "stderrTail": "sert.False(document.CanRetry);\n         Assert.NotNull(document.FailedUtc);\n     }\n \n     [Fact]\n     public void Failed_document_cannot_transition_to_processed()\n@@ -57,7 +75,8 @@ public sealed class CompanyKnowledgeDocumentTests\n         var document = CreateDocument();\n         document.MarkFailed(\n             \"extraction_failed\",\n-            \"The document contents could not be extracted. Upload a clean copy and retry ingestion.\");\n+            \"The document contents could not be extracted.\",\n+            \"Upload a clean copy and retry ingestion.\");\n \n         var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());\n \ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -175,7 +175,8 @@ Form fields:\n - `metadata` as an optional JSON object string\n - `file`\n \n-Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.\n-Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and leave the document in the `uploaded` state so later ingestion stages can pick it up through the existing orchestration seam.\n+Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.\n+Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and expose `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting. Unsupported uploads are rejected up front with actionable validation guidance.\n+\n ## Authorization Behavior\n \n - Active membership is required for company-scoped access.\nEND_OF_PATCH\ntokens used\n72,627\n",
+  "verbosityMode": "verbose"
+}
