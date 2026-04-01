@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.3.2",
+  "promptPath": ".ai-design/prompts/TASK-8.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-03-31T19:53:48.522Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-31T19-53-48-522Z_TASK-8.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-31T19-53-48-522Z_TASK-8.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-31T19:57:52.485Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "+        Assert.Equal(\"paused\", decision.Metadata[\"agentStatus\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()\n     {\n@@ -116,6 +135,41 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Contains(\"ambiguous_policy_configuration\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_supports_explicit_execute_scope_bucket()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            dataScopes: Payload(\n+                (\"read\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"execute\", new JsonArray(JsonValue.Create(\"payments\"))))));\n+\n+        Assert.Equal(\"allow\", decision.Outcome);\n+        Assert.Equal(\"execute\", decision.Metadata[\"scopePolicyBucket\"]!.GetValue<string>());\n+        Assert.False(decision.Metadata[\"scopePolicyFallbackApplied\"]!.GetValue<bool>());\n+    }\n+\n+    [Fact]\n+    public void Evaluate_requires_approval_when_explicit_policy_rule_matches_request()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_3\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            escalationRules: Payload(\n+                (\"escalateTo\", JsonValue.Create(\"founder\")),\n+                (\"requireApproval\", new JsonObject\n+                {\n+                    [\"actions\"] = new JsonArray(JsonValue.Create(\"execute\")),\n+                    [\"tools\"] = new JsonArray(JsonValue.Create(\"erp\"))\n+                }))));\n+\n+        Assert.Equal(\"require_approval\", decision.Outcome);\n+        Assert.Contains(\"approval_required_by_policy\", decision.ReasonCodes);\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\n",
+  "stderrTail": "al(\"paused\", decision.Metadata[\"agentStatus\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()\n     {\n@@ -116,6 +135,41 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Contains(\"ambiguous_policy_configuration\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_supports_explicit_execute_scope_bucket()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            dataScopes: Payload(\n+                (\"read\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"execute\", new JsonArray(JsonValue.Create(\"payments\"))))));\n+\n+        Assert.Equal(\"allow\", decision.Outcome);\n+        Assert.Equal(\"execute\", decision.Metadata[\"scopePolicyBucket\"]!.GetValue<string>());\n+        Assert.False(decision.Metadata[\"scopePolicyFallbackApplied\"]!.GetValue<bool>());\n+    }\n+\n+    [Fact]\n+    public void Evaluate_requires_approval_when_explicit_policy_rule_matches_request()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_3\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            escalationRules: Payload(\n+                (\"escalateTo\", JsonValue.Create(\"founder\")),\n+                (\"requireApproval\", new JsonObject\n+                {\n+                    [\"actions\"] = new JsonArray(JsonValue.Create(\"execute\")),\n+                    [\"tools\"] = new JsonArray(JsonValue.Create(\"erp\"))\n+                }))));\n+\n+        Assert.Equal(\"require_approval\", decision.Outcome);\n+        Assert.Contains(\"approval_required_by_policy\", decision.ReasonCodes);\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\ntokens used\n68,495\n",
+  "verbosityMode": "verbose"
+}

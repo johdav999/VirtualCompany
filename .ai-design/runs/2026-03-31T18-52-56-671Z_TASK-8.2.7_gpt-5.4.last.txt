@@ -1,0 +1,465 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 9683633..2115535 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -51,6 +51,7 @@ public static class AuditEventActions
+     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
+     public const string AgentHired = "agent.hired";
+     public const string AgentOperatingProfileUpdated = "agent.operating_profile.updated";
++    public const string AgentStatusUpdated = "agent.status.updated";
+     public const string AgentToolExecutionDenied = "agent.tool_execution.denied";
+     public const string AgentToolExecutionExecuted = "agent.tool_execution.executed";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 8cbfe2a..fce1c97 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -1,5 +1,7 @@
++using System.Diagnostics;
+ using System.Globalization;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
+@@ -8,6 +10,7 @@ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -20,6 +23,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private const int RoleBriefMaxLength = 4000;
+     private const int AvatarUrlMaxLength = 2048;
+     private const int PersonalitySummaryMaxLength = 1000;
++    private const int AuditMetadataValueMaxLength = 512;
+ 
+     private static readonly HashSet<string> SupportedWorkingDays = new(StringComparer.OrdinalIgnoreCase)
+     {
+@@ -39,11 +43,13 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public CompanyAgentService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -102,6 +108,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             throw new KeyNotFoundException("Agent not found.");
+         }
+ 
++        var beforeSnapshot = CreateOperatingProfileAuditSnapshot(agent);
++
+         var changed = agent.UpdateOperatingProfile(
+             command.RoleBrief,
+             AgentStatusValues.Parse(command.Status),
+@@ -120,21 +128,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         if (changed)
+         {
+-            await _auditEventWriter.WriteAsync(
+-                new AuditEventWriteRequest(
+-                    companyId,
+-                    AuditActorTypes.User,
+-                    membership.UserId,
+-                    AuditEventActions.AgentOperatingProfileUpdated,
+-                    AuditTargetTypes.Agent,
+-                    agent.Id.ToString("N"),
+-                    AuditEventOutcomes.Succeeded,
+-                    Metadata: new Dictionary<string, string?>
+-                    {
+-                        ["status"] = agent.Status.ToStorageValue(),
+-                        ["autonomyLevel"] = agent.AutonomyLevel.ToStorageValue(),
+-                        ["displayName"] = agent.DisplayName
+-                    }),
+-                cancellationToken);
++            await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
+ 
+             await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+@@ -173,22 +167,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         _dbContext.Agents.Add(agent);
+ 
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                companyId,
+-                AuditActorTypes.User,
+-                membership.UserId,
+-                AuditEventActions.AgentHired,
+-                AuditTargetTypes.Agent,
+-                agent.Id.ToString(),
+-                AuditEventOutcomes.Succeeded,
+-                Metadata: new Dictionary<string, string?>
+-                {
+-                    ["templateId"] = template.TemplateId,
+-                    ["displayName"] = agent.DisplayName,
+-                    ["roleName"] = agent.RoleName,
+-                    ["department"] = agent.Department,
+-                    ["seniority"] = agent.Seniority.ToStorageValue(),
+-                    ["autonomyLevel"] = agent.AutonomyLevel.ToStorageValue()
+-                }),
++        await WriteAgentCreatedAuditEventAsync(
++            companyId, membership, agent, template.TemplateId,
+             cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -235,8 +214,178 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return membership;
+     }
+ 
++    private Task WriteAgentCreatedAuditEventAsync(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        Agent agent,
++        string templateId,
++        CancellationToken cancellationToken)
++    {
++        var snapshot = CreateOperatingProfileAuditSnapshot(agent);
++        var metadata = CreateAuditMetadata(
++            ("templateId", templateId),
++            ("displayName", agent.DisplayName),
++            ("roleName", agent.RoleName),
++            ("department", agent.Department),
++            ("seniority", agent.Seniority.ToStorageValue()),
++            ("status", snapshot.Status),
++            ("autonomyLevel", snapshot.AutonomyLevel),
++            ("configuredFields", JsonSerializer.Serialize(new[]
++            {
++                "objectives",
++                "kpis",
++                "roleBrief",
++                "toolPermissions",
++                "dataScopes",
++                "approvalThresholds",
++                "escalationRules",
++                "triggerLogic",
++                "workingHours",
++                "status"
++            })),
++            ("roleBrief", snapshot.RoleBrief),
++            ("objectives", snapshot.ObjectivesJson),
++            ("kpis", snapshot.KpisJson),
++            ("toolPermissions", snapshot.ToolPermissionsJson),
++            ("dataScopes", snapshot.DataScopesJson),
++            ("approvalThresholds", snapshot.ApprovalThresholdsJson),
++            ("escalationRules", snapshot.EscalationRulesJson),
++            ("triggerLogic", snapshot.TriggerLogicJson),
++            ("workingHours", snapshot.WorkingHoursJson));
++
++        return _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.AgentHired,
++                AuditTargetTypes.Agent,
++                agent.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                "Hired agent from template and captured the initial operating profile snapshot.",
++                ["agent_management", "http_request"],
++                metadata,
++                CreateCorrelationId()),
++            cancellationToken);
++    }
++
++    private Task WriteOperatingProfileAuditEventAsync(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        Agent agent,
++        AgentOperatingProfileAuditSnapshot beforeSnapshot,
++        CancellationToken cancellationToken)
++    {
++        var afterSnapshot = CreateOperatingProfileAuditSnapshot(agent);
++        var changes = BuildOperatingProfileChanges(beforeSnapshot, afterSnapshot);
++        var action = changes.Count == 1 && string.Equals(changes[0].Field, "status", StringComparison.Ordinal)
++            ? AuditEventActions.AgentStatusUpdated
++            : AuditEventActions.AgentOperatingProfileUpdated;
++
++        var metadata = CreateAuditMetadata(
++            ("templateId", agent.TemplateId),
++            ("displayName", agent.DisplayName),
++            ("status", afterSnapshot.Status),
++            ("autonomyLevel", afterSnapshot.AutonomyLevel),
++            ("changedFieldCount", changes.Count.ToString(CultureInfo.InvariantCulture)),
++            ("changedFields", JsonSerializer.Serialize(changes.Select(static change => change.Field).ToArray())));
++
++        foreach (var change in changes)
++        {
++            metadata[$"{change.Field}Before"] = PrepareMetadataValue(change.Before);
++            metadata[$"{change.Field}After"] = PrepareMetadataValue(change.After);
++        }
++
++        return _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                action,
++                AuditTargetTypes.Agent,
++                agent.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                BuildOperatingProfileRationaleSummary(action, afterSnapshot, changes),
++                ["agent_management", "http_request"],
++                metadata,
++                CreateCorrelationId()),
++            cancellationToken);
++    }
++
++    private string CreateCorrelationId() =>
++        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
++            : _correlationContextAccessor.CorrelationId!;
++
++    private static AgentOperatingProfileAuditSnapshot CreateOperatingProfileAuditSnapshot(Agent agent) =>
++        new(
++            agent.RoleBrief,
++            agent.Status.ToStorageValue(),
++            agent.AutonomyLevel.ToStorageValue(),
++            SerializeJsonDictionary(agent.Objectives),
++            SerializeJsonDictionary(agent.Kpis),
++            SerializeJsonDictionary(agent.Tools),
++            SerializeJsonDictionary(agent.Scopes),
++            SerializeJsonDictionary(agent.Thresholds),
++            SerializeJsonDictionary(agent.EscalationRules),
++            SerializeJsonDictionary(agent.TriggerLogic),
++            SerializeJsonDictionary(agent.WorkingHours));
++
++    private static List<AgentOperatingProfileAuditChange> BuildOperatingProfileChanges(
++        AgentOperatingProfileAuditSnapshot before,
++        AgentOperatingProfileAuditSnapshot after)
++    {
++        var changes = new List<AgentOperatingProfileAuditChange>();
++
++        AddOperatingProfileChange(changes, "objectives", before.ObjectivesJson, after.ObjectivesJson);
++        AddOperatingProfileChange(changes, "kpis", before.KpisJson, after.KpisJson);
++        AddOperatingProfileChange(changes, "roleBrief", before.RoleBrief, after.RoleBrief);
++        AddOperatingProfileChange(changes, "toolPermissions", before.ToolPermissionsJson, after.ToolPermissionsJson);
++        AddOperatingProfileChange(changes, "dataScopes", before.DataScopesJson, after.DataScopesJson);
++        AddOperatingProfileChange(changes, "approvalThresholds", before.ApprovalThresholdsJson, after.ApprovalThresholdsJson);
++        AddOperatingProfileChange(changes, "escalationRules", before.EscalationRulesJson, after.EscalationRulesJson);
++        AddOperatingProfileChange(changes, "triggerLogic", before.TriggerLogicJson, after.TriggerLogicJson);
++        AddOperatingProfileChange(changes, "workingHours", before.WorkingHoursJson, after.WorkingHoursJson);
++        AddOperatingProfileChange(changes, "status", before.Status, after.Status);
++        AddOperatingProfileChange(changes, "autonomyLevel", before.AutonomyLevel, after.AutonomyLevel);
++
++        return changes;
++    }
++
++    private static void AddOperatingProfileChange(
++        ICollection<AgentOperatingProfileAuditChange> changes,
++        string field,
++        string? before,
++        string? after)
++    {
++        if (!string.Equals(before, after, StringComparison.Ordinal))
++        {
++            changes.Add(new AgentOperatingProfileAuditChange(field, before, after));
++        }
++    }
++
++    private static string BuildOperatingProfileRationaleSummary(
++        string action,
++        AgentOperatingProfileAuditSnapshot afterSnapshot,
++        IReadOnlyCollection<AgentOperatingProfileAuditChange> changes)
++    {
++        if (string.Equals(action, AuditEventActions.AgentStatusUpdated, StringComparison.Ordinal))
++        {
++            return $"Updated agent status to {afterSnapshot.Status}.";
++        }
++
++        return $"Updated agent operating profile: {string.Join(", ", changes.Select(static change => DescribeOperatingProfileField(change.Field)))}.";
++    }
++
++    private static string DescribeOperatingProfileField(string field) => field switch
++    {
++        "objectives" => "objectives",
++        "kpis" => "KPIs",
++        "roleBrief" => "role brief",
++        "toolPermissions" => "tool permissions",
++        "dataScopes" => "data scopes",
++        "approvalThresholds" => "approval thresholds",
++        "escalationRules" => "escalation rules",
++        "triggerLogic" => "trigger logic",
++        "workingHours" => "working hours",
++        "status" => "status",
++        "autonomyLevel" => "autonomy level",
++        _ => field
++    };
++
+     private static CompanyAgentSummaryDto ToSummaryDto(Agent agent) =>
+         new(
+             agent.Id,
+@@ -246,8 +395,9 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.RoleName,
+             agent.Department,
+             agent.Seniority.ToStorageValue(),
+-            agent.Status.ToStorageValue(),
+-            agent.AvatarUrl, ResolvePersonalitySummary(agent.Personality));
++            agent.Status.ToStorageValue(),
++            agent.AvatarUrl,
++            ResolvePersonalitySummary(agent.Personality),
+             agent.AutonomyLevel.ToStorageValue());
+ 
+     private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent) =>
+@@ -540,4 +690,53 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         {
+             return false;
+         }
+     }
++
++    private static string SerializeJsonDictionary(IReadOnlyDictionary<string, JsonNode?> values)
++    {
++        var json = new JsonObject();
++        foreach (var pair in values.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
++        {
++            json[pair.Key] = pair.Value?.DeepClone();
++        }
++
++        return json.ToJsonString();
++    }
++
++    private static Dictionary<string, string?> CreateAuditMetadata(params (string Key, string? Value)[] values)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var (key, value) in values)
++        {
++            metadata[key] = PrepareMetadataValue(value);
++        }
++
++        return metadata;
++    }
++
++    private static string? PrepareMetadataValue(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= AuditMetadataValueMaxLength
++            ? trimmed
++            : $"{trimmed[..(AuditMetadataValueMaxLength - 3)]}...";
++    }
++
++    private sealed record AgentOperatingProfileAuditSnapshot(
++        string? RoleBrief,
++        string Status,
++        string AutonomyLevel,
++        string ObjectivesJson,
++        string KpisJson,
++        string ToolPermissionsJson,
++        string DataScopesJson,
++        string ApprovalThresholdsJson,
++        string EscalationRulesJson,
++        string TriggerLogicJson,
++        string WorkingHoursJson);
++
++    private sealed record AgentOperatingProfileAuditChange(string Field, string? Before, string? After);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 034f394..a45fd7f 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -118,6 +118,23 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotEmpty(agent.EscalationRules);
+         Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
+         Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
++
++        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
++            x.CompanyId == ids.CompanyId &&
++            x.Action == "agent.hired" &&
++            x.TargetId == payload.Agent.Id.ToString("N"));
++
++        Assert.Equal("user", auditEvent.ActorType);
++        Assert.Equal("agent", auditEvent.TargetType);
++        Assert.Equal("succeeded", auditEvent.Outcome);
++        Assert.Equal("finance", auditEvent.Metadata["templateId"]);
++        Assert.Equal("Nora Ledger", auditEvent.Metadata["displayName"]);
++        Assert.Equal("active", auditEvent.Metadata["status"]);
++        Assert.Equal(agent.AutonomyLevel.ToStorageValue(), auditEvent.Metadata["autonomyLevel"]);
++        Assert.Contains("initial operating profile snapshot", auditEvent.RationaleSummary);
++
++        var configuredFields = JsonSerializer.Deserialize<string[]>(auditEvent.Metadata["configuredFields"]!);
++        Assert.NotNull(configuredFields);
++        Assert.Contains("objectives", configuredFields!);
++        Assert.Contains("status", configuredFields);
+     }
+ 
+     [Fact]
+@@ -513,6 +530,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         var seed = await SeedMembershipWithExistingAgentAsync();
+ 
+         using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
++        client.DefaultRequestHeaders.Add("X-Correlation-ID", "agent-profile-update-audit");
+         var before = await client.GetFromJsonAsync<AgentOperatingProfileResponse>($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
+ 
+         Assert.NotNull(before);
+@@ -557,6 +575,29 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
+         Assert.Equal("\"Europe/Stockholm\"", agent.WorkingHours["timezone"]!.ToJsonString());
+         Assert.Equal("[\"forecast_accuracy\",\"approval_latency\"]", agent.Kpis["targets"]!.ToJsonString());
++
++        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == "agent.operating_profile.updated" &&
++            x.TargetId == seed.AgentId.ToString("N"));
++
++        Assert.Equal("user", auditEvent.ActorType);
++        Assert.Equal("agent", auditEvent.TargetType);
++        Assert.Equal("succeeded", auditEvent.Outcome);
++        Assert.Equal("agent-profile-update-audit", auditEvent.CorrelationId);
++        Assert.Equal("Nora Ledger", auditEvent.Metadata["displayName"]);
++        Assert.Equal("archived", auditEvent.Metadata["status"]);
++        Assert.Equal("10", auditEvent.Metadata["changedFieldCount"]);
++
++        var changedFields = JsonSerializer.Deserialize<string[]>(auditEvent.Metadata["changedFields"]!);
++        Assert.NotNull(changedFields);
++        Assert.Equal(
++            ["objectives", "kpis", "roleBrief", "toolPermissions", "dataScopes", "approvalThresholds", "escalationRules", "triggerLogic", "workingHours", "status"],
++            changedFields);
++
++        Assert.Equal("active", auditEvent.Metadata["statusBefore"]);
++        Assert.Equal("archived", auditEvent.Metadata["statusAfter"]);
++        Assert.Equal("Original finance operating profile.", auditEvent.Metadata["roleBriefBefore"]);
++        Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", auditEvent.Metadata["roleBriefAfter"]);
+     }
+ 
+     [Fact]
+@@ -654,6 +695,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         Assert.Equal(seed.OriginalUpdatedUtc, agent.UpdatedUtc);
+         Assert.Equal(AgentStatus.Active, agent.Status);
++        Assert.False(await dbContext.AuditEvents.AnyAsync(x => x.CompanyId == seed.CompanyId && x.TargetId == seed.AgentId.ToString("N")));
+         Assert.Equal("Original finance operating profile.", agent.RoleBrief);
+     }
+ 
+@@ -691,6 +733,16 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+ 
+         Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
+         Assert.Equal(AgentStatus.Paused, agent.Status);
++
++        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == "agent.status.updated" &&
++            x.TargetId == seed.AgentId.ToString("N"));
++
++        Assert.Equal("paused", auditEvent.Metadata["status"]);
++        Assert.Equal("active", auditEvent.Metadata["statusBefore"]);
++        Assert.Equal("paused", auditEvent.Metadata["statusAfter"]);
++        Assert.Equal("[\"status\"]", auditEvent.Metadata["changedFields"]);
++        Assert.Equal("Updated agent status to paused.", auditEvent.RationaleSummary);
+     }
+ 
+     [Fact]
+END_OF_PATCH

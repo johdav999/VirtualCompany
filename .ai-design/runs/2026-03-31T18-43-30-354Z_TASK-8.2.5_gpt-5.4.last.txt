@@ -1,0 +1,949 @@
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 5b4d0c2..4914ca2 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -53,12 +53,19 @@ using (var scope = app.Services.CreateScope())
+ {
+     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
++    var providerName = dbContext.Database.ProviderName;
++    var isPostgreSql = string.Equals(providerName, "Npgsql.EntityFrameworkCore.PostgreSQL", StringComparison.Ordinal);
+ 
+-    if (dbContext.Database.IsRelational())
++    if (isPostgreSql)
++    {
++        // The repo still carries historical SQL Server migrations; PostgreSQL environments
++        // bootstrap from the current model until the provider history is rebased.
++        await dbContext.Database.EnsureCreatedAsync();
++    }
++    else if (dbContext.Database.IsRelational())
+     {
+         if (applyMigrationsOnStartup)
+         {
+             await dbContext.Database.MigrateAsync();
+         }
+-    }
++    } 
+     else if (app.Environment.IsDevelopment())
+     {
+         await dbContext.Database.EnsureCreatedAsync();
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 3377f13..3f97945 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -1,7 +1,7 @@
+ {
+   "ConnectionStrings": {
+-    "VirtualCompanyDb": "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True"
++    "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true"
+   },
+   "DatabaseInitialization": {
+     "ApplyMigrationsOnStartup": true
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index f167b71..8b8082d 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -1,7 +1,7 @@
+ {
+   "ConnectionStrings": {
+-    "VirtualCompanyDb": "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True"
++    "VirtualCompanyDb": "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true"
+   },
+   "DatabaseInitialization": {
+     "ApplyMigrationsOnStartup": false
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 4ea188b..653864c 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -1,5 +1,7 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ 
+ namespace VirtualCompany.Application.Agents;
+ 
+@@ -69,17 +71,91 @@ public sealed record UpdateAgentOperatingProfileCommand(
+     string Status,
+     string? RoleBrief,
+-    Dictionary<string, JsonNode?>? Objectives,
+-    Dictionary<string, JsonNode?>? Kpis,
+-    Dictionary<string, JsonNode?>? ToolPermissions,
+-    Dictionary<string, JsonNode?>? DataScopes,
+-    Dictionary<string, JsonNode?>? ApprovalThresholds,
+-    Dictionary<string, JsonNode?>? EscalationRules,
+-    Dictionary<string, JsonNode?>? TriggerLogic,
+-    Dictionary<string, JsonNode?>? WorkingHours);
++    AgentObjectivesInput? Objectives,
++    AgentKpisInput? Kpis,
++    AgentToolPermissionsInput? ToolPermissions,
++    AgentDataScopesInput? DataScopes,
++    AgentApprovalThresholdsInput? ApprovalThresholds,
++    AgentEscalationRulesInput? EscalationRules,
++    AgentTriggerLogicInput? TriggerLogic,
++    AgentWorkingHoursInput? WorkingHours);
+ 
+ public sealed record AgentRuntimeProfileDto(
+@@ -114,6 +190,78 @@ public interface IAgentRuntimeProfileResolver
+         Guid agentId,
+         CancellationToken cancellationToken);
+ }
++
++public sealed class AgentObjectivesInput
++{
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? Sections { get; set; }
++}
++
++public sealed class AgentKpisInput
++{
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? Sections { get; set; }
++}
++
++public sealed class AgentToolPermissionsInput
++{
++    public List<string> Allowed { get; set; } = [];
++    public List<string> Denied { get; set; } = [];
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentDataScopesInput
++{
++    public List<string> Read { get; set; } = [];
++    public List<string> Write { get; set; } = [];
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentApprovalThresholdsInput
++{
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? Rules { get; set; }
++}
++
++public sealed class AgentEscalationRulesInput
++{
++    public List<string> Critical { get; set; } = [];
++    public string? EscalateTo { get; set; }
++    public decimal? NotifyAfterMinutes { get; set; }
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentTriggerLogicInput
++{
++    public bool? Enabled { get; set; }
++    public List<AgentTriggerConditionInput> Conditions { get; set; } = [];
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentTriggerConditionInput
++{
++    public string? Event { get; set; }
++    public string? Type { get; set; }
++    public string? Source { get; set; }
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentWorkingHoursInput
++{
++    public string? Timezone { get; set; }
++    public List<AgentWorkingHourWindowInput> Windows { get; set; } = [];
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
++public sealed class AgentWorkingHourWindowInput
++{
++    public string? Day { get; set; }
++    public string? Start { get; set; }
++    public string? End { get; set; }
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
+ 
+ public sealed class AgentValidationException : Exception
+ {
+diff --git a/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+new file mode 100644
+index 0000000..40415f5
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+@@ -0,0 +1,162 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Agents;
++
++public static class AgentOperatingProfileJsonMapper
++{
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentObjectivesInput? input) =>
++        input is null ? null : ToJsonDictionary(input.Sections);
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentKpisInput? input) =>
++        input is null ? null : ToJsonDictionary(input.Sections);
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentApprovalThresholdsInput? input) =>
++        input is null ? null : ToJsonDictionary(input.Rules);
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentToolPermissionsInput? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++        AddArrayIfPresent(payload, "allowed", input.Allowed);
++        AddArrayIfPresent(payload, "denied", input.Denied);
++        AddExtensionData(payload, input.AdditionalProperties, "allowed", "denied");
++        return payload;
++    }
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentDataScopesInput? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++        AddArrayIfPresent(payload, "read", input.Read);
++        AddArrayIfPresent(payload, "write", input.Write);
++        AddExtensionData(payload, input.AdditionalProperties, "read", "write");
++        return payload;
++    }
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentEscalationRulesInput? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++        AddArrayIfPresent(payload, "critical", input.Critical);
++
++        if (input.EscalateTo is not null)
++        {
++            payload["escalateTo"] = JsonValue.Create(input.EscalateTo);
++        }
++
++        if (input.NotifyAfterMinutes.HasValue)
++        {
++            payload["notifyAfterMinutes"] = JsonValue.Create(input.NotifyAfterMinutes.Value);
++        }
++
++        AddExtensionData(payload, input.AdditionalProperties, "critical", "escalateTo", "notifyAfterMinutes");
++        return payload;
++    }
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentTriggerLogicInput? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++
++        if (input.Enabled.HasValue)
++        {
++            payload["enabled"] = JsonValue.Create(input.Enabled.Value);
++        }
++
++        if (input.Conditions.Count > 0)
++        {
++            payload["conditions"] = JsonSerializer.SerializeToNode(input.Conditions);
++        }
++
++        AddExtensionData(payload, input.AdditionalProperties, "enabled", "conditions");
++        return payload;
++    }
++
++    public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentWorkingHoursInput? input)
++    {
++        if (input is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++
++        if (input.Timezone is not null)
++        {
++            payload["timezone"] = JsonValue.Create(input.Timezone);
++        }
++
++        if (input.Windows.Count > 0)
++        {
++            payload["windows"] = JsonSerializer.SerializeToNode(input.Windows);
++        }
++
++        AddExtensionData(payload, input.AdditionalProperties, "timezone", "windows");
++        return payload;
++    }
++
++    private static Dictionary<string, JsonNode?>? ToJsonDictionary(Dictionary<string, JsonElement>? source)
++    {
++        if (source is null)
++        {
++            return null;
++        }
++
++        var payload = CreateNodeMap();
++        foreach (var (key, value) in source)
++        {
++            payload[key] = ToNode(value);
++        }
++
++        return payload;
++    }
++
++    private static Dictionary<string, JsonNode?> CreateNodeMap() =>
++        new(StringComparer.OrdinalIgnoreCase);
++
++    private static void AddArrayIfPresent(
++        IDictionary<string, JsonNode?> payload,
++        string propertyName,
++        IReadOnlyCollection<string>? values)
++    {
++        if (values is null)
++        {
++            return;
++        }
++
++        payload[propertyName] = JsonSerializer.SerializeToNode(values);
++    }
++
++    private static void AddExtensionData(
++        IDictionary<string, JsonNode?> payload,
++        Dictionary<string, JsonElement>? additionalProperties,
++        params string[] knownProperties)
++    {
++        if (additionalProperties is null || additionalProperties.Count == 0)
++        {
++            return;
++        }
++
++        var known = new HashSet<string>(knownProperties, StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in additionalProperties)
++        {
++            if (known.Contains(key))
++            {
++                continue;
++            }
++
++            payload[key] = ToNode(value);
++        }
++    }
++
++    private static JsonNode? ToNode(JsonElement value)
++    {
++        if (value.ValueKind is JsonValueKind.Undefined)
++        {
++            return null;
++        }
++
++        return JsonNode.Parse(value.GetRawText());
++    }
++}
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+index 548f680..5b11146 100644
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -39,6 +39,16 @@ public static class UpdateAgentOperatingProfileCommandValidator
+ 
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
++        var objectives = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives);
++        var kpis = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis);
++        var toolPermissions = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions);
++        var dataScopes = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes);
++        var approvalThresholds = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds);
++        var escalationRules = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules);
++        var triggerLogic = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic);
++        var workingHours = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.WorkingHours);
++
+         if (!AgentStatusValues.TryParse(command.Status, out _))
+         {
+             AddError(errors, nameof(command.Status), AgentStatusValues.BuildValidationMessage(command.Status));
+@@ -46,14 +56,14 @@ public static class UpdateAgentOperatingProfileCommandValidator
+ 
+         AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
+-        ValidateObjectives(errors, nameof(command.Objectives), command.Objectives);
+-        ValidateKpis(errors, nameof(command.Kpis), command.Kpis);
+-        ValidateToolPermissions(errors, nameof(command.ToolPermissions), command.ToolPermissions);
+-        ValidateDataScopes(errors, nameof(command.DataScopes), command.DataScopes);
+-        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds);
+-        ValidateEscalationRules(errors, nameof(command.EscalationRules), command.EscalationRules);
+-        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), command.TriggerLogic);
+-        ValidateWorkingHours(errors, nameof(command.WorkingHours), command.WorkingHours);
++        ValidateObjectives(errors, nameof(command.Objectives), objectives);
++        ValidateKpis(errors, nameof(command.Kpis), kpis);
++        ValidateToolPermissions(errors, nameof(command.ToolPermissions), toolPermissions);
++        ValidateDataScopes(errors, nameof(command.DataScopes), dataScopes);
++        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), approvalThresholds);
++        ValidateEscalationRules(errors, nameof(command.EscalationRules), escalationRules);
++        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), triggerLogic);
++        ValidateWorkingHours(errors, nameof(command.WorkingHours), workingHours);
+ 
+         ThrowIfAny(errors);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 56e58c9..066e018 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -118,16 +118,16 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         var changed = agent.UpdateOperatingProfile(
+             command.RoleBrief,
+             AgentStatusValues.Parse(command.Status),
+-            command.Objectives,
+-            command.Kpis,
+-            command.ToolPermissions,
+-            command.DataScopes, 
+-            command.ApprovalThresholds,
+-            command.EscalationRules,
+-            command.TriggerLogic,
+-            command.WorkingHours);
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic),
++            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.WorkingHours));
+ 
+-        if (changed)
++        if (changed)
+         {
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c92115c..f44a7a9 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -26,13 +26,13 @@ public static class DependencyInjection
+     {
+         var connectionString =
+             configuration.GetConnectionString("VirtualCompanyDb")
+-            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True";
++            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true";
+ 
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+-            options.UseSqlServer(
++            options.UseNpgsql(
+                 connectionString,
+-                sqlServerOptions => sqlServerOptions.EnableRetryOnFailure()));
++                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure()));
+ 
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index dca7f3e..9fe4f6f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -23,8 +23,8 @@ internal static class CompanyJsonColumnConfiguration
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+-    private const string JsonObjectDefaultSql = "N'{}'";
+-    private const string JsonArrayDefaultSql = "N'[]'";
++    private const string JsonObjectDefaultSql = "'{}'";
++    private const string JsonArrayDefaultSql = "'[]'";
+ 
+     public static PropertyBuilder<T> HasJsonConversion<T>(this PropertyBuilder<T> propertyBuilder)
+         where T : class, new()
+@@ -40,7 +40,7 @@ internal static class CompanyJsonColumnConfiguration
+             value => DeserializeOrDefault<T>(Serialize(value)));
+ 
+-        propertyBuilder.HasColumnType("nvarchar(max)");
++        propertyBuilder.HasColumnType("jsonb");
+         propertyBuilder.HasConversion(converter);
+         propertyBuilder.Metadata.SetValueComparer(comparer);
+         return propertyBuilder;
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331193000_ConvertAgentProfileJsonColumnsToJsonb.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331193000_ConvertAgentProfileJsonColumnsToJsonb.cs
+new file mode 100644
+index 0000000..64a2f8a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331193000_ConvertAgentProfileJsonColumnsToJsonb.cs
+@@ -0,0 +1,145 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class ConvertAgentProfileJsonColumnsToJsonb : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql(
++            """
++            ALTER TABLE agent_templates
++            ALTER COLUMN personality_json TYPE jsonb
++            USING CASE
++                WHEN personality_json IS NULL OR btrim(personality_json) = '' THEN '{}'::jsonb
++                ELSE personality_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN personality_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN objectives_json TYPE jsonb
++            USING CASE
++                WHEN objectives_json IS NULL OR btrim(objectives_json) = '' THEN '{}'::jsonb
++                ELSE objectives_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN objectives_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN kpis_json TYPE jsonb
++            USING CASE
++                WHEN kpis_json IS NULL OR btrim(kpis_json) = '' THEN '{}'::jsonb
++                ELSE kpis_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN kpis_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN tool_permissions_json TYPE jsonb
++            USING CASE
++                WHEN tool_permissions_json IS NULL OR btrim(tool_permissions_json) = '' THEN '{}'::jsonb
++                ELSE tool_permissions_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN tool_permissions_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN data_scopes_json TYPE jsonb
++            USING CASE
++                WHEN data_scopes_json IS NULL OR btrim(data_scopes_json) = '' THEN '{}'::jsonb
++                ELSE data_scopes_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN data_scopes_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN approval_thresholds_json TYPE jsonb
++            USING CASE
++                WHEN approval_thresholds_json IS NULL OR btrim(approval_thresholds_json) = '' THEN '{}'::jsonb
++                ELSE approval_thresholds_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN approval_thresholds_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agent_templates
++            ALTER COLUMN escalation_rules_json TYPE jsonb
++            USING CASE
++                WHEN escalation_rules_json IS NULL OR btrim(escalation_rules_json) = '' THEN '{}'::jsonb
++                ELSE escalation_rules_json::jsonb
++            END;
++            ALTER TABLE agent_templates ALTER COLUMN escalation_rules_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN personality_json TYPE jsonb
++            USING CASE
++                WHEN personality_json IS NULL OR btrim(personality_json) = '' THEN '{}'::jsonb
++                ELSE personality_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN personality_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN objectives_json TYPE jsonb
++            USING CASE
++                WHEN objectives_json IS NULL OR btrim(objectives_json) = '' THEN '{}'::jsonb
++                ELSE objectives_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN objectives_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN kpis_json TYPE jsonb
++            USING CASE
++                WHEN kpis_json IS NULL OR btrim(kpis_json) = '' THEN '{}'::jsonb
++                ELSE kpis_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN kpis_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN tool_permissions_json TYPE jsonb
++            USING CASE
++                WHEN tool_permissions_json IS NULL OR btrim(tool_permissions_json) = '' THEN '{}'::jsonb
++                ELSE tool_permissions_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN tool_permissions_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN data_scopes_json TYPE jsonb
++            USING CASE
++                WHEN data_scopes_json IS NULL OR btrim(data_scopes_json) = '' THEN '{}'::jsonb
++                ELSE data_scopes_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN data_scopes_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN approval_thresholds_json TYPE jsonb
++            USING CASE
++                WHEN approval_thresholds_json IS NULL OR btrim(approval_thresholds_json) = '' THEN '{}'::jsonb
++                ELSE approval_thresholds_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN approval_thresholds_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN escalation_rules_json TYPE jsonb
++            USING CASE
++                WHEN escalation_rules_json IS NULL OR btrim(escalation_rules_json) = '' THEN '{}'::jsonb
++                ELSE escalation_rules_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN escalation_rules_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN trigger_logic_json TYPE jsonb
++            USING CASE
++                WHEN trigger_logic_json IS NULL OR btrim(trigger_logic_json) = '' THEN '{}'::jsonb
++                ELSE trigger_logic_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN trigger_logic_json SET DEFAULT '{}'::jsonb;
++
++            ALTER TABLE agents
++            ALTER COLUMN working_hours_json TYPE jsonb
++            USING CASE
++                WHEN working_hours_json IS NULL OR btrim(working_hours_json) = '' THEN '{}'::jsonb
++                ELSE working_hours_json::jsonb
++            END;
++            ALTER TABLE agents ALTER COLUMN working_hours_json SET DEFAULT '{}'::jsonb;
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql(
++            """
++            ALTER TABLE agent_templates ALTER COLUMN personality_json TYPE text USING personality_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN objectives_json TYPE text USING objectives_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN kpis_json TYPE text USING kpis_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN tool_permissions_json TYPE text USING tool_permissions_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN data_scopes_json TYPE text USING data_scopes_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN approval_thresholds_json TYPE text USING approval_thresholds_json::text;
++            ALTER TABLE agent_templates ALTER COLUMN escalation_rules_json TYPE text USING escalation_rules_json::text;
++            ALTER TABLE agents ALTER COLUMN personality_json TYPE text USING personality_json::text;
++            ALTER TABLE agents ALTER COLUMN objectives_json TYPE text USING objectives_json::text;
++            ALTER TABLE agents ALTER COLUMN kpis_json TYPE text USING kpis_json::text;
++            ALTER TABLE agents ALTER COLUMN tool_permissions_json TYPE text USING tool_permissions_json::text;
++            ALTER TABLE agents ALTER COLUMN data_scopes_json TYPE text USING data_scopes_json::text;
++            ALTER TABLE agents ALTER COLUMN approval_thresholds_json TYPE text USING approval_thresholds_json::text;
++            ALTER TABLE agents ALTER COLUMN escalation_rules_json TYPE text USING escalation_rules_json::text;
++            ALTER TABLE agents ALTER COLUMN trigger_logic_json TYPE text USING trigger_logic_json::text;
++            ALTER TABLE agents ALTER COLUMN working_hours_json TYPE text USING working_hours_json::text;
++            """);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+index 40585b6..c6ef396 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs
+@@ -8,10 +8,10 @@ public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory
+     public VirtualCompanyDbContext CreateDbContext(string[] args)
+     {
+         var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
+-        optionsBuilder.UseSqlServer(
+-            "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True",
+-            sqlServerOptions => sqlServerOptions.EnableRetryOnFailure());
++        optionsBuilder.UseNpgsql(
++            "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true",
++            npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+ 
+         return new VirtualCompanyDbContext(optionsBuilder.Options);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+index 0caebff..9ed7b59 100644
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -16,6 +16,7 @@
+   <ItemGroup>
+     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
++    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
+   </ItemGroup>
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 51e5581..2412f51 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -444,6 +444,33 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Contains("DisplayName", payload.Errors.Keys);
+         Assert.Contains("Personality", payload.Errors.Keys);
+         Assert.Contains("Seniority", payload.Errors.Keys);
++    }
++
++    [Fact]
++    public void Agent_operating_profile_json_columns_are_mapped_to_jsonb()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var agentEntity = dbContext.Model.FindEntityType(typeof(Agent));
++        Assert.NotNull(agentEntity);
++
++        Assert.Equal("jsonb", agentEntity!.FindProperty(nameof(Agent.Objectives))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Kpis))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Tools))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Scopes))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Thresholds))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.EscalationRules))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.TriggerLogic))!.GetColumnType());
++        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.WorkingHours))!.GetColumnType());
++
++        var templateEntity = dbContext.Model.FindEntityType(typeof(AgentTemplate));
++        Assert.NotNull(templateEntity);
++
++        Assert.Equal("jsonb", templateEntity!.FindProperty(nameof(AgentTemplate.Objectives))!.GetColumnType());
++        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Kpis))!.GetColumnType());
++        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Tools))!.GetColumnType());
++        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Scopes))!.GetColumnType());
++        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Thresholds))!.GetColumnType());
++        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.EscalationRules))!.GetColumnType());
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+index e6d3953..672cb11 100644
+--- a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+@@ -9,18 +9,18 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+     public void ValidateAndThrow_allows_valid_operating_profile_payloads()
+     {
+         var command = new UpdateAgentOperatingProfileCommand(
+             "restricted",
+             "Finance gatekeeper for exception approvals.",
+-            Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
+-            Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy"), JsonValue.Create("approval_latency")))),
+-            Payload(("allowed", new JsonArray(JsonValue.Create("erp"), JsonValue.Create("approvals_console")))),
+-            Payload(("read", new JsonArray(JsonValue.Create("finance"))), ("write", new JsonArray(JsonValue.Create("approval_notes")))),
+-            Payload(("approval", new JsonObject { ["expenseUsd"] = 2500, ["maxAmount"] = 5000, ["minAmount"] = 0 })),
+-            Payload(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create("owner"))),
+-            Payload(
+-                ("enabled", JsonValue.Create(true)),
+-                ("conditions", new JsonArray(new JsonObject
++            Objectives(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++            Kpis(("targets", new JsonArray(JsonValue.Create("forecast_accuracy"), JsonValue.Create("approval_latency")))),
++            ToolPermissions(("allowed", new JsonArray(JsonValue.Create("erp"), JsonValue.Create("approvals_console")))),
++            DataScopes(("read", new JsonArray(JsonValue.Create("finance"))), ("write", new JsonArray(JsonValue.Create("approval_notes")))),
++            Thresholds(("approval", new JsonObject { ["expenseUsd"] = 2500, ["maxAmount"] = 5000, ["minAmount"] = 0 })),
++            Escalation(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create("owner"))),
++            TriggerLogic(
++                enabled: true,
++                new JsonObject
+                 {
+                     ["event"] = "invoice_created",
+                     ["source"] = "erp"
+-                }))),
+-            Payload(
+-                ("timezone", JsonValue.Create("UTC")),
+-                ("windows", new JsonArray(new JsonObject
++                }),
++            WorkingHours(
++                "UTC",
++                new JsonObject
+                 {
+                     ["day"] = "monday",
+                     ["start"] = "08:00",
+                     ["end"] = "16:00"
+-                }))));
++                }));
+ 
+         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+     }
+@@ -31,18 +31,18 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+     {
+         var command = new UpdateAgentOperatingProfileCommand(
+             "sleeping",
+             new string('x', 4001),
+-            Payload(("primary", new JsonArray(JsonValue.Create(string.Empty)))),
+-            Payload(("targets", new JsonArray(new JsonObject { ["name"] = string.Empty }, JsonValue.Create("cycle_time"), JsonValue.Create("cycle_time")))),
+-            Payload(("allowed", new JsonArray(JsonValue.Create("erp"), JsonValue.Create(string.Empty), JsonValue.Create("erp"))), ("denied", new JsonArray(JsonValue.Create("erp")))),
+-            Payload(("read", new JsonArray(JsonValue.Create("finance"), JsonValue.Create(string.Empty)))),
+-            Payload(("approval", new JsonObject { ["expenseUsd"] = -1, ["minAmount"] = 50, ["maxAmount"] = 10, ["requiresApproval"] = "yes" })),
+-            Payload(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create(string.Empty))),
+-            Payload(("enabled", JsonValue.Create(true)), ("conditions", new JsonArray(new JsonObject { ["source"] = "erp" }))),
+-            Payload(
+-                ("timezone", JsonValue.Create(string.Empty)),
+-                ("windows", new JsonArray(new JsonObject
++            Objectives(("primary", new JsonArray(JsonValue.Create(string.Empty)))),
++            Kpis(("targets", new JsonArray(new JsonObject { ["name"] = string.Empty }, JsonValue.Create("cycle_time"), JsonValue.Create("cycle_time")))),
++            ToolPermissions(("allowed", new JsonArray(JsonValue.Create("erp"), JsonValue.Create(string.Empty), JsonValue.Create("erp"))), ("denied", new JsonArray(JsonValue.Create("erp")))),
++            DataScopes(("read", new JsonArray(JsonValue.Create("finance"), JsonValue.Create(string.Empty)))),
++            Thresholds(("approval", new JsonObject { ["expenseUsd"] = -1, ["minAmount"] = 50, ["maxAmount"] = 10, ["requiresApproval"] = "yes" })),
++            Escalation(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create(string.Empty))),
++            TriggerLogic(
++                enabled: true,
++                new JsonObject { ["source"] = "erp" }),
++            WorkingHours(
++                string.Empty,
++                new JsonObject
+                 {
+                     ["day"] = "monday",
+                     ["start"] = "18:00",
+                     ["end"] = "09:00"
+-                }))));
++                }));
+ 
+         var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+ 
+@@ -81,18 +81,18 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+     {
+         var command = new UpdateAgentOperatingProfileCommand(
+             "archived",
+             "Archived operating profile.",
+-            Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
+-            Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
+-            Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
+-            Payload(("read", new JsonArray(JsonValue.Create("finance")))),
+-            Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+-            Payload(("critical", new JsonArray(JsonValue.Create("cash_runway_under_90_days"))), ("escalateTo", JsonValue.Create("owner"))),
+-            Payload(
+-                ("enabled", JsonValue.Create(true)),
+-                ("conditions", new JsonArray(new JsonObject
++            Objectives(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++            Kpis(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++            ToolPermissions(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            DataScopes(("read", new JsonArray(JsonValue.Create("finance")))),
++            Thresholds(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++            Escalation(("critical", new JsonArray(JsonValue.Create("cash_runway_under_90_days"))), ("escalateTo", JsonValue.Create("owner"))),
++            TriggerLogic(
++                enabled: true,
++                new JsonObject
+                 {
+                     ["event"] = "invoice_created"
+-                }))),
+-            Payload(
+-                ("timezone", JsonValue.Create("UTC")),
+-                ("windows", new JsonArray(new JsonObject
++                }),
++            WorkingHours(
++                "UTC",
++                new JsonObject
+                 {
+                     ["day"] = "monday",
+                     ["start"] = "08:00",
+                     ["end"] = "16:00"
+-                }))));
++                }));
+ 
+         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+     }
+@@ -105,4 +105,72 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+ 
+         return payload;
+     }
++
++    private static AgentObjectivesInput Objectives(params (string Key, JsonNode? Value)[] properties) =>
++        new()
++        {
++            Sections = ToJsonElements(properties)
++        };
++
++    private static AgentKpisInput Kpis(params (string Key, JsonNode? Value)[] properties) =>
++        new()
++        {
++            Sections = ToJsonElements(properties)
++        };
++
++    private static AgentToolPermissionsInput ToolPermissions(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = Payload(properties);
++        return new AgentToolPermissionsInput
++        {
++            Allowed = ExtractStringList(payload, "allowed"),
++            Denied = ExtractStringList(payload, "denied"),
++            AdditionalProperties = ToJsonElements(payload.Where(x => !string.Equals(x.Key, "allowed", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Key, "denied", StringComparison.OrdinalIgnoreCase)).Select(x => (x.Key, x.Value)).ToArray())
++        };
++    }
++
++    private static AgentDataScopesInput DataScopes(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = Payload(properties);
++        return new AgentDataScopesInput
++        {
++            Read = ExtractStringList(payload, "read"),
++            Write = ExtractStringList(payload, "write"),
++            AdditionalProperties = ToJsonElements(payload.Where(x => !string.Equals(x.Key, "read", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Key, "write", StringComparison.OrdinalIgnoreCase)).Select(x => (x.Key, x.Value)).ToArray())
++        };
++    }
++
++    private static AgentApprovalThresholdsInput Thresholds(params (string Key, JsonNode? Value)[] properties) =>
++        new()
++        {
++            Rules = ToJsonElements(properties)
++        };
++
++    private static AgentEscalationRulesInput Escalation(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = Payload(properties);
++        return new AgentEscalationRulesInput
++        {
++            Critical = ExtractStringList(payload, "critical"),
++            EscalateTo = payload.TryGetValue("escalateTo", out var escalateToNode) ? escalateToNode?.GetValue<string>() : null
++        };
++    }
++
++    private static AgentTriggerLogicInput TriggerLogic(bool? enabled, params JsonObject[] conditions) =>
++        new()
++        {
++            Enabled = enabled,
++            Conditions = conditions.Select(condition => new AgentTriggerConditionInput
++            {
++                Event = condition.TryGetPropertyValue("event", out var eventNode) ? eventNode?.GetValue<string>() : null,
++                Type = condition.TryGetPropertyValue("type", out var typeNode) ? typeNode?.GetValue<string>() : null,
++                Source = condition.TryGetPropertyValue("source", out var sourceNode) ? sourceNode?.GetValue<string>() : null
++            }).ToList()
++        };
++
++    private static AgentWorkingHoursInput WorkingHours(string? timezone, params JsonObject[] windows) =>
++        new()
++        {
++            Timezone = timezone,
++            Windows = windows.Select(window => new AgentWorkingHourWindowInput
++            {
++                Day = window.TryGetPropertyValue("day", out var dayNode) ? dayNode?.GetValue<string>() : null,
++                Start = window.TryGetPropertyValue("start", out var startNode) ? startNode?.GetValue<string>() : null,
++                End = window.TryGetPropertyValue("end", out var endNode) ? endNode?.GetValue<string>() : null
++            }).ToList()
++        };
++
++    private static Dictionary<string, JsonElement> ToJsonElements(params (string Key, JsonNode? Value)[] properties) =>
++        properties.ToDictionary(pair => pair.Key, pair => JsonDocument.Parse(pair.Value?.ToJsonString() ?? "null").RootElement.Clone(), StringComparer.OrdinalIgnoreCase);
++
++    private static List<string> ExtractStringList(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
++        payload.TryGetValue(key, out var node) && node is JsonArray array
++            ? array.Select(item => item?.GetValue<string>() ?? string.Empty).ToList()
++            : [];
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+index 672cb11..8db2ed1 100644
+--- a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using System.Text.Json;
+ using VirtualCompany.Application.Agents;
+ using Xunit;
+ 
+END_OF_PATCH

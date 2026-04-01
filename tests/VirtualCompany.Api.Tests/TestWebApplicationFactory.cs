@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Observability;
@@ -42,12 +44,19 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICompanyInvitationSender>();
             services.AddSingleton<TestCompanyInvitationSender>();
+            services.RemoveAll<ICompanyToolExecutor>();
+            services.AddSingleton<TestCompanyToolExecutor>();
+
+            services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
         });
     }
 
     public TestCompanyInvitationSender InvitationSender =>
         Services.GetRequiredService<TestCompanyInvitationSender>();
+
+    public TestCompanyToolExecutor ToolExecutor =>
+        Services.GetRequiredService<TestCompanyToolExecutor>();
 
     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
     {
@@ -126,6 +135,38 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                     return true;
                 }
             }
+        }
+    }
+
+    public sealed class TestCompanyToolExecutor : ICompanyToolExecutor
+    {
+        private readonly ConcurrentQueue<ToolExecutionRequest> _requests = new();
+
+        public IReadOnlyList<ToolExecutionRequest> Requests => _requests.ToArray();
+        public int ExecutionCount => _requests.Count;
+
+        public void Reset()
+        {
+            while (_requests.TryDequeue(out _))
+            {
+            }
+        }
+
+        public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
+        {
+            _requests.Enqueue(request);
+
+            var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["toolName"] = JsonValue.Create(request.ToolName),
+                ["actionType"] = JsonValue.Create(request.ActionType),
+                ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+                ["executed"] = JsonValue.Create(true)
+            };
+
+            return Task.FromResult(new ToolExecutionResult(
+                $"Executed '{request.ToolName}' in the test tool executor.",
+                payload));
         }
     }
 }

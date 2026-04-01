@@ -1,0 +1,578 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 5f9af41..e7981d0 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -158,6 +158,8 @@ public sealed class AgentToolPermissionsInput
+ public sealed class AgentDataScopesInput
+ {
+     public List<string> Read { get; set; } = [];
++    public List<string> Recommend { get; set; } = [];
++    public List<string> Execute { get; set; } = [];
+     public List<string> Write { get; set; } = [];
+ 
+     [JsonExtensionData]
+@@ -170,6 +172,7 @@ public sealed class AgentEscalationRulesInput
+     public List<string> Critical { get; set; } = [];
+     public string? EscalateTo { get; set; }
+     public decimal? NotifyAfterMinutes { get; set; }
++    public AgentApprovalRequirementInput? RequireApproval { get; set; }
+ 
+     [JsonExtensionData]
+     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+@@ -188,6 +191,16 @@ public sealed class AgentTriggerLogicInput
+     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+ }
+ 
++public sealed class AgentApprovalRequirementInput
++{
++    public List<string> Actions { get; set; } = [];
++    public List<string> Tools { get; set; } = [];
++    public List<string> Scopes { get; set; } = [];
++
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
++}
++
+ public sealed class AgentTriggerConditionInput
+ {
+     public string? Event { get; set; }
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 7f67a40..b86979d 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -88,6 +88,7 @@ public static class PolicyDecisionReasonCodes
+ {
+     public const string PolicyChecksPassed = "policy_checks_passed";
+     public const string InvalidCompanyContext = "invalid_company_context";
++    public const string ApprovalRequiredByPolicy = "approval_required_by_policy";
+     public const string InvalidActionType = "invalid_action_type";
+     public const string InvalidAutonomyLevel = "invalid_autonomy_level";
+     public const string AgentStatusDisallowsExecution = "agent_status_disallows_execution";
+diff --git a/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+index 49c6445..314d497 100644
+--- a/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
++++ b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+@@ -37,6 +37,8 @@ public static class AgentOperatingProfileJsonMapper
+ 
+         var payload = CreateNodeMap();
+         AddArrayIfPresent(payload, "read", input.Read);
++        AddArrayIfPresent(payload, "recommend", input.Recommend);
++        AddArrayIfPresent(payload, "execute", input.Execute);
+         AddArrayIfPresent(payload, "write", input.Write);
+-        AddExtensionData(payload, input.AdditionalProperties, "read", "write");
++        AddExtensionData(payload, input.AdditionalProperties, "read", "recommend", "execute", "write");
+         return payload;
+     }
+@@ -61,8 +63,13 @@ public static class AgentOperatingProfileJsonMapper
+             payload["notifyAfterMinutes"] = JsonValue.Create(input.NotifyAfterMinutes.Value);
+         }
+ 
+-        AddExtensionData(payload, input.AdditionalProperties, "critical", "escalateTo", "notifyAfterMinutes");
++        if (input.RequireApproval is not null)
++        {
++            payload["requireApproval"] = BuildApprovalRequirementNode(input.RequireApproval);
++        }
++
++        AddExtensionData(payload, input.AdditionalProperties, "critical", "escalateTo", "notifyAfterMinutes", "requireApproval");
+         return payload;
+     }
+@@ -106,6 +113,27 @@ public static class AgentOperatingProfileJsonMapper
+     private static Dictionary<string, JsonNode?> CreateNodeMap() =>
+         new(StringComparer.OrdinalIgnoreCase);
+ 
++    private static JsonObject BuildApprovalRequirementNode(AgentApprovalRequirementInput input)
++    {
++        var payload = CreateNodeMap();
++        AddArrayIfPresent(payload, "actions", input.Actions);
++        AddArrayIfPresent(payload, "tools", input.Tools);
++        AddArrayIfPresent(payload, "scopes", input.Scopes);
++        AddExtensionData(payload, input.AdditionalProperties, "actions", "tools", "scopes");
++
++        var jsonObject = new JsonObject();
++        foreach (var (key, value) in payload)
++        {
++            jsonObject[key] = value;
++        }
++
++        return jsonObject;
++    }
++
+     private static void AddArrayIfPresent(
+         IDictionary<string, JsonNode?> payload,
+         string propertyName,
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+index 3ceab38..335062f 100644
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -28,7 +28,9 @@ public static class UpdateAgentOperatingProfileCommandValidator
+     private static readonly HashSet<string> SupportedDataScopeActions = new(StringComparer.OrdinalIgnoreCase)
+     {
+         "read",
+-        "write"
++        "recommend",
++        "execute",
++        "write"
+     };
+@@ -252,9 +254,11 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         }
+ 
+         var readScopes = ValidateIdentifierArray(errors, $"{key}.read", payload, "read");
++        var recommendScopes = ValidateIdentifierArray(errors, $"{key}.recommend", payload, "recommend");
++        var executeScopes = ValidateIdentifierArray(errors, $"{key}.execute", payload, "execute");
+         var writeScopes = ValidateIdentifierArray(errors, $"{key}.write", payload, "write");
+ 
+-        if (readScopes.Count == 0 && writeScopes.Count == 0)
++        if (readScopes.Count == 0 && recommendScopes.Count == 0 && executeScopes.Count == 0 && writeScopes.Count == 0)
+         {
+-            AddError(errors, key, $"{key} must define at least one read or write scope.");
++            AddError(errors, key, $"{key} must define at least one read, recommend, execute, or write scope.");
+         }
+     }
+@@ -319,6 +323,26 @@ public static class UpdateAgentOperatingProfileCommandValidator
+             AddError(errors, $"{key}.notifyAfterMinutes", "Escalation delay must be a non-negative number.");
+         }
+ 
++        if (payload.TryGetValue("requireApproval", out var requireApprovalNode) && requireApprovalNode is not null)
++        {
++            if (requireApprovalNode is not JsonObject requireApprovalObject)
++            {
++                AddError(errors, $"{key}.requireApproval", "Approval requirement rules must be an object.");
++            }
++            else
++            {
++                var actionRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.actions", requireApprovalObject, "actions");
++                var toolRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.tools", requireApprovalObject, "tools");
++                var scopeRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.scopes", requireApprovalObject, "scopes");
++
++                if (actionRules.Count == 0 && toolRules.Count == 0 && scopeRules.Count == 0)
++                {
++                    AddError(errors, $"{key}.requireApproval", "Approval requirement rules must define at least one action, tool, or scope.");
++                }
++
++                hasRoute = true;
++            }
++        }
++
+         if (criticalRules.Count == 0 && !hasValidEscalateTo)
+         {
+             AddError(errors, key, $"{key} must define at least one escalation route.");
+@@ -326,6 +350,11 @@ public static class UpdateAgentOperatingProfileCommandValidator
+     }
+ 
+     private static void ValidateTriggerLogic(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null || payload.Count == 0)
+         IDictionary<string, List<string>> errors,
+         string key,
+         IDictionary<string, JsonNode?>? payload)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index 77cfceb..2bcf1f4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -26,6 +27,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 metadata);
+         }
+ 
++        metadata["agentStatus"] = JsonValue.Create(request.AgentStatus);
++        metadata["canReceiveAssignments"] = JsonValue.Create(request.CanReceiveAssignments);
+         if (!AgentStatusValues.TryParse(request.AgentStatus, out var status) ||
+             status is AgentStatus.Paused or AgentStatus.Restricted or AgentStatus.Archived ||
+             !request.CanReceiveAssignments)
+@@ -41,7 +44,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, request.ActionType,
+-                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                [PolicyDecisionReasonCodes.InvalidActionType],
+                 "The requested action type is invalid.",
+                 metadata);
+         }
+@@ -50,7 +53,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, request.ActionType,
+-                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                [PolicyDecisionReasonCodes.InvalidAutonomyLevel],
+                 "The agent autonomy configuration is missing or invalid.",
+                 metadata);
+         }
+@@ -91,11 +94,13 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+                 metadata);
+         }
+ 
+-        var requiredScopeBucket = actionType == ToolActionType.Execute ? "write" : "read";
+-        metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
+-
+-        if (!TryGetIdentifierSet(request.DataScopes, requiredScopeBucket, out var scopes, out var scopeConfigExists) ||
++        if (!TryResolveScopePolicyBucket(request.DataScopes, actionType, out var requiredScopeBucket, out var scopes, out var scopeConfigExists, out var usedLegacyScopeAlias) ||
+             !scopeConfigExists ||
+             scopes.Count == 0)
+         {
+@@ -106,6 +111,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 "Data scope policy is missing or invalid for the requested action.",
+                 metadata);
+         }
++        metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
++        metadata["scopePolicyFallbackApplied"] = JsonValue.Create(usedLegacyScopeAlias);
+ 
+         if (actionType == ToolActionType.Execute && string.IsNullOrWhiteSpace(request.Scope))
+         {
+@@ -136,6 +142,25 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 metadata);
+         }
+ 
++        if (!TryGetApprovalRequirementPolicy(request.EscalationRules, out var approvalRequirementPolicy, out var approvalRequirementConfigured))
++        {
++            return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
++                "Approval requirement policy is present but invalid or ambiguous.",
++                metadata);
++        }
++
++        if (approvalRequirementConfigured && approvalRequirementPolicy is not null)
++        {
++            metadata["approvalRequirementPolicy"] = CreateApprovalRequirementMetadata(approvalRequirementPolicy);
++
++            if (MatchesApprovalRequirement(approvalRequirementPolicy, actionType.ToStorageValue(), request.ToolName, request.Scope))
++            {
++                return RequireApproval(
++                    request,
++                    actionType.ToStorageValue(),
++                    metadata,
++                    PolicyDecisionReasonCodes.ApprovalRequiredByPolicy,
++                    "The requested action requires human approval based on the configured policy.");
++            }
++        }
++
+         if (request.ThresholdValue.HasValue)
+         {
+             if (!TryGetThresholdValue(request.ApprovalThresholds, request.ThresholdCategory!, request.ThresholdKey!, out var configuredThreshold))
+@@ -151,6 +176,18 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             metadata["thresholdCategory"] = JsonValue.Create(request.ThresholdCategory);
+             metadata["thresholdKey"] = JsonValue.Create(request.ThresholdKey);
+             metadata["thresholdValue"] = JsonValue.Create(request.ThresholdValue.Value);
++            metadata["thresholdEvaluation"] = new JsonObject
++            {
++                ["category"] = JsonValue.Create(request.ThresholdCategory),
++                ["key"] = JsonValue.Create(request.ThresholdKey),
++                ["requestValue"] = JsonValue.Create(request.ThresholdValue.Value),
++                ["configuredThreshold"] = JsonValue.Create(configuredThreshold),
++                ["exceeded"] = JsonValue.Create(request.ThresholdValue.Value > configuredThreshold)
++            };
+ 
+             if (request.ThresholdValue.Value > configuredThreshold)
+             {
+@@ -231,6 +268,38 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["agentCompanyId"] = JsonValue.Create(request.AgentCompanyId),
+             ["evaluatedAutonomyLevel"] = JsonValue.Create(request.EvaluatedAutonomyLevel),
++            ["evaluationVersion"] = JsonValue.Create("task_8_3_2"),
+             ["policyMode"] = JsonValue.Create("default_deny"),
+             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
+         };
+@@ -264,6 +333,52 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         return false;
+     }
+ 
++    private static bool TryResolveScopePolicyBucket(
++        IReadOnlyDictionary<string, JsonNode?> dataScopes,
++        ToolActionType actionType,
++        out string evaluatedBucket,
++        out HashSet<string> scopes,
++        out bool exists,
++        out bool usedLegacyAlias)
++    {
++        evaluatedBucket = actionType.ToStorageValue();
++        scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        exists = false;
++        usedLegacyAlias = false;
++
++        var primaryBucket = actionType.ToStorageValue();
++        var legacyBucket = actionType == ToolActionType.Execute
++            ? "write"
++            : actionType == ToolActionType.Recommend
++                ? "read"
++                : null;
++
++        if (!TryGetIdentifierSet(dataScopes, primaryBucket, out var primaryScopes, out var primaryExists))
++        {
++            return false;
++        }
++
++        if (primaryExists)
++        {
++            evaluatedBucket = primaryBucket;
++            scopes = primaryScopes;
++            exists = true;
++            return true;
++        }
++
++        if (legacyBucket is null)
++        {
++            return true;
++        }
++
++        if (!TryGetIdentifierSet(dataScopes, legacyBucket, out var legacyScopes, out var legacyExists))
++        {
++            return false;
++        }
++
++        evaluatedBucket = legacyBucket;
++        scopes = legacyScopes;
++        exists = legacyExists;
++        usedLegacyAlias = legacyExists;
++        return true;
++    }
++
+     private static bool TryGetThresholdValue(
+         IReadOnlyDictionary<string, JsonNode?> thresholds,
+         string category,
+@@ -294,6 +409,93 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         return false;
+     }
+ 
++    private static bool TryGetApprovalRequirementPolicy(
++        IReadOnlyDictionary<string, JsonNode?> escalationRules,
++        out ApprovalRequirementPolicy? policy,
++        out bool exists)
++    {
++        policy = null;
++        exists = escalationRules.TryGetValue("requireApproval", out var node) && node is not null;
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        if (node is not JsonObject jsonObject)
++        {
++            return false;
++        }
++
++        if (!TryGetIdentifierSet(jsonObject, "actions", out var actions, out var actionsExists) ||
++            !TryGetIdentifierSet(jsonObject, "tools", out var tools, out var toolsExists) ||
++            !TryGetIdentifierSet(jsonObject, "scopes", out var scopes, out var scopesExists))
++        {
++            return false;
++        }
++
++        if (!actionsExists && !toolsExists && !scopesExists)
++        {
++            return false;
++        }
++
++        policy = new ApprovalRequirementPolicy(actions, tools, scopes);
++        return true;
++    }
++
++    private static bool MatchesApprovalRequirement(
++        ApprovalRequirementPolicy policy,
++        string actionType,
++        string toolName,
++        string? scope)
++    {
++        var actionMatches = policy.Actions.Count == 0 || policy.Actions.Contains(actionType);
++        var toolMatches = policy.Tools.Count == 0 || policy.Tools.Contains(toolName);
++        var scopeMatches = policy.Scopes.Count == 0 ||
++            (!string.IsNullOrWhiteSpace(scope) && policy.Scopes.Contains(scope));
++
++        return actionMatches && toolMatches && scopeMatches;
++    }
++
++    private static JsonObject CreateApprovalRequirementMetadata(ApprovalRequirementPolicy policy)
++    {
++        return new JsonObject
++        {
++            ["actions"] = ToJsonArray(policy.Actions),
++            ["tools"] = ToJsonArray(policy.Tools),
++            ["scopes"] = ToJsonArray(policy.Scopes)
++        };
++    }
++
++    private static JsonArray ToJsonArray(IEnumerable<string> values) =>
++        new(values.Select(static value => (JsonNode?)JsonValue.Create(value)).ToArray());
++
++    private static bool TryGetIdentifierSet(
++        JsonObject values,
++        string key,
++        out HashSet<string> results,
++        out bool exists)
++    {
++        results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        exists = values.TryGetPropertyValue(key, out var node) && node is not null;
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        if (node is not JsonArray items)
++        {
++            return false;
++        }
++
++        foreach (var item in items)
++        {
++            if (item is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
++            {
++                return false;
++            }
++
++            results.Add(text.Trim());
++        }
++
++        return true;
++    }
++
+     private static bool TryGetEscalationTarget(
+         IReadOnlyDictionary<string, JsonNode?> escalationRules,
+         out string? escalationTarget)
+@@ -311,4 +513,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         escalationTarget = value.Trim();
+         return true;
+     }
++
++    private sealed record ApprovalRequirementPolicy(
++        HashSet<string> Actions,
++        HashSet<string> Tools,
++        HashSet<string> Scopes);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 44cf9cd..397b4a6 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -141,6 +141,45 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(payload.ApprovalRequestId, attempt.ApprovalRequestId);
+     }
+ 
++    [Fact]
++    public async Task Policy_required_approval_skips_tool_executor_and_creates_pending_approval()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level3,
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++            escalationRules: Payload(
++                ("escalateTo", JsonValue.Create("founder")),
++                ("requireApproval", new JsonObject
++                {
++                    ["actions"] = new JsonArray(JsonValue.Create("execute")),
++                    ["tools"] = new JsonArray(JsonValue.Create("erp")),
++                    ["scopes"] = new JsonArray(JsonValue.Create("payments"))
++                })));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "erp",
++            actionType = "execute",
++            scope = "payments",
++            requestPayload = new { paymentId = "pay-500" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("awaiting_approval", payload!.Status);
++        Assert.Equal("require_approval", payload.PolicyDecision.Outcome);
++        Assert.Contains("approval_required_by_policy", payload.PolicyDecision.ReasonCodes);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++        Assert.NotNull(payload.ApprovalRequestId);
++        Assert.True(payload.PolicyDecision.Metadata.ContainsKey("approvalRequirementPolicy"));
++        Assert.Equal("execute", payload.PolicyDecision.Metadata["approvalRequirementPolicy"].GetProperty("actions")[0].GetString());
++    }
++
+     [Fact]
+     public async Task Allowed_execution_runs_tool_executor_and_persists_structured_policy_decision_metadata()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+index 5fcfd18..39c7d9f 100644
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -48,6 +48,25 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("autonomy_level_blocks_action", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_denies_when_agent_status_is_not_execution_eligible()
++    {
++        var request = CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments") with
++        {
++            AgentStatus = "paused"
++        };
++
++        var decision = _engine.Evaluate(request);
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("agent_status_disallows_execution", decision.ReasonCodes);
++        Assert.Equal("paused", decision.Metadata["agentStatus"]!.GetValue<string>());
++    }
++
+     [Fact]
+     public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()
+     {
+@@ -116,6 +135,41 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("ambiguous_policy_configuration", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_supports_explicit_execute_scope_bucket()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            dataScopes: Payload(
++                ("read", new JsonArray(JsonValue.Create("finance"))),
++                ("execute", new JsonArray(JsonValue.Create("payments"))))));
++
++        Assert.Equal("allow", decision.Outcome);
++        Assert.Equal("execute", decision.Metadata["scopePolicyBucket"]!.GetValue<string>());
++        Assert.False(decision.Metadata["scopePolicyFallbackApplied"]!.GetValue<bool>());
++    }
++
++    [Fact]
++    public void Evaluate_requires_approval_when_explicit_policy_rule_matches_request()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_3",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            escalationRules: Payload(
++                ("escalateTo", JsonValue.Create("founder")),
++                ("requireApproval", new JsonObject
++                {
++                    ["actions"] = new JsonArray(JsonValue.Create("execute")),
++                    ["tools"] = new JsonArray(JsonValue.Create("erp"))
++                }))));
++
++        Assert.Equal("require_approval", decision.Outcome);
++        Assert.Contains("approval_required_by_policy", decision.ReasonCodes);
++    }
++
+     private static PolicyEvaluationRequest CreateRequest(
+         string autonomyLevel,
+         string toolName,
+END_OF_PATCH

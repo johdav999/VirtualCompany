@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.4.6",
+  "promptPath": ".ai-design/prompts/TASK-8.4.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T06:04:39.911Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T06-04-39-911Z_TASK-8.4.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T06-04-39-911Z_TASK-8.4.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T06:11:29.995Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "    var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 0, null),\n+            UtcNow);\n+\n+        Assert.Equal(\"inactive\", summary.Status);\n+        Assert.Equal(\"Inactive\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_inactive_when_last_activity_is_stale()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddDays(-4)),\n+            UtcNow);\n+\n+        Assert.Equal(\"inactive\", summary.Status);\n+        Assert.Equal(\"Inactive\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_busy_when_recent_activity_crosses_threshold()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 3, UtcNow.AddHours(-2)),\n+            UtcNow);\n+\n+        Assert.Equal(\"busy\", summary.Status);\n+        Assert.Equal(\"Busy\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_healthy_when_no_concerning_signals_exist()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddHours(-1)),\n+            UtcNow);\n+\n+        Assert.Equal(\"healthy\", summary.Status);\n+        Assert.Equal(\"Healthy\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_prioritizes_blocked_over_inactive()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(1, 0, 1, UtcNow.AddDays(-7)),\n+            UtcNow);\n+\n+        Assert.Equal(\"blocked\", summary.Status);\n+    }\n+\n+    [Fact]\n+    public void Calculate_prioritizes_failed_over_inactive_when_no_blocked_work_exists()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 1, 1, UtcNow.AddDays(-7)),\n+            UtcNow);\n+\n+        Assert.Equal(\"needs_attention\", summary.Status);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "gentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 0, null),\n+            UtcNow);\n+\n+        Assert.Equal(\"inactive\", summary.Status);\n+        Assert.Equal(\"Inactive\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_inactive_when_last_activity_is_stale()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddDays(-4)),\n+            UtcNow);\n+\n+        Assert.Equal(\"inactive\", summary.Status);\n+        Assert.Equal(\"Inactive\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_busy_when_recent_activity_crosses_threshold()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 3, UtcNow.AddHours(-2)),\n+            UtcNow);\n+\n+        Assert.Equal(\"busy\", summary.Status);\n+        Assert.Equal(\"Busy\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_returns_healthy_when_no_concerning_signals_exist()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddHours(-1)),\n+            UtcNow);\n+\n+        Assert.Equal(\"healthy\", summary.Status);\n+        Assert.Equal(\"Healthy\", summary.Label);\n+    }\n+\n+    [Fact]\n+    public void Calculate_prioritizes_blocked_over_inactive()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(1, 0, 1, UtcNow.AddDays(-7)),\n+            UtcNow);\n+\n+        Assert.Equal(\"blocked\", summary.Status);\n+    }\n+\n+    [Fact]\n+    public void Calculate_prioritizes_failed_over_inactive_when_no_blocked_work_exists()\n+    {\n+        var summary = AgentHealthSummaryCalculator.Calculate(\n+            new AgentHealthDerivationInput(0, 1, 1, UtcNow.AddDays(-7)),\n+            UtcNow);\n+\n+        Assert.Equal(\"needs_attention\", summary.Status);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n80,105\n",
+  "verbosityMode": "verbose"
+}

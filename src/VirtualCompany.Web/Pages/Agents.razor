@@ -1,4 +1,5 @@
-@page "/agents"
+@page "/agents/manage"
+@rendermode InteractiveServer
 @using System.ComponentModel.DataAnnotations
 @using System.Text.Json
 @using System.Text.Json.Nodes
@@ -32,7 +33,7 @@ else if (CompanyId is null)
                 <div class="template-grid">
                     @foreach (var membership in activeMemberships)
                     {
-                        <a class="template-card text-decoration-none text-reset" href="@($"/agents?companyId={membership.CompanyId}")">
+                        <a class="template-card text-decoration-none text-reset" href="@($"/agents/manage?companyId={membership.CompanyId}")">
                             <strong>@membership.CompanyName</strong>
                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
                         </a>
@@ -44,6 +45,7 @@ else if (CompanyId is null)
 }
 else
 {
+    var canViewDirectory = CanViewDirectory;
     <section class="py-4 dashboard-hero">
         <div class="agent-layout">
             <div class="wizard-card">
@@ -143,127 +145,232 @@ else
             </div>
         </div>
 
-        <div class="wizard-card mt-4">
-            <div class="agent-roster-header">
-                <div>
-                    <span class="dashboard-kicker">Operating profile</span>
-                    <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+        @if (CanManageProfiles)
+        {
+            <div class="wizard-card mt-4">
+                <div class="agent-roster-header">
+                    <div>
+                        <span class="dashboard-kicker">Operating profile</span>
+                        <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+                    </div>
+                    <p class="text-body-secondary mb-0">Use the canonical profile page for identity, activity, and future analytics. This editor remains focused on operating configuration.</p>
                 </div>
-            </div>
 
-            @if (!CanManageProfiles)
-            {
-                <p class="text-body-secondary mb-0 mt-3">Owner or admin membership is required to manage operating profiles.</p>
-            }
-            else if (selectedAgentProfile is null)
-            {
-                <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
-            }
-            else
-            {
-                @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
+                @if (selectedAgentProfile is null)
                 {
-                    <div class="alert alert-danger mt-3">@profileErrorMessage</div>
+                    <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
                 }
-
-                @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
+                else
                 {
-                    <div class="alert alert-success mt-3">@profileSuccessMessage</div>
-                }
+                    @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
+                    {
+                        <div class="alert alert-danger mt-3">@profileErrorMessage</div>
+                    }
 
-                <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
-                    <DataAnnotationsValidator />
-                    <ValidationSummary />
+                    @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
+                    {
+                        <div class="alert alert-success mt-3">@profileSuccessMessage</div>
+                    }
 
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label" for="profile-status">Status</label>
-                            <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
-                                @foreach (var status in statusOptions)
+                    <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
+                        <DataAnnotationsValidator />
+                        <ValidationSummary />
+
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label" for="profile-status">Status</label>
+                                <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status" disabled="@(!CanEditSelectedAgentStatus)">
+                                    @foreach (var status in GetStatusOptionsForSelectedAgent())
+                                    {
+                                        <option value="@status">@status</option>
+                                    }
+                                </InputSelect>
+                                <ValidationMessage For="@(() => profileModel.Status)" />
+                                <div class="form-text">
+                                    Archived agents are excluded from new task assignment.
+                                    @if (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent)
+                                    {
+                                        <span> Owner and admin memberships can manage all status states.</span>
+                                    }
+                                    else
+                                    {
+                                        <span> Your membership can only move agents between active and paused while they remain outside restricted or archived states.</span>
+                                    }
+                                </div>
+                                @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
                                 {
-                                    <option value="@status">@status</option>
+                                    <div class="text-danger small mt-1">@error</div>
                                 }
-                            </InputSelect>
-                            <ValidationMessage For="@(() => profileModel.Status)" />
-                            <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
-                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label" for="profile-autonomy">Autonomy</label>
+                                <InputSelect id="profile-autonomy" class="form-select" @bind-Value="profileModel.AutonomyLevel" disabled="@(!selectedAgentProfile.Visibility.CanEditSensitiveGovernance)">
+                                    @foreach (var level in GetAutonomyOptionsForSelectedAgent())
+                                    {
+                                        <option value="@level">@ToDisplayText(level)</option>
+                                    }
+                                </InputSelect>
+                                <div class="form-text">
+                                    @if (selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                                    {
+                                        <span>Autonomy, tools, scopes, thresholds, escalation, and trigger logic are governance settings.</span>
+                                    }
+                                    else
+                                    {
+                                        <span>Autonomy changes require owner or admin access.</span>
+                                    }
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label" for="profile-updated">Last updated</label>
+                                <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
+                            </div>
+                        </div>
+
+                        <div class="mt-3">
+                            <label class="form-label" for="role-brief">Role brief</label>
+                            <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" disabled="@(!selectedAgentProfile.Visibility.CanEditRoleBrief)" />
+                            <ValidationMessage For="@(() => profileModel.RoleBrief)" />
+                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
                             {
                                 <div class="text-danger small mt-1">@error</div>
                             }
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label" for="profile-updated">Last updated</label>
-                            <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
-                        </div>
-                    </div>
 
-                    <div class="mt-3">
-                        <label class="form-label" for="role-brief">Role brief</label>
-                        <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
-                        <ValidationMessage For="@(() => profileModel.RoleBrief)" />
-                        @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
+                        @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson, !selectedAgentProfile.Visibility.CanEditObjectives)
+                        @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson, !selectedAgentProfile.Visibility.CanEditKpis)
+
+                        @if (selectedAgentProfile.Visibility.CanViewPermissions)
                         {
-                            <div class="text-danger small mt-1">@error</div>
+                            @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
                         }
-                    </div>
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">Tool permissions and data scopes are hidden for your membership role.</p>
+                        }
 
-                    @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
-                    @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
-                    @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
-                    @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
-                    @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
-                    @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
-                    @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
-                    @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
+                        @if (selectedAgentProfile.Visibility.CanViewThresholds)
+                        {
+                            @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                        }
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">Approval thresholds, escalation rules, and trigger logic are hidden for your membership role.</p>
+                        }
 
-                    <div class="dashboard-actions mt-3">
-                        <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
-                    </div>
-                </EditForm>
+                        @if (selectedAgentProfile.Visibility.CanViewWorkingHours)
+                        {
+                            @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson, !selectedAgentProfile.Visibility.CanEditWorkingHours)
+                        }
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">Working hours are hidden for your membership role.</p>
+                        }
+
+                        <div class="dashboard-actions mt-3">
+                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
+                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open canonical profile</a>
+                        </div>
+                    </EditForm>
+                }
             }
-        </div>
+            </div>
+        }
 
         <div class="wizard-card mt-4">
             <div class="agent-roster-header">
                 <div>
                     <span class="dashboard-kicker">Company roster</span>
-                    <h2 class="h4 mb-0 mt-2">Active agents</h2>
+                    <h2 class="h4 mb-0 mt-2">Company agents</h2>
                 </div>
-                <span class="badge text-bg-light">@roster.Count total</span>
+                <span class="badge text-bg-light">@rosterResponse.Items.Count total</span>
             </div>
 
-            @if (roster.Count == 0)
+            @if (!canViewDirectory)
             {
-                <p class="text-body-secondary mb-0 mt-3">No agents have been hired for this company yet.</p>
+                <p class="text-body-secondary mb-0 mt-3">Manager, admin, or owner membership is required to view the agent roster.</p>
             }
             else
             {
-                <div class="agent-roster-grid mt-4">
-                    @foreach (var agent in roster)
-                    {
-                        <button type="button"
-                                class="template-card text-start @(selectedAgentId == agent.Id ? "is-selected" : null)"
-                                disabled="@(!CanManageProfiles && selectedAgentId != agent.Id)"
-                                @onclick="@(() => SelectAgentAsync(agent.Id))">
-                            <div class="agent-template-header">
-                                <strong>@agent.DisplayName</strong>
-                                <span class="badge text-bg-success">@agent.Status</span>
-                            </div>
-                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
-                            <div class="text-body-secondary">@agent.Seniority</div>
-                            @if (!string.IsNullOrWhiteSpace(agent.AvatarUrl))
+                <div class="agent-filter-bar mt-4">
+                    <div>
+                        <label class="form-label" for="department-filter">Department</label>
+                        <InputSelect id="department-filter" class="form-select" @bind-Value="Department">
+                            <option value="">All departments</option>
+                            @foreach (var department in rosterResponse.Departments)
                             {
-                                <div class="text-body-secondary small mt-2">Avatar reference: @agent.AvatarUrl</div>
+                                <option value="@department">@department</option>
                             }
-                            @if (!string.IsNullOrWhiteSpace(agent.Personality))
+                        </InputSelect>
+                    </div>
+                    <div>
+                        <label class="form-label" for="status-filter">Status</label>
+                        <InputSelect id="status-filter" class="form-select" @bind-Value="Status">
+                            <option value="">All statuses</option>
+                            @foreach (var status in rosterResponse.Statuses)
                             {
-                                <p class="mb-0 mt-3">@agent.Personality</p>
+                                <option value="@status">@GetStatusLabel(status)</option>
                             }
-                        </button>
-                    }
+                        </InputSelect>
+                    </div>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="button" @onclick="ApplyFilters">Apply filters</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilters">Clear</button>
+                    </div>
                 </div>
+
+                @if (rosterResponse.Items.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+                }
+                else
+                {
+                    <div class="table-responsive mt-4">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Name</th>
+                                    <th scope="col">Role</th>
+                                    <th scope="col">Department</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Autonomy</th>
+                                    <th scope="col">Workload and health</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var agent in rosterResponse.Items)
+                                {
+                                    <tr class="@(selectedAgentId == agent.Id ? "table-active" : null)">
+                                        <th scope="row">
+                                            <a class="fw-semibold text-decoration-none" href="@GetProfileRoute(agent)">@agent.DisplayName</a>
+                                            @if (CanManageProfiles)
+                                            {
+                                                <div class="mt-2">
+                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open configuration editor</button>
+                                                </div>
+                                            }
+                                        </th>
+                                        <td>@agent.RoleName</td>
+                                        <td>@agent.Department</td>
+                                        <td>
+                                            <span class="badge @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+                                        </td>
+                                        <td>@ToDisplayText(agent.AutonomyLevel)</td>
+                                        <td>
+                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthStatus)">@agent.WorkloadSummary.Summary</div>
+                                            <div class="small text-body-secondary mt-1">@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
             }
-        </div>        
+        </div>
     </section>
 }
 
@@ -271,8 +378,18 @@ else
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
+    [SupplyParameterFromQuery(Name = "department")]
+    public string? Department { get; set; }
+
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? Status { get; set; }
+
+    [SupplyParameterFromQuery(Name = "agentId")]
+    public Guid? AgentId { get; set; }
+
     private static readonly JsonSerializerOptions JsonEditorOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
+    private readonly string[] autonomyOptions = [ "level_0", "level_1", "level_2", "level_3" ];
     private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
     private bool isLoading = true;
     private bool isSubmitting;
@@ -284,7 +401,7 @@ else
     private CurrentUserContextViewModel? currentUser;
     private CompanyAccessViewModel? companyAccess;
     private List<AgentTemplateCatalogItemViewModel> templates = [];
-    private List<CompanyAgentSummaryViewModel> roster = [];
+    private AgentRosterResponseViewModel rosterResponse = new();
     private HireAgentFormModel hireModel = new();
     private AgentOperatingProfileViewModel? selectedAgentProfile;
     private AgentOperatingProfileFormModel profileModel = new();
@@ -299,9 +416,27 @@ else
     private AgentTemplateCatalogItemViewModel? selectedTemplate =>
         templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
 
+    // Owner, admin, and manager memberships can open the operating-profile experience.
     private bool CanManageProfiles =>
         string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
+        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
+
+    private bool CanEditSelectedAgentStatus =>
+        selectedAgentProfile is not null &&
+        selectedAgentProfile.Visibility.CanEditStatus &&
+        (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent || IsManagerEditableStatus(selectedAgentProfile.Status));
+
+    private IEnumerable<string> GetStatusOptionsForSelectedAgent() =>
+        EnsureCurrentOption(statusOptions, selectedAgentProfile?.Status, IsManagerEditableStatus, selectedAgentProfile?.Visibility.CanPauseOrRestrictAgent == true);
+
+    private IEnumerable<string> GetAutonomyOptionsForSelectedAgent() => EnsureCurrentOption(autonomyOptions, selectedAgentProfile?.AutonomyLevel, static _ => true, true);
+
+    private bool CanViewDirectory =>
+        CanManageProfiles ||
+        string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
+
+    private string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
 
 
     protected override async Task OnParametersSetAsync()
@@ -316,7 +451,7 @@ else
 
             if (CompanyId is null && currentUser?.ActiveCompany is not null)
             {
-                Navigation.NavigateTo($"/agents?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                Navigation.NavigateTo($"/agents/manage?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
                 return;
             }
 
@@ -327,32 +462,35 @@ else
                 {
                     errorMessage = "The selected company could not be loaded.";
                     templates = [];
-                    roster = [];
+                    rosterResponse = new AgentRosterResponseViewModel();
                 }
                 else
                 {
                     templates = (await AgentApiClient.GetTemplatesAsync(companyId)).ToList();
-                    roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
 
                     if (selectedTemplateId is null || templates.All(x => !string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase)))
                     {
                         selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
                         ResetSelectedTemplate();
                     }
+                    rosterResponse = CanViewDirectory
+                        ? await AgentApiClient.GetRosterViewAsync(companyId, Department, Status)
+                        : new AgentRosterResponseViewModel();
 
-                    if (CanManageProfiles && roster.Count > 0)
+                    if (CanManageProfiles && rosterResponse.Items.Count > 0)
                     {
-                        var nextSelectedAgent = selectedAgentId.HasValue
-                            ? roster.FirstOrDefault(x => x.Id == selectedAgentId.Value) ?? roster[0]
-                            : roster[0];
+                        var nextSelectedAgent = AgentId
+                            ?? selectedAgentId
+                            ?? rosterResponse.Items[0].Id;
 
-                        await SelectAgentAsync(nextSelectedAgent.Id);
+                        await SelectAgentAsync(nextSelectedAgent);
                     }
                     else
                     {
                         selectedAgentId = null;
                         selectedAgentProfile = null;
                         profileModel = new AgentOperatingProfileFormModel();
+                        profileErrors.Clear();
                     }
                 }
             }
@@ -414,6 +552,7 @@ else
         {
             selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+            Navigation.NavigateTo(BuildAgentsUri(companyId, Department, Status, agentId), replace: true);
         }
         catch (OnboardingApiException ex)
         {
@@ -430,7 +569,7 @@ else
             return;
         }
 
-        if (!profileModel.TryCreateRequest(out var request, out var localErrors))
+        if (!profileModel.TryCreateRequest(selectedAgentProfile.Visibility, out var request, out var localErrors))
         {
             profileErrors = localErrors;
             profileErrorMessage = "Fix the highlighted operating profile fields and try again.";
@@ -447,7 +586,7 @@ else
         {
             selectedAgentProfile = await AgentApiClient.UpdateOperatingProfileAsync(companyId, agentId, request);
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
-            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+            rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
             profileSuccessMessage = $"{selectedAgentProfile.DisplayName} operating profile was saved.";
         }
         catch (OnboardingApiException ex)
@@ -477,7 +616,113 @@ else
             : matched;
     }
 
-    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
+    private static string GetStatusBadgeCss(string? status) =>
+        status?.Trim().ToLowerInvariant() switch
+        {
+            "active" => "text-bg-success",
+            "paused" => "text-bg-warning",
+            "restricted" => "text-bg-secondary",
+            "archived" => "text-bg-dark",
+            _ => "text-bg-light"
+        };
+
+    private static string GetStatusLabel(string? status) =>
+        status?.Trim().ToLowerInvariant() switch
+        {
+            "active" => "Active",
+            "paused" => "Paused",
+            "restricted" => "Restricted",
+            "archived" => "Archived",
+            _ => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim()
+        };
+
+    private static string GetHealthCss(string? healthStatus) =>
+        healthStatus?.Trim().ToLowerInvariant() switch
+        {
+            "healthy" => "agent-health-healthy",
+            "unknown" => "text-body-secondary",
+            "archived" => "agent-health-archived",
+            _ => "agent-health-attention"
+        };
+
+    private string GetProfileRoute(AgentRosterItemViewModel agent) => string.IsNullOrWhiteSpace(agent.ProfileRoute) ? BuildProfileUri(agent.Id) : agent.ProfileRoute!;
+    private static string ToDisplayText(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "Unknown"
+            : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+
+    private void ApplyFilters()
+    {
+        if (CompanyId is Guid selectedCompanyId && rosterResponse.Items.Count == 0)
+        {
+            selectedAgentId = null;
+        }
+        if (CompanyId is Guid companyIdForNavigation)
+        {
+            Navigation.NavigateTo(BuildAgentsUri(companyIdForNavigation, Department, Status, AgentId));
+        }
+    }
+
+    private void ClearFilters()
+    {
+        Department = null;
+        Status = null;
+        ApplyFilters();
+    }
+
+    private static bool IsSupportedStatus(string? status) =>
+        status?.Trim().ToLowerInvariant() is
+            "active" or
+            "paused" or
+            "restricted" or
+            "archived";
+
+    private static string FormatRosterActivity(DateTime? lastActivityUtc) =>
+        lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+
+
+    private string BuildAgentsUri(Guid companyId, string? department, string? status, Guid? agentId)
+    {
+        var query = new List<string> { $"companyId={companyId}" };
+
+        if (!string.IsNullOrWhiteSpace(department))
+        {
+            query.Add($"department={Uri.EscapeDataString(department)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query.Add($"status={Uri.EscapeDataString(status)}");
+        }
+
+        if (agentId is Guid selectedAgent)
+        {
+            query.Add($"agentId={selectedAgent}");
+        }
+
+        return $"/agents/manage?{string.Join("&", query)}";
+    }
+
+    private void OpenEditor(Guid agentId) => Navigation.NavigateTo(BuildAgentsUri(CompanyId!.Value, Department, Status, agentId));
+
+    private static IEnumerable<string> EnsureCurrentOption(IEnumerable<string> options, string? currentValue, Func<string, bool> predicate, bool allowAll)
+    {
+        var resolved = allowAll
+            ? options.ToList()
+            : options.Where(predicate).ToList();
+
+        if (!string.IsNullOrWhiteSpace(currentValue) &&
+            !resolved.Contains(currentValue.Trim(), StringComparer.OrdinalIgnoreCase))
+        {
+            resolved.Add(currentValue.Trim());
+        }
+
+        return resolved;
+    }
+
+    private static bool IsManagerEditableStatus(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
+
+    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor, bool isReadOnly = false) => builder =>
     {
         var sequence = 0;
 
@@ -495,6 +740,7 @@ else
         builder.AddAttribute(sequence++, "class", "form-control");
         builder.AddAttribute(sequence++, "rows", "8");
         builder.AddAttribute(sequence++, "value", valueAccessor());
+        builder.AddAttribute(sequence++, "disabled", isReadOnly);
         builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string>(this, value =>
         {
             switch (fieldName)
@@ -536,7 +782,7 @@ else
         try
         {
             var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
-            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
+            rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
             successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
 
             if (CanManageProfiles)
@@ -626,13 +872,16 @@ else
             };
     }
 
-    private sealed class AgentOperatingProfileFormModel
+    private sealed class AgentOperatingProfileFormModel : IValidatableObject
     {
         [Required, StringLength(32)]
         public string Status { get; set; } = "active";
 
         [StringLength(4000)]
         public string? RoleBrief { get; set; }
+
+        [StringLength(32)]
+        public string AutonomyLevel { get; set; } = "level_0";
 
         public string ObjectivesJson { get; set; } = "{}";
         public string KpisJson { get; set; } = "{}";
@@ -646,7 +895,8 @@ else
         public static AgentOperatingProfileFormModel FromViewModel(AgentOperatingProfileViewModel model) =>
             new()
             {
-                Status = model.Status,
+                Status = NormalizeStatus(model.Status),
+                AutonomyLevel = NormalizeToken(model.AutonomyLevel),
                 RoleBrief = model.RoleBrief,
                 ObjectivesJson = Serialize(model.Objectives),
                 KpisJson = Serialize(model.Kpis),
@@ -658,18 +908,38 @@ else
                 WorkingHoursJson = Serialize(model.WorkingHours)
             };
 
-        public bool TryCreateRequest(out UpdateAgentOperatingProfileRequest request, out Dictionary<string, string[]> errors)
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (!IsSupportedStatus(Status))
+            {
+                yield return new ValidationResult(
+                    "Status must be one of active, paused, restricted, or archived.",
+                    [nameof(Status)]);
+            }
+
+            if (!IsSupportedAutonomyLevel(AutonomyLevel))
+            {
+                yield return new ValidationResult(
+                    "AutonomyLevel must be one of level_0, level_1, level_2, or level_3.",
+                    [nameof(AutonomyLevel)]);
+            }
+        }
+
+        public bool TryCreateRequest(
+            AgentProfileVisibilityViewModel visibility,
+            out UpdateAgentOperatingProfileRequest request,
+            out Dictionary<string, string[]> errors)
         {
             var collectedErrors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-            var objectives = ParseJson("Objectives", ObjectivesJson, collectedErrors);
-            var kpis = ParseJson("Kpis", KpisJson, collectedErrors);
-            var toolPermissions = ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors);
-            var dataScopes = ParseJson("DataScopes", DataScopesJson, collectedErrors);
-            var approvalThresholds = ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors);
-            var escalationRules = ParseJson("EscalationRules", EscalationRulesJson, collectedErrors);
-            var triggerLogic = ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors);
-            var workingHours = ParseJson("WorkingHours", WorkingHoursJson, collectedErrors);
+            var objectives = visibility.CanEditObjectives ? ParseJson("Objectives", ObjectivesJson, collectedErrors) : null;
+            var kpis = visibility.CanEditKpis ? ParseJson("Kpis", KpisJson, collectedErrors) : null;
+            var toolPermissions = visibility.CanEditSensitiveGovernance ? ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors) : null;
+            var dataScopes = visibility.CanEditSensitiveGovernance ? ParseJson("DataScopes", DataScopesJson, collectedErrors) : null;
+            var approvalThresholds = visibility.CanEditSensitiveGovernance ? ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors) : null;
+            var escalationRules = visibility.CanEditSensitiveGovernance ? ParseJson("EscalationRules", EscalationRulesJson, collectedErrors) : null;
+            var triggerLogic = visibility.CanEditSensitiveGovernance ? ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors) : null;
+            var workingHours = visibility.CanEditWorkingHours ? ParseJson("WorkingHours", WorkingHoursJson, collectedErrors) : null;
 
             if (collectedErrors.Count > 0)
             {
@@ -680,8 +950,9 @@ else
 
             request = new UpdateAgentOperatingProfileRequest
             {
-                Status = Status,
-                RoleBrief = RoleBrief,
+                Status = NormalizeStatus(Status),
+                RoleBrief = visibility.CanEditRoleBrief ? RoleBrief : null,
+                AutonomyLevel = visibility.CanEditSensitiveGovernance ? NormalizeToken(AutonomyLevel) : null,
                 Objectives = objectives,
                 Kpis = kpis,
                 ToolPermissions = toolPermissions,
@@ -726,6 +997,19 @@ else
 
         private static string Serialize(IDictionary<string, JsonNode?> payload) =>
             JsonSerializer.Serialize(payload, JsonEditorOptions);
+
+        private static string NormalizeStatus(string? status) =>
+            string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
+
+        private static string NormalizeToken(string? value) =>
+            string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+
+        private static bool IsSupportedAutonomyLevel(string? autonomyLevel) =>
+            autonomyLevel?.Trim().ToLowerInvariant() is
+                "level_0" or
+                "level_1" or
+                "level_2" or
+                "level_3";
 
         private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
         {

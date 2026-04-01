@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.3.7",
+  "promptPath": ".ai-design/prompts/TASK-8.3.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-03-31T20:27:57.984Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-31T20-27-57-984Z_TASK-8.3.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-31T20-27-57-984Z_TASK-8.3.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-31T20:35:59.551Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\n+                }))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration, decision.ReasonCodes);\n+        Assert.Equal(\"ambiguous\", decision.Metadata[\"approvalRequirementPolicyState\"]!.GetValue<string>());\n+    }\n+\n+    [Fact]\n+    public void Evaluate_denies_when_threshold_configuration_is_invalid()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            thresholdCategory: \"approval\",\n+            thresholdKey: \"expenseUsd\",\n+            thresholdValue: 250,\n+            thresholds: Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = -1 }))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(PolicyDecisionReasonCodes.InvalidPolicyConfiguration, decision.ReasonCodes);\n+        Assert.Equal(\"invalid\", decision.Metadata[\"thresholdConfigurationState\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Evaluate_default_denies_when_approval_route_is_missing_for_required_approval()\n     {\n@@ -351,7 +446,11 @@ public sealed class PolicyGuardrailEngineTests\n             true,\n             toolPermissions ?? Payload((\"allowed\", new JsonArray(JsonValue.Create(\"erp\")))),\n-            dataScopes ?? Payload((\"read\", new JsonArray(JsonValue.Create(\"finance\"))), (\"write\", new JsonArray(JsonValue.Create(\"payments\")))),\n+            dataScopes ?? Payload(\n+                (\"read\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"recommend\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"execute\", new JsonArray(JsonValue.Create(\"payments\")))),\n             thresholds ?? Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = 1000 })),\n             escalationRules ?? Payload((\"escalateTo\", JsonValue.Create(\"founder\"))),\n             toolName,\n             actionType,\nEND_OF_PATCH\n",
+  "stderrTail": "))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration, decision.ReasonCodes);\n+        Assert.Equal(\"ambiguous\", decision.Metadata[\"approvalRequirementPolicyState\"]!.GetValue<string>());\n+    }\n+\n+    [Fact]\n+    public void Evaluate_denies_when_threshold_configuration_is_invalid()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            thresholdCategory: \"approval\",\n+            thresholdKey: \"expenseUsd\",\n+            thresholdValue: 250,\n+            thresholds: Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = -1 }))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(PolicyDecisionReasonCodes.InvalidPolicyConfiguration, decision.ReasonCodes);\n+        Assert.Equal(\"invalid\", decision.Metadata[\"thresholdConfigurationState\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Evaluate_default_denies_when_approval_route_is_missing_for_required_approval()\n     {\n@@ -351,7 +446,11 @@ public sealed class PolicyGuardrailEngineTests\n             true,\n             toolPermissions ?? Payload((\"allowed\", new JsonArray(JsonValue.Create(\"erp\")))),\n-            dataScopes ?? Payload((\"read\", new JsonArray(JsonValue.Create(\"finance\"))), (\"write\", new JsonArray(JsonValue.Create(\"payments\")))),\n+            dataScopes ?? Payload(\n+                (\"read\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"recommend\", new JsonArray(JsonValue.Create(\"finance\"))),\n+                (\"execute\", new JsonArray(JsonValue.Create(\"payments\")))),\n             thresholds ?? Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = 1000 })),\n             escalationRules ?? Payload((\"escalateTo\", JsonValue.Create(\"founder\"))),\n             toolName,\n             actionType,\nEND_OF_PATCH\ntokens used\n89,799\n",
+  "verbosityMode": "verbose"
+}

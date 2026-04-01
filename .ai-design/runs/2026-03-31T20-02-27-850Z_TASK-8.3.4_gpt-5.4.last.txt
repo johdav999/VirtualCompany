@@ -1,0 +1,753 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index 779dbdd..f2a2a84 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -1,496 +1,530 @@
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ {
+     public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
+     {
+         var metadata = CreateBaseMetadata(request);
+ 
+         if (request.CompanyId == Guid.Empty ||
+             request.AgentId == Guid.Empty ||
+             request.AgentCompanyId == Guid.Empty ||
+             request.AgentCompanyId != request.CompanyId)
+         {
+             return Deny(
+                 request,
+                 [PolicyDecisionReasonCodes.InvalidCompanyContext],
+                 "Tenant context is missing or inconsistent for this execution request.",
+                 metadata);
+         }
+ 
+         metadata["agentStatus"] = JsonValue.Create(request.AgentStatus);
+         metadata["canReceiveAssignments"] = JsonValue.Create(request.CanReceiveAssignments);
+         if (!AgentStatusValues.TryParse(request.AgentStatus, out var status) ||
+             status is AgentStatus.Paused or AgentStatus.Restricted or AgentStatus.Archived ||
+             !request.CanReceiveAssignments)
+         {
+             return Deny(
+                 request,
+                 [PolicyDecisionReasonCodes.AgentStatusDisallowsExecution],
+                 "The agent status does not permit tool execution.",
+                 metadata);
+         }
+ 
+         if (!ToolActionTypeValues.TryParse(request.ActionType, out var actionType))
+         {
+             return Deny(
+                 request,
+                 [PolicyDecisionReasonCodes.InvalidActionType],
+                 "The requested action type is invalid.",
+                 metadata);
+         }
+ 
+         if (!AgentAutonomyLevelValues.TryParse(request.EvaluatedAutonomyLevel, out var autonomyLevel))
+         {
+             return Deny(
+                 request,
+                 [PolicyDecisionReasonCodes.InvalidAutonomyLevel],
+                 "The agent autonomy configuration is missing or invalid.",
+                 metadata);
+         }
+ 
+         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
+             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _))
+         {
+             metadata["toolPolicyState"] = JsonValue.Create("invalid");
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions are missing or invalid, so execution is denied by default.",
+                 metadata);
+         }
+ 
+         if (!allowedToolsExists || allowedTools.Count == 0)
+         {
+             metadata["toolPolicyState"] = JsonValue.Create("missing");
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions do not define an allowed set for this agent.",
+                 metadata);
+         }
+ 
+         if (allowedTools.Overlaps(deniedTools))
+         {
+             metadata["toolPolicyState"] = JsonValue.Create("ambiguous");
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Tool permissions are ambiguous because the same tool is both allowed and denied.",
+                 metadata);
+         }
+ 
+         metadata["toolPolicyState"] = JsonValue.Create("configured");
+         metadata["toolAllowed"] = JsonValue.Create(true);
+ 
+         if (deniedTools.Contains(request.ToolName))
+         {
+             metadata["toolAllowed"] = JsonValue.Create(false);
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+                 "The requested tool is explicitly denied for this agent.",
+                 metadata);
+         }
+ 
+         if (!allowedTools.Contains(request.ToolName))
+         {
+             metadata["toolAllowed"] = JsonValue.Create(false);
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+                 metadata);
+         }
+ 
+         if (!TryResolveScopePolicyBucket(
+                 request.DataScopes,
+                 actionType,
+                 out var requiredScopeBucket,
+                 out var scopes,
+                 out var scopeConfigExists,
+                 out var usedLegacyScopeAlias) ||
+             !scopeConfigExists)
+         {
+             metadata["scopeConfigState"] = JsonValue.Create("missing");
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Data scope policy is missing or invalid for the requested action.",
+                 metadata);
+         }
+ 
+         if (scopes.Count == 0)
+         {
+             metadata["scopeConfigState"] = JsonValue.Create("empty");
+             metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Data scope policy is missing or invalid for the requested action.",
+                 metadata);
+         }
+ 
+         metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
+         metadata["scopePolicyFallbackApplied"] = JsonValue.Create(usedLegacyScopeAlias);
+         metadata["scopeConfigState"] = JsonValue.Create("configured");
+         metadata["permittedScopes"] = ToJsonArray(scopes);
+ 
+         if (actionType == ToolActionType.Execute && string.IsNullOrWhiteSpace(request.Scope))
+         {
+             metadata["scopeMatch"] = JsonValue.Create(false);
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ScopeContextMissing],
+                 "Execute actions require an explicit scope so guardrails can authorize them before execution.",
+                 metadata);
+         }
+ 
+         if (!string.IsNullOrWhiteSpace(request.Scope) && !scopes.Contains(request.Scope))
+         {
+             metadata["scopeMatch"] = JsonValue.Create(false);
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ScopeNotPermitted],
+                 "The requested scope is outside the agent's configured data access boundaries.",
+                 metadata);
+         }
+ 
+         metadata["scopeMatch"] = JsonValue.Create(true);
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level0 && actionType != ToolActionType.Read)
+         {
+             if (actionType == ToolActionType.Recommend)
+             {
+                 return Allow(
+                     request,
+                     actionType.ToStorageValue(),
+                     metadata,
+                     "The requested action is in scope and allowed by policy.");
+             }
+ 
+             return Deny(
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AutonomyLevelBlocksAction],
+                 "Autonomy level 0 is limited to read and recommendation activity and cannot execute tools directly.",
+                 metadata);
+         }
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level1 && actionType == ToolActionType.Execute)
+         {
+             return RequireApproval(
+                 request,
+                 actionType.ToStorageValue(),
+                 metadata,
+                 [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],
+                 "Autonomy level 1 requires approval before execute actions can run.");
+         }
+ 
+-        if (request.SensitiveAction)
++        if (actionType == ToolActionType.Execute && request.SensitiveAction)
+         {
+-            return RequireApproval(
+-                request,
+-                actionType.ToStorageValue(),
+-                metadata,
+-                PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
+-                "Sensitive actions require approval before execution.");
++            metadata["sensitivityEvaluation"] = new JsonObject
++            {
++                ["requiresThresholdReview"] = JsonValue.Create(true),
++                ["sensitiveExecuteAction"] = JsonValue.Create(true)
++            };
++
++            if (!HasThresholdContext(request))
++            {
++                metadata["thresholdEvaluationState"] = JsonValue.Create("missing_request_context");
++                return Deny(
++                    request,
++                    actionType.ToStorageValue(),
++                    [PolicyDecisionReasonCodes.ThresholdContextMissing],
++                    "Sensitive execute actions require threshold context before policy can determine whether approval is needed.",
++                    metadata);
++            }
++
++            AddRequestedThresholdMetadata(request, metadata);
++
++            if (!TryGetThresholdValue(
++                    request.ApprovalThresholds,
++                    request.ThresholdCategory!,
++                    request.ThresholdKey!,
++                    out var configuredThreshold))
++            {
++                metadata["thresholdEvaluationState"] = JsonValue.Create("missing_configuration");
++                return Deny(
++                    request,
++                    actionType.ToStorageValue(),
++                    [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
++                    "Threshold policy is missing or invalid for this sensitive execute action.",
++                    metadata);
++            }
++
++            metadata["thresholdEvaluationState"] = JsonValue.Create("evaluated");
++            AddThresholdEvaluationMetadata(request, metadata, configuredThreshold);
++
++            if (request.ThresholdValue!.Value > configuredThreshold)
++            {
++                return RequireApproval(
++                    request,
++                    actionType.ToStorageValue(),
++                    metadata,
++                    [
++                        PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
++                        PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval
++                    ],
++                    "This sensitive execute action exceeds the configured approval threshold and must remain pending approval before it can run.");
++            }
+         }
+ 
+         if (!TryGetApprovalRequirementPolicy(request.EscalationRules, out var approvalRequirementPolicy, out var approvalRequirementConfigured))
+         {
+             return Deny(
+-                request, actionType.ToStorageValue(),
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Approval requirement policy is present but invalid or ambiguous.",
+                 metadata);
+         }
+ 
+         if (approvalRequirementConfigured && approvalRequirementPolicy is not null)
+         {
+             metadata["approvalRequirementPolicy"] = CreateApprovalRequirementMetadata(approvalRequirementPolicy);
+ 
+             if (MatchesApprovalRequirement(approvalRequirementPolicy, actionType.ToStorageValue(), request.ToolName, request.Scope))
+             {
+                 return RequireApproval(
+                     request,
+                     actionType.ToStorageValue(),
+                     metadata,
+-                    PolicyDecisionReasonCodes.ApprovalRequiredByPolicy,
++                    [PolicyDecisionReasonCodes.ApprovalRequiredByPolicy],
+                     "The requested action requires human approval based on the configured policy.");
+             }
+         }
+ 
+         if (request.ThresholdValue.HasValue)
+         {
+-            if (!TryGetThresholdValue(request.ApprovalThresholds, request.ThresholdCategory!, request.ThresholdKey!, out var configuredThreshold))
++            if (!HasThresholdContext(request))
+             {
++                metadata["thresholdEvaluationState"] = JsonValue.Create("missing_request_context");
+                 return Deny(
+-                    request, actionType.ToStorageValue(),
+-                    [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
+-                    "Threshold policy is missing or invalid for the requested action.",
++                    request,
++                    actionType.ToStorageValue(),
++                    [PolicyDecisionReasonCodes.ThresholdContextMissing],
++                    "Threshold context is incomplete for the requested action.",
+                     metadata);
+             }
+ 
+-            metadata["configuredThreshold"] = JsonValue.Create(configuredThreshold);
+-            metadata["thresholdCategory"] = JsonValue.Create(request.ThresholdCategory);
+-            metadata["thresholdKey"] = JsonValue.Create(request.ThresholdKey);
+-            metadata["thresholdValue"] = JsonValue.Create(request.ThresholdValue.Value);
+-            metadata["thresholdEvaluation"] = new JsonObject
+-            {
+-                ["category"] = JsonValue.Create(request.ThresholdCategory),
+-                ["key"] = JsonValue.Create(request.ThresholdKey),
+-                ["requestValue"] = JsonValue.Create(request.ThresholdValue.Value),
+-                ["configuredThreshold"] = JsonValue.Create(configuredThreshold),
+-                ["exceeded"] = JsonValue.Create(request.ThresholdValue.Value > configuredThreshold)
+-            };
++            AddRequestedThresholdMetadata(request, metadata);
++
++            if (!TryGetThresholdValue(
++                    request.ApprovalThresholds,
++                    request.ThresholdCategory!,
++                    request.ThresholdKey!,
++                    out var configuredThreshold))
++            {
++                metadata["thresholdEvaluationState"] = JsonValue.Create("missing_configuration");
++                return Deny(
++                    request,
++                    actionType.ToStorageValue(),
++                    [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
++                    "Threshold policy is missing or invalid for the requested action.",
++                    metadata);
++            }
++
++            metadata["thresholdEvaluationState"] = JsonValue.Create("evaluated");
++            AddThresholdEvaluationMetadata(request, metadata, configuredThreshold);
+ 
+             if (request.ThresholdValue.Value > configuredThreshold)
+             {
+                 return RequireApproval(
+                     request,
+                     actionType.ToStorageValue(),
+                     metadata,
+-                    PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval,
++                    [PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval],
+                     "The requested action exceeds the configured approval threshold.");
+             }
+         }
+ 
+         return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is within scope, within threshold, and allowed to execute.");
+     }
+ 
+     private static ToolExecutionDecisionDto Allow(
+         PolicyEvaluationRequest request,
+         string evaluatedActionType,
+         Dictionary<string, JsonNode?> metadata,
+-        string explanation) =>
++        string explanation)
++    {
++        metadata["executionBlocked"] = JsonValue.Create(false);
++        metadata["blockedPendingApproval"] = JsonValue.Create(false);
++        metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Executed.ToStorageValue());
++        return new(
++            PolicyDecisionOutcomeValues.Allow,
++            [PolicyDecisionReasonCodes.PolicyChecksPassed],
++            explanation,
++            request.EvaluatedAutonomyLevel,
++            evaluatedActionType,
++            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
++            false,
++            metadata);
++    }
++
++    private static ToolExecutionDecisionDto Deny(
++        PolicyEvaluationRequest request,
++        string evaluatedActionType,
++        IReadOnlyList<string> reasonCodes,
++        string explanation,
++        Dictionary<string, JsonNode?> metadata)
++    {
++        metadata["executionBlocked"] = JsonValue.Create(true);
++        metadata["blockedPendingApproval"] = JsonValue.Create(false);
++        metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Denied.ToStorageValue());
+         new(
+-            PolicyDecisionOutcomeValues.Allow,
+-            [PolicyDecisionReasonCodes.PolicyChecksPassed],
++            PolicyDecisionOutcomeValues.Deny,
++            reasonCodes,
+             explanation,
+             request.EvaluatedAutonomyLevel,
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             false,
+             metadata);
+-
+-    private static ToolExecutionDecisionDto Deny(
+-        PolicyEvaluationRequest request,
+-        string evaluatedActionType,
+-        IReadOnlyList<string> reasonCodes,
+-        string explanation,
+-        Dictionary<string, JsonNode?> metadata) =>
+-        new(
+-            PolicyDecisionOutcomeValues.Deny,
+-            reasonCodes,
+-            explanation,
+-            request.EvaluatedAutonomyLevel,
+-            evaluatedActionType,
+-            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+-            false,
+-            metadata);
++        return new ToolExecutionDecisionDto(
++            PolicyDecisionOutcomeValues.Deny,
++            reasonCodes,
++            explanation,
++            request.EvaluatedAutonomyLevel,
++            evaluatedActionType,
++            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
++            false,
++            metadata);
++    }
+ 
+     private static ToolExecutionDecisionDto RequireApproval(
+         PolicyEvaluationRequest request,
+         string evaluatedActionType,
+         Dictionary<string, JsonNode?> metadata,
+-        string reasonCode,
++        IReadOnlyList<string> reasonCodes,
+         string explanation)
+     {
+         if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
+         {
+             return Deny(
+-                request, evaluatedActionType,
++                request,
++                evaluatedActionType,
+                 [PolicyDecisionReasonCodes.ApprovalRouteMissing],
+                 "Approval is required, but the escalation route is missing or invalid.",
+                 metadata);
+         }
+ 
+         metadata["approvalTarget"] = JsonValue.Create(approvalTarget);
++        metadata["executionBlocked"] = JsonValue.Create(true);
++        metadata["blockedPendingApproval"] = JsonValue.Create(true);
++        metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.AwaitingApproval.ToStorageValue());
+         return new ToolExecutionDecisionDto(
+             PolicyDecisionOutcomeValues.RequireApproval,
+-            [reasonCode],
++            reasonCodes,
+             explanation,
+             request.EvaluatedAutonomyLevel,
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             true,
+             metadata);
+     }
+ 
+     private static Dictionary<string, JsonNode?> CreateBaseMetadata(PolicyEvaluationRequest request) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["companyId"] = JsonValue.Create(request.CompanyId),
+             ["agentId"] = JsonValue.Create(request.AgentId),
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+             ["agentCompanyId"] = JsonValue.Create(request.AgentCompanyId),
+             ["companyScopeMatched"] = JsonValue.Create(
+                 request.CompanyId != Guid.Empty &&
+                 request.AgentCompanyId != Guid.Empty &&
+                 request.AgentCompanyId == request.CompanyId),
+             ["evaluatedAutonomyLevel"] = JsonValue.Create(request.EvaluatedAutonomyLevel),
+-            ["evaluationVersion"] = JsonValue.Create("task_8_3_3"),
++            ["evaluationVersion"] = JsonValue.Create("task_8_3_4"),
+             ["policyMode"] = JsonValue.Create("default_deny"),
+             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
+         };
+ 
+     private static ToolExecutionDecisionDto Deny(
+         PolicyEvaluationRequest request,
+         IReadOnlyList<string> reasonCodes,
+         string explanation,
+         Dictionary<string, JsonNode?> metadata) =>
+         Deny(request, NormalizeEvaluatedActionType(request.ActionType), reasonCodes, explanation, metadata);
++
++    private static bool HasThresholdContext(PolicyEvaluationRequest request) =>
++        !string.IsNullOrWhiteSpace(request.ThresholdCategory) &&
++        !string.IsNullOrWhiteSpace(request.ThresholdKey) &&
++        request.ThresholdValue.HasValue;
+ 
+     private static bool TryGetIdentifierSet(
+         IReadOnlyDictionary<string, JsonNode?> values,
+         string key,
+         out HashSet<string> results,
+         out bool exists)
+@@ -416,6 +450,41 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         usedLegacyScopeAlias = false;
+         return TryGetIdentifierSet(dataScopes, bucket, out scopes, out scopeConfigExists);
+     }
++
++    private static void AddRequestedThresholdMetadata(
++        PolicyEvaluationRequest request,
++        Dictionary<string, JsonNode?> metadata)
++    {
++        if (!string.IsNullOrWhiteSpace(request.ThresholdCategory))
++        {
++            metadata["thresholdCategory"] = JsonValue.Create(request.ThresholdCategory.Trim());
++        }
++
++        if (!string.IsNullOrWhiteSpace(request.ThresholdKey))
++        {
++            metadata["thresholdKey"] = JsonValue.Create(request.ThresholdKey.Trim());
++        }
++
++        if (request.ThresholdValue.HasValue)
++        {
++            metadata["thresholdValue"] = JsonValue.Create(request.ThresholdValue.Value);
++        }
++    }
++
++    private static void AddThresholdEvaluationMetadata(
++        PolicyEvaluationRequest request,
++        Dictionary<string, JsonNode?> metadata,
++        decimal configuredThreshold)
++    {
++        metadata["configuredThreshold"] = JsonValue.Create(configuredThreshold);
++        metadata["thresholdEvaluation"] = new JsonObject
++        {
++            ["category"] = JsonValue.Create(request.ThresholdCategory),
++            ["key"] = JsonValue.Create(request.ThresholdKey),
++            ["requestValue"] = JsonValue.Create(request.ThresholdValue!.Value),
++            ["configuredThreshold"] = JsonValue.Create(configuredThreshold),
++            ["exceeded"] = JsonValue.Create(request.ThresholdValue.Value > configuredThreshold),
++            ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
++        };
++    }
+ 
+     private static bool TryGetThresholdValue(
+         IReadOnlyDictionary<string, JsonNode?> thresholds,
+@@ -527,4 +596,4 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+     private sealed record ApprovalRequirementPolicy(
+         HashSet<string> Actions,
+         HashSet<string> Tools,
+-        HashSet<string> Scopes);
++        HashSet<string> Scopes);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index d4109a5..d574bc8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -134,7 +134,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 attempt.Id,
+                 attempt.Status.ToStorageValue(),
+                 approvalRequest.Id,
+                 decision,
+                 null,
+-                decision.Explanation);
++                BuildCallerMessage(decision));
+         }
+ 
+         var result = await _companyToolExecutor.ExecuteAsync(
+@@ -179,6 +179,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ["approvalRequired"] = decision.ApprovalRequired ? "true" : "false",
+             ["autonomyLevel"] = decision.EvaluatedAutonomyLevel,
+             ["reasonCodes"] = string.Join(",", decision.ReasonCodes),
++            ["executionState"] = TryGetNonEmptyString(decision.Metadata, "executionState"),
+             ["primaryReasonCode"] = GetPrimaryReasonCode(decision)
+         };
+ 
+@@ -209,6 +210,24 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             thresholdContext["approvalTarget"] = approvalTarget?.DeepClone();
+         }
+ 
++        thresholdContext["toolName"] = JsonValue.Create(command.ToolName);
++        thresholdContext["actionType"] = JsonValue.Create(command.ActionType);
++
++        if (!string.IsNullOrWhiteSpace(command.Scope))
++        {
++            thresholdContext["scope"] = JsonValue.Create(command.Scope.Trim());
++        }
++
++        thresholdContext["sensitiveAction"] = JsonValue.Create(command.SensitiveAction);
++
++        if (decision.Metadata.TryGetValue("thresholdEvaluation", out var thresholdEvaluation))
++        {
++            thresholdContext["thresholdEvaluation"] = thresholdEvaluation?.DeepClone();
++        }
++
++        if (decision.Metadata.TryGetValue("executionState", out var executionState))
++        {
++            thresholdContext["executionState"] = executionState?.DeepClone();
++        }
++
+         return thresholdContext;
+     }
+ 
+@@ -256,6 +275,15 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
+         {
+-            return decision.Explanation;
++            if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
++            {
++                return GetPrimaryReasonCode(decision) switch
++                {
++                    PolicyDecisionReasonCodes.SensitiveActionRequiresApproval or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval
++                        => "This sensitive action is pending approval and was not executed.",
++                    _ => "This action is pending approval and was not executed."
++                };
++            }
++
++            return decision.Explanation;
+         }
+ 
+         return GetPrimaryReasonCode(decision) switch
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+index f7fe85f..2ec65b9 100644
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -88,6 +88,45 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("missing_policy_configuration", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_requires_approval_when_sensitive_execute_exceeds_threshold()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            thresholdCategory: "approval",
++            thresholdKey: "expenseUsd",
++            thresholdValue: 1500,
++            sensitiveAction: true));
++
++        Assert.Equal("require_approval", decision.Outcome);
++        Assert.Contains("sensitive_action_requires_approval", decision.ReasonCodes);
++        Assert.Contains("threshold_exceeded_requires_approval", decision.ReasonCodes);
++        Assert.True(decision.Metadata["blockedPendingApproval"]!.GetValue<bool>());
++        Assert.Equal("awaiting_approval", decision.Metadata["executionState"]!.GetValue<string>());
++        Assert.True(decision.Metadata["thresholdEvaluation"]!["sensitiveAction"]!.GetValue<bool>());
++    }
++
++    [Fact]
++    public void Evaluate_allows_sensitive_execute_when_value_is_within_threshold()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            thresholdCategory: "approval",
++            thresholdKey: "expenseUsd",
++            thresholdValue: 750,
++            sensitiveAction: true));
++
++        Assert.Equal("allow", decision.Outcome);
++        Assert.Contains("policy_checks_passed", decision.ReasonCodes);
++        Assert.False(decision.Metadata["executionBlocked"]!.GetValue<bool>());
++        Assert.False(decision.Metadata["thresholdEvaluation"]!["exceeded"]!.GetValue<bool>());
++        Assert.True(decision.Metadata["thresholdEvaluation"]!["sensitiveAction"]!.GetValue<bool>());
++    }
++
+     [Fact]
+     public void Evaluate_requires_approval_when_threshold_is_exceeded()
+     {
+@@ -134,6 +173,22 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("autonomy_level_requires_approval", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_denies_sensitive_execute_when_threshold_context_is_missing()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            sensitiveAction: true));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("threshold_context_missing", decision.ReasonCodes);
++        Assert.True(decision.Metadata["executionBlocked"]!.GetValue<bool>());
++        Assert.Equal("missing_request_context", decision.Metadata["thresholdEvaluationState"]!.GetValue<string>());
++        Assert.False(decision.ApprovalRequired);
++    }
++
+     [Fact]
+     public void Evaluate_denies_when_execute_scope_is_missing()
+     {
+@@ -184,7 +239,8 @@ public sealed class PolicyGuardrailEngineTests
+         decimal? thresholdValue = null,
+         Dictionary<string, JsonNode?>? toolPermissions = null,
+         Dictionary<string, JsonNode?>? dataScopes = null,
+         Dictionary<string, JsonNode?>? thresholds = null,
+-        Dictionary<string, JsonNode?>? escalationRules = null)
++        Dictionary<string, JsonNode?>? escalationRules = null,
++        bool sensitiveAction = false)
+     {
+         var companyId = Guid.NewGuid();
+         return new PolicyEvaluationRequest(
+@@ -204,7 +260,7 @@ public sealed class PolicyGuardrailEngineTests
+             thresholdCategory,
+             thresholdKey,
+             thresholdValue,
+-            false);
++            sensitiveAction);
+     }
+ 
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 417d68d..321dbba 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -122,6 +122,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+             thresholdCategory = "approval",
+             thresholdKey = "expenseUsd",
+             thresholdValue = 1500,
++            sensitiveAction = true,
+             requestPayload = new { expenseId = "exp-200" }
+         });
+ 
+@@ -133,6 +134,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("awaiting_approval", payload!.Status);
+         Assert.Equal("require_approval", payload.PolicyDecision.Outcome);
+         Assert.Contains("threshold_exceeded_requires_approval", payload.PolicyDecision.ReasonCodes);
++        Assert.Contains("sensitive_action_requires_approval", payload.PolicyDecision.ReasonCodes);
++        Assert.Equal("This sensitive action is pending approval and was not executed.", payload.Message);
+         Assert.NotNull(payload.ApprovalRequestId);
+         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+ 
+@@ -145,10 +148,17 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         var approval = await dbContext.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == payload.ApprovalRequestId);
+         Assert.Equal(ApprovalRequestStatus.Pending, approval.Status);
+         Assert.Equal("founder", approval.ApprovalTarget);
++        Assert.True(approval.ThresholdContext["sensitiveAction"]!.GetValue<bool>());
+         Assert.Equal("expenseUsd", approval.ThresholdContext["thresholdKey"]!.GetValue<string>());
++        Assert.Equal("execute", approval.ThresholdContext["actionType"]!.GetValue<string>());
++        Assert.Equal("awaiting_approval", approval.ThresholdContext["executionState"]!.GetValue<string>());
+ 
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+         Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
+         Assert.Equal(payload.ApprovalRequestId, attempt.ApprovalRequestId);
++        Assert.True(attempt.PolicyDecision["approvalRequired"]!.GetValue<bool>());
++        Assert.Equal("awaiting_approval", attempt.PolicyDecision["metadata"]!["executionState"]!.GetValue<string>());
++        Assert.True(attempt.PolicyDecision["metadata"]!["blockedPendingApproval"]!.GetValue<bool>());
++        Assert.True(attempt.PolicyDecision["metadata"]!["thresholdEvaluation"]!["sensitiveAction"]!.GetValue<bool>());
+     }
+ END_OF_PATCH

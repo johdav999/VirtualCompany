@@ -1,0 +1,488 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 50c4d5d..d746802 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -74,6 +74,19 @@ public sealed record AgentRecentActivityDto(
+     string Status,
+     string? Detail);
+ 
++public sealed record AgentProfileSectionDto(
++    string Id,
++    string Title,
++    string Description,
++    bool IsAvailable);
++
++public sealed record AgentProfileAnalyticsPreviewDto(
++    string SectionId,
++    string Heading,
++    string Description,
++    IReadOnlyList<string> PlannedModules);
++
++
+ public sealed record AgentProfileVisibilityDto(
+     bool CanViewPermissions,
+     bool CanViewThresholds,
+@@ -99,6 +112,9 @@ public sealed record AgentProfileViewDto(
+     AgentWorkloadSummaryDto WorkloadSummary,
+     IReadOnlyList<AgentRecentActivityDto> RecentActivity,
+     AgentProfileVisibilityDto Visibility,
++    string ProfileRoute,
++    IReadOnlyList<AgentProfileSectionDto> Sections,
++    AgentProfileAnalyticsPreviewDto AnalyticsPreview,
+     DateTime UpdatedUtc);
+ 
+ public sealed record CreateAgentFromTemplateCommand(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 2acdad2..f96220f 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -695,6 +695,9 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             visibility.CanViewWorkingHours ? CloneNodes(agent.WorkingHours) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             workloadSummary,
+             recentActivity,
++            visibility,
++            BuildAgentProfileRoute(agent.CompanyId, agent.Id),
++            BuildProfileSections(visibility),
++            BuildAnalyticsPreview(),
+             visibility,
+             agent.UpdatedUtc);
+     }
+@@ -719,6 +722,35 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             canEditSensitiveGovernance,
+             canEditSensitiveGovernance);
+     }
++
++    private static IReadOnlyList<AgentProfileSectionDto> BuildProfileSections(AgentProfileVisibilityDto visibility) =>
++        [
++            new("overview", "Overview", "Identity, current workload, and health summary.", true),
++            new("objectives", "Objectives", "Current objectives and operating intent.", true),
++            new("permissions", "Permissions", "Tool permissions and data scopes.", visibility.CanViewPermissions),
++            new("thresholds", "Thresholds", "Approval thresholds and escalation rules.", visibility.CanViewThresholds),
++            new("working-hours", "Working hours", "Availability and coverage windows.", visibility.CanViewWorkingHours),
++            new("recent-activity", "Recent activity", "Latest executions, approvals, and tenant-scoped events.", true),
++            new("analytics", "Analytics", "Reserved profile surface for future KPI, health, and trend modules.", true)
++        ];
++
++    private static AgentProfileAnalyticsPreviewDto BuildAnalyticsPreview() =>
++        new(
++            "analytics",
++            "Profile analytics",
++            "Future KPI, workload, health, and trend modules should extend the agent profile instead of branching to a separate destination.",
++            [
++                "Workload and health summary",
++                "Recent activity rollups",
++                "KPI and metrics panels",
++                "Trend and analytics modules"
++            ]);
+ 
+     private static void ValidateOperatingProfileUpdateAccess(
+         UpdateAgentOperatingProfileCommand command,
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+index d7ee889..e1ae885 100644
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -6,17 +6,17 @@
+ @inject AgentApiClient AgentApiClient
+ @inject NavigationManager Navigation
+ 
+-<PageTitle>Agent Detail</PageTitle>
++<PageTitle>Agent Profile</PageTitle>
+ 
+ @if (isLoading)
+ {
+     <section class="py-4">
+-        <h1>Agent detail</h1>
+-        <p class="text-body-secondary mb-0">Loading agent context...</p>
++        <h1>Agent profile</h1>
++        <p class="text-body-secondary mb-0">Loading profile context...</p>
+     </section>
+ }
+ else if (CompanyId is null)
+ {
+     <section class="py-4 dashboard-hero">
+         <div class="wizard-card">
+@@ -29,7 +29,7 @@
+ {
+     <section class="py-4 dashboard-hero">
+         <div class="wizard-card">
+-            <h1>Agent detail</h1>
++            <h1>Agent profile</h1>
+             <p class="text-body-secondary mb-0">The selected agent could not be loaded.</p>
+         </div>
+     </section>
+@@ -45,9 +45,9 @@
+             <div class="agent-roster-header">
+                 <div>
+-                    <span class="dashboard-kicker">Agent directory</span>
++                    <span class="dashboard-kicker">Agent profile</span>
+                     <h1 class="mb-2 mt-2">@profile.DisplayName</h1>
+-                    <p class="text-body-secondary mb-0">Tenant-scoped profile for @(ActiveMembership?.CompanyName ?? "the selected company").</p>
++                    <p class="text-body-secondary mb-0">Canonical tenant-scoped profile for @(ActiveMembership?.CompanyName ?? "the selected company"), ready to host future analytics modules without changing the primary route.</p>
+                 </div>
+                 <div class="dashboard-actions">
+                     @if (canViewDirectory)
+@@ -64,14 +64,35 @@
+             </div>
+         </div>
+ 
++        @if (profile.Sections.Count > 0)
++        {
++            <nav class="agent-profile-nav mt-4" aria-label="Agent profile sections">
++                @foreach (var section in profile.Sections)
++                {
++                    <a class="@GetSectionLinkCss(section)" href="@BuildSectionHref(section.Id)">@section.Title</a>
++                }
++            </nav>
++        }
++
+         <div class="agent-profile-grid mt-4">
+-            <section class="wizard-card agent-profile-section agent-profile-section--wide">
+-                <h2 class="h5 mb-3">Identity</h2>
++            <section id="overview" class="wizard-card agent-profile-section agent-profile-section--wide">
++                <div class="agent-profile-section-heading">
++                    <div>
++                        <span class="dashboard-kicker">Stable anchor</span>
++                        <h2 class="h5 mb-1 mt-2">Overview</h2>
++                        <p class="text-body-secondary mb-0">Identity and operational summary stay at the top of the canonical profile so later KPI and health modules can extend this surface.</p>
++                    </div>
++                </div>
+ 
+                 <div class="agent-identity">
+                     @if (!string.IsNullOrWhiteSpace(profile.AvatarUrl))
+                     {
+                         <img class="agent-avatar" src="@profile.AvatarUrl" alt="@($"{profile.DisplayName} avatar")" />
++                    }
++                    else if (!string.IsNullOrWhiteSpace(profile.Personality))
++                    {
++                        <img class="agent-avatar" src="@profile.AvatarUrl" alt="@($"{profile.DisplayName} avatar")" />
++                    }
++                    else
++                    {
++                        <div class="agent-avatar agent-avatar--placeholder" aria-hidden="true">@initials</div>
+                     }
+-                    else
+-                    {
+-                        <div class="agent-avatar agent-avatar--placeholder" aria-hidden="true">@initials</div>
+-                    }
+ 
+                     <div class="agent-identity-body">
+                         <div class="summary-pill-grid mb-4">
+@@ -95,6 +116,14 @@
+                                 <span class="dashboard-kicker">Open work</span>
+                                 <strong>@profile.WorkloadSummary.OpenItemsCount item(s)</strong>
+                             </div>
++                            <div class="summary-pill">
++                                <span class="dashboard-kicker">Awaiting approval</span>
++                                <strong>@profile.WorkloadSummary.AwaitingApprovalCount item(s)</strong>
++                            </div>
++                            <div class="summary-pill">
++                                <span class="dashboard-kicker">Recent signals</span>
++                                <strong>@profile.RecentActivity.Count event(s)</strong>
++                            </div>
+                         </div>
+ 
+                         <dl class="kv-list mb-0">
+@@ -132,14 +161,37 @@
+                         }
+                     </p>
+                 }
++
++                <div class="agent-profile-note mt-4">
++                    <strong>Future analytics note:</strong> extend this profile page first for workload, KPI, health, and trend modules so navigation remains stable from the roster and management surfaces.
++                </div>
+             </section>
+-            
+-            <section class="wizard-card agent-profile-section">
++
++            <section id="objectives" class="wizard-card agent-profile-section">
+                 <h2 class="h5 mb-3">Objectives</h2>
+                 @RenderEntries(profile.Objectives)
+             </section>
+ 
+-            <section class="wizard-card agent-profile-section">
++            <section id="analytics" class="wizard-card agent-profile-section">
++                <span class="dashboard-kicker">Reserved surface</span>
++                <h2 class="h5 mb-3 mt-2">@profile.AnalyticsPreview.Heading</h2>
++                <p class="text-body-secondary mb-0">@profile.AnalyticsPreview.Description</p>
++
++                @if (profile.AnalyticsPreview.PlannedModules.Count > 0)
++                {
++                    <div class="agent-analytics-placeholder-grid mt-4">
++                        @foreach (var module in profile.AnalyticsPreview.PlannedModules)
++                        {
++                            <article class="agent-analytics-placeholder-card">
++                                <strong>@module</strong>
++                                <p class="text-body-secondary mb-0 mt-2">Placeholder only. Future work should populate this section from dedicated profile analytics queries without changing the route.</p>
++                            </article>
++                        }
++                    </div>
++                }
++            </section>
++
++            <section id="permissions" class="wizard-card agent-profile-section">
+                 <h2 class="h5 mb-3">Permissions</h2>
+                 @if (!profile.Visibility.CanViewPermissions)
+                 {
+@@ -152,7 +204,7 @@
+                 }
+             </section>
+ 
+-            <section class="wizard-card agent-profile-section">
++            <section id="thresholds" class="wizard-card agent-profile-section">
+                 <h2 class="h5 mb-3">Thresholds</h2>
+                 @if (!profile.Visibility.CanViewThresholds)
+                 {
+@@ -167,7 +219,7 @@
+                 }
+             </section>
+ 
+-            <section class="wizard-card agent-profile-section">
++            <section id="working-hours" class="wizard-card agent-profile-section">
+                 <h2 class="h5 mb-3">Working hours</h2>
+                 @if (!profile.Visibility.CanViewWorkingHours)
+                 {
+@@ -179,7 +231,7 @@
+                 }
+             </section>
+ 
+-            <section class="wizard-card agent-profile-section agent-profile-section--wide">
++            <section id="recent-activity" class="wizard-card agent-profile-section agent-profile-section--wide">
+                 <h2 class="h5 mb-3">Recent activity</h2>
+ 
+                 <dl class="kv-list mb-4">
+@@ -296,6 +348,14 @@
+         }
+     }
+ 
++    private string GetCanonicalProfileRoute() =>
++        string.IsNullOrWhiteSpace(profile?.ProfileRoute)
++            ? $"/agents/{AgentId}?companyId={CompanyId}"
++            : profile.ProfileRoute!;
++
++    private string BuildSectionHref(string sectionId) => $"{GetCanonicalProfileRoute()}#{sectionId}";
++
++    private static string GetSectionLinkCss(AgentProfileSectionViewModel section) => section.IsAvailable ? "agent-profile-nav__link" : "agent-profile-nav__link is-muted";
++
+     private static string FormatDate(DateTime? value) =>
+         value is null ? "No recent activity" : value.Value.ToLocalTime().ToString("g");
+ 
+diff --git a/src/VirtualCompany.Web/Pages/AgentRoster.razor b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+index 7727b4f..0fd1bc4 100644
+--- a/src/VirtualCompany.Web/Pages/AgentRoster.razor
++++ b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+@@ -48,7 +48,7 @@ else
+                 <div>
+                     <span class="dashboard-kicker">Agent directory</span>
+                     <h1 class="mb-0 mt-2">@(companyAccess?.CompanyName ?? "Agent roster")</h1>
+-                    <p class="text-body-secondary mt-3 mb-0">Server-rendered roster with query-string filters for tenant-safe refresh and deep linking.</p>
++                    <p class="text-body-secondary mt-3 mb-0">Server-rendered roster with query-string filters for tenant-safe refresh, deep linking, and a canonical drill-in to the agent profile page.</p>
+                 </div>
+                 <div class="dashboard-actions">
+                     <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">Back to dashboard</a>
+@@ -153,7 +153,7 @@ else
+                                         </td>
+                                         <td>
+                                             <div class="dashboard-actions">
+-                                                <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">View profile</a>
++                                                <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">Open profile</a>
+                                                 @if (CanManageProfiles)
+                                                 {
+                                                     <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">Manage</a>
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 0cce865..574a5ba 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -154,6 +154,7 @@ else
+                         <span class="dashboard-kicker">Operating profile</span>
+                         <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+                     </div>
++                    <p class="text-body-secondary mb-0">Use the canonical profile page for identity, activity, and future analytics. This editor remains focused on operating configuration.</p>
+                 </div>
+ 
+                 @if (selectedAgentProfile is null)
+@@ -271,7 +272,7 @@ else
+ 
+                         <div class="dashboard-actions mt-3">
+                             <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
+-                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open detail view</a>
++                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open canonical profile</a>
+                         </div>
+                     </EditForm>
+                 }
+@@ -348,7 +349,7 @@ else
+                                             @if (CanManageProfiles)
+                                             {
+                                                 <div class="mt-2">
+-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open profile editor</button>
++                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open configuration editor</button>
+                                                 </div>
+                                             }
+                                         </th>
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 4b373cb..9334e82 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -282,7 +282,6 @@ public sealed class AgentApiClient
+                     AvatarUrl = profile.AvatarUrl,
+                     Personality = profile.RoleBrief ?? string.Empty,
+                     RoleBrief = profile.RoleBrief,
+-                    AutonomyLevel = "level_0",
+                     Objectives = CloneNodes(profile.Objectives),
+                     Kpis = CloneNodes(profile.Kpis),
+                     ToolPermissions = CloneNodes(profile.ToolPermissions),
+@@ -307,6 +306,18 @@ public sealed class AgentApiClient
+                     WorkloadSummary =
+                     {
+                         HealthSummary = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc),
++                        HealthStatus = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc).Status,
++                        Summary = BuildOfflineSummaryText(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc)
++                    },
++                    ProfileRoute = BuildProfileRoute(profile.CompanyId, profile.Id),
++                    Sections = BuildProfileSections(),
++                    AnalyticsPreview = new AgentProfileAnalyticsPreviewViewModel
++                    {
++                        SectionId = "analytics",
++                        Heading = "Profile analytics",
++                        Description = "Future KPI, workload, health, and trend modules should extend the profile page instead of branching to a separate destination.",
++                        PlannedModules =
++                        [
++                            "Workload and health summary",
++                            "Recent activity rollups",
++                            "KPI and metrics panels",
++                            "Trend and analytics modules"
++                        ]
+                     },
+-                        HealthStatus = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc).Status,
+-                        Summary = BuildOfflineSummaryText(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc)
+-                    }
+                 });
+             }
+         }
+@@ -570,6 +581,18 @@ public sealed class AgentApiClient
+         private static string BuildProfileRoute(Guid companyId, Guid agentId) =>
+             $"/agents/{agentId}?companyId={companyId}";
+ 
++        private static List<AgentProfileSectionViewModel> BuildProfileSections() =>
++            [
++                new() { Id = "overview", Title = "Overview", Description = "Identity, current workload, and health summary.", IsAvailable = true },
++                new() { Id = "objectives", Title = "Objectives", Description = "Current objectives and operating intent.", IsAvailable = true },
++                new() { Id = "permissions", Title = "Permissions", Description = "Tool permissions and data scopes.", IsAvailable = true },
++                new() { Id = "thresholds", Title = "Thresholds", Description = "Approval thresholds and escalation rules.", IsAvailable = true },
++                new() { Id = "working-hours", Title = "Working hours", Description = "Availability and coverage windows.", IsAvailable = true },
++                new() { Id = "recent-activity", Title = "Recent activity", Description = "Latest executions, approvals, and tenant-scoped events.", IsAvailable = true },
++                new() { Id = "analytics", Title = "Analytics", Description = "Reserved profile surface for future KPI, health, and trend modules.", IsAvailable = true }
++            ];
++
+         private static AgentHealthSummaryViewModel BuildOfflineHealthSummary(string status, DateTime? lastActivityUtc)
+         {
+             if (string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase))
+@@ -690,6 +713,25 @@ public sealed class AgentProfileVisibilityViewModel
+     public bool CanPauseOrRestrictAgent { get; set; }
+ }
+ 
++public sealed class AgentProfileSectionViewModel
++{
++    public string Id { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public bool IsAvailable { get; set; }
++}
++
++public sealed class AgentProfileAnalyticsPreviewViewModel
++{
++    public string SectionId { get; set; } = "analytics";
++    public string Heading { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public List<string> PlannedModules { get; set; } = [];
++}
++
+ public sealed class AgentProfileViewModel
+ {
+     public Guid Id { get; set; }
+@@ -713,6 +755,9 @@ public sealed class AgentProfileViewModel
+     public AgentWorkloadSummaryViewModel WorkloadSummary { get; set; } = new();
+     public List<AgentRecentActivityViewModel> RecentActivity { get; set; } = [];
+     public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
++    public string ProfileRoute { get; set; } = string.Empty;
++    public List<AgentProfileSectionViewModel> Sections { get; set; } = [];
++    public AgentProfileAnalyticsPreviewViewModel AnalyticsPreview { get; set; } = new();
+     public DateTime UpdatedUtc { get; set; }
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 8c5a355..28ecb14 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -333,10 +333,53 @@ code {
+ .agent-profile-section {
+     min-width: 0;
+ }
+ 
+ .agent-profile-section--wide {
+     grid-column: 1 / -1;
++}
++
++.agent-profile-section-heading {
++    align-items: start;
++    display: flex;
++    gap: 1rem;
++    justify-content: space-between;
++    margin-bottom: 1rem;
++}
++
++.agent-profile-nav {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.75rem;
++}
++
++.agent-profile-nav__link {
++    background: #fff;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 999px;
++    color: #0f172a;
++    padding: 0.6rem 0.95rem;
++    text-decoration: none;
++}
++
++.agent-profile-nav__link:hover {
++    border-color: #1b6ec2;
++    color: #1d4ed8;
++}
++
++.agent-profile-nav__link.is-muted {
++    opacity: 0.72;
++}
++
++.agent-profile-note {
++    background: #eff6ff;
++    border: 1px solid rgba(29, 78, 216, 0.18);
++    border-radius: 1rem;
++    color: #1e3a8a;
++    padding: 1rem;
++}
++
++.agent-analytics-placeholder-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+ }
+ 
+ .agent-identity {
+     align-items: flex-start;
+     display: grid;
+@@ -405,6 +448,14 @@ code {
+     padding: 1rem;
+ }
+ 
++.agent-analytics-placeholder-card {
++    background: #f8fafc;
++    border: 1px dashed rgba(15, 23, 42, 0.18);
++    border-radius: 1rem;
++    min-height: 100%;
++    padding: 1rem;
++}
++
+ .agent-health-healthy {
+     color: #15803d;
+ }
+ END_OF_PATCH

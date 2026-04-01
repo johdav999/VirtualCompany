@@ -26,12 +26,20 @@ public static class DependencyInjection
     {
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
-            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True";
+            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true";
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
-            options.UseSqlServer(
+        {
+            if (LooksLikeSqliteConnectionString(connectionString))
+            {
+                options.UseSqlite(connectionString);
+                return;
+            }
+
+            options.UseNpgsql(
                 connectionString,
-                sqlServerOptions => sqlServerOptions.EnableRetryOnFailure()));
+                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+        });
 
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
@@ -61,6 +69,10 @@ public static class DependencyInjection
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+        services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
+        services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+        services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
+        services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
@@ -81,4 +93,9 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static bool LooksLikeSqliteConnectionString(string connectionString) =>
+        connectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase) ||
+        connectionString.Contains(".db", StringComparison.OrdinalIgnoreCase) ||
+        connectionString.Contains(".sqlite", StringComparison.OrdinalIgnoreCase);
 }

@@ -32,6 +32,8 @@ public static class UpdateAgentOperatingProfileCommandValidator
     private static readonly HashSet<string> SupportedDataScopeActions = new(StringComparer.OrdinalIgnoreCase)
     {
         "read",
+        "recommend",
+        "execute",
         "write"
     };
 
@@ -41,26 +43,35 @@ public static class UpdateAgentOperatingProfileCommandValidator
 
         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-        var hasValidStatus = AgentStatusValues.TryParse(command.Status, out var status);
-        if (!hasValidStatus)
+        var objectives = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives);
+        var kpis = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis);
+        var toolPermissions = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions);
+        var dataScopes = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes);
+        var approvalThresholds = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds);
+        var escalationRules = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules);
+        var triggerLogic = AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic);
+        var workingHours = command.WorkingHours;
+
+        if (!AgentStatusValues.TryParse(command.Status, out _))
         {
             AddError(errors, nameof(command.Status), AgentStatusValues.BuildValidationMessage(command.Status));
         }
 
-        AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
-        ValidateObjectives(errors, nameof(command.Objectives), command.Objectives);
-        ValidateKpis(errors, nameof(command.Kpis), command.Kpis);
-        ValidateToolPermissions(errors, nameof(command.ToolPermissions), command.ToolPermissions);
-        ValidateDataScopes(errors, nameof(command.DataScopes), command.DataScopes);
-        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds);
-        ValidateEscalationRules(errors, nameof(command.EscalationRules), command.EscalationRules);
-        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), command.TriggerLogic);
-        ValidateWorkingHours(errors, nameof(command.WorkingHours), command.WorkingHours);
-
-        if (hasValidStatus)
+        if (!string.IsNullOrWhiteSpace(command.AutonomyLevel) &&
+            !AgentAutonomyLevelValues.TryParse(command.AutonomyLevel, out _))
         {
-            ValidateStatusConfiguration(errors, status, command.TriggerLogic);
+            AddError(errors, nameof(command.AutonomyLevel), AgentAutonomyLevelValues.BuildValidationMessage(command.AutonomyLevel));
         }
+
+        AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
+        ValidateObjectives(errors, nameof(command.Objectives), objectives);
+        ValidateKpis(errors, nameof(command.Kpis), kpis);
+        ValidateToolPermissions(errors, nameof(command.ToolPermissions), toolPermissions);
+        ValidateDataScopes(errors, nameof(command.DataScopes), dataScopes);
+        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), approvalThresholds);
+        ValidateEscalationRules(errors, nameof(command.EscalationRules), escalationRules);
+        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), triggerLogic);
+        ValidateWorkingHours(errors, nameof(command.WorkingHours), workingHours);
 
         ThrowIfAny(errors);
     }
@@ -247,11 +258,13 @@ public static class UpdateAgentOperatingProfileCommandValidator
         }
 
         var readScopes = ValidateIdentifierArray(errors, $"{key}.read", payload, "read");
+        var recommendScopes = ValidateIdentifierArray(errors, $"{key}.recommend", payload, "recommend");
+        var executeScopes = ValidateIdentifierArray(errors, $"{key}.execute", payload, "execute");
         var writeScopes = ValidateIdentifierArray(errors, $"{key}.write", payload, "write");
 
-        if (readScopes.Count == 0 && writeScopes.Count == 0)
+        if (readScopes.Count == 0 && recommendScopes.Count == 0 && executeScopes.Count == 0 && writeScopes.Count == 0)
         {
-            AddError(errors, key, $"{key} must define at least one read or write scope.");
+            AddError(errors, key, $"{key} must define at least one read, recommend, execute, or write scope.");
         }
     }
 
@@ -293,6 +306,7 @@ public static class UpdateAgentOperatingProfileCommandValidator
 
         var hasEscalateTo = payload.TryGetValue("escalateTo", out var escalateToNode);
         var hasValidEscalateTo = TryGetNonEmptyString(escalateToNode, out _);
+        var hasRoute = hasValidEscalateTo;
         if (hasEscalateTo && !hasValidEscalateTo)
         {
             AddError(errors, $"{key}.escalateTo", "Escalation destination is required.");
@@ -310,7 +324,28 @@ public static class UpdateAgentOperatingProfileCommandValidator
             AddError(errors, $"{key}.notifyAfterMinutes", "Escalation delay must be a non-negative number.");
         }
 
-        if (criticalRules.Count == 0 && !hasValidEscalateTo)
+        if (payload.TryGetValue("requireApproval", out var requireApprovalNode) && requireApprovalNode is not null)
+        {
+            if (requireApprovalNode is not JsonObject requireApprovalObject)
+            {
+                AddError(errors, $"{key}.requireApproval", "Approval requirement rules must be an object.");
+            }
+            else
+            {
+                var actionRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.actions", requireApprovalObject, "actions");
+                var toolRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.tools", requireApprovalObject, "tools");
+                var scopeRules = ValidateIdentifierArray(errors, $"{key}.requireApproval.scopes", requireApprovalObject, "scopes");
+
+                if (actionRules.Count == 0 && toolRules.Count == 0 && scopeRules.Count == 0)
+                {
+                    AddError(errors, $"{key}.requireApproval", "Approval requirement rules must define at least one action, tool, or scope.");
+                }
+
+                hasRoute = true;
+            }
+        }
+
+        if (criticalRules.Count == 0 && !hasRoute)
         {
             AddError(errors, key, $"{key} must define at least one escalation route.");
         }
@@ -497,23 +532,6 @@ public static class UpdateAgentOperatingProfileCommandValidator
             }
 
             dayWindows.Add((start, end));
-        }
-    }
-
-    private static void ValidateStatusConfiguration(
-        IDictionary<string, List<string>> errors,
-        AgentStatus status,
-        IDictionary<string, JsonNode?>? triggerLogic)
-    {
-        if (status != AgentStatus.Archived)
-        {
-            return;
-        }
-
-        if (TryGetEnabled(triggerLogic))
-        {
-            AddError(errors, nameof(UpdateAgentOperatingProfileCommand.Status), "Archived agents cannot have active trigger logic.");
-            AddError(errors, $"{nameof(UpdateAgentOperatingProfileCommand.TriggerLogic)}.enabled", "Archived agents cannot have active trigger logic.");
         }
     }
 
@@ -840,19 +858,6 @@ public static class UpdateAgentOperatingProfileCommandValidator
         }
 
         return false;
-    }
-
-    private static bool TryGetEnabled(IDictionary<string, JsonNode?>? triggerLogic)
-    {
-        if (triggerLogic is null ||
-            !triggerLogic.TryGetValue("enabled", out var enabledNode) ||
-            enabledNode is not JsonValue enabledValue ||
-            !enabledValue.TryGetValue<bool>(out var enabled))
-        {
-            return false;
-        }
-
-        return enabled;
     }
 
     private static bool IsValidIdentifier(string value)

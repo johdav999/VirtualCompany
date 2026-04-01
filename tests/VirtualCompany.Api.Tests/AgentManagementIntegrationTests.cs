@@ -131,6 +131,26 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.NotEmpty(agent.EscalationRules);
         Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
         Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
+
+        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
+        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+            x.CompanyId == ids.CompanyId &&
+            x.Action == "agent.hired" &&
+            x.TargetId == payload.Agent.Id.ToString("N"));
+
+        Assert.Equal("user", auditEvent.ActorType);
+        Assert.Equal("agent", auditEvent.TargetType);
+        Assert.Equal("succeeded", auditEvent.Outcome);
+        Assert.Equal("finance", auditEvent.Metadata["templateId"]);
+        Assert.Equal("Nora Ledger", auditEvent.Metadata["displayName"]);
+        Assert.Equal("active", auditEvent.Metadata["status"]);
+        Assert.Equal(agent.AutonomyLevel.ToStorageValue(), auditEvent.Metadata["autonomyLevel"]);
+        Assert.Contains("initial operating profile snapshot", auditEvent.RationaleSummary);
+
+        var configuredFields = JsonSerializer.Deserialize<string[]>(auditEvent.Metadata["configuredFields"]!);
+        Assert.NotNull(configuredFields);
+        Assert.Contains("objectives", configuredFields!);
+        Assert.Contains("status", configuredFields);
     }
 
     [Fact]
@@ -194,6 +214,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.Equal("/avatars/agents/operations-manager.png", agent.AvatarUrl);
         Assert.Equal(AgentSeniority.Lead, agent.Seniority);
         Assert.Equal(AgentStatus.Active, agent.Status);
+        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
         AssertJsonDictionaryEqual(personality, agent.Personality);
         AssertJsonDictionaryEqual(objectives, agent.Objectives);
         AssertJsonDictionaryEqual(kpis, agent.Kpis);
@@ -220,6 +241,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         var payload = await response.Content.ReadFromJsonAsync<HireAgentResponse>();
         Assert.NotNull(payload);
         Assert.Equal("active", payload!.Agent.Status);
+        Assert.Equal("level_0", payload.Agent.AutonomyLevel);
 
         using var scope = _factory.Services.CreateScope();
         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
@@ -235,6 +257,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.Equal(template.RoleName, agent.RoleName);
         Assert.Equal(template.AvatarUrl, agent.AvatarUrl);
         Assert.Equal(template.DefaultSeniority, agent.Seniority);
+        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
         Assert.Equal(AgentStatus.Active, agent.Status);
         Assert.Equal(template.Personality["summary"]!.ToJsonString(), agent.Personality["summary"]!.ToJsonString());
         Assert.Equal("Casey Support", agent.DisplayName);
@@ -252,6 +275,25 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.NotSame(template.Scopes, agent.Scopes);
         Assert.NotSame(template.Thresholds, agent.Thresholds);
         Assert.NotSame(template.EscalationRules, agent.EscalationRules);
+    }
+
+    [Fact]
+    public void Agent_defaults_to_level_0_autonomy_when_unspecified_and_rejects_invalid_values()
+    {
+        var agent = new Agent(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "finance",
+            "Nora Ledger",
+            "Finance Manager",
+            "Finance",
+            null,
+            AgentSeniority.Senior);
+
+        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new Agent(
+            Guid.NewGuid(), Guid.NewGuid(), "finance", "Nora Ledger", "Finance Manager", "Finance", null,
+            AgentSeniority.Senior, autonomyLevel: (AgentAutonomyLevel)99));
     }
 
     [Fact]
@@ -477,11 +519,41 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
     }
 
     [Fact]
+    public void Agent_operating_profile_json_columns_are_mapped_to_jsonb()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var agentEntity = dbContext.Model.FindEntityType(typeof(Agent));
+        Assert.NotNull(agentEntity);
+
+        Assert.Equal("jsonb", agentEntity!.FindProperty(nameof(Agent.Objectives))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Kpis))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Tools))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Scopes))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.Thresholds))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.EscalationRules))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.TriggerLogic))!.GetColumnType());
+        Assert.Equal("jsonb", agentEntity.FindProperty(nameof(Agent.WorkingHours))!.GetColumnType());
+
+        var templateEntity = dbContext.Model.FindEntityType(typeof(AgentTemplate));
+        Assert.NotNull(templateEntity);
+
+        Assert.Equal("jsonb", templateEntity!.FindProperty(nameof(AgentTemplate.Objectives))!.GetColumnType());
+        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Kpis))!.GetColumnType());
+        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Tools))!.GetColumnType());
+        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Scopes))!.GetColumnType());
+        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.Thresholds))!.GetColumnType());
+        Assert.Equal("jsonb", templateEntity.FindProperty(nameof(AgentTemplate.EscalationRules))!.GetColumnType());
+    }
+
+    [Fact]
     public async Task Owner_can_get_and_update_agent_operating_profile_with_round_trip_persistence()
     {
         var seed = await SeedMembershipWithExistingAgentAsync();
 
         using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
+        client.DefaultRequestHeaders.Add("X-Correlation-ID", "agent-profile-update-audit");
         var before = await client.GetFromJsonAsync<AgentOperatingProfileResponse>($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
 
         Assert.NotNull(before);
@@ -529,6 +601,30 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
         Assert.Equal("\"Europe/Stockholm\"", agent.WorkingHours["timezone"]!.ToJsonString());
         Assert.Equal("[\"forecast_accuracy\",\"approval_latency\"]", agent.Kpis["targets"]!.ToJsonString());
+
+        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == "agent.operating_profile.updated" &&
+            x.TargetId == seed.AgentId.ToString("N"));
+
+        Assert.Equal("user", auditEvent.ActorType);
+        Assert.Equal("agent", auditEvent.TargetType);
+        Assert.Equal("succeeded", auditEvent.Outcome);
+        Assert.Equal("agent-profile-update-audit", auditEvent.CorrelationId);
+        Assert.Equal("Nora Ledger", auditEvent.Metadata["displayName"]);
+        Assert.Equal("archived", auditEvent.Metadata["status"]);
+        Assert.Equal("10", auditEvent.Metadata["changedFieldCount"]);
+
+        var changedFields = JsonSerializer.Deserialize<string[]>(auditEvent.Metadata["changedFields"]!);
+        Assert.NotNull(changedFields);
+        Assert.Equal(
+            ["objectives", "kpis", "roleBrief", "toolPermissions", "dataScopes", "approvalThresholds", "escalationRules", "triggerLogic", "workingHours", "status"],
+            changedFields);
+
+        Assert.Equal("active", auditEvent.Metadata["statusBefore"]);
+        Assert.Equal("archived", auditEvent.Metadata["statusAfter"]);
+        Assert.Equal("Original finance operating profile.", auditEvent.Metadata["roleBriefBefore"]);
+        Assert.Equal("Owns exception approvals, escalations, and finance tool access policy.", auditEvent.Metadata["roleBriefAfter"]);
     }
 
     [Fact]
@@ -626,19 +722,20 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
 
         Assert.Equal(seed.OriginalUpdatedUtc, agent.UpdatedUtc);
         Assert.Equal(AgentStatus.Active, agent.Status);
+        Assert.False(await dbContext.AuditEvents.AnyAsync(x => x.CompanyId == seed.CompanyId && x.TargetId == seed.AgentId.ToString("N")));
         Assert.Equal("Original finance operating profile.", agent.RoleBrief);
     }
 
     [Fact]
-    public async Task Updating_operating_profile_rejects_archived_status_with_enabled_trigger_logic()
+    public async Task Updating_operating_profile_accepts_paused_status_and_persists_timestamp()
     {
         var seed = await SeedMembershipWithExistingAgentAsync();
 
         using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
         var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
         {
-            status = "archived",
-            roleBrief = "Archive after transition.",
+            status = "paused",
+            roleBrief = "Paused while finance approvals are being reviewed.",
             objectives = new { primary = new[] { "Protect cash flow" } },
             kpis = new { targets = new[] { "forecast_accuracy" } },
             toolPermissions = new { allowed = new[] { "erp" } },
@@ -649,12 +746,14 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
             workingHours = new { timezone = "UTC", windows = new[] { new { day = "monday", start = "08:00", end = "16:00" } } }
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
         Assert.NotNull(payload);
-        Assert.Contains("Status", payload!.Errors.Keys);
-        Assert.Contains("TriggerLogic.enabled", payload.Errors.Keys);
+        Assert.Equal("paused", payload!.Status);
+        Assert.Equal("Paused while finance approvals are being reviewed.", payload.RoleBrief);
+        Assert.True(payload.CanReceiveAssignments);
+        Assert.True(payload.UpdatedUtc > seed.OriginalUpdatedUtc);
 
         using var scope = _factory.Services.CreateScope();
         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
@@ -662,12 +761,104 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
 
-        Assert.Equal(seed.OriginalUpdatedUtc, agent.UpdatedUtc);
-        Assert.Equal(AgentStatus.Active, agent.Status);
+        Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
+        Assert.Equal(AgentStatus.Paused, agent.Status);
+
+        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == "agent.status.updated" &&
+            x.TargetId == seed.AgentId.ToString("N"));
+
+        Assert.Equal("paused", auditEvent.Metadata["status"]);
+        Assert.Equal("active", auditEvent.Metadata["statusBefore"]);
+        Assert.Equal("paused", auditEvent.Metadata["statusAfter"]);
+        Assert.Equal("[\"status\"]", auditEvent.Metadata["changedFields"]);
+        Assert.Equal("Updated agent status to paused.", auditEvent.RationaleSummary);
     }
 
     [Fact]
-    public async Task Operating_profile_endpoints_require_admin_access_and_stay_company_scoped()
+    public async Task Manager_can_get_operating_profile_but_receives_redacted_governance_sections()
+    {
+        var seed = await SeedMembershipWithExistingAgentAsync();
+
+        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+        Assert.NotNull(payload);
+        Assert.True(payload!.Visibility.CanEditAgent);
+        Assert.True(payload.Visibility.CanEditObjectives);
+        Assert.True(payload.Visibility.CanEditKpis);
+        Assert.True(payload.Visibility.CanEditWorkingHours);
+        Assert.True(payload.Visibility.CanEditStatus);
+        Assert.False(payload.Visibility.CanEditSensitiveGovernance);
+        Assert.False(payload.Visibility.CanPauseOrRestrictAgent);
+        Assert.NotEmpty(payload.Objectives);
+        Assert.NotEmpty(payload.Kpis);
+        Assert.NotEmpty(payload.WorkingHours);
+        Assert.Empty(payload.ToolPermissions);
+        Assert.Empty(payload.ApprovalThresholds);
+        Assert.Empty(payload.EscalationRules);
+        Assert.Empty(payload.TriggerLogic);
+    }
+
+    [Fact]
+    public async Task Manager_can_update_operational_profile_fields_but_cannot_change_governance_fields_or_restricted_status()
+    {
+        var seed = await SeedMembershipWithExistingAgentAsync();
+
+        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+
+        var allowedResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
+        {
+            status = "paused",
+            roleBrief = "Manager-adjusted operating profile.",
+            objectives = new { primary = new[] { "Protect cash flow", "Reduce approval queue" } },
+            kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
+            workingHours = new { timezone = "UTC", windows = new[] { new { day = "tuesday", start = "09:00", end = "17:00" } } }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, allowedResponse.StatusCode);
+
+        var allowedPayload = await allowedResponse.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+        Assert.NotNull(allowedPayload);
+        Assert.Equal("paused", allowedPayload!.Status);
+        Assert.Equal("Manager-adjusted operating profile.", allowedPayload.RoleBrief);
+        Assert.Equal("UTC", allowedPayload.WorkingHours["timezone"].GetString());
+        Assert.Empty(allowedPayload.ToolPermissions);
+
+        var rejectedResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
+        {
+            status = "restricted",
+            roleBrief = "Manager-adjusted operating profile.",
+            autonomyLevel = "level_3",
+            objectives = new { primary = new[] { "Protect cash flow", "Reduce approval queue" } },
+            kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
+            toolPermissions = new { allowed = new[] { "erp", "wire_transfer" } },
+            dataScopes = new { read = new[] { "finance" }, write = new[] { "approval_notes" } },
+            approvalThresholds = new { approval = new { expenseUsd = 1 } },
+            escalationRules = new { critical = new[] { "cash_runway_under_90_days" }, escalateTo = "founder" },
+            triggerLogic = new { enabled = true, conditions = new[] { new { @event = "invoice_created", source = "erp" } } },
+            workingHours = new { timezone = "UTC", windows = new[] { new { day = "wednesday", start = "10:00", end = "18:00" } } }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, rejectedResponse.StatusCode);
+
+        var problem = await rejectedResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+        Assert.NotNull(problem);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.Status), problem!.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.AutonomyLevel), problem.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.ToolPermissions), problem.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.DataScopes), problem.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.ApprovalThresholds), problem.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.EscalationRules), problem.Errors.Keys);
+        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.TriggerLogic), problem.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task Operating_profile_endpoints_require_manager_access_and_stay_company_scoped()
     {
         var seed = await SeedEmployeeAndCrossCompanyAgentAsync();
 
@@ -675,6 +866,9 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.Equal(
             HttpStatusCode.Forbidden,
             (await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile")).StatusCode);
+
+        using var managerClient = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+        Assert.Equal(HttpStatusCode.OK, (await managerClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile")).StatusCode);
 
         using var founderClient = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
         Assert.Equal(
@@ -740,7 +934,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
                 }))));
 
         var exception = Assert.Throws<InvalidOperationException>(() => agent.EnsureCanReceiveAssignments());
-        Assert.Contains("Archived agents cannot receive new assignments.", exception.Message);
+        Assert.Contains(Agent.ArchivedAssignmentErrorMessage, exception.Message);
     }
 
     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
@@ -776,20 +970,20 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
     private async Task<EditableAgentSeed> SeedMembershipWithExistingAgentAsync()
     {
         var userId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
         var agentId = Guid.NewGuid();
         var originalUpdatedUtc = DateTime.UtcNow.AddMinutes(-30);
 
         await _factory.SeedAsync(dbContext =>
         {
-            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Users.AddRange(
+                new User(userId, "founder@example.com", "Founder", "dev-header", "founder"),
+                new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
             dbContext.Companies.Add(new Company(companyId, "Company A"));
-            dbContext.CompanyMemberships.Add(new CompanyMembership(
-                Guid.NewGuid(),
-                companyId,
-                userId,
-                CompanyMembershipRole.Owner,
-                CompanyMembershipStatus.Active));
+            dbContext.CompanyMemberships.AddRange(
+                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
 
             dbContext.Agents.Add(new Agent(
                 agentId,
@@ -834,6 +1028,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
     {
         var ownerUserId = Guid.NewGuid();
         var employeeUserId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
         var otherCompanyId = Guid.NewGuid();
         var agentId = Guid.NewGuid();
@@ -843,13 +1038,15 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         {
             dbContext.Users.AddRange(
                 new User(ownerUserId, "founder@example.com", "Founder", "dev-header", "founder"),
-                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
+                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"),
+                new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
             dbContext.Companies.AddRange(
                 new Company(companyId, "Company A"),
                 new Company(otherCompanyId, "Company B"));
             dbContext.CompanyMemberships.AddRange(
                 new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
-                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
+                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active),
+                new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
             dbContext.Agents.AddRange(
                 new Agent(agentId, companyId, "finance", "Company A Finance", "Finance Manager", "Finance", null, AgentSeniority.Senior, AgentStatus.Active),
                 new Agent(otherCompanyAgentId, otherCompanyId, "support", "Company B Support", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
@@ -952,9 +1149,26 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         public string? RoleBrief { get; set; }
         public DateTime UpdatedUtc { get; set; }
         public bool CanReceiveAssignments { get; set; }
+        public string AutonomyLevel { get; set; } = string.Empty;
         public Dictionary<string, JsonElement> Objectives { get; set; } = [];
         public Dictionary<string, JsonElement> Kpis { get; set; } = [];
+        public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
+        public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
+        public Dictionary<string, JsonElement> EscalationRules { get; set; } = [];
+        public Dictionary<string, JsonElement> TriggerLogic { get; set; } = [];
         public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
+        public AgentProfileVisibilityResponse Visibility { get; set; } = new();
+    }
+
+    private sealed class AgentProfileVisibilityResponse
+    {
+        public bool CanEditAgent { get; set; }
+        public bool CanEditObjectives { get; set; }
+        public bool CanEditKpis { get; set; }
+        public bool CanEditWorkingHours { get; set; }
+        public bool CanEditStatus { get; set; }
+        public bool CanEditSensitiveGovernance { get; set; }
+        public bool CanPauseOrRestrictAgent { get; set; }
     }
 
     private sealed class AgentTemplateResponse
@@ -999,6 +1213,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         public string Status { get; set; } = string.Empty;
         public string? AvatarUrl { get; set; }
         public string Seniority { get; set; } = string.Empty;
+        public string AutonomyLevel { get; set; } = string.Empty;
     }
 
     private sealed class ValidationProblemResponse

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.3.1",
+  "promptPath": ".ai-design/prompts/TASK-8.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-03-31T19:49:10.102Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-31T19-49-10-102Z_TASK-8.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-31T19-49-10-102Z_TASK-8.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-31T19:53:48.367Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "n\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"0\",\n+            toolName: \"erp\",\n+            actionType: \"recommend\",\n+            scope: \"finance\"));\n+\n+        Assert.Equal(\"allow\", decision.Outcome);\n+        Assert.Equal(\"recommend\", decision.EvaluatedActionType);\n+        Assert.Equal(\"finance\", decision.EvaluatedScope);\n+        Assert.Contains(\"policy_checks_passed\", decision.ReasonCodes);\n+    }\n+\n     [Fact]\n     public void Evaluate_default_denies_when_tool_policy_configuration_is_missing()\n     {\n@@ -94,6 +110,34 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Contains(\"autonomy_level_requires_approval\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_denies_when_execute_scope_is_missing()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: null));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"scope_context_missing\", decision.ReasonCodes);\n+    }\n+\n+    [Fact]\n+    public void Evaluate_denies_when_tool_permissions_are_ambiguous()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            toolPermissions: Payload(\n+                (\"allowed\", new JsonArray(JsonValue.Create(\"erp\"))),\n+                (\"denied\", new JsonArray(JsonValue.Create(\"erp\"))))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"ambiguous_policy_configuration\", decision.ReasonCodes);\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\n",
+  "stderrTail": "Codes);\n     }\n \n+    [Fact]\n+    public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"0\",\n+            toolName: \"erp\",\n+            actionType: \"recommend\",\n+            scope: \"finance\"));\n+\n+        Assert.Equal(\"allow\", decision.Outcome);\n+        Assert.Equal(\"recommend\", decision.EvaluatedActionType);\n+        Assert.Equal(\"finance\", decision.EvaluatedScope);\n+        Assert.Contains(\"policy_checks_passed\", decision.ReasonCodes);\n+    }\n+\n     [Fact]\n     public void Evaluate_default_denies_when_tool_policy_configuration_is_missing()\n     {\n@@ -94,6 +110,34 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Contains(\"autonomy_level_requires_approval\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_denies_when_execute_scope_is_missing()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: null));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"scope_context_missing\", decision.ReasonCodes);\n+    }\n+\n+    [Fact]\n+    public void Evaluate_denies_when_tool_permissions_are_ambiguous()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_2\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            toolPermissions: Payload(\n+                (\"allowed\", new JsonArray(JsonValue.Create(\"erp\"))),\n+                (\"denied\", new JsonArray(JsonValue.Create(\"erp\"))))));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"ambiguous_policy_configuration\", decision.ReasonCodes);\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\ntokens used\n90,745\n",
+  "verbosityMode": "verbose"
+}

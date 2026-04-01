@@ -1,0 +1,423 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -19,6 +19,7 @@ public interface IAuditEventWriter
+ public static class AuditActorTypes
+ {
+     public const string User = "user";
++    public const string Agent = "agent";
+ }
+ 
+ public static class AuditTargetTypes
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -82,11 +82,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+                     companyId,
+-                    AuditActorTypes.User,
+-                    membership.UserId,
++                    AuditActorTypes.Agent,
++                    agentId,
+                     AuditEventActions.AgentToolExecutionDenied,
+                     AuditTargetTypes.AgentToolExecution,
+                     attempt.Id.ToString("N"),
+                     AuditEventOutcomes.Denied,
+-                    RationaleSummary: decision.Explanation,
++                    RationaleSummary: BuildAuditRationaleSummary(decision),
+                     Metadata: BuildAuditMetadata(command, decision)),
+                 cancellationToken);
+ 
+@@ -100,7 +100,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 attempt.Status.ToStorageValue(),
+                 null,
+                 decision,
+                 null,
+-                decision.Explanation);
++                BuildCallerMessage(decision));
+         }
+ 
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
+@@ -173,11 +173,15 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ["actionType"] = command.ActionType,
+             ["scope"] = command.Scope,
+             ["policyOutcome"] = decision.Outcome,
++            ["approvalRequired"] = decision.ApprovalRequired ? "true" : "false",
+             ["autonomyLevel"] = decision.EvaluatedAutonomyLevel,
+-            ["reasonCodes"] = string.Join(",", decision.ReasonCodes)
++            ["reasonCodes"] = string.Join(",", decision.ReasonCodes),
++            ["primaryReasonCode"] = GetPrimaryReasonCode(decision)
+         };
+ 
+         if (approvalRequestId.HasValue)
+         {
+             metadata["approvalRequestId"] = approvalRequestId.Value.ToString("N");
+         }
+@@ -247,6 +251,39 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return jsonObject;
+     }
+ 
++    private static string BuildAuditRationaleSummary(ToolExecutionDecisionDto decision)
++    {
++        var primaryReasonCode = GetPrimaryReasonCode(decision);
++        return string.IsNullOrWhiteSpace(primaryReasonCode)
++            ? "Action blocked by policy before execution."
++            : $"Action blocked by policy before execution ({primaryReasonCode}).";
++    }
++
++    private static string BuildCallerMessage(ToolExecutionDecisionDto decision)
++    {
++        if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
++        {
++            return decision.Explanation;
++        }
++
++        return GetPrimaryReasonCode(decision) switch
++        {
++            PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted
++                => "This action was blocked by policy because the agent is not permitted to use that tool.",
++            PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.InvalidCompanyContext
++                => "This action was blocked by policy because the request is outside the agent's allowed company scope.",
++            PolicyDecisionReasonCodes.AgentStatusDisallowsExecution
++                => "This action was blocked by policy because the agent is not currently allowed to execute tools.",
++            PolicyDecisionReasonCodes.AutonomyLevelBlocksAction
++                => "This action was blocked by policy because the agent autonomy level does not permit it.",
++            PolicyDecisionReasonCodes.InvalidActionType
++                => "This action was blocked by policy because the requested action type is not supported.",
++            PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ApprovalRouteMissing
++                => "This action was blocked by policy because the required guardrail configuration could not be verified.",
++            _ => "This action was blocked by policy."
++        };
++    }
++
++    private static string? GetPrimaryReasonCode(ToolExecutionDecisionDto decision) =>
++        decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code));
++
+     private static string? TryGetNonEmptyString(IReadOnlyDictionary<string, JsonNode?> values, string key)
+     {
+         if (!values.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var text))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -48,6 +48,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                metadata["toolPolicyState"] = JsonValue.Create("invalid");
++                metadata,
+                 "Tool permissions are missing or invalid, so execution is denied by default.",
+                 metadata);
+         }
+@@ -56,6 +58,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         {
+             return Deny(
+                 request, actionType.ToStorageValue(),
++                metadata["toolPolicyState"] = JsonValue.Create("missing");
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions do not define an allowed set for this agent.",
+                 metadata);
+@@ -65,6 +68,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         {
+             return Deny(
+                 request, actionType.ToStorageValue(),
++                metadata["toolPolicyState"] = JsonValue.Create("ambiguous");
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Tool permissions are ambiguous because the same tool is both allowed and denied.",
+                 metadata);
+@@ -73,6 +77,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (deniedTools.Contains(request.ToolName))
+         {
+             return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
++                metadata["toolPolicyState"] = JsonValue.Create("configured");
++                metadata["toolAllowed"] = JsonValue.Create(false);
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+                 "The requested tool is explicitly denied for this agent.",
+@@ -82,6 +90,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!allowedTools.Contains(request.ToolName))
+         {
+             return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.ToolNotPermitted],
++                metadata["toolPolicyState"] = JsonValue.Create("configured");
++                metadata["toolAllowed"] = JsonValue.Create(false);
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+@@ -89,12 +101,22 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         }
+ 
+         if (!TryResolveScopePolicyBucket(request.DataScopes, actionType, out var requiredScopeBucket, out var scopes, out var scopeConfigExists, out var usedLegacyScopeAlias) ||
+-            !scopeConfigExists ||
+-            scopes.Count == 0)
++            !scopeConfigExists)
+         {
++            metadata["scopeConfigState"] = JsonValue.Create("missing");
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "Data scope policy is missing or invalid for the requested action.",
++                metadata);
++        }
++
++        if (scopes.Count == 0)
++        {
++            metadata["scopeConfigState"] = JsonValue.Create("empty");
++            metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
++            return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Data scope policy is missing or invalid for the requested action.",
+                 metadata);
+         }
+@@ -102,12 +124,17 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
+         metadata["scopePolicyFallbackApplied"] = JsonValue.Create(usedLegacyScopeAlias);
++        metadata["scopeConfigState"] = JsonValue.Create("configured");
++        metadata["permittedScopes"] = ToJsonArray(scopes);
+ 
+         if (actionType == ToolActionType.Execute && string.IsNullOrWhiteSpace(request.Scope))
+         {
++            metadata["scopeMatch"] = JsonValue.Create(false);
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ScopeContextMissing],
+                 "Execute actions require an explicit scope so guardrails can authorize them before execution.",
+                 metadata);
+         }
+ 
+         if (!string.IsNullOrWhiteSpace(request.Scope))
+@@ -115,6 +142,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             if (!scopes.Contains(request.Scope))
+             {
++                metadata["scopeMatch"] = JsonValue.Create(false);
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+@@ -124,6 +152,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                     metadata);
+             }
+         }
++        metadata["scopeMatch"] = JsonValue.Create(true);
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level0 && actionType != ToolActionType.Read)
+         {
+@@ -140,6 +169,25 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 metadata);
+         }
+ 
++        if (autonomyLevel == AgentAutonomyLevel.Level1 && actionType == ToolActionType.Execute)
++        {
++            return RequireApproval(
++                request,
++                actionType.ToStorageValue(),
++                metadata,
++                PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,
++                "Autonomy level 1 requires approval before execute actions can run.");
++        }
++
++        if (request.SensitiveAction)
++        {
++            return RequireApproval(
++                request,
++                actionType.ToStorageValue(),
++                metadata,
++                PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
++                "Sensitive actions require approval before execution.");
++        }
++
+         if (!TryGetApprovalRequirementPolicy(request.EscalationRules, out var approvalRequirementPolicy, out var approvalRequirementConfigured))
+         {
+             return Deny(
+@@ -243,13 +291,24 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+             ["agentCompanyId"] = JsonValue.Create(request.AgentCompanyId),
++            ["companyScopeMatched"] = JsonValue.Create(
++                request.CompanyId != Guid.Empty &&
++                request.AgentCompanyId != Guid.Empty &&
++                request.AgentCompanyId == request.CompanyId),
+             ["evaluatedAutonomyLevel"] = JsonValue.Create(request.EvaluatedAutonomyLevel),
+-            ["evaluationVersion"] = JsonValue.Create("task_8_3_2"),
++            ["evaluationVersion"] = JsonValue.Create("task_8_3_3"),
+             ["policyMode"] = JsonValue.Create("default_deny"),
+             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
+         };
+ 
++    private static ToolExecutionDecisionDto Deny(
++        PolicyEvaluationRequest request,
++        IReadOnlyList<string> reasonCodes,
++        string explanation,
++        Dictionary<string, JsonNode?> metadata) =>
++        Deny(request, NormalizeEvaluatedActionType(request.ActionType), reasonCodes, explanation, metadata);
++
+     private static bool TryGetIdentifierSet(
+         IReadOnlyDictionary<string, JsonNode?> values,
+         string key,
+         out HashSet<string> results,
+@@ -280,6 +339,51 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         return true;
+     }
+ 
++    private static bool TryResolveScopePolicyBucket(
++        IReadOnlyDictionary<string, JsonNode?> dataScopes,
++        ToolActionType actionType,
++        out string requiredScopeBucket,
++        out HashSet<string> scopes,
++        out bool scopeConfigExists,
++        out bool usedLegacyScopeAlias)
++    {
++        return actionType switch
++        {
++            ToolActionType.Read => TryResolvePrimaryScopeBucket(
++                dataScopes,
++                ToolActionType.Read.ToStorageValue(),
++                out requiredScopeBucket,
++                out scopes,
++                out scopeConfigExists,
++                out usedLegacyScopeAlias),
++            ToolActionType.Recommend => TryResolveScopeBucketWithFallback(
++                dataScopes,
++                ToolActionType.Recommend.ToStorageValue(),
++                ToolActionType.Read.ToStorageValue(),
++                out requiredScopeBucket,
++                out scopes,
++                out scopeConfigExists,
++                out usedLegacyScopeAlias),
++            ToolActionType.Execute => TryResolveScopeBucketWithFallback(
++                dataScopes,
++                ToolActionType.Execute.ToStorageValue(),
++                "write",
++                out requiredScopeBucket,
++                out scopes,
++                out scopeConfigExists,
++                out usedLegacyScopeAlias),
++            _ => throw new ArgumentOutOfRangeException(nameof(actionType), actionType, "Unsupported tool action type.")
++        };
++    }
++
++    private static bool TryResolvePrimaryScopeBucket(
++        IReadOnlyDictionary<string, JsonNode?> dataScopes,
++        string bucket,
++        out string requiredScopeBucket,
++        out HashSet<string> scopes,
++        out bool scopeConfigExists,
++        out bool usedLegacyScopeAlias)
++    {
++        requiredScopeBucket = bucket;
++        usedLegacyScopeAlias = false;
++        return TryGetIdentifierSet(dataScopes, bucket, out scopes, out scopeConfigExists);
++    }
++
+     private static bool TryGetThresholdValue(
+         IReadOnlyDictionary<string, JsonNode?> thresholds,
+         string category,
+@@ -332,6 +436,35 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         return actionMatches && toolMatches && scopeMatches;
+     }
+ 
++    private static bool TryResolveScopeBucketWithFallback(
++        IReadOnlyDictionary<string, JsonNode?> dataScopes,
++        string primaryBucket,
++        string fallbackBucket,
++        out string requiredScopeBucket,
++        out HashSet<string> scopes,
++        out bool scopeConfigExists,
++        out bool usedLegacyScopeAlias)
++    {
++        requiredScopeBucket = primaryBucket;
++        usedLegacyScopeAlias = false;
++
++        if (!TryGetIdentifierSet(dataScopes, primaryBucket, out scopes, out scopeConfigExists))
++        {
++            return false;
++        }
++
++        if (scopeConfigExists)
++        {
++            return true;
++        }
++
++        if (!TryGetIdentifierSet(dataScopes, fallbackBucket, out scopes, out scopeConfigExists))
++        {
++            return false;
++        }
++
++        requiredScopeBucket = fallbackBucket;
++        usedLegacyScopeAlias = scopeConfigExists;
++        return true;
++    }
++
+     private static JsonObject CreateApprovalRequirementMetadata(ApprovalRequirementPolicy policy)
+     {
+         return new JsonObject
+@@ -371,6 +504,11 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         return true;
+     }
+ 
++    private static string NormalizeEvaluatedActionType(string actionType) =>
++        ToolActionTypeValues.TryParse(actionType, out var parsedActionType)
++            ? parsedActionType.ToStorageValue()
++            : actionType;
++
+     private static bool TryGetEscalationTarget(
+         IReadOnlyDictionary<string, JsonNode?> escalationRules,
+         out string? escalationTarget)
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -43,6 +44,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("denied", payload!.Status);
+         Assert.Equal("deny", payload.PolicyDecision.Outcome);
+         Assert.Contains("tool_not_permitted", payload.PolicyDecision.ReasonCodes);
++        Assert.Equal("This action was blocked by policy because the agent is not permitted to use that tool.", payload.Message);
+         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+ 
+         using var scope = _factory.Services.CreateScope();
+@@ -55,6 +57,15 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("wire_transfer", attempt.ToolName);
+         Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+         Assert.Null(attempt.ApprovalRequestId);
++
++        var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.AgentToolExecutionDenied &&
++            x.TargetId == payload.ExecutionId.ToString("N"));
++
++        Assert.Equal(AuditActorTypes.Agent, auditEvent.ActorType);
++        Assert.Equal(seed.AgentId, auditEvent.ActorId);
++        Assert.Equal("tool_not_permitted", auditEvent.Metadata["primaryReasonCode"]);
++        Assert.Contains("blocked by policy before execution", auditEvent.RationaleSummary);
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -181,9 +181,10 @@ public sealed class PolicyGuardrailEngineTests
+         Dictionary<string, JsonNode?>? thresholds = null,
+         Dictionary<string, JsonNode?>? escalationRules = null)
+     {
++        var companyId = Guid.NewGuid();
+         return new PolicyEvaluationRequest(
+-            Guid.NewGuid(),
+-            Guid.NewGuid(),
+-            Guid.NewGuid(),
++            companyId,
++            Guid.NewGuid(),
++            companyId,
+             "active",
+             autonomyLevel,
+             true,
+END_OF_PATCH

@@ -298,6 +298,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
         Assert.Equal("active", statusConverter!.ConvertToProvider(AgentStatus.Active));
         Assert.Equal(AgentStatus.Active, statusConverter.ConvertFromProvider("Active"));
 
+        Assert.False(AgentStatusValues.TryParse("inactive", out _));
+
         var agent = new Agent(
             Guid.NewGuid(),
             Guid.NewGuid(),

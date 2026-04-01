@@ -1,0 +1,356 @@
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index 719f9f0..bd8fa2e 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -23,7 +23,6 @@ public static class AgentStatusValues
+     public const string Paused = "paused";
+     public const string Restricted = "restricted";
+     public const string Archived = "archived";
+-    public const string Inactive = "inactive";
+ 
+     private static readonly IReadOnlyDictionary<AgentStatus, string> Values = new Dictionary<AgentStatus, string>
+     {
+@@ -39,8 +38,7 @@ public static class AgentStatusValues
+             [Active] = AgentStatus.Active,
+             [Paused] = AgentStatus.Paused,
+             [Restricted] = AgentStatus.Restricted,
+-            [Archived] = AgentStatus.Archived,
+-            [Inactive] = AgentStatus.Paused
++            [Archived] = AgentStatus.Archived
+         };
+ 
+     public static AgentStatus DefaultStatus => AgentStatus.Active;
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+index 4b8f632..71a96c8 100644
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -41,11 +41,9 @@ public static class UpdateAgentOperatingProfileCommandValidator
+     {
+         ArgumentNullException.ThrowIfNull(command);
+ 
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
+-        var hasValidStatus = AgentStatusValues.TryParse(command.Status, out var status);
+-        if (!hasValidStatus)
++        if (!AgentStatusValues.TryParse(command.Status, out _))
+         {
+             AddError(errors, nameof(command.Status), AgentStatusValues.BuildValidationMessage(command.Status));
+         }
+ 
+@@ -57,11 +55,6 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), command.ApprovalThresholds);
+         ValidateEscalationRules(errors, nameof(command.EscalationRules), command.EscalationRules);
+         ValidateTriggerLogic(errors, nameof(command.TriggerLogic), command.TriggerLogic);
+         ValidateWorkingHours(errors, nameof(command.WorkingHours), command.WorkingHours);
+-
+-        if (hasValidStatus)
+-        {
+-            ValidateStatusConfiguration(errors, status, command.TriggerLogic);
+-        }
+ 
+         ThrowIfAny(errors);
+     }
+@@ -504,20 +497,6 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         }
+     }
+ 
+-    private static void ValidateStatusConfiguration(
+-        IDictionary<string, List<string>> errors,
+-        AgentStatus status,
+-        IDictionary<string, JsonNode?>? triggerLogic)
+-    {
+-        if (status != AgentStatus.Archived)
+-        {
+-            return;
+-        }
+-
+-        if (TryGetEnabled(triggerLogic))
+-        {
+-            AddError(errors, nameof(UpdateAgentOperatingProfileCommand.Status), "Archived agents cannot have active trigger logic.");
+-            AddError(errors, $"{nameof(UpdateAgentOperatingProfileCommand.TriggerLogic)}.enabled", "Archived agents cannot have active trigger logic.");
+-        }
+-    }
+-
+     private static void ValidateStringCollectionMap(
+         IDictionary<string, List<string>> errors,
+         string key,
+@@ -724,18 +703,6 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         return false;
+     }
+ 
+-    private static bool TryGetEnabled(IDictionary<string, JsonNode?>? triggerLogic)
+-    {
+-        if (triggerLogic is null ||
+-            !triggerLogic.TryGetValue("enabled", out var enabledNode) ||
+-            enabledNode is not JsonValue enabledValue ||
+-            !enabledValue.TryGetValue<bool>(out var enabled))
+-        {
+-            return false;
+-        }
+-
+-        return enabled;
+-    }
+-
+     private static bool IsValidIdentifier(string value)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 58fd353..fbeb10f 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -223,7 +223,7 @@ else
+                 <div>
+                     <span class="dashboard-kicker">Company roster</span>
+-                    <h2 class="h4 mb-0 mt-2">Active agents</h2>
++                    <h2 class="h4 mb-0 mt-2">Company agents</h2>
+                 </div>
+                 <span class="badge text-bg-light">@roster.Count total</span>
+             </div>
+@@ -242,7 +242,7 @@ else
+                                 disabled="@(!CanManageProfiles && selectedAgentId != agent.Id)"
+                                 @onclick="@(() => SelectAgentAsync(agent.Id))">
+                             <div class="agent-template-header">
+                                 <strong>@agent.DisplayName</strong>
+-                                <span class="badge text-bg-success">@agent.Status</span>
++                                <span class="badge @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+                             </div>
+                             <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
+                             <div class="text-body-secondary">@agent.Seniority</div>
+@@ -406,6 +406,30 @@ else
+             : matched;
+     }
+ 
++    private static string GetStatusBadgeCss(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            "active" => "text-bg-success",
++            "paused" => "text-bg-warning",
++            "restricted" => "text-bg-secondary",
++            "archived" => "text-bg-dark",
++            _ => "text-bg-light"
++        };
++
++    private static string GetStatusLabel(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            "active" => "Active",
++            "paused" => "Paused",
++            "restricted" => "Restricted",
++            "archived" => "Archived",
++            _ => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim()
++        };
++
++    private static bool IsSupportedStatus(string? status) =>
++        status?.Trim().ToLowerInvariant() is
++            "active" or
++            "paused" or
++            "restricted" or
++            "archived";
++
+     private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
+     {
+         var sequence = 0;
+@@ -518,7 +542,7 @@ else
+         public CreateAgentFromTemplateRequest ToRequest() =>
+             new()
+             {
+                 TemplateId = TemplateId,
+                 DisplayName = DisplayName,
+@@ -531,7 +555,7 @@ else
+             };
+     }
+ 
+-    private sealed class AgentOperatingProfileFormModel
++    private sealed class AgentOperatingProfileFormModel : IValidatableObject
+     {
+         [Required, StringLength(32)]
+         public string Status { get; set; } = "active";
+@@ -548,7 +572,7 @@ else
+         public static AgentOperatingProfileFormModel FromViewModel(AgentOperatingProfileViewModel model) =>
+             new()
+             {
+-                Status = model.Status,
++                Status = NormalizeStatus(model.Status),
+                 RoleBrief = model.RoleBrief,
+                 ObjectivesJson = Serialize(model.Objectives),
+                 KpisJson = Serialize(model.Kpis),
+@@ -560,6 +584,17 @@ else
+                 TriggerLogicJson = Serialize(model.TriggerLogic),
+                 WorkingHoursJson = Serialize(model.WorkingHours)
+             };
++
++        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
++        {
++            if (!IsSupportedStatus(Status))
++            {
++                yield return new ValidationResult(
++                    "Status must be one of active, paused, restricted, or archived.",
++                    [nameof(Status)]);
++            }
++        }
+ 
+         public bool TryCreateRequest(out UpdateAgentOperatingProfileRequest request, out Dictionary<string, string[]> errors)
+         {
+@@ -585,7 +620,7 @@ else
+             request = new UpdateAgentOperatingProfileRequest
+             {
+-                Status = Status,
++                Status = NormalizeStatus(Status),
+                 RoleBrief = RoleBrief,
+                 Objectives = objectives,
+                 Kpis = kpis,
+@@ -627,6 +662,9 @@ else
+         private static string Serialize(IDictionary<string, JsonNode?> payload) =>
+             JsonSerializer.Serialize(payload, JsonEditorOptions);
+ 
++        private static string NormalizeStatus(string? status) =>
++            string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
++
+         private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
+         {
+             if (!errors.TryGetValue(key, out var messages))
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 64b95d8..771ad27 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -147,6 +147,13 @@ public sealed class AgentApiClient
+     private sealed class OfflineAgentStore
+     {
+         private readonly object _sync = new();
++        private static readonly HashSet<string> SupportedStatuses = new(StringComparer.OrdinalIgnoreCase)
++        {
++            "active",
++            "paused",
++            "restricted",
++            "archived"
++        };
+         private readonly Dictionary<Guid, List<CompanyAgentSummaryViewModel>> _agentsByCompany = [];
+         private readonly Dictionary<Guid, AgentOperatingProfileViewModel> _profilesByAgentId = [];
+         private Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>>? _templatesTask;
+@@ -194,7 +201,7 @@ public sealed class AgentApiClient
+                     throw new OnboardingApiException("The selected agent profile could not be loaded.");
+                 }
+ 
+-                existing.Status = request.Status.Trim();
++                existing.Status = NormalizeStatus(request.Status);
+                 existing.RoleBrief = string.IsNullOrWhiteSpace(request.RoleBrief) ? null : request.RoleBrief.Trim();
+                 existing.Objectives = CloneNodes(request.Objectives);
+                 existing.Kpis = CloneNodes(request.Kpis);
+@@ -375,6 +382,25 @@ public sealed class AgentApiClient
+                 })
+                 .ToList();
+         }
++
++        private static string NormalizeStatus(string? status)
++        {
++            if (string.IsNullOrWhiteSpace(status) || !SupportedStatuses.Contains(status.Trim()))
++            {
++                throw new OnboardingApiException(
++                    "Status must be one of active, paused, restricted, or archived.",
++                    new Dictionary<string, string[]>
++                    {
++                        [nameof(UpdateAgentOperatingProfileRequest.Status)] =
++                        [
++                            "Status must be one of active, paused, restricted, or archived."
++                        ]
++                    });
++            }
++
++            return status.Trim().ToLowerInvariant();
++        }
+ 
+         private static bool TryValidateAvatarReference(string? value, out string? error)
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 4ed2e2e..71d57ab 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -630,7 +630,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     }
+ 
+     [Fact]
+-    public async Task Updating_operating_profile_rejects_archived_status_with_enabled_trigger_logic()
++    public async Task Updating_operating_profile_accepts_paused_status_and_persists_timestamp()
+     {
+         var seed = await SeedMembershipWithExistingAgentAsync();
+ 
+@@ -638,8 +638,8 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
+         {
+-            status = "archived",
+-            roleBrief = "Archive after transition.",
++            status = "paused",
++            roleBrief = "Paused while finance approvals are being reviewed.",
+             objectives = new { primary = new[] { "Protect cash flow" } },
+             kpis = new { targets = new[] { "forecast_accuracy" } },
+             toolPermissions = new { allowed = new[] { "erp" } },
+@@ -649,22 +649,23 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+             triggerLogic = new { enabled = true, conditions = new[] { new { @event = "invoice_created", source = "erp" } } },
+             workingHours = new { timezone = "UTC", windows = new[] { new { day = "monday", start = "08:00", end = "16:00" } } }
+         });
+ 
+-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+-        var payload = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+         Assert.NotNull(payload);
+-        Assert.Contains("Status", payload!.Errors.Keys);
+-        Assert.Contains("TriggerLogic.enabled", payload.Errors.Keys);
++        Assert.Equal("paused", payload!.Status);
++        Assert.Equal("Paused while finance approvals are being reviewed.", payload.RoleBrief);
++        Assert.True(payload.CanReceiveAssignments);
++        Assert.True(payload.UpdatedUtc > seed.OriginalUpdatedUtc);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
+         companyContextAccessor.SetCompanyId(seed.CompanyId);
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
+ 
+-        Assert.Equal(seed.OriginalUpdatedUtc, agent.UpdatedUtc);
+-        Assert.Equal(AgentStatus.Active, agent.Status);
++        Assert.True(agent.UpdatedUtc > seed.OriginalUpdatedUtc);
++        Assert.Equal(AgentStatus.Paused, agent.Status);
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+index 0d6bb2a..906dc9f 100644
+--- a/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuthAndTenantIntegrationTests.cs
+@@ -298,6 +298,8 @@ public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("active", statusConverter!.ConvertToProvider(AgentStatus.Active));
+         Assert.Equal(AgentStatus.Active, statusConverter.ConvertFromProvider("Active"));
+ 
++        Assert.False(AgentStatusValues.TryParse("inactive", out _));
++
+         var agent = new Agent(
+             Guid.NewGuid(),
+             Guid.NewGuid(),
+diff --git a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+index 00c985f..cabf2ef 100644
+--- a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+@@ -79,7 +79,7 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+     }
+ 
+     [Fact]
+-    public void ValidateAndThrow_rejects_archived_profiles_with_enabled_trigger_logic()
++    public void ValidateAndThrow_allows_archived_profiles_when_other_fields_are_valid()
+     {
+         var command = new UpdateAgentOperatingProfileCommand(
+             "archived",
+@@ -104,10 +104,7 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+                     ["end"] = "16:00"
+                 }))));
+ 
+-        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+-
+-        Assert.Contains("Status", exception.Errors.Keys);
+-        Assert.Contains("TriggerLogic.enabled", exception.Errors.Keys);
++        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+     }
+ 
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
+END_OF_PATCH

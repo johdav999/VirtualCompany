@@ -1,0 +1,1232 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -21,7 +21,46 @@ public sealed record ExecuteAgentToolResultDto(
+     Dictionary<string, JsonNode?>? ExecutionResult,
+     string Message);
+ 
++public static class PolicyDecisionSchemaVersions
++{
++    public const string V1 = "2026-03-31";
++}
++
++public static class PolicyDecisionEvaluationVersions
++{
++    public const string Current = "task_8_3_6";
++}
++
++public sealed record PolicyDecisionReasonDto(
++    string Code,
++    string Category,
++    string Summary);
++
++public sealed record PolicyDecisionTenantContextDto(
++    Guid CompanyId,
++    Guid AgentCompanyId,
++    bool CompanyScopeMatched);
++
++public sealed record PolicyDecisionActorContextDto(
++    Guid AgentId,
++    string AgentStatus,
++    bool CanReceiveAssignments);
++
++public sealed record PolicyDecisionToolContextDto(
++    string ToolName,
++    string ActionType,
++    string? Scope);
++
++public sealed record PolicyDecisionThresholdEvaluationDto(
++    string Category,
++    string Key,
++    decimal? RequestedValue,
++    decimal? ConfiguredValue,
++    bool Exceeded,
++    bool ApprovalRequired,
++    bool SensitiveAction,
++    string EvaluationState);
++
++public sealed record PolicyDecisionApprovalRequirementDto(
++    string RequirementType,
++    string? ApprovalTarget,
++    string? PolicySource,
++    string? ThresholdCategory,
++    string? ThresholdKey,
++    decimal? RequestedValue,
++    decimal? ConfiguredValue,
++    IReadOnlyList<string>? MatchedActions = null,
++    IReadOnlyList<string>? MatchedTools = null,
++    IReadOnlyList<string>? MatchedScopes = null);
++
++public sealed record PolicyDecisionAuditContextDto(
++    Guid ExecutionId,
++    string? CorrelationId,
++    DateTime EvaluatedAtUtc,
++    string PolicyMode,
++    string PolicyVersion);
++
+ public sealed record ToolExecutionDecisionDto(
+     string Outcome,
+     IReadOnlyList<string> ReasonCodes,
+@@ -29,7 +68,14 @@ public sealed record ToolExecutionDecisionDto(
+     string EvaluatedAutonomyLevel,
+     string EvaluatedActionType,
+     string? EvaluatedScope,
+     bool ApprovalRequired,
+-    Dictionary<string, JsonNode?> Metadata);
++    Dictionary<string, JsonNode?> Metadata,
++    string SchemaVersion = PolicyDecisionSchemaVersions.V1,
++    IReadOnlyList<PolicyDecisionReasonDto>? Reasons = null,
++    PolicyDecisionTenantContextDto? Tenant = null,
++    PolicyDecisionActorContextDto? Actor = null,
++    PolicyDecisionToolContextDto? Tool = null,
++    IReadOnlyList<PolicyDecisionThresholdEvaluationDto>? ThresholdEvaluations = null,
++    PolicyDecisionApprovalRequirementDto? ApprovalRequirement = null,
++    PolicyDecisionAuditContextDto? Audit = null);
+ 
+ public sealed record PolicyEvaluationRequest(
+     Guid CompanyId,
+@@ -47,7 +93,9 @@ public sealed record PolicyEvaluationRequest(
+     string? ThresholdCategory,
+     string? ThresholdKey,
+     decimal? ThresholdValue,
+-    bool SensitiveAction);
++    bool SensitiveAction,
++    Guid ExecutionId,
++    string? CorrelationId);
+ 
+ public sealed record ToolExecutionRequest(
+     Guid CompanyId,
+@@ -89,11 +137,14 @@ public static class PolicyDecisionReasonCodes
+     public const string AmbiguousPolicyConfiguration = "ambiguous_policy_configuration";
+     public const string ToolExplicitlyDenied = "tool_explicitly_denied";
+     public const string ToolNotPermitted = "tool_not_permitted";
++    public const string TenantScopeViolation = "tenant_scope_violation";
++    public const string DataScopeViolation = "data_scope_violation";
+     public const string ScopeNotPermitted = "scope_not_permitted";
+     public const string AutonomyLevelBlocksAction = "autonomy_level_blocks_action";
+     public const string ScopeContextMissing = "scope_context_missing";
+     public const string AutonomyLevelRequiresApproval = "autonomy_level_requires_approval";
+     public const string ApprovalRouteMissing = "approval_route_missing";
++    public const string ApprovalRequired = "approval_required";
+     public const string ThresholdContextMissing = "threshold_context_missing";
+     public const string ThresholdConfigurationMissing = "threshold_configuration_missing";
+     public const string ThresholdExceededRequiresApproval = "threshold_exceeded_requires_approval";
+diff --git a/src/VirtualCompany.Application/Agents/ToolExecutionPolicyDecisionJsonSerializer.cs b/src/VirtualCompany.Application/Agents/ToolExecutionPolicyDecisionJsonSerializer.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/ToolExecutionPolicyDecisionJsonSerializer.cs
+@@ -0,0 +1,58 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Agents;
++
++public static class ToolExecutionPolicyDecisionJsonSerializer
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
++    {
++        WriteIndented = false
++    };
++
++    public static Dictionary<string, JsonNode?> Serialize(ToolExecutionDecisionDto decision)
++    {
++        ArgumentNullException.ThrowIfNull(decision);
++
++        var node = JsonSerializer.SerializeToNode(decision, SerializerOptions) as JsonObject ?? new JsonObject();
++        return ToDictionary(node);
++    }
++
++    public static ToolExecutionDecisionDto Deserialize(IReadOnlyDictionary<string, JsonNode?>? payload)
++    {
++        if (payload is null || payload.Count == 0)
++        {
++            return new ToolExecutionDecisionDto(
++                PolicyDecisionOutcomeValues.Deny,
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "Policy decision payload is missing.",
++                string.Empty,
++                string.Empty,
++                null,
++                false,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++                PolicyDecisionSchemaVersions.V1);
++        }
++
++        var jsonObject = new JsonObject();
++        foreach (var (key, value) in payload)
++        {
++            jsonObject[key] = value?.DeepClone();
++        }
++
++        return jsonObject.Deserialize<ToolExecutionDecisionDto>(SerializerOptions)
++               ?? throw new InvalidOperationException("Failed to deserialize the structured policy decision payload.");
++    }
++
++    private static Dictionary<string, JsonNode?> ToDictionary(JsonObject jsonObject)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var property in jsonObject)
++        {
++            payload[property.Key] = property.Value?.DeepClone();
++        }
++
++        return payload;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -1,8 +1,11 @@
++using System.Diagnostics;
++using System.Globalization;
+ using System.Text.Json.Nodes;
++using System.Text.Json;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -16,6 +19,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     private readonly IPolicyGuardrailEngine _policyGuardrailEngine;
+     private readonly ICompanyToolExecutor _companyToolExecutor;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public CompanyAgentToolExecutionService(
+         VirtualCompanyDbContext dbContext,
+@@ -23,7 +27,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
+         IPolicyGuardrailEngine policyGuardrailEngine,
+         ICompanyToolExecutor companyToolExecutor,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -31,6 +36,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         _policyGuardrailEngine = policyGuardrailEngine;
+         _companyToolExecutor = companyToolExecutor;
+         _auditEventWriter = auditEventWriter;
++        _correlationContextAccessor = correlationContextAccessor;
+     }
+ 
+     public async Task<ExecuteAgentToolResultDto> ExecuteAsync(
+@@ -41,6 +47,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
++        var correlationId = CreateCorrelationId();
++        var executionId = Guid.NewGuid();
++
++        var attempt = new ToolExecutionAttempt(
++            executionId,
++            companyId,
++            agentId,
++            command.ToolName,
++            ToolActionTypeValues.Parse(command.ActionType),
++            command.Scope,
++            command.RequestPayload);
+ 
+         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
+         var policyRequest = new PolicyEvaluationRequest(
+@@ -58,18 +72,12 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             command.ThresholdCategory,
+             command.ThresholdKey,
+             command.ThresholdValue,
+-            command.SensitiveAction);
++            command.SensitiveAction,
++            executionId,
++            correlationId);
+ 
+         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
+-        var attempt = new ToolExecutionAttempt(
+-            Guid.NewGuid(),
+-            companyId,
+-            agentId,
+-            command.ToolName,
+-            ToolActionTypeValues.Parse(command.ActionType),
+-            command.Scope,
+-            command.RequestPayload);
+-
+         _dbContext.ToolExecutionAttempts.Add(attempt);
+ 
+         var serializedDecision = SerializeDecision(decision);
+@@ -85,6 +93,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                     AuditTargetTypes.AgentToolExecution,
+                     attempt.Id.ToString("N"),
+                     AuditEventOutcomes.Denied,
++                    DataSources: ["agent_execution", "policy_guardrail", "http_request"],
++                    CorrelationId: correlationId,
+                     RationaleSummary: BuildAuditRationaleSummary(decision),
+                     Metadata: BuildAuditMetadata(command, decision)),
+                 cancellationToken);
+@@ -113,6 +123,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                     AuditTargetTypes.ApprovalRequest,
+                     approvalRequest.Id.ToString("N"),
+                     AuditEventOutcomes.Pending,
++                    DataSources: ["agent_execution", "policy_guardrail", "http_request"],
++                    CorrelationId: correlationId,
+                     RationaleSummary: decision.Explanation,
+                     Metadata: BuildAuditMetadata(command, decision, approvalRequest.Id)),
+                 cancellationToken);
+@@ -145,6 +157,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 AuditTargetTypes.AgentToolExecution,
+                 attempt.Id.ToString("N"),
+                 AuditEventOutcomes.Succeeded,
++                DataSources: ["agent_execution", "policy_guardrail", "http_request"],
++                CorrelationId: correlationId,
+                 RationaleSummary: result.Summary,
+                 Metadata: BuildAuditMetadata(command, decision)),
+             cancellationToken);
+@@ -177,6 +191,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ["approvalRequired"] = decision.ApprovalRequired ? "true" : "false",
+             ["autonomyLevel"] = decision.EvaluatedAutonomyLevel,
+             ["reasonCodes"] = string.Join(",", decision.ReasonCodes),
++            ["policyDecisionSchemaVersion"] = decision.SchemaVersion,
++            ["policyEvaluationVersion"] = decision.Audit?.PolicyVersion,
++            ["policyCorrelationId"] = decision.Audit?.CorrelationId,
++            ["executionId"] = decision.Audit is null ? null : decision.Audit.ExecutionId.ToString("N"),
++            ["approvalRequirementType"] = decision.ApprovalRequirement?.RequirementType,
+             ["executionState"] = TryGetNonEmptyString(decision.Metadata, "executionState"),
+             ["primaryReasonCode"] = GetPrimaryReasonCode(decision)
+         };
+@@ -186,6 +205,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             metadata["approvalRequestId"] = approvalRequestId.Value.ToString("N");
+         }
+ 
++        if (decision.ThresholdEvaluations is not null)
++        {
++            metadata["thresholdEvaluationCount"] = decision.ThresholdEvaluations.Count.ToString(CultureInfo.InvariantCulture);
++        }
++
+         return metadata;
+     }
+ 
+@@ -227,22 +251,22 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             thresholdContext["executionState"] = executionState?.DeepClone();
+         }
+ 
++        thresholdContext["schemaVersion"] = JsonValue.Create(decision.SchemaVersion);
++
++        if (decision.ApprovalRequirement is not null)
++        {
++            thresholdContext["approvalRequirement"] = JsonSerializer.SerializeToNode(decision.ApprovalRequirement);
++        }
++
++        if (decision.ThresholdEvaluations is not null && decision.ThresholdEvaluations.Count > 0)
++        {
++            thresholdContext["thresholdEvaluations"] = JsonSerializer.SerializeToNode(decision.ThresholdEvaluations);
++        }
++
+         return thresholdContext;
+     }
+ 
+-    private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision)
+-    {
+-        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["outcome"] = JsonValue.Create(decision.Outcome),
+-            ["reasonCodes"] = new JsonArray(decision.ReasonCodes.Select(static code => (JsonNode?)JsonValue.Create(code)).ToArray()),
+-            ["explanation"] = JsonValue.Create(decision.Explanation),
+-            ["evaluatedActionType"] = JsonValue.Create(decision.EvaluatedActionType),
+-            ["evaluatedScope"] = string.IsNullOrWhiteSpace(decision.EvaluatedScope) ? null : JsonValue.Create(decision.EvaluatedScope),
+-            ["evaluatedAutonomyLevel"] = JsonValue.Create(decision.EvaluatedAutonomyLevel),
+-            ["approvalRequired"] = JsonValue.Create(decision.ApprovalRequired),
+-            ["metadata"] = ToJsonObject(decision.Metadata)
+-        };
+-
+-        return payload;
+-    }
++    private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision) =>
++        ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision);
+ 
+     private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?> nodes)
+     {
+@@ -283,7 +307,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return GetPrimaryReasonCode(decision) switch
+         {
+             PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted
+                 => "This action was blocked by policy because the agent is not permitted to use that tool.",
+-            PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.InvalidCompanyContext
++            PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.InvalidCompanyContext or PolicyDecisionReasonCodes.TenantScopeViolation or PolicyDecisionReasonCodes.DataScopeViolation
+                 => "This action was blocked by policy because the request is outside the agent's allowed company scope.",
+             PolicyDecisionReasonCodes.AgentStatusDisallowsExecution
+                 => "This action was blocked by policy because the agent is not currently allowed to execute tools.",
+@@ -306,6 +330,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private string CreateCorrelationId() =>
++        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
++            : _correlationContextAccessor.CorrelationId!;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using System.Text.Json;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -8,6 +9,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+     public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
+     {
+         var metadata = CreateBaseMetadata(request);
++        var thresholdEvaluations = new List<PolicyDecisionThresholdEvaluationDto>();
++        PolicyDecisionApprovalRequirementDto? approvalRequirement = null;
+ 
+         if (request.CompanyId == Guid.Empty ||
+             request.AgentId == Guid.Empty ||
+@@ -16,9 +19,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         {
+             return Deny(
+                 request,
+-                [PolicyDecisionReasonCodes.InvalidCompanyContext],
++                [PolicyDecisionReasonCodes.InvalidCompanyContext, PolicyDecisionReasonCodes.TenantScopeViolation],
+                 "Tenant context is missing or inconsistent for this execution request.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         metadata["agentStatus"] = JsonValue.Create(request.AgentStatus);
+@@ -29,7 +33,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request,
+                 [PolicyDecisionReasonCodes.AgentStatusDisallowsExecution],
+                 "The agent status does not permit tool execution.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!ToolActionTypeValues.TryParse(request.ActionType, out var actionType))
+@@ -39,7 +44,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request.ActionType,
+                 [PolicyDecisionReasonCodes.InvalidActionType],
+                 "The requested action type is invalid.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!AgentAutonomyLevelValues.TryParse(request.EvaluatedAutonomyLevel, out var autonomyLevel))
+@@ -49,7 +55,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.InvalidAutonomyLevel],
+                 "The agent autonomy configuration is missing or invalid.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
+@@ -61,7 +68,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions are missing or invalid, so execution is denied by default.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!allowedToolsExists || allowedTools.Count == 0)
+@@ -71,7 +79,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions do not define an allowed set for this agent.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (allowedTools.Overlaps(deniedTools))
+@@ -81,7 +90,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Tool permissions are ambiguous because the same tool is both allowed and denied.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (deniedTools.Contains(request.ToolName))
+@@ -92,7 +102,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+                 "The requested tool is explicitly denied for this agent.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!allowedTools.Contains(request.ToolName))
+@@ -103,7 +114,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         metadata["toolPolicyState"] = JsonValue.Create("configured");
+@@ -117,7 +129,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Data scope policy is missing or invalid for the requested action.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (scopes.Count == 0)
+@@ -127,7 +140,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Data scope policy is missing or invalid for the requested action.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+         metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
+         metadata["scopePolicyFallbackApplied"] = JsonValue.Create(usedLegacyScopeAlias);
+@@ -140,7 +154,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ScopeContextMissing],
+                 "Execute actions require an explicit scope so guardrails can authorize them before execution.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (!string.IsNullOrWhiteSpace(request.Scope))
+@@ -151,9 +166,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+-                    [PolicyDecisionReasonCodes.ScopeNotPermitted],
++                    [PolicyDecisionReasonCodes.ScopeNotPermitted, PolicyDecisionReasonCodes.DataScopeViolation],
+                     "The requested scope is outside the agent's configured data access boundaries.",
+-                    metadata);
++                    metadata,
++                    thresholdEvaluations);
+             }
+         }
+         metadata["scopeMatch"] = JsonValue.Create(true);
+@@ -169,20 +185,25 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return Deny(
+                 request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AutonomyLevelBlocksAction],
+                 "Autonomy level 0 is limited to read and recommendation activity and cannot execute tools directly.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level1 && actionType == ToolActionType.Execute)
+         {
++            approvalRequirement = new PolicyDecisionApprovalRequirementDto(
++                "autonomy_level",
++                null,
++                "autonomy_level.level_1_execute",
++                null,
++                null,
++                null,
++                null,
++                [actionType.ToStorageValue()],
++                [request.ToolName],
++                string.IsNullOrWhiteSpace(request.Scope) ? [] : [request.Scope.Trim()]);
+             return RequireApproval(
+                 request,
+                 actionType.ToStorageValue(),
+                 metadata,
+                 [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],
+-                "Autonomy level 1 requires approval before execute actions can run.");
++                "Autonomy level 1 requires approval before execute actions can run.",
++                thresholdEvaluations,
++                approvalRequirement);
+         }
+ 
+         if (actionType == ToolActionType.Execute && request.SensitiveAction)
+@@ -197,28 +218,42 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             if (!HasThresholdContext(request))
+             {
+                 metadata["thresholdEvaluationState"] = JsonValue.Create("missing_request_context");
++                thresholdEvaluations.Add(CreateThresholdEvaluation(request, null, false, false, "missing_request_context"));
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ThresholdContextMissing],
+                     "Sensitive execute actions require threshold context before policy can determine whether approval is needed.",
+-                    metadata);
++                    metadata,
++                    thresholdEvaluations);
+             }
+ 
+             AddRequestedThresholdMetadata(request, metadata);
+ 
+             if (!TryGetThresholdValue(
+-                    request.ApprovalThresholds,
+-                    request.ThresholdCategory!,
+-                    request.ThresholdKey!,
+-                    out var configuredThreshold))
++                request.ApprovalThresholds,
++                request.ThresholdCategory!,
++                request.ThresholdKey!,
++                out var configuredThreshold))
+             {
+                 metadata["thresholdEvaluationState"] = JsonValue.Create("missing_configuration");
++                thresholdEvaluations.Add(CreateThresholdEvaluation(request, null, false, false, "missing_configuration"));
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
+                     "Threshold policy is missing or invalid for this sensitive execute action.",
+-                    metadata);
++                    metadata,
++                    thresholdEvaluations);
+             }
+ 
+             metadata["thresholdEvaluationState"] = JsonValue.Create("evaluated");
+             AddThresholdEvaluationMetadata(request, metadata, configuredThreshold);
++            var exceeded = request.ThresholdValue!.Value > configuredThreshold;
++            thresholdEvaluations.Add(CreateThresholdEvaluation(request, configuredThreshold, exceeded, exceeded, "evaluated"));
+ 
+-            if (request.ThresholdValue!.Value > configuredThreshold)
++            if (exceeded)
+             {
++                approvalRequirement = new PolicyDecisionApprovalRequirementDto(
++                    "threshold",
++                    null,
++                    "approval_thresholds",
++                    request.ThresholdCategory,
++                    request.ThresholdKey,
++                    request.ThresholdValue,
++                    configuredThreshold);
+                 return RequireApproval(
+                     request,
+                     actionType.ToStorageValue(),
+@@ -228,7 +263,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                         PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
+                         PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval
+                     ],
+-                    "This sensitive execute action exceeds the configured approval threshold and must remain pending approval before it can run.");
++                    "This sensitive execute action exceeds the configured approval threshold and must remain pending approval before it can run.",
++                    thresholdEvaluations,
++                    approvalRequirement);
+             }
+         }
+ 
+@@ -239,7 +276,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request,
+                 actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Approval requirement policy is present but invalid or ambiguous.",
+-                metadata);
++                metadata,
++                thresholdEvaluations);
+         }
+ 
+         if (approvalRequirementConfigured && approvalRequirementPolicy is not null)
+@@ -248,24 +286,38 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ 
+             if (MatchesApprovalRequirement(approvalRequirementPolicy, actionType.ToStorageValue(), request.ToolName, request.Scope))
+             {
++                approvalRequirement = new PolicyDecisionApprovalRequirementDto(
++                    "policy_rule",
++                    null,
++                    "escalation_rules.requireApproval",
++                    null,
++                    null,
++                    null,
++                    null,
++                    approvalRequirementPolicy.Actions.OrderBy(static value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
++                    approvalRequirementPolicy.Tools.OrderBy(static value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
++                    approvalRequirementPolicy.Scopes.OrderBy(static value => value, StringComparer.OrdinalIgnoreCase).ToArray());
+                 return RequireApproval(
+                     request,
+                     actionType.ToStorageValue(),
+                     metadata,
+-                    [PolicyDecisionReasonCodes.ApprovalRequiredByPolicy],
+-                    "The requested action requires human approval based on the configured policy.");
++                    [PolicyDecisionReasonCodes.ApprovalRequiredByPolicy, PolicyDecisionReasonCodes.ApprovalRequired],
++                    "The requested action requires human approval based on the configured policy.",
++                    thresholdEvaluations,
++                    approvalRequirement);
+             }
+         }
+ 
+         if (request.ThresholdValue.HasValue)
+         {
+             if (!HasThresholdContext(request))
+             {
+                 metadata["thresholdEvaluationState"] = JsonValue.Create("missing_request_context");
++                thresholdEvaluations.Add(CreateThresholdEvaluation(request, null, false, false, "missing_request_context"));
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ThresholdContextMissing],
+                     "Threshold context is incomplete for the requested action.",
+-                    metadata);
++                    metadata,
++                    thresholdEvaluations);
+             }
+ 
+             AddRequestedThresholdMetadata(request, metadata);
+@@ -278,28 +330,42 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             {
+                 metadata["thresholdEvaluationState"] = JsonValue.Create("missing_configuration");
++                thresholdEvaluations.Add(CreateThresholdEvaluation(request, null, false, false, "missing_configuration"));
+                 return Deny(
+                     request,
+                     actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
+                     "Threshold policy is missing or invalid for the requested action.",
+-                    metadata);
++                    metadata,
++                    thresholdEvaluations);
+             }
+ 
+             metadata["thresholdEvaluationState"] = JsonValue.Create("evaluated");
+             AddThresholdEvaluationMetadata(request, metadata, configuredThreshold);
++            var exceeded = request.ThresholdValue.Value > configuredThreshold;
++            thresholdEvaluations.Add(CreateThresholdEvaluation(request, configuredThreshold, exceeded, exceeded, "evaluated"));
+ 
+-            if (request.ThresholdValue.Value > configuredThreshold)
++            if (exceeded)
+             {
++                approvalRequirement = new PolicyDecisionApprovalRequirementDto(
++                    "threshold",
++                    null,
++                    "approval_thresholds",
++                    request.ThresholdCategory,
++                    request.ThresholdKey,
++                    request.ThresholdValue,
++                    configuredThreshold);
+                 return RequireApproval(
+                     request,
+                     actionType.ToStorageValue(),
+                     metadata,
+                     [PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval],
+-                    "The requested action exceeds the configured approval threshold.");
++                    "The requested action exceeds the configured approval threshold.",
++                    thresholdEvaluations,
++                    approvalRequirement);
+             }
+         }
+ 
+-        return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is within scope, within threshold, and allowed to execute.");
++        return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is within scope, within threshold, and allowed to execute.", thresholdEvaluations);
+     }
+ 
+     private static ToolExecutionDecisionDto Allow(
+@@ -307,7 +373,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         string evaluatedActionType,
+         Dictionary<string, JsonNode?> metadata,
+-        string explanation)
++        string explanation,
++        IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations)
+     {
+         metadata["executionBlocked"] = JsonValue.Create(false);
+         metadata["blockedPendingApproval"] = JsonValue.Create(false);
+@@ -320,7 +387,11 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             false,
+-            metadata);
++            metadata,
++            PolicyDecisionSchemaVersions.V1,
++            CreateReasons([PolicyDecisionReasonCodes.PolicyChecksPassed]),
++            CreateTenantContext(request),
++            CreateActorContext(request),
++            CreateToolContext(request, evaluatedActionType),
++            thresholdEvaluations.ToArray(),
++            null,
++            CreateAuditContext(request));
+     }
+ 
+     private static ToolExecutionDecisionDto Deny(
+@@ -329,7 +400,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         IReadOnlyList<string> reasonCodes,
+         string explanation,
+-        Dictionary<string, JsonNode?> metadata)
++        Dictionary<string, JsonNode?> metadata,
++        IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations,
++        PolicyDecisionApprovalRequirementDto? approvalRequirement = null)
+     {
+         metadata["executionBlocked"] = JsonValue.Create(true);
+         metadata["blockedPendingApproval"] = JsonValue.Create(false);
+@@ -341,15 +414,15 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             false,
+-            metadata);
+-        return new ToolExecutionDecisionDto(
+-            PolicyDecisionOutcomeValues.Deny,
+-            reasonCodes,
+-            explanation,
+-            request.EvaluatedAutonomyLevel,
+-            evaluatedActionType,
+-            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+-            false,
+-            metadata);
++            metadata,
++            PolicyDecisionSchemaVersions.V1,
++            CreateReasons(reasonCodes),
++            CreateTenantContext(request),
++            CreateActorContext(request),
++            CreateToolContext(request, evaluatedActionType),
++            thresholdEvaluations.ToArray(),
++            approvalRequirement,
++            CreateAuditContext(request));
+     }
+ 
+     private static ToolExecutionDecisionDto RequireApproval(
+@@ -358,7 +431,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         Dictionary<string, JsonNode?> metadata,
+         IReadOnlyList<string> reasonCodes,
+-        string explanation)
++        string explanation,
++        IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations,
++        PolicyDecisionApprovalRequirementDto? approvalRequirement)
+     {
+         if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
+         {
++            metadata["approvalRequirementState"] = JsonValue.Create("missing_route");
+             return Deny(
+                 request,
+                 evaluatedActionType,
+                 [PolicyDecisionReasonCodes.ApprovalRouteMissing],
+                 "Approval is required, but the escalation route is missing or invalid.",
+-                metadata);
++                metadata,
++                thresholdEvaluations,
++                approvalRequirement);
+         }
+ 
+         metadata["approvalTarget"] = JsonValue.Create(approvalTarget);
++        metadata["approvalRequirementState"] = JsonValue.Create("configured");
+         metadata["executionBlocked"] = JsonValue.Create(true);
+         metadata["blockedPendingApproval"] = JsonValue.Create(true);
+         metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.AwaitingApproval.ToStorageValue());
++        var effectiveApprovalRequirement = approvalRequirement is null
++            ? new PolicyDecisionApprovalRequirementDto("manual", approvalTarget, "escalation_rules.escalateTo", null, null, null, null)
++            : approvalRequirement with { ApprovalTarget = approvalTarget };
+         return new ToolExecutionDecisionDto(
+             PolicyDecisionOutcomeValues.RequireApproval,
+             reasonCodes,
+@@ -367,7 +442,13 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             true,
+-            metadata);
++            metadata,
++            PolicyDecisionSchemaVersions.V1,
++            CreateReasons(reasonCodes),
++            CreateTenantContext(request),
++            CreateActorContext(request),
++            CreateToolContext(request, evaluatedActionType),
++            thresholdEvaluations.ToArray(),
++            effectiveApprovalRequirement,
++            CreateAuditContext(request));
+     }
+ 
+     private static Dictionary<string, JsonNode?> CreateBaseMetadata(PolicyEvaluationRequest request) =>
+@@ -384,15 +465,29 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 request.CompanyId != Guid.Empty &&
+                 request.AgentCompanyId != Guid.Empty &&
+                 request.AgentCompanyId == request.CompanyId),
+             ["evaluatedAutonomyLevel"] = JsonValue.Create(request.EvaluatedAutonomyLevel),
+-            ["evaluationVersion"] = JsonValue.Create("task_8_3_4"),
++            ["evaluationVersion"] = JsonValue.Create(PolicyDecisionEvaluationVersions.Current),
++            ["policyDecisionSchemaVersion"] = JsonValue.Create(PolicyDecisionSchemaVersions.V1),
+             ["policyMode"] = JsonValue.Create("default_deny"),
+-            ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
++            ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction),
++            ["executionId"] = JsonValue.Create(request.ExecutionId),
++            ["correlationId"] = string.IsNullOrWhiteSpace(request.CorrelationId) ? null : JsonValue.Create(request.CorrelationId)
+         };
+ 
+     private static ToolExecutionDecisionDto Deny(
+         PolicyEvaluationRequest request,
+         IReadOnlyList<string> reasonCodes,
+         string explanation,
+-        Dictionary<string, JsonNode?> metadata) =>
+-        Deny(request, NormalizeEvaluatedActionType(request.ActionType), reasonCodes, explanation, metadata);
++        Dictionary<string, JsonNode?> metadata,
++        IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations,
++        PolicyDecisionApprovalRequirementDto? approvalRequirement = null) =>
++        Deny(request, NormalizeEvaluatedActionType(request.ActionType), reasonCodes, explanation, metadata, thresholdEvaluations, approvalRequirement);
++
++    private static PolicyDecisionTenantContextDto CreateTenantContext(PolicyEvaluationRequest request) =>
++        new(request.CompanyId, request.AgentCompanyId, request.CompanyId != Guid.Empty && request.AgentCompanyId != Guid.Empty && request.AgentCompanyId == request.CompanyId);
++
++    private static PolicyDecisionActorContextDto CreateActorContext(PolicyEvaluationRequest request) =>
++        new(request.AgentId, request.AgentStatus, request.CanReceiveAssignments);
++
++    private static PolicyDecisionToolContextDto CreateToolContext(PolicyEvaluationRequest request, string evaluatedActionType) =>
++        new(request.ToolName, evaluatedActionType, string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim());
++
++    private static PolicyDecisionAuditContextDto CreateAuditContext(PolicyEvaluationRequest request) =>
++        new(request.ExecutionId, string.IsNullOrWhiteSpace(request.CorrelationId) ? null : request.CorrelationId.Trim(), DateTime.UtcNow, "default_deny", PolicyDecisionEvaluationVersions.Current);
+ 
+     private static bool HasThresholdContext(PolicyEvaluationRequest request) =>
+         !string.IsNullOrWhiteSpace(request.ThresholdCategory) &&
+@@ -485,12 +580,14 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyEvaluationRequest request,
+         Dictionary<string, JsonNode?> metadata,
+         decimal configuredThreshold)
+     {
+         metadata["configuredThreshold"] = JsonValue.Create(configuredThreshold);
++        var exceeded = request.ThresholdValue!.Value > configuredThreshold;
+         metadata["thresholdEvaluation"] = new JsonObject
+         {
+             ["category"] = JsonValue.Create(request.ThresholdCategory),
+             ["key"] = JsonValue.Create(request.ThresholdKey),
+             ["requestValue"] = JsonValue.Create(request.ThresholdValue!.Value),
+             ["configuredThreshold"] = JsonValue.Create(configuredThreshold),
+-            ["exceeded"] = JsonValue.Create(request.ThresholdValue.Value > configuredThreshold),
++            ["exceeded"] = JsonValue.Create(exceeded),
++            ["approvalRequired"] = JsonValue.Create(exceeded),
+             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
+         };
+     }
+@@ -556,7 +653,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+     }
+ 
+     private static JsonObject CreateApprovalRequirementMetadata(ApprovalRequirementPolicy policy)
+     {
+         return new JsonObject
+         {
+             ["actions"] = ToJsonArray(policy.Actions),
+@@ -566,8 +663,92 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         };
+     }
+ 
+     private static JsonArray ToJsonArray(IEnumerable<string> values) =>
+-        new(values.Select(static value => (JsonNode?)JsonValue.Create(value)).ToArray());
++        new(values
++            .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase)
++            .Select(static value => (JsonNode?)JsonValue.Create(value))
++            .ToArray());
++
++    private static PolicyDecisionThresholdEvaluationDto CreateThresholdEvaluation(
++        PolicyEvaluationRequest request,
++        decimal? configuredThreshold,
++        bool exceeded,
++        bool approvalRequired,
++        string evaluationState) =>
++        new(
++            request.ThresholdCategory?.Trim() ?? string.Empty,
++            request.ThresholdKey?.Trim() ?? string.Empty,
++            request.ThresholdValue,
++            configuredThreshold,
++            exceeded,
++            approvalRequired,
++            request.SensitiveAction,
++            evaluationState);
++
++    private static IReadOnlyList<PolicyDecisionReasonDto> CreateReasons(IReadOnlyList<string> reasonCodes) =>
++        reasonCodes
++            .Where(static code => !string.IsNullOrWhiteSpace(code))
++            .Select(code => new PolicyDecisionReasonDto(code, ResolveReasonCategory(code), ResolveReasonSummary(code)))
++            .ToArray();
++
++    private static string ResolveReasonCategory(string reasonCode) => reasonCode switch
++    {
++        PolicyDecisionReasonCodes.InvalidCompanyContext or PolicyDecisionReasonCodes.TenantScopeViolation => "tenant",
++        PolicyDecisionReasonCodes.AgentStatusDisallowsExecution => "actor",
++        PolicyDecisionReasonCodes.InvalidActionType => "action",
++        PolicyDecisionReasonCodes.InvalidAutonomyLevel or PolicyDecisionReasonCodes.AutonomyLevelBlocksAction or PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval => "autonomy",
++        PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration => "policy_configuration",
++        PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted => "tool",
++        PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.DataScopeViolation => "scope",
++        PolicyDecisionReasonCodes.ApprovalRequiredByPolicy or PolicyDecisionReasonCodes.ApprovalRouteMissing or PolicyDecisionReasonCodes.ApprovalRequired => "approval",
++        PolicyDecisionReasonCodes.ThresholdContextMissing or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "threshold",
++        PolicyDecisionReasonCodes.SensitiveActionRequiresApproval => "sensitivity",
++        PolicyDecisionReasonCodes.PolicyChecksPassed => "allowance",
++        _ => "policy"
++    };
++
++    private static string ResolveReasonSummary(string reasonCode) => reasonCode switch
++    {
++        PolicyDecisionReasonCodes.PolicyChecksPassed => "All configured policy checks passed.",
++        PolicyDecisionReasonCodes.InvalidCompanyContext => "Tenant context was missing or inconsistent.",
++        PolicyDecisionReasonCodes.TenantScopeViolation => "The request crossed tenant boundaries.",
++        PolicyDecisionReasonCodes.ApprovalRequiredByPolicy => "Configured policy requires a human approval step.",
++        PolicyDecisionReasonCodes.InvalidActionType => "The requested action type is not supported.",
++        PolicyDecisionReasonCodes.InvalidAutonomyLevel => "The agent autonomy level is missing or invalid.",
++        PolicyDecisionReasonCodes.AgentStatusDisallowsExecution => "The agent status does not permit execution.",
++        PolicyDecisionReasonCodes.MissingPolicyConfiguration => "Required guardrail configuration is missing.",
++        PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration => "Guardrail configuration is ambiguous.",
++        PolicyDecisionReasonCodes.ToolExplicitlyDenied => "The tool is explicitly denied.",
++        PolicyDecisionReasonCodes.ToolNotPermitted => "The tool is outside the allowed tool set.",
++        PolicyDecisionReasonCodes.ScopeNotPermitted => "The requested scope is not permitted.",
++        PolicyDecisionReasonCodes.DataScopeViolation => "The requested scope violates the configured data boundary.",
++        PolicyDecisionReasonCodes.AutonomyLevelBlocksAction => "The autonomy level blocks this action.",
++        PolicyDecisionReasonCodes.ScopeContextMissing => "The request is missing required scope context.",
++        PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval => "The autonomy level requires approval for this action.",
++        PolicyDecisionReasonCodes.ApprovalRouteMissing => "Approval is required but no escalation route is configured.",
++        PolicyDecisionReasonCodes.ApprovalRequired => "A human approval step is required.",
++        PolicyDecisionReasonCodes.ThresholdContextMissing => "Threshold context is incomplete.",
++        PolicyDecisionReasonCodes.ThresholdConfigurationMissing => "Threshold policy is missing or invalid.",
++        PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "The request exceeded a configured threshold.",
++        PolicyDecisionReasonCodes.SensitiveActionRequiresApproval => "The action is marked as sensitive and requires approval.",
++        _ => "The action was evaluated by a default-deny guardrail rule."
++    };
+ 
+     private static bool TryGetIdentifierSet(
+         JsonObject values,
+@@ -610,5 +791,5 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ 
+     private sealed record ApprovalRequirementPolicy(
+         HashSet<string> Actions,
+         HashSet<string> Tools,
+         HashSet<string> Scopes);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -60,6 +60,9 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+         Assert.Equal("wire_transfer", attempt.ToolName);
+         Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
++        Assert.Equal(seed.CompanyId, attempt.PolicyDecision["tenant"]!["companyId"]!.GetValue<Guid>());
++        Assert.Equal("tool_not_permitted", attempt.PolicyDecision["reasons"]![0]!["code"]!.GetValue<string>());
+         Assert.Null(attempt.ApprovalRequestId);
+ 
+         var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
+@@ -71,6 +74,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(AuditActorTypes.Agent, auditEvent.ActorType);
+         Assert.Equal(seed.AgentId, auditEvent.ActorId);
+         Assert.Equal("tool_not_permitted", auditEvent.Metadata["primaryReasonCode"]);
++        Assert.Equal(PolicyDecisionSchemaVersions.V1, auditEvent.Metadata["policyDecisionSchemaVersion"]);
+         Assert.Contains("blocked by policy before execution", auditEvent.RationaleSummary);
+     }
+ 
+@@ -103,6 +107,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+ 
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+         Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
++        Assert.Equal("autonomy", attempt.PolicyDecision["reasons"]![0]!["category"]!.GetValue<string>());
++        Assert.Equal(seed.AgentId, attempt.PolicyDecision["actor"]!["agentId"]!.GetValue<Guid>());
+     }
+ 
+     [Fact]
+@@ -168,6 +174,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.True(attempt.PolicyDecision["approvalRequired"]!.GetValue<bool>());
+         Assert.Equal("awaiting_approval", attempt.PolicyDecision["metadata"]!["executionState"]!.GetValue<string>());
+         Assert.True(attempt.PolicyDecision["metadata"]!["blockedPendingApproval"]!.GetValue<bool>());
++        Assert.Equal("threshold", attempt.PolicyDecision["approvalRequirement"]!["requirementType"]!.GetValue<string>());
++        Assert.Equal("expenseUsd", attempt.PolicyDecision["thresholdEvaluations"]![0]!["key"]!.GetValue<string>());
+         Assert.True(attempt.PolicyDecision["metadata"]!["thresholdEvaluation"]!["sensitiveAction"]!.GetValue<bool>());
+     }
+ 
+@@ -208,6 +216,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.True(payload.PolicyDecision.Metadata.ContainsKey("approvalRequirementPolicy"));
+         Assert.Equal("execute", payload.PolicyDecision.Metadata["approvalRequirementPolicy"].GetProperty("actions")[0].GetString());
+     }
+ 
+@@ -252,8 +262,12 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
+         Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
+         Assert.Equal("default_deny", attempt.PolicyDecision["metadata"]!["policyMode"]!.GetValue<string>());
++        Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
+         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal("erp", attempt.PolicyDecision["tool"]!["toolName"]!.GetValue<string>());
++        Assert.Equal("task_8_3_6", attempt.PolicyDecision["audit"]!["policyVersion"]!.GetValue<string>());
+         Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
++        Assert.Equal("expenseUsd", attempt.PolicyDecision["thresholdEvaluations"]![0]!["key"]!.GetValue<string>());
+         Assert.NotNull(attempt.ExecutedUtc);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -21,6 +21,10 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Equal("allow", decision.Outcome);
+         Assert.Contains("policy_checks_passed", decision.ReasonCodes);
+         Assert.Equal("execute", decision.EvaluatedActionType);
++        Assert.Equal(PolicyDecisionSchemaVersions.V1, decision.SchemaVersion);
++        Assert.NotNull(decision.Tenant);
++        Assert.NotNull(decision.Actor);
++        Assert.NotNull(decision.Audit);
+         Assert.Equal("default_deny", decision.Metadata["policyMode"]!.GetValue<string>());
+     }
+ 
+@@ -86,6 +90,8 @@ public sealed class PolicyGuardrailEngineTests
+ 
+         Assert.Equal("deny", decision.Outcome);
+         Assert.Contains("missing_policy_configuration", decision.ReasonCodes);
++        Assert.NotNull(decision.Reasons);
++        Assert.Contains(decision.Reasons!, x => x.Code == PolicyDecisionReasonCodes.MissingPolicyConfiguration && x.Category == "policy_configuration");
+     }
+ 
+     [Fact]
+@@ -104,6 +110,29 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.True(decision.Metadata["blockedPendingApproval"]!.GetValue<bool>());
+         Assert.Equal("awaiting_approval", decision.Metadata["executionState"]!.GetValue<string>());
+         Assert.True(decision.Metadata["thresholdEvaluation"]!["sensitiveAction"]!.GetValue<bool>());
++        Assert.NotNull(decision.ApprovalRequirement);
++        Assert.Equal("threshold", decision.ApprovalRequirement!.RequirementType);
++        Assert.NotNull(decision.ThresholdEvaluations);
++        Assert.Single(decision.ThresholdEvaluations!);
++        Assert.Equal("expenseUsd", decision.ThresholdEvaluations![0].Key);
++    }
++
++    [Fact]
++    public void Evaluate_denies_when_company_scope_does_not_match()
++    {
++        var companyId = Guid.NewGuid();
++        var decision = _engine.Evaluate(new PolicyEvaluationRequest(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "active",
++            "level_2",
++            true,
++            Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            Payload(("read", new JsonArray(JsonValue.Create("finance"))), ("write", new JsonArray(JsonValue.Create("payments")))),
++            Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            Payload(("escalateTo", JsonValue.Create("founder"))),
++            "erp",
++            "execute",
++            "payments",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            null,
++            null,
++            null,
++            false,
++            Guid.NewGuid(),
++            "corr-tenant"));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("tenant_scope_violation", decision.ReasonCodes);
++        Assert.False(decision.Tenant!.CompanyScopeMatched);
+     }
+ 
+     [Fact]
+@@ -175,6 +204,20 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("scope_context_missing", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_denies_when_scope_violates_data_boundary()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "hr"));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("data_scope_violation", decision.ReasonCodes);
++        Assert.NotNull(decision.Reasons);
++        Assert.Contains(decision.Reasons!, x => x.Code == PolicyDecisionReasonCodes.DataScopeViolation && x.Category == "scope");
++    }
++
+     [Fact]
+     public void Evaluate_denies_when_tool_permissions_are_ambiguous()
+     {
+@@ -301,7 +344,9 @@ public sealed class PolicyGuardrailEngineTests
+             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             thresholdCategory,
+             thresholdKey,
+             thresholdValue,
+-            sensitiveAction);
++            sensitiveAction,
++            Guid.NewGuid(),
++            "corr-policy-001");
+     }
+ 
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
+diff --git a/tests/VirtualCompany.Api.Tests/ToolExecutionPolicyDecisionJsonSerializerTests.cs b/tests/VirtualCompany.Api.Tests/ToolExecutionPolicyDecisionJsonSerializerTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ToolExecutionPolicyDecisionJsonSerializerTests.cs
+@@ -0,0 +1,63 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ToolExecutionPolicyDecisionJsonSerializerTests
++{
++    [Fact]
++    public void Serialize_and_deserialize_round_trips_structured_policy_decision()
++    {
++        var decision = new ToolExecutionDecisionDto(
++            PolicyDecisionOutcomeValues.RequireApproval,
++            [PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval, PolicyDecisionReasonCodes.ApprovalRequired],
++            "Approval is required because the threshold was exceeded.",
++            "level_2",
++            "execute",
++            "payments",
++            true,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["executionState"] = JsonValue.Create("awaiting_approval")
++            },
++            PolicyDecisionSchemaVersions.V1,
++            [
++                new PolicyDecisionReasonDto(PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval, "threshold", "The request exceeded a configured threshold."),
++                new PolicyDecisionReasonDto(PolicyDecisionReasonCodes.ApprovalRequired, "approval", "A human approval step is required.")
++            ],
++            new PolicyDecisionTenantContextDto(Guid.Parse("11111111-1111-1111-1111-111111111111"), Guid.Parse("11111111-1111-1111-1111-111111111111"), true),
++            new PolicyDecisionActorContextDto(Guid.Parse("22222222-2222-2222-2222-222222222222"), "active", true),
++            new PolicyDecisionToolContextDto("erp", "execute", "payments"),
++            [
++                new PolicyDecisionThresholdEvaluationDto("approval", "expenseUsd", 1500m, 1000m, true, true, false, "evaluated")
++            ],
++            new PolicyDecisionApprovalRequirementDto(
++                "threshold",
++                "founder",
++                "approval_thresholds",
++                "approval",
++                "expenseUsd",
++                1500m,
++                1000m,
++                ["execute"],
++                ["erp"],
++                ["payments"]),
++            new PolicyDecisionAuditContextDto(
++                Guid.Parse("33333333-3333-3333-3333-333333333333"),
++                "corr-serializer-001",
++                new DateTime(2026, 3, 31, 12, 0, 0, DateTimeKind.Utc),
++                "default_deny",
++                PolicyDecisionEvaluationVersions.Current));
++
++        var payload = ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision);
++
++        Assert.Equal(PolicyDecisionSchemaVersions.V1, payload["schemaVersion"]!.GetValue<string>());
++        Assert.Equal("threshold", payload["approvalRequirement"]!["requirementType"]!.GetValue<string>());
++        Assert.Equal("threshold_exceeded_requires_approval", payload["reasons"]![0]!["code"]!.GetValue<string>());
++
++        var roundTrip = ToolExecutionPolicyDecisionJsonSerializer.Deserialize(payload);
++
++        Assert.Equal(decision.SchemaVersion, roundTrip.SchemaVersion);
++        Assert.Equal(decision.Tenant!.CompanyId, roundTrip.Tenant!.CompanyId);
++        Assert.Single(roundTrip.ThresholdEvaluations!);
++        Assert.Equal("threshold", roundTrip.ApprovalRequirement!.RequirementType);
++        Assert.Equal("corr-serializer-001", roundTrip.Audit!.CorrelationId);
++    }
++}
+END_OF_PATCH

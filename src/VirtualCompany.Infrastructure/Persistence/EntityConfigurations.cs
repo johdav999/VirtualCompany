@@ -32,8 +32,8 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
 internal static class CompanyJsonColumnConfiguration
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private const string JsonObjectDefaultSql = "N'{}'";
-    private const string JsonArrayDefaultSql = "N'[]'";
+    private const string JsonObjectDefaultSql = "'{}'";
+    private const string JsonArrayDefaultSql = "'[]'";
 
     public static PropertyBuilder<T> HasJsonConversion<T>(this PropertyBuilder<T> propertyBuilder)
         where T : class, new()
@@ -47,7 +47,7 @@ internal static class CompanyJsonColumnConfiguration
             value => StringComparer.Ordinal.GetHashCode(Serialize(value)),
             value => DeserializeOrDefault<T>(Serialize(value)));
 
-        propertyBuilder.HasColumnType("nvarchar(max)");
+        propertyBuilder.HasColumnType("jsonb");
         propertyBuilder.HasConversion(converter);
         propertyBuilder.Metadata.SetValueComparer(comparer);
         return propertyBuilder;
@@ -420,6 +420,12 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
             .HasDefaultValue(AgentStatusValues.DefaultStatus)
             .HasSentinel((AgentStatus)0)
             .IsRequired();
+        builder.Property(x => x.AutonomyLevel)
+            .HasColumnName("autonomy_level")
+            .HasConversion(value => value.ToStorageValue(), value => AgentAutonomyLevelValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(AgentAutonomyLevelValues.DefaultLevel)
+            .IsRequired();
         builder.Property(x => x.Personality)
             .HasColumnName("personality_json")
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
@@ -470,6 +476,86 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
         builder.HasIndex(x => new { x.CompanyId, x.Status });
         builder.HasIndex(x => new { x.CompanyId, x.Department });
         builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfiguration<ToolExecutionAttempt>
+{
+    public void Configure(EntityTypeBuilder<ToolExecutionAttempt> builder)
+    {
+        builder.ToTable("tool_execution_attempts");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.AgentId).IsRequired();
+        builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.ActionType)
+            .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Scope).HasMaxLength(100);
+        builder.Property(x => x.Status)
+            .HasConversion(value => value.ToStorageValue(), value => ToolExecutionStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.RequestPayload)
+            .HasColumnName("request_payload_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.PolicyDecision)
+            .HasColumnName("policy_decision_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.ResultPayload)
+            .HasColumnName("result_payload_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.Property(x => x.ExecutedUtc);
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
+{
+    public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
+    {
+        builder.ToTable("approval_requests");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.AgentId).IsRequired();
+        builder.Property(x => x.ToolExecutionAttemptId).IsRequired();
+        builder.Property(x => x.RequestedByUserId).IsRequired();
+        builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.ActionType)
+            .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.ApprovalTarget).HasMaxLength(100);
+        builder.Property(x => x.Status)
+            .HasConversion(value => value.ToStorageValue(), value => ApprovalRequestStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.ThresholdContext)
+            .HasColumnName("threshold_context_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.PolicyDecision)
+            .HasColumnName("policy_decision_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
 }

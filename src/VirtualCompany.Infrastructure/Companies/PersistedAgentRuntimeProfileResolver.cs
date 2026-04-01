@@ -52,7 +52,8 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             CloneNodes(agent.TriggerLogic),
             CloneNodes(agent.WorkingHours),
             agent.CanReceiveAssignments,
-            agent.UpdatedUtc);
+            agent.UpdatedUtc,
+            agent.AutonomyLevel.ToStorageValue());
     }
 
     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes)

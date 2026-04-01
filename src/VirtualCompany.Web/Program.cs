@@ -1,37 +1,62 @@
-using Microsoft.AspNetCore.Components.Web;
-using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
+using Microsoft.AspNetCore.Http;
 using VirtualCompany.Web;
 using VirtualCompany.Web.Services;
 
-var builder = WebAssemblyHostBuilder.CreateDefault(args);
-builder.RootComponents.Add<App>("#app");
-builder.RootComponents.Add<HeadOutlet>("head::after");
+var builder = WebApplication.CreateBuilder(args);
 
-var configuredApiBaseUrl = builder.Configuration["ApiBaseUrl"];
-var useOfflineMode = ShouldUseOfflineMode(builder, configuredApiBaseUrl);
-var developmentAuth = ResolveDevelopmentAuth(builder);
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+builder.Services.AddHttpContextAccessor();
 
-builder.Services.AddScoped(_ => new HttpClient
+builder.Services.AddScoped(sp =>
 {
-    BaseAddress = ResolveApiBaseAddress(builder, configuredApiBaseUrl, useOfflineMode)
-}.ApplyDevelopmentAuth(developmentAuth));
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var httpContextAccessor = sp.GetRequiredService<IHttpContextAccessor>();
+    var httpContext = httpContextAccessor.HttpContext;
+    var configuredApiBaseUrl = builder.Configuration["ApiBaseUrl"];
+    var useOfflineMode = ShouldUseOfflineMode(configuredApiBaseUrl, httpContext);
+    var developmentAuth = ResolveDevelopmentAuth(configuration, environment, httpContext);
+
+    var httpClient = new HttpClient
+    {
+        BaseAddress = ResolveApiBaseAddress(configuredApiBaseUrl, useOfflineMode, httpContext)
+    };
+
+    httpClient.ApplyRequestHeaders(httpContext);
+    httpClient.ApplyDevelopmentAuth(developmentAuth);
+    return httpClient;
+});
 builder.Services.AddScoped(sp => new OnboardingApiClient(
     sp.GetRequiredService<HttpClient>(),
-    useOfflineMode));
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 builder.Services.AddScoped(sp => new AgentApiClient(
     sp.GetRequiredService<HttpClient>(),
-    useOfflineMode));
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 
-await builder.Build().RunAsync();
+var app = builder.Build();
 
-static Uri ResolveApiBaseAddress(WebAssemblyHostBuilder builder, string? configuredValue, bool useOfflineMode)
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+app.UseAntiforgery();
+
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Run();
+
+static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, HttpContext? httpContext)
 {
     if (Uri.TryCreate(configuredValue, UriKind.Absolute, out var configuredUri))
     {
         return configuredUri;
     }
 
-    var hostUri = new Uri(builder.HostEnvironment.BaseAddress);
+    var hostUri = ResolveHostUri(httpContext);
     if (useOfflineMode)
     {
         return hostUri;
@@ -39,39 +64,39 @@ static Uri ResolveApiBaseAddress(WebAssemblyHostBuilder builder, string? configu
 
     if (string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
     {
-        return new Uri("https://localhost:7120/");
+        return new Uri("http://localhost:5301/");
     }
 
     return hostUri;
 }
 
-static bool ShouldUseOfflineMode(WebAssemblyHostBuilder builder, string? configuredValue)
+static bool ShouldUseOfflineMode(string? configuredValue, HttpContext? httpContext)
 {
     if (!string.IsNullOrWhiteSpace(configuredValue))
     {
         return false;
     }
 
-    var hostUri = new Uri(builder.HostEnvironment.BaseAddress);
-    return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase);
+    var hostUri = ResolveHostUri(httpContext);
+    return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) || hostUri.IsLoopback;
 }
 
-static DevelopmentAuthSettings? ResolveDevelopmentAuth(WebAssemblyHostBuilder builder)
+static DevelopmentAuthSettings? ResolveDevelopmentAuth(IConfiguration configuration, IWebHostEnvironment environment, HttpContext? httpContext)
 {
-    if (!builder.HostEnvironment.IsDevelopment())
+    if (!environment.IsDevelopment())
     {
         return null;
     }
 
-    var subject = builder.Configuration["DevelopmentAuth:Subject"]?.Trim();
-    var email = builder.Configuration["DevelopmentAuth:Email"]?.Trim();
-    var displayName = builder.Configuration["DevelopmentAuth:DisplayName"]?.Trim();
-    var provider = builder.Configuration["DevelopmentAuth:Provider"]?.Trim();
+    var subject = configuration["DevelopmentAuth:Subject"]?.Trim();
+    var email = configuration["DevelopmentAuth:Email"]?.Trim();
+    var displayName = configuration["DevelopmentAuth:DisplayName"]?.Trim();
+    var provider = configuration["DevelopmentAuth:Provider"]?.Trim();
 
     if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(email))
     {
-        var hostUri = new Uri(builder.HostEnvironment.BaseAddress);
-        return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+        var hostUri = ResolveHostUri(httpContext);
+        return string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) || hostUri.IsLoopback
             ? new DevelopmentAuthSettings(
                 "alice",
                 "alice@example.com",
@@ -87,8 +112,34 @@ static DevelopmentAuthSettings? ResolveDevelopmentAuth(WebAssemblyHostBuilder bu
         string.IsNullOrWhiteSpace(provider) ? "dev-header" : provider);
 }
 
+static Uri ResolveHostUri(HttpContext? httpContext)
+{
+    if (httpContext is not null)
+    {
+        return new Uri($"{httpContext.Request.Scheme}://{httpContext.Request.Host}/");
+    }
+
+    return new Uri("http://localhost/");
+}
+
 static class HttpClientDevelopmentAuthExtensions
 {
+    public static HttpClient ApplyRequestHeaders(this HttpClient httpClient, HttpContext? httpContext)
+    {
+        if (httpContext is null)
+        {
+            return httpClient;
+        }
+
+        CopyHeader(httpClient, httpContext, "Authorization");
+        CopyHeader(httpClient, httpContext, "Cookie");
+        CopyHeader(httpClient, httpContext, "X-Dev-Auth-Subject");
+        CopyHeader(httpClient, httpContext, "X-Dev-Auth-Email");
+        CopyHeader(httpClient, httpContext, "X-Dev-Auth-DisplayName");
+        CopyHeader(httpClient, httpContext, "X-Dev-Auth-Provider");
+        return httpClient;
+    }
+
     public static HttpClient ApplyDevelopmentAuth(this HttpClient httpClient, DevelopmentAuthSettings? auth)
     {
         if (auth is null)
@@ -114,6 +165,14 @@ static class HttpClientDevelopmentAuthExtensions
         }
 
         return httpClient;
+    }
+
+    private static void CopyHeader(HttpClient httpClient, HttpContext httpContext, string headerName)
+    {
+        if (httpContext.Request.Headers.TryGetValue(headerName, out var value) && !string.IsNullOrWhiteSpace(value))
+        {
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(headerName, value.ToString());
+        }
     }
 }
 

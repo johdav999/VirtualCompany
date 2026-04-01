@@ -1,0 +1,599 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -24,6 +24,8 @@ public sealed record ToolExecutionDecisionDto(
+     IReadOnlyList<string> ReasonCodes,
+     string Explanation,
+     string EvaluatedAutonomyLevel,
++    string EvaluatedActionType,
++    string? EvaluatedScope,
+     bool ApprovalRequired,
+     Dictionary<string, JsonNode?> Metadata);
+ 
+@@ -81,6 +83,8 @@ public static class PolicyDecisionReasonCodes
+ {
+     public const string PolicyChecksPassed = "policy_checks_passed";
+     public const string InvalidCompanyContext = "invalid_company_context";
++    public const string InvalidActionType = "invalid_action_type";
++    public const string InvalidAutonomyLevel = "invalid_autonomy_level";
+     public const string AgentStatusDisallowsExecution = "agent_status_disallows_execution";
+     public const string MissingPolicyConfiguration = "missing_policy_configuration";
+     public const string AmbiguousPolicyConfiguration = "ambiguous_policy_configuration";
+@@ -88,6 +92,7 @@ public static class PolicyDecisionReasonCodes
+     public const string ToolNotPermitted = "tool_not_permitted";
+     public const string ScopeNotPermitted = "scope_not_permitted";
+     public const string AutonomyLevelBlocksAction = "autonomy_level_blocks_action";
++    public const string ScopeContextMissing = "scope_context_missing";
+     public const string AutonomyLevelRequiresApproval = "autonomy_level_requires_approval";
+     public const string ApprovalRouteMissing = "approval_route_missing";
+     public const string ThresholdContextMissing = "threshold_context_missing";
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -1,3 +1,5 @@
++using System.Globalization;
++
+ namespace VirtualCompany.Domain.Enums;
+ 
+ public enum AgentStatus
+@@ -162,7 +164,14 @@ public static class AgentAutonomyLevelValues
+     private static readonly IReadOnlyDictionary<string, AgentAutonomyLevel> ReverseValues =
+         Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+ 
+-    public static AgentAutonomyLevel DefaultLevel => AgentAutonomyLevel.Level1;
++    private static readonly IReadOnlyDictionary<int, AgentAutonomyLevel> NumericValues = new Dictionary<int, AgentAutonomyLevel>
++    {
++        [0] = AgentAutonomyLevel.Level0,
++        [1] = AgentAutonomyLevel.Level1,
++        [2] = AgentAutonomyLevel.Level2,
++        [3] = AgentAutonomyLevel.Level3
++    };
++
++    public static AgentAutonomyLevel DefaultLevel => AgentAutonomyLevel.Level0;
+     public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
+ 
+     public static string ToStorageValue(this AgentAutonomyLevel autonomyLevel)
+@@ -183,6 +192,12 @@ public static class AgentAutonomyLevelValues
+             return true;
+         }
+ 
++        if (int.TryParse(value.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var numericLevel) &&
++            NumericValues.TryGetValue(numericLevel, out autonomyLevel))
++        {
++            return true;
++        }
++
+         return Enum.TryParse(value.Trim(), ignoreCase: true, out autonomyLevel) && Values.ContainsKey(autonomyLevel);
+     }
+ 
+@@ -200,9 +215,10 @@ public static class AgentAutonomyLevelValues
+ 
+     public static string BuildValidationMessage(string? attemptedValue = null)
+     {
++        const string allowedValues = "0, 1, 2, 3 (level_0, level_1, level_2, level_3)";
+         var allowedValues = string.Join(", ", AllowedValues);
+         return string.IsNullOrWhiteSpace(attemptedValue)
+-            ? $"Agent autonomy level is required. Allowed values: {allowedValues}."
++            ? $"Agent autonomy level is required. Allowed values: 0, 1, 2, 3 (level_0, level_1, level_2, level_3)."
+             : $"Unsupported agent autonomy level '{attemptedValue}'. Allowed values: {allowedValues}.";
+     }
+ }
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -200,10 +216,9 @@ public static class AgentAutonomyLevelValues
+ 
+     public static string BuildValidationMessage(string? attemptedValue = null)
+     {
+-        const string allowedValues = "0, 1, 2, 3 (level_0, level_1, level_2, level_3)";
+-        var allowedValues = string.Join(", ", AllowedValues);
++        const string allowedValues = "0, 1, 2, 3 (level_0, level_1, level_2, level_3)";
+         return string.IsNullOrWhiteSpace(attemptedValue)
+-            ? $"Agent autonomy level is required. Allowed values: 0, 1, 2, 3 (level_0, level_1, level_2, level_3)."
++            ? $"Agent autonomy level is required. Allowed values: {allowedValues}."
+             : $"Unsupported agent autonomy level '{attemptedValue}'. Allowed values: {allowedValues}.";
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -259,6 +259,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ["outcome"] = JsonValue.Create(decision.Outcome),
+             ["reasonCodes"] = new JsonArray(decision.ReasonCodes.Select(static code => (JsonNode?)JsonValue.Create(code)).ToArray()),
+             ["explanation"] = JsonValue.Create(decision.Explanation),
++            ["evaluatedActionType"] = JsonValue.Create(decision.EvaluatedActionType),
++            ["evaluatedScope"] = string.IsNullOrWhiteSpace(decision.EvaluatedScope) ? null : JsonValue.Create(decision.EvaluatedScope),
+             ["evaluatedAutonomyLevel"] = JsonValue.Create(decision.EvaluatedAutonomyLevel),
+             ["approvalRequired"] = JsonValue.Create(decision.ApprovalRequired),
+             ["metadata"] = ToJsonObject(decision.Metadata)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -31,7 +31,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!ToolActionTypeValues.TryParse(request.ActionType, out var actionType))
+         {
+             return Deny(
+-                request,
++                request, request.ActionType,
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "The requested action type is invalid.",
+                 metadata);
+@@ -40,7 +40,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!AgentAutonomyLevelValues.TryParse(request.EvaluatedAutonomyLevel, out var autonomyLevel))
+         {
+             return Deny(
+-                request,
++                request, request.ActionType,
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "The agent autonomy configuration is missing or invalid.",
+                 metadata);
+@@ -51,7 +51,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _))
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions are missing or invalid, so execution is denied by default.",
+                 metadata);
+@@ -60,7 +60,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!allowedToolsExists || allowedTools.Count == 0)
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions do not define an allowed set for this agent.",
+                 metadata);
+@@ -69,7 +69,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (allowedTools.Overlaps(deniedTools))
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Tool permissions are ambiguous because the same tool is both allowed and denied.",
+                 metadata);
+@@ -78,7 +78,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (deniedTools.Contains(request.ToolName))
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+                 "The requested tool is explicitly denied for this agent.",
+                 metadata);
+@@ -87,27 +87,40 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!allowedTools.Contains(request.ToolName))
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+                 metadata);
+         }
+ 
+-        if (!string.IsNullOrWhiteSpace(request.Scope))
++        var requiredScopeBucket = actionType == ToolActionType.Execute ? "write" : "read";
++        metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
++
++        if (!TryGetIdentifierSet(request.DataScopes, requiredScopeBucket, out var scopes, out var scopeConfigExists) ||
++            !scopeConfigExists ||
++            scopes.Count == 0)
+         {
+-            var requiredScopeBucket = actionType == ToolActionType.Execute ? "write" : "read";
+-            if (!TryGetIdentifierSet(request.DataScopes, requiredScopeBucket, out var scopes, out var scopeConfigExists) ||
+-                !scopeConfigExists)
+-            {
+-                return Deny(
+-                    request,
+-                    [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+-                    "Data scope policy is missing or invalid for the requested action.",
+-                    metadata);
+-            }
++            return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "Data scope policy is missing or invalid for the requested action.",
++                metadata);
++        }
+ 
+-            if (!scopes.Contains(request.Scope))
+-            {
+-                return Deny(
++        if (actionType == ToolActionType.Execute && string.IsNullOrWhiteSpace(request.Scope))
++        {
++            return Deny(
++                request, actionType.ToStorageValue(),
++                [PolicyDecisionReasonCodes.ScopeContextMissing],
++                "Execute actions require an explicit scope so guardrails can authorize them before execution.",
++                metadata);
++        }
++
++        if (!string.IsNullOrWhiteSpace(request.Scope))
++        {
++            if (!scopes.Contains(request.Scope))
++            {
++                return Deny(
++                    request,
++                    actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ScopeNotPermitted],
+                     "The requested scope is outside the agent's configured data access boundaries.",
+                     metadata);
+@@ -116,34 +129,36 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level0 && actionType != ToolActionType.Read)
+         {
++            if (actionType == ToolActionType.Recommend)
++            {
++                return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is in scope and allowed by policy.");
++            }
++
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AutonomyLevelBlocksAction],
+-                "Autonomy level 0 is limited to read-only activity.",
++                "Autonomy level 0 is limited to read and recommendation activity and cannot execute tools directly.",
+                 metadata);
+         }
+ 
+         if (actionType != ToolActionType.Execute)
+         {
+-            return Allow(request, metadata, "The requested action is in scope and allowed by policy.");
++            return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is in scope and allowed by policy.");
+         }
+ 
+         if (autonomyLevel == AgentAutonomyLevel.Level1)
+         {
+             return RequireApproval(
+                 request,
++                actionType.ToStorageValue(),
+                 metadata,
+                 PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,
+                 "Autonomy level 1 cannot execute actions directly and must request human approval.");
+         }
+ 
+-        var hasAnyThresholdFields =
+-            !string.IsNullOrWhiteSpace(request.ThresholdCategory) ||
+-            !string.IsNullOrWhiteSpace(request.ThresholdKey) ||
+-            request.ThresholdValue.HasValue;
+-
+-        if (hasAnyThresholdFields &&
++        if ((!string.IsNullOrWhiteSpace(request.ThresholdCategory) ||
++             !string.IsNullOrWhiteSpace(request.ThresholdKey) ||
++             request.ThresholdValue.HasValue) &&
+             (string.IsNullOrWhiteSpace(request.ThresholdCategory) ||
+              string.IsNullOrWhiteSpace(request.ThresholdKey) ||
+              !request.ThresholdValue.HasValue))
+         {
+             return Deny(
+-                request,
++                request, actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ThresholdContextMissing],
+                 "Threshold context is incomplete, so policy evaluation defaults to deny.",
+                 metadata);
+@@ -153,6 +168,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         {
+             return RequireApproval(
+                 request,
++                actionType.ToStorageValue(),
+                 metadata,
+                 PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
+                 "Sensitive actions require human approval before execution.");
+@@ -163,7 +179,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             if (!TryGetThresholdValue(request.ApprovalThresholds, request.ThresholdCategory!, request.ThresholdKey!, out var configuredThreshold))
+             {
+                 return Deny(
+-                    request,
++                    request, actionType.ToStorageValue(),
+                     [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
+                     "Threshold policy is missing or invalid for the requested action.",
+                     metadata);
+@@ -177,38 +193,44 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             {
+                 return RequireApproval(
+                     request,
++                    actionType.ToStorageValue(),
+                     metadata,
+                     PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval,
+                     "The requested action exceeds the configured approval threshold.");
+             }
+         }
+ 
+-        return Allow(request, metadata, "The requested action is within scope, within threshold, and allowed to execute.");
++        return Allow(request, actionType.ToStorageValue(), metadata, "The requested action is within scope, within threshold, and allowed to execute.");
+     }
+ 
+     private static ToolExecutionDecisionDto Allow(
+         PolicyEvaluationRequest request,
++        string evaluatedActionType,
+         Dictionary<string, JsonNode?> metadata,
+         string explanation) =>
+         new(
+             PolicyDecisionOutcomeValues.Allow,
+             [PolicyDecisionReasonCodes.PolicyChecksPassed],
+             explanation,
+             request.EvaluatedAutonomyLevel,
++            evaluatedActionType,
++            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             false,
+             metadata);
+ 
+     private static ToolExecutionDecisionDto Deny(
+         PolicyEvaluationRequest request,
++        string evaluatedActionType,
+         IReadOnlyList<string> reasonCodes,
+         string explanation,
+         Dictionary<string, JsonNode?> metadata) =>
+         new(
+             PolicyDecisionOutcomeValues.Deny,
+             reasonCodes,
+             explanation,
+             request.EvaluatedAutonomyLevel,
++            evaluatedActionType,
++            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             false,
+             metadata);
+ 
+     private static ToolExecutionDecisionDto RequireApproval(
+         PolicyEvaluationRequest request,
++        string evaluatedActionType,
+         Dictionary<string, JsonNode?> metadata,
+         string reasonCode,
+         string explanation)
+@@ -216,7 +238,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
+         {
+             return Deny(
+-                request,
++                request, evaluatedActionType,
+                 [PolicyDecisionReasonCodes.ApprovalRouteMissing],
+                 "Approval is required, but the escalation route is missing or invalid.",
+                 metadata);
+@@ -228,6 +250,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             [reasonCode],
+             explanation,
+             request.EvaluatedAutonomyLevel,
++            evaluatedActionType,
++            string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope,
+             true,
+             metadata);
+     }
+@@ -239,6 +263,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["evaluatedAutonomyLevel"] = JsonValue.Create(request.EvaluatedAutonomyLevel),
++            ["policyMode"] = JsonValue.Create("default_deny"),
+             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs
+@@ -12,7 +12,7 @@ public partial class AddAgentExecutionPolicyGuardrails : Migration
+             table: "agents",
+             type: "nvarchar(32)",
+             maxLength: 32,
+             nullable: false,
+-            defaultValue: "level_1");
++            defaultValue: "level_0");
+ 
+         migrationBuilder.CreateTable(
+             name: "tool_execution_attempts",
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -58,6 +58,42 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Null(attempt.ApprovalRequestId);
+     }
+ 
++    [Fact]
++    public async Task Level_0_execute_is_blocked_before_tool_executor_runs()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level0,
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("write", new JsonArray(JsonValue.Create("payments"))), ("read", new JsonArray(JsonValue.Create("finance")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "erp",
++            actionType = "execute",
++            scope = "payments",
++            requestPayload = new { paymentId = "pay-101" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("denied", payload!.Status);
++        Assert.Equal("deny", payload.PolicyDecision.Outcome);
++        Assert.Equal("execute", payload.PolicyDecision.EvaluatedActionType);
++        Assert.Contains("autonomy_level_blocks_action", payload.PolicyDecision.ReasonCodes);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
++    }
++
+     [Fact]
+     public async Task Above_threshold_execution_creates_pending_approval_and_skips_tool_executor()
+     {
+@@ -134,6 +170,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.NotNull(payload);
+         Assert.Equal("executed", payload!.Status);
+         Assert.Equal("allow", payload.PolicyDecision.Outcome);
++        Assert.Equal("execute", payload.PolicyDecision.EvaluatedActionType);
++        Assert.Equal("default_deny", payload.PolicyDecision.Metadata["policyMode"].GetString());
+         Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
+         Assert.NotNull(payload.ExecutionResult);
+         Assert.Equal("erp", payload.ExecutionResult!["toolName"].GetString());
+@@ -145,6 +183,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+ 
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+         Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
++        Assert.Equal("default_deny", attempt.PolicyDecision["metadata"]!["policyMode"]!.GetValue<string>());
+         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+         Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
+         Assert.NotNull(attempt.ExecutedUtc);
+@@ -247,7 +287,9 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         public List<string> ReasonCodes { get; set; } = [];
+         public string Explanation { get; set; } = string.Empty;
+         public string EvaluatedAutonomyLevel { get; set; } = string.Empty;
++        public string EvaluatedActionType { get; set; } = string.Empty;
+         public bool ApprovalRequired { get; set; }
++        public string? EvaluatedScope { get; set; }
+         public Dictionary<string, JsonElement> Metadata { get; set; } = [];
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -125,6 +125,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(template.Objectives["primary"]!.ToJsonString(), agent.Objectives["primary"]!.ToJsonString());
+         Assert.True(agent.CreatedUtc <= agent.UpdatedUtc);
+ 
++        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
+         var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+             x.CompanyId == ids.CompanyId &&
+             x.Action == "agent.hired" &&
+@@ -210,6 +211,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal("/avatars/agents/operations-manager.png", agent.AvatarUrl);
+         Assert.Equal(AgentSeniority.Lead, agent.Seniority);
+         Assert.Equal(AgentStatus.Active, agent.Status);
++        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
+         AssertJsonDictionaryEqual(personality, agent.Personality);
+         AssertJsonDictionaryEqual(objectives, agent.Objectives);
+         AssertJsonDictionaryEqual(kpis, agent.Kpis);
+@@ -241,6 +243,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         var payload = await response.Content.ReadFromJsonAsync<HireAgentResponse>();
+         Assert.NotNull(payload);
+         Assert.Equal("active", payload!.Agent.Status);
++        Assert.Equal("level_0", payload.Agent.AutonomyLevel);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
+@@ -255,6 +258,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.Equal(template.RoleName, agent.RoleName);
+         Assert.Equal(template.AvatarUrl, agent.AvatarUrl);
+         Assert.Equal(template.DefaultSeniority, agent.Seniority);
++        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
+         Assert.Equal(AgentStatus.Active, agent.Status);
+         Assert.Equal(template.Personality["summary"]!.ToJsonString(), agent.Personality["summary"]!.ToJsonString());
+         Assert.Equal("Casey Support", agent.DisplayName);
+@@ -269,6 +273,24 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotSame(template.EscalationRules, agent.EscalationRules);
+     }
+ 
++    [Fact]
++    public void Agent_defaults_to_level_0_autonomy_when_unspecified_and_rejects_invalid_values()
++    {
++        var agent = new Agent(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "finance",
++            "Nora Ledger",
++            "Finance Manager",
++            "Finance",
++            null,
++            AgentSeniority.Senior);
++
++        Assert.Equal(AgentAutonomyLevel.Level0, agent.AutonomyLevel);
++        Assert.Throws<ArgumentOutOfRangeException>(() => new Agent(
++            Guid.NewGuid(), Guid.NewGuid(), "finance", "Nora Ledger", "Finance Manager", "Finance", null,
++            AgentSeniority.Senior, autonomyLevel: (AgentAutonomyLevel)99));
++    }
++
+     [Fact]
+     public async Task Hiring_from_valid_new_template_record_works_without_role_specific_logic()
+     {
+@@ -1091,6 +1113,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public string? AvatarUrl { get; set; }
+         public string Status { get; set; } = string.Empty;
+         public string Seniority { get; set; } = string.Empty;
++        public string AutonomyLevel { get; set; } = string.Empty;
+     }
+ 
+     private sealed class ValidationProblemResponse
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -22,6 +22,8 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Equal("allow", decision.Outcome);
+         Assert.Contains("policy_checks_passed", decision.ReasonCodes);
++        Assert.Equal("execute", decision.EvaluatedActionType);
++        Assert.Equal("default_deny", decision.Metadata["policyMode"]!.GetValue<string>());
+     }
+ 
+     [Fact]
+@@ -51,6 +53,20 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("autonomy_level_blocks_action", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_allows_level_0_recommendation_when_tool_and_scope_are_permitted()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "0",
++            toolName: "erp",
++            actionType: "recommend",
++            scope: "finance"));
++
++        Assert.Equal("allow", decision.Outcome);
++        Assert.Equal("recommend", decision.EvaluatedActionType);
++        Assert.Equal("finance", decision.EvaluatedScope);
++        Assert.Contains("policy_checks_passed", decision.ReasonCodes);
++    }
++
+     [Fact]
+     public void Evaluate_default_denies_when_tool_policy_configuration_is_missing()
+     {
+@@ -94,6 +110,34 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains("autonomy_level_requires_approval", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_denies_when_execute_scope_is_missing()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: null));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("scope_context_missing", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_denies_when_tool_permissions_are_ambiguous()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            toolPermissions: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("erp"))),
++                ("denied", new JsonArray(JsonValue.Create("erp"))))));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("ambiguous_policy_configuration", decision.ReasonCodes);
++    }
++
+     private static PolicyEvaluationRequest CreateRequest(
+         string autonomyLevel,
+         string toolName,
+END_OF_PATCH

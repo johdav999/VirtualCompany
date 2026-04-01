@@ -1,0 +1,311 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -62,6 +62,10 @@ public sealed record AgentRosterResponseDto(
+     IReadOnlyList<AgentRosterItemDto> Items,
+     IReadOnlyList<string> Departments,
+     IReadOnlyList<string> Statuses);
++
++public sealed record AgentRosterFilterDto(
++    string? Department,
++    string? Status);
+ 
+ public sealed record AgentRecentActivityDto(
+     DateTime OccurredUtc,
+@@ -174,7 +178,7 @@ public interface ICompanyAgentService
+ {
+     Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
+-    Task<AgentRosterResponseDto> GetRosterViewAsync(Guid companyId, string? department, string? status, CancellationToken cancellationToken);
++    Task<AgentRosterResponseDto> GetRosterViewAsync(Guid companyId, AgentRosterFilterDto filter, CancellationToken cancellationToken);
+     Task<AgentProfileViewDto> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -46,7 +46,8 @@ public sealed class AgentsController : ControllerBase
+     {
+         try
+         {
+-            var roster = await _agentService.GetRosterViewAsync(companyId, department, status, cancellationToken);
++            var filter = new AgentRosterFilterDto(department, status);
++            var roster = await _agentService.GetRosterViewAsync(companyId, filter, cancellationToken);
+             return Ok(roster);
+         }
+         catch (UnauthorizedAccessException)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -85,19 +85,44 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+     public async Task<AgentRosterResponseDto> GetRosterViewAsync(
+         Guid companyId,
+-        string? department,
+-        string? status,
++        AgentRosterFilterDto filter,
+         CancellationToken cancellationToken)
+     {
+         await EnsureManagerAccessAsync(companyId, cancellationToken);
+ 
+-        var agents = await _dbContext.Agents
++        var normalizedFilter = new AgentRosterFilterDto(
++            NormalizeFilter(filter.Department),
++            NormalizeFilter(filter.Status));
++
++        var tenantAgentsQuery = _dbContext.Agents
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.CompanyId == companyId);
++
++        var departments = (await tenantAgentsQuery
++            .Select(x => x.Department)
++            .Where(x => x != string.Empty)
++            .ToListAsync(cancellationToken))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
+             .OrderBy(x => x.Department)
+-            .ThenBy(x => x.DisplayName)
++            .ToList();
++
++        var filteredAgentsQuery = tenantAgentsQuery;
++
++        if (normalizedFilter.Department is not null)
++        {
++            filteredAgentsQuery = filteredAgentsQuery.Where(x => x.Department == normalizedFilter.Department);
++        }
++
++        if (normalizedFilter.Status is not null)
++        {
++            if (AgentStatusValues.TryParse(normalizedFilter.Status, out var parsedStatus))
++            {
++                filteredAgentsQuery = filteredAgentsQuery.Where(x => x.Status == parsedStatus);
++            }
++            else
++            {
++                filteredAgentsQuery = filteredAgentsQuery.Where(static _ => false);
++            }
++        }
++
++        var agents = await filteredAgentsQuery
++            .OrderBy(x => x.Department)
++            .ThenBy(x => x.DisplayName)
+             .ToListAsync(cancellationToken);
+ 
+-        var executionSummaries = await _dbContext.ToolExecutionAttempts
++        var statusOptions = AgentStatusValues.AllowedValues.ToList();
++
++        if (agents.Count == 0)
++        {
++            return new AgentRosterResponseDto([], departments, statusOptions);
++        }
++
++        var agentIds = agents.Select(x => x.Id).ToArray();
++        var auditTargetIds = agentIds.Select(x => x.ToString("N")).ToArray();
++
++        var executionSummaries = await _dbContext.ToolExecutionAttempts
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
+             .GroupBy(x => x.AgentId)
+             .Select(group => new AgentExecutionAggregate(
+                 group.Key,
+@@ -108,7 +133,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         var approvalSummaries = await _dbContext.ApprovalRequests
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
+             .GroupBy(x => x.AgentId)
+             .Select(group => new AgentApprovalAggregate(
+                 group.Key,
+@@ -119,7 +144,10 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         var auditSummaries = await _dbContext.AuditEvents
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.TargetType == AuditTargetTypes.Agent)
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.TargetType == AuditTargetTypes.Agent &&
++                auditTargetIds.Contains(x.TargetId))
+             .GroupBy(x => x.TargetId)
+             .Select(group => new AgentAuditAggregate(
+                 group.Key,
+@@ -129,16 +157,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         var executionByAgentId = executionSummaries.ToDictionary(x => x.AgentId);
+         var approvalByAgentId = approvalSummaries.ToDictionary(x => x.AgentId);
+         var auditByTargetId = auditSummaries.ToDictionary(x => x.TargetId, StringComparer.OrdinalIgnoreCase);
+-
+-        var normalizedDepartment = NormalizeFilter(department);
+-        var normalizedStatus = NormalizeFilter(status);
+-
+         var items = agents
+-            .Where(agent =>
+-                (normalizedDepartment is null || string.Equals(agent.Department, normalizedDepartment, StringComparison.OrdinalIgnoreCase)) &&
+-                (normalizedStatus is null || string.Equals(agent.Status.ToStorageValue(), normalizedStatus, StringComparison.OrdinalIgnoreCase)))
+             .Select(agent =>
+             {
+                 executionByAgentId.TryGetValue(agent.Id, out var execution);
+@@ -164,15 +183,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+         return new AgentRosterResponseDto(
+             items,
+-            agents.Select(x => x.Department)
+-                .Where(x => !string.IsNullOrWhiteSpace(x))
+-                .Distinct(StringComparer.OrdinalIgnoreCase)
+-                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+-                .ToList(),
+-            agents.Select(x => x.Status.ToStorageValue())
+-                .Distinct(StringComparer.OrdinalIgnoreCase)
+-                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+-                .ToList());
++            departments,
++            statusOptions);
+     }
+ 
+     public async Task<AgentProfileViewDto> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -269,7 +269,7 @@ else
+                 
+                 @if (rosterResponse.Items.Count == 0)
+                 {
+-                    <p class="text-body-secondary mb-0 mt-4">No agents matched the current filters.</p>
++                    <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+                 }
+                 else
+                 {
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -155,6 +155,8 @@ public sealed class AgentApiClient
+             "restricted",
+             "archived"
+         };
++        private static readonly IReadOnlyList<string> SupportedStatusOptions =
++            ["active", "paused", "restricted", "archived"];
+         private readonly Dictionary<Guid, List<CompanyAgentSummaryViewModel>> _agentsByCompany = [];
+         private readonly Dictionary<Guid, AgentOperatingProfileViewModel> _profilesByAgentId = [];
+         private Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>>? _templatesTask;
+@@ -238,7 +240,7 @@ public sealed class AgentApiClient
+                 return new AgentRosterResponseViewModel
+                 {
+                     Items = allItems.Where(x => MatchesFilter(x.Department, department) && MatchesFilter(x.Status, status)).ToList(),
+                     Departments = allItems.Select(x => x.Department).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
+-                    Statuses = allItems.Select(x => x.Status).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList()
++                    Statuses = SupportedStatusOptions.ToList()
+                 };
+             }
+         }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+@@ -19,6 +19,28 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         _factory = factory;
+     }
+ 
++    [Fact]
++    public async Task Agent_roster_view_returns_all_company_agents_and_tenant_scoped_filter_options_when_unfiltered()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/roster");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentRosterResponse>();
++        Assert.NotNull(payload);
++
++        Assert.Equal(3, payload!.Items.Count);
++        Assert.Equal(new[] { seed.FinanceAgentId, seed.OperationsAgentId, seed.SupportAgentId }, payload.Items.Select(x => x.Id));
++        Assert.DoesNotContain(payload.Items, x => x.Id == seed.OtherCompanyAgentId);
++
++        Assert.Equal(new[] { "Finance", "Operations", "Support" }, payload.Departments);
++        Assert.DoesNotContain("Legal", payload.Departments);
++
++        Assert.Equal(new[] { "active", "paused", "restricted", "archived" }, payload.Statuses);
++    }
++
+     [Fact]
+     public async Task Agent_roster_view_filters_by_department_and_status_and_returns_workload_summary()
+     {
+@@ -45,8 +67,39 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         Assert.Equal("attention", item.WorkloadSummary.HealthStatus);
+         Assert.Equal("Attention needed · 1 awaiting approval", item.WorkloadSummary.Summary);
+         Assert.Contains("Finance", payload.Departments);
+-        Assert.Contains("active", payload.Statuses);
+-        Assert.Contains("paused", payload.Statuses);
++        Assert.Equal(new[] { "active", "paused", "restricted", "archived" }, payload.Statuses);
++    }
++
++    [Fact]
++    public async Task Agent_roster_view_filters_by_department_only()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/roster?department=Support");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentRosterResponse>();
++        Assert.NotNull(payload);
++
++        var item = Assert.Single(payload!.Items);
++        Assert.Equal(seed.SupportAgentId, item.Id);
++        Assert.Equal("Support", item.Department);
++        Assert.Equal("paused", item.Status);
++    }
++
++    [Fact]
++    public async Task Agent_roster_view_filters_by_status_only()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/roster?status=active");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentRosterResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(new[] { seed.FinanceAgentId, seed.OperationsAgentId }, payload!.Items.Select(x => x.Id));
+     }
+ 
+     [Fact]
+@@ -136,7 +189,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+                     supportAgentId,
+                     otherCompanyId,
+                     "support",
+-                    "Other Company Support",
+-                    "Support Lead",
+-                    "Support",
++                    "Other Company Legal",
++                    "Legal Lead",
++                    "Legal",
+                     null,
+                     AgentSeniority.Lead,
+-                    AgentStatus.Active));
++                    AgentStatus.Restricted));
+ 
+             var execution = new ToolExecutionAttempt(
+                 executionId,
+@@ -171,7 +224,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+             "Updated the finance operating profile.",
+             new[] { "agent_management" },
+             new Dictionary<string, string?>()));
+         await dbContext.SaveChangesAsync();
+ 
+-        return new DirectorySeed(companyId, financeAgentId, operationsAgentId, otherCompanyAgentId);
++        return new DirectorySeed(companyId, financeAgentId, supportAgentId, operationsAgentId, otherCompanyAgentId);
+     }
+@@ -186,7 +239,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         return payload;
+     }
+ 
+-    private sealed record DirectorySeed(Guid CompanyId, Guid FinanceAgentId, Guid OperationsAgentId, Guid OtherCompanyAgentId);
++    private sealed record DirectorySeed(Guid CompanyId, Guid FinanceAgentId, Guid SupportAgentId, Guid OperationsAgentId, Guid OtherCompanyAgentId);
+ 
+     private sealed class AgentRosterResponse
+     {
+END_OF_PATCH

@@ -1,0 +1,289 @@
+@page "/agents"
+@using Microsoft.AspNetCore.Components
+@inject OnboardingApiClient OnboardingApiClient
+@inject AgentApiClient AgentApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Agent Roster</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Agent roster</h1>
+        <p class="text-body-secondary mb-0">Loading tenant-scoped directory data...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Select a company</h1>
+            <p class="text-body-secondary">Choose the company where you want to browse the agent roster.</p>
+
+            @if (activeMemberships.Count == 0)
+            {
+                <p class="mb-0">No active company memberships are available yet.</p>
+            }
+            else
+            {
+                <div class="template-grid">
+                    @foreach (var membership in activeMemberships)
+                    {
+                        <a class="template-card text-decoration-none text-reset" href="@BuildRosterUri(membership.CompanyId, null, null)">
+                            <strong>@membership.CompanyName</strong>
+                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <div class="agent-roster-header">
+                <div>
+                    <span class="dashboard-kicker">Agent directory</span>
+                    <h1 class="mb-0 mt-2">@(companyAccess?.CompanyName ?? "Agent roster")</h1>
+                    <p class="text-body-secondary mt-3 mb-0">Server-rendered roster with query-string filters for tenant-safe refresh, deep linking, and a canonical drill-in to the agent profile page.</p>
+                </div>
+                <div class="dashboard-actions">
+                    <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">Back to dashboard</a>
+                    @if (CanManageProfiles)
+                    {
+                        <a class="btn btn-primary" href="@BuildManageUri(CompanyId!.Value, Department, Status, null)">Open agent management</a>
+                    }
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+            }
+        </div>
+
+        @if (!CanViewDirectory)
+        {
+            <div class="wizard-card mt-4">
+                <h2 class="h5 mb-2">Restricted roster access</h2>
+                <p class="text-body-secondary mb-0">Manager, admin, or owner membership is required to view the tenant agent directory.</p>
+            </div>
+        }
+        else
+        {
+            <div class="wizard-card mt-4">
+                <div class="agent-roster-header">
+                    <div>
+                        <span class="dashboard-kicker">SSR-first filters</span>
+                        <h2 class="h4 mb-0 mt-2">Company agents</h2>
+                    </div>
+                    <span class="badge text-bg-light">@rosterResponse.Items.Count total</span>
+                </div>
+
+                <form class="agent-filter-bar mt-4" method="get">
+                    <input type="hidden" name="companyId" value="@CompanyId" />
+
+                    <div>
+                        <label class="form-label" for="department-filter">Department</label>
+                        <select id="department-filter" class="form-select" name="department">
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Department)">All departments</option>
+                            @foreach (var department in rosterResponse.Departments)
+                            {
+                                <option value="@department" selected="@IsSelected(Department, department)">@department</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="form-label" for="status-filter">Status</label>
+                        <select id="status-filter" class="form-select" name="status">
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All statuses</option>
+                            @foreach (var status in rosterResponse.Statuses)
+                            {
+                                <option value="@status" selected="@IsSelected(Status, status)">@GetStatusLabel(status)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="submit">Apply filters</button>
+                        <a class="btn btn-outline-secondary" href="@BuildRosterUri(CompanyId!.Value, null, null)">Clear</a>
+                    </div>
+                </form>
+
+                @if (rosterResponse.Items.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+                }
+                else
+                {
+                    <div class="table-responsive mt-4">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Name</th>
+                                    <th scope="col">Role</th>
+                                    <th scope="col">Department</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Autonomy</th>
+                                    <th scope="col">Workload and health</th>
+                                    <th scope="col">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var agent in rosterResponse.Items)
+                                {
+                                    <tr>
+                                        <th scope="row">
+                                            <a class="fw-semibold text-decoration-none" href="@GetProfileRoute(agent)">@agent.DisplayName</a>
+                                            <div class="small text-body-secondary mt-1">@agent.Seniority</div>
+                                        </th>
+                                        <td>@agent.RoleName</td>
+                                        <td>@agent.Department</td>
+                                        <td>
+                                            <span class="badge @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+                                        </td>
+                                        <td>@ToDisplayText(agent.AutonomyLevel)</td>
+                                        <td>
+                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthSummary.Status)">@agent.WorkloadSummary.HealthSummary.Label</div>
+                                            <div class="small text-body-secondary mt-1">@agent.WorkloadSummary.HealthSummary.Reason</div>
+                                            <div class="small text-body-secondary mt-1">@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</div>
+                                        </td>
+                                        <td>
+                                            <div class="dashboard-actions">
+                                                <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">Open profile</a>
+                                                @if (CanManageProfiles)
+                                                {
+                                                    <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">Manage</a>
+                                                }
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "department")]
+    public string? Department { get; set; }
+
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? Status { get; set; }
+
+    private bool isLoading = true;
+    private string? errorMessage;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private AgentRosterResponseViewModel rosterResponse = new();
+
+    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    private bool CanViewDirectory =>
+        string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
+
+    private bool CanManageProfiles => CanViewDirectory;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        rosterResponse = new AgentRosterResponseViewModel();
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo(BuildRosterUri(currentUser.ActiveCompany.CompanyId, Department, Status), replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                if (companyAccess is null)
+                {
+                    errorMessage = "The selected company could not be loaded.";
+                    return;
+                }
+
+                if (CanViewDirectory)
+                {
+                    rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
+                }
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static bool IsSelected(string? currentValue, string expectedValue) =>
+        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+
+    private string GetProfileRoute(AgentRosterItemViewModel agent) => string.IsNullOrWhiteSpace(agent.ProfileRoute) ? $"/agents/{agent.Id}?companyId={agent.CompanyId}" : agent.ProfileRoute!;
+
+    private static string GetStatusBadgeCss(string? status) =>
+        status?.Trim().ToLowerInvariant() switch
+        {
+            "active" => "text-bg-success",
+            "paused" => "text-bg-warning",
+            "restricted" => "text-bg-secondary",
+            "archived" => "text-bg-dark",
+            _ => "text-bg-light"
+        };
+
+    private static string GetStatusLabel(string? status) => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim().Replace("_", " ", StringComparison.Ordinal);
+    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+    private static string GetHealthCss(string? healthStatus) =>
+        healthStatus?.Trim().ToLowerInvariant() switch
+        {
+            "healthy" => "agent-health-healthy",
+            "busy" => "agent-health-busy",
+            "inactive" => "agent-health-inactive",
+            "blocked" => "agent-health-attention",
+            "needs_attention" => "agent-health-attention",
+            _ => "text-body-secondary"
+        };
+    private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+
+    private static string BuildRosterUri(Guid companyId, string? department, string? status)
+    {
+        var query = new List<string> { $"companyId={companyId}" };
+        if (!string.IsNullOrWhiteSpace(department)) query.Add($"department={Uri.EscapeDataString(department)}");
+        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+        return $"/agents?{string.Join("&", query)}";
+    }
+
+    private static string BuildManageUri(Guid companyId, string? department, string? status, Guid? agentId)
+    {
+        var query = new List<string> { $"companyId={companyId}" };
+        if (!string.IsNullOrWhiteSpace(department)) query.Add($"department={Uri.EscapeDataString(department)}");
+        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+        if (agentId is Guid selectedAgentId) query.Add($"agentId={selectedAgentId}");
+        return $"/agents/manage?{string.Join("&", query)}";
+    }
+}

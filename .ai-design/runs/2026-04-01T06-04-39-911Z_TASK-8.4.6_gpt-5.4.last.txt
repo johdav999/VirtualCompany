@@ -1,0 +1,736 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -28,12 +28,19 @@ public sealed record CompanyAgentSummaryDto(
+     string Personality,
+     string AutonomyLevel);
+ 
++public sealed record AgentHealthSummaryDto(
++    string Status,
++    string Label,
++    string Reason);
++
+ public sealed record AgentWorkloadSummaryDto(
+     int OpenItemsCount,
+     int AwaitingApprovalCount,
+     int ExecutedCount,
+     int FailedCount,
+     DateTime? LastActivityUtc,
++    AgentHealthSummaryDto HealthSummary,
++    // Retained for existing clients that still read the legacy flat fields.
+     string HealthStatus,
+     string Summary);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentHealthSummaryCalculator.cs b/src/VirtualCompany.Infrastructure/Companies/AgentHealthSummaryCalculator.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentHealthSummaryCalculator.cs
+@@ -0,0 +1,80 @@
++using VirtualCompany.Application.Agents;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed record AgentHealthDerivationInput(
++    int BlockedTaskCount,
++    int FailedTaskCount,
++    int ActiveTaskCount,
++    DateTime? LastActivityUtc);
++
++public static class AgentHealthSummaryCalculator
++{
++    private const int BusyTaskThreshold = 3;
++    private static readonly TimeSpan BusyWindow = TimeSpan.FromHours(24);
++    private static readonly TimeSpan InactiveThreshold = TimeSpan.FromDays(3);
++
++    public static TimeSpan BusyActivityWindow => BusyWindow;
++
++    public static AgentHealthSummaryDto Calculate(AgentHealthDerivationInput input, DateTime utcNow)
++    {
++        var lastActivityUtc = NormalizeUtc(input.LastActivityUtc);
++
++        // ST-204 starts with a simple derived summary from task state and last activity.
++        // This can evolve later without introducing persisted health state into the domain model.
++        if (input.BlockedTaskCount > 0)
++        {
++            return new AgentHealthSummaryDto(
++                "blocked",
++                "Blocked",
++                input.BlockedTaskCount == 1
++                    ? "1 task is waiting on approval or unblock."
++                    : $"{input.BlockedTaskCount} tasks are waiting on approval or unblock.");
++        }
++
++        if (input.FailedTaskCount > 0)
++        {
++            return new AgentHealthSummaryDto(
++                "needs_attention",
++                "Needs attention",
++                input.FailedTaskCount == 1
++                    ? "1 failed task needs review."
++                    : $"{input.FailedTaskCount} failed tasks need review.");
++        }
++
++        if (lastActivityUtc is null)
++        {
++            return new AgentHealthSummaryDto("inactive", "Inactive", "No recent task activity has been recorded yet.");
++        }
++
++        if (utcNow - lastActivityUtc.Value >= InactiveThreshold)
++        {
++            return new AgentHealthSummaryDto(
++                "inactive",
++                "Inactive",
++                $"No task activity in the last {(int)InactiveThreshold.TotalDays} days.");
++        }
++
++        if (input.ActiveTaskCount >= BusyTaskThreshold)
++        {
++            return new AgentHealthSummaryDto(
++                "busy",
++                "Busy",
++                $"{input.ActiveTaskCount} recent tasks were handled in the last {(int)BusyWindow.TotalHours} hours.");
++        }
++
++        return new AgentHealthSummaryDto("healthy", "Healthy", "Recent task activity is within the expected range.");
++    }
++
++    public static string BuildSummaryText(AgentHealthSummaryDto summary) =>
++        $"{summary.Label} - {summary.Reason}";
++
++    private static DateTime? NormalizeUtc(DateTime? value)
++    {
++        if (value is null)
++        {
++            return null;
++        }
++
++        return value.Value.Kind switch
++        {
++            DateTimeKind.Utc => value.Value,
++            DateTimeKind.Unspecified => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc),
++            _ => value.Value.ToUniversalTime()
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -117,6 +117,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         }
+ 
+         var agentIds = agents.Select(x => x.Id).ToArray();
++        var busyActivityCutoffUtc = DateTime.UtcNow - AgentHealthSummaryCalculator.BusyActivityWindow;
+         var auditTargetIds = agentIds.Select(x => x.ToString("N")).ToArray();
+ 
+         var executionSummaries = await _dbContext.ToolExecutionAttempts
+@@ -127,6 +128,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 group.Key,
+                 group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
+                 group.Count(x => x.Status == ToolExecutionStatus.Executed),
++                group.Count(x => x.Status == ToolExecutionStatus.Executed && (x.ExecutedUtc ?? x.UpdatedUtc) >= busyActivityCutoffUtc),
+                 group.Count(x => x.Status == ToolExecutionStatus.Failed),
+                 group.Max(x => (DateTime?)(x.ExecutedUtc ?? x.UpdatedUtc))))
+             .ToListAsync(cancellationToken);
+@@ -219,6 +221,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             throw new KeyNotFoundException("Agent not found.");
+         }
+ 
++        var busyActivityCutoffUtc = DateTime.UtcNow - AgentHealthSummaryCalculator.BusyActivityWindow;
+         var executionAttempts = await _dbContext.ToolExecutionAttempts
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
+@@ -240,12 +243,20 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             .Take(8)
+             .ToListAsync(cancellationToken);
+ 
+-        var executionSummary = executionAttempts.Count == 0
+-            ? null
+-            : new AgentExecutionAggregate(
+-                agentId,
+-                executionAttempts.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
+-                executionAttempts.Count(x => x.Status == ToolExecutionStatus.Executed),
++        var executionSummary = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentExecutionAggregate(
++                group.Key,
++                group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
++                group.Count(x => x.Status == ToolExecutionStatus.Executed),
++                group.Count(x => x.Status == ToolExecutionStatus.Executed && (x.ExecutedUtc ?? x.UpdatedUtc) >= busyActivityCutoffUtc),
++                group.Count(x => x.Status == ToolExecutionStatus.Failed),
++                group.Max(x => (DateTime?)(x.ExecutedUtc ?? x.UpdatedUtc))))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        var approvalSummary = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentApprovalAggregate(
+                 agentId,
+-                executionAttempts.Count(x => x.Status == ToolExecutionStatus.Failed),
+-                executionAttempts.Max(x => (DateTime?)(x.ExecutedUtc ?? x.UpdatedUtc)));
+-
+-        var approvalSummary = approvalRequests.Count == 0
+-            ? null
+-            : new AgentApprovalAggregate(
+-                agentId,
+                 approvalRequests.Count(x => x.Status == ApprovalRequestStatus.Pending),
+                 approvalRequests.Max(x => (DateTime?)x.UpdatedUtc));
+ 
+@@ -853,47 +864,28 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     {
+         var awaitingApprovalCount = (execution?.AwaitingApprovalCount ?? 0) + (approval?.PendingApprovalCount ?? 0);
+         var failedCount = execution?.FailedCount ?? 0;
++        var recentExecutionCount = execution?.RecentExecutionCount ?? 0;
+         var executedCount = execution?.ExecutedCount ?? 0;
+         var deduplicatedAwaitingApprovalCount = Math.Max(execution?.AwaitingApprovalCount ?? 0, approval?.PendingApprovalCount ?? 0);
+         var openItemsCount = deduplicatedAwaitingApprovalCount + failedCount;
+         var lastActivityUtc = MaxUtc(execution?.LastActivityUtc, approval?.LastActivityUtc, auditActivityUtc);
+-        var healthStatus = ResolveRosterHealthStatus(agent.Status, openItemsCount, lastActivityUtc);
+-        var summary = BuildRosterWorkloadSummary(agent.Status, deduplicatedAwaitingApprovalCount, failedCount, lastActivityUtc);
++        var healthSummary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(
++                deduplicatedAwaitingApprovalCount,
++                failedCount,
++                deduplicatedAwaitingApprovalCount + recentExecutionCount,
++                lastActivityUtc),
++            DateTime.UtcNow);
+ 
+         return new AgentWorkloadSummaryDto(
+             openItemsCount,
+             deduplicatedAwaitingApprovalCount,
+             executedCount,
+             failedCount,
+             lastActivityUtc,
+-            healthStatus,
+-            summary);
+-    }
+-
+-    private static string ResolveRosterHealthStatus(AgentStatus status, int openItemsCount, DateTime? lastActivityUtc) =>
+-        status switch
+-        {
+-            AgentStatus.Archived => "archived",
+-            AgentStatus.Paused or AgentStatus.Restricted => "attention",
+-            _ when openItemsCount > 0 => "attention",
+-            _ when lastActivityUtc is null => "unknown",
+-            _ => "healthy"
+-        };
+-
+-    private static string BuildRosterWorkloadSummary(
+-        AgentStatus status,
+-        int awaitingApprovalCount,
+-        int failedCount,
+-        DateTime? lastActivityUtc)
+-    {
+-        if (status == AgentStatus.Archived)
+-        {
+-            return "Archived · unavailable for new assignments";
+-        }
+-
+-        if (status == AgentStatus.Paused)
+-        {
+-            return "Attention needed · agent is paused";
+-        }
+-
+-        if (status == AgentStatus.Restricted)
+-        {
+-            return "Attention needed · agent is restricted";
+-        }
+-
+-        if (failedCount > 0 && awaitingApprovalCount > 0)
+-        {
+-            return $"Attention needed · {FormatCount(failedCount, "failed execution")}, {FormatCount(awaitingApprovalCount, "awaiting approval")}";
+-        }
+-
+-        if (failedCount > 0)
+-        {
+-            return $"Attention needed · {FormatCount(failedCount, "failed execution")}";
+-        }
+-
+-        if (awaitingApprovalCount > 0)
+-        {
+-            return $"Attention needed · {FormatCount(awaitingApprovalCount, "awaiting approval")}";
+-        }
+-
+-        return lastActivityUtc is null
+-            ? "Unknown · no recent activity"
+-            : "Idle · no open tasks";
+-    }
+-
+-    private static string FormatCount(int count, string label) =>
+-        $"{count} {label}{(count == 1 ? string.Empty : "s")}";
++            healthSummary,
++            healthSummary.Status,
++            AgentHealthSummaryCalculator.BuildSummaryText(healthSummary));
++    }
+ 
+     private static string BuildAgentProfileRoute(Guid companyId, Guid agentId) =>
+         $"/agents/{agentId}?companyId={companyId}";
+@@ -1497,6 +1489,6 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return correlationId.Length > 128 ? correlationId[..128] : correlationId;
+     }
+ 
+-    private sealed record AgentExecutionAggregate(Guid AgentId, int AwaitingApprovalCount, int ExecutedCount, int FailedCount, DateTime? LastActivityUtc);
++    private sealed record AgentExecutionAggregate(Guid AgentId, int AwaitingApprovalCount, int ExecutedCount, int RecentExecutionCount, int FailedCount, DateTime? LastActivityUtc);
+     private sealed record AgentApprovalAggregate(Guid AgentId, int PendingApprovalCount, DateTime? LastActivityUtc);
+     private sealed record AgentAuditAggregate(string TargetId, DateTime? LastActivityUtc);
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -226,10 +226,14 @@ public sealed class AgentApiClient
+                         ProfileRoute = BuildProfileRoute(agent.CompanyId, agent.Id),
+                         WorkloadSummary = new AgentWorkloadSummaryViewModel
+                         {
+-                            LastActivityUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : DateTime.UtcNow,
+-                            HealthStatus = string.Equals(agent.Status, "archived", StringComparison.OrdinalIgnoreCase) ? "archived" : "healthy",
+-                            Summary = "Offline mode uses operating profile timestamps as the recent activity source."
+-                        }
++                            LastActivityUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : DateTime.UtcNow
++                        },
++                        WorkloadSummary =
++                        {
++                            HealthSummary = BuildOfflineHealthSummary(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow),
++                            HealthStatus = BuildOfflineHealthSummary(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow).Status,
++                            Summary = BuildOfflineSummaryText(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow)
++                        }
+                     })
+                     .ToList();
+ 
+@@ -302,10 +306,12 @@ public sealed class AgentApiClient
+                     },
+                     WorkloadSummary = new AgentWorkloadSummaryViewModel
+                     {
+-                        LastActivityUtc = profile.UpdatedUtc == default ? null : profile.UpdatedUtc,
+-                        HealthStatus = ResolveOfflineHealthStatus(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc),
+-                        Summary = "Offline mode uses the saved operating profile as the profile source."
+-                    }
++                        LastActivityUtc = profile.UpdatedUtc == default ? null : profile.UpdatedUtc
++                    },
++                    WorkloadSummary =
++                    {
++                        HealthSummary = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc),
++                        HealthStatus = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc).Status,
++                        Summary = BuildOfflineSummaryText(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc)
++                    }
+                 });
+             }
+         }
+@@ -553,24 +559,45 @@ public sealed class AgentApiClient
+         private static string BuildProfileRoute(Guid companyId, Guid agentId) =>
+             $"/agents/{agentId}?companyId={companyId}";
+ 
+-        private static string ResolveOfflineHealthStatus(string status, DateTime? lastActivityUtc)
++        private static AgentHealthSummaryViewModel BuildOfflineHealthSummary(string status, DateTime? lastActivityUtc)
+         {
+             if (string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase))
+             {
+-                return "archived";
++                return new AgentHealthSummaryViewModel
++                {
++                    Status = "inactive",
++                    Label = "Inactive",
++                    Reason = "Offline mode only has the saved operating profile timestamp available."
++                };
+             }
+ 
+             if (string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(status, "restricted", StringComparison.OrdinalIgnoreCase))
+             {
+-                return "attention";
++                return new AgentHealthSummaryViewModel
++                {
++                    Status = "needs_attention",
++                    Label = "Needs attention",
++                    Reason = "Offline mode cannot inspect live task state for this agent."
++                };
+             }
+ 
+             if (lastActivityUtc is null)
+             {
+-                return "unknown";
++                return new AgentHealthSummaryViewModel
++                {
++                    Status = "inactive",
++                    Label = "Inactive",
++                    Reason = "Offline mode has not recorded any recent activity yet."
++                };
+             }
+ 
+-            return "healthy";
++            return new AgentHealthSummaryViewModel
++            {
++                Status = "healthy",
++                Label = "Healthy",
++                Reason = "Offline mode uses the saved operating profile timestamp as the activity source."
++            };
++        }
++
++        private static string BuildOfflineSummaryText(string status, DateTime? lastActivityUtc) =>
++            $"{BuildOfflineHealthSummary(status, lastActivityUtc).Label} - {BuildOfflineHealthSummary(status, lastActivityUtc).Reason}";
+         }
+ 
+         private static bool MatchesFilter(string value, string? filter) =>
+@@ -610,12 +637,20 @@ public sealed class AgentWorkloadSummaryViewModel
+     public int ExecutedCount { get; set; }
+     public int FailedCount { get; set; }
+     public DateTime? LastActivityUtc { get; set; }
++    public AgentHealthSummaryViewModel HealthSummary { get; set; } = new();
+     public string HealthStatus { get; set; } = string.Empty;
+     public string Summary { get; set; } = string.Empty;
+ }
+ 
++public sealed class AgentHealthSummaryViewModel
++{
++    public string Status { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public string Reason { get; set; } = string.Empty;
++}
++
+ public sealed class AgentRecentActivityViewModel
+ {
++
+     public DateTime OccurredUtc { get; set; }
+     public string ActivityType { get; set; } = string.Empty;
+     public string Title { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/AgentRoster.razor b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+--- a/src/VirtualCompany.Web/Pages/AgentRoster.razor
++++ b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+@@ -147,8 +147,9 @@ else
+                                         </td>
+                                         <td>@ToDisplayText(agent.AutonomyLevel)</td>
+                                         <td>
+-                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthStatus)">@agent.WorkloadSummary.Summary</div>
++                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthSummary.Status)">@agent.WorkloadSummary.HealthSummary.Label</div>
++                                            <div class="small text-body-secondary mt-1">@agent.WorkloadSummary.HealthSummary.Reason</div>
+                                             <div class="small text-body-secondary mt-1">@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</div>
+                                         </td>
+                                         <td>
+@@ -253,7 +254,15 @@ else
+     private static string GetStatusBadgeCss(string? status) =>
+         status?.Trim().ToLowerInvariant() switch
+         {
+-            "active" => "text-bg-success",
++            "active" => "text-bg-success",
+             "paused" => "text-bg-warning",
+             "restricted" => "text-bg-secondary",
+             "archived" => "text-bg-dark",
+@@ -262,7 +271,15 @@ else
+         };
+ 
+     private static string GetStatusLabel(string? status) => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim().Replace("_", " ", StringComparison.Ordinal);
+-    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+-    private static string GetHealthCss(string? healthStatus) => string.Equals(healthStatus, "healthy", StringComparison.OrdinalIgnoreCase) ? "agent-health-healthy" : string.Equals(healthStatus, "archived", StringComparison.OrdinalIgnoreCase) ? "agent-health-archived" : string.Equals(healthStatus, "unknown", StringComparison.OrdinalIgnoreCase) ? "text-body-secondary" : "agent-health-attention";
++    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
++    private static string GetHealthCss(string? healthStatus) =>
++        healthStatus?.Trim().ToLowerInvariant() switch
++        {
++            "healthy" => "agent-health-healthy",
++            "busy" => "agent-health-busy",
++            "inactive" => "agent-health-inactive",
++            "blocked" => "agent-health-attention",
++            "needs_attention" => "agent-health-attention",
++            _ => "text-body-secondary"
++        };
+     private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+ 
+     private static string BuildRosterUri(Guid companyId, string? department, string? status)
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -76,7 +76,7 @@ else
+                             </div>
+                             <div class="summary-pill">
+                                 <span class="dashboard-kicker">Health</span>
+-                                <strong class="@GetHealthCss(profile.WorkloadSummary.HealthStatus)">@ToDisplayText(profile.WorkloadSummary.HealthStatus)</strong>
++                                <strong class="@GetHealthCss(profile.WorkloadSummary.HealthSummary.Status)">@profile.WorkloadSummary.HealthSummary.Label</strong>
+                             </div>
+                             <div class="summary-pill">
+                                 <span class="dashboard-kicker">Open work</span>
+@@ -109,8 +109,8 @@ else
+                             <dd>@ToDisplayText(profile.Seniority)</dd>
+                             <dt>Role brief</dt>
+                             <dd>@GetOptionalText(profile.RoleBrief)</dd>
+-                            <dt>Summary</dt>
++                            <dt>Summary</dt>
+                             <dd>@GetOptionalText(profile.Personality)</dd>
+-                            <dt>Workload</dt>
+-                            <dd>@profile.WorkloadSummary.Summary</dd>
++                            <dt>Health summary</dt>
++                            <dd>@profile.WorkloadSummary.HealthSummary.Reason</dd>
+                             <dt>Last activity</dt>
+                             <dd>@FormatDate(profile.WorkloadSummary.LastActivityUtc)</dd>
+                             <dt>Profile updated</dt>
+@@ -286,11 +286,13 @@ else
+     private static string GetHealthCss(string healthStatus) =>
+         healthStatus.Trim().ToLowerInvariant() switch
+         {
+-            "healthy" => "agent-health-healthy",
+-            "unknown" => "text-body-secondary",
+-            "archived" => "agent-health-archived",
+-            "attention" => "agent-health-attention",
+-            _ => "agent-health-attention"
++            "healthy" => "agent-health-healthy",
++            "busy" => "agent-health-busy",
++            "inactive" => "agent-health-inactive",
++            "blocked" => "agent-health-attention",
++            "needs_attention" => "agent-health-attention",
++            "archived" => "agent-health-archived",
++            _ => "text-body-secondary"
+         };
+ 
+     private static string GetInitials(string value)
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -359,8 +359,9 @@
+                                         </td>
+                                         <td>@ToDisplayText(agent.AutonomyLevel)</td>
+                                         <td>
+-                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthStatus)">@agent.WorkloadSummary.Summary</div>
++                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthSummary.Status)">@agent.WorkloadSummary.HealthSummary.Label</div>
++                                            <div class="small text-body-secondary mt-1">@agent.WorkloadSummary.HealthSummary.Reason</div>
+                                             <div class="small text-body-secondary mt-1">@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</div>
+                                         </td>
+                                     </tr>
+@@ -655,7 +656,15 @@
+     private static string GetStatusLabel(string? status) => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim().Replace("_", " ", StringComparison.Ordinal);
+     private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+-    private static string GetHealthCss(string? healthStatus) => string.Equals(healthStatus, "healthy", StringComparison.OrdinalIgnoreCase) ? "agent-health-healthy" : string.Equals(healthStatus, "archived", StringComparison.OrdinalIgnoreCase) ? "agent-health-archived" : string.Equals(healthStatus, "unknown", StringComparison.OrdinalIgnoreCase) ? "text-body-secondary" : "agent-health-attention";
++    private static string GetHealthCss(string? healthStatus) =>
++        healthStatus?.Trim().ToLowerInvariant() switch
++        {
++            "healthy" => "agent-health-healthy",
++            "busy" => "agent-health-busy",
++            "inactive" => "agent-health-inactive",
++            "blocked" => "agent-health-attention",
++            "needs_attention" => "agent-health-attention",
++            _ => "text-body-secondary"
++        };
+     private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+     private static string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
+ 
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -406,10 +406,18 @@
+ .agent-health-healthy {
+     color: #15803d;
+ }
+ 
++.agent-health-busy {
++    color: #1d4ed8;
++}
++
+ .agent-health-attention {
+     color: #b45309;
+ }
+ 
++.agent-health-inactive {
++    color: #64748b;
++}
++
+ .agent-health-archived {
+     color: #475569;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+@@ -61,15 +61,18 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         Assert.Equal($"/agents/{seed.FinanceAgentId}?companyId={seed.CompanyId}", item.ProfileRoute);
+         Assert.Equal(1, item.WorkloadSummary.OpenItemsCount);
+         Assert.Equal(1, item.WorkloadSummary.AwaitingApprovalCount);
+-        Assert.Equal("attention", item.WorkloadSummary.HealthStatus);
+-        Assert.Equal("Attention needed · 1 awaiting approval", item.WorkloadSummary.Summary);
++        Assert.Equal("blocked", item.WorkloadSummary.HealthStatus);
++        Assert.Equal("blocked", item.WorkloadSummary.HealthSummary.Status);
++        Assert.Equal("Blocked", item.WorkloadSummary.HealthSummary.Label);
++        Assert.Equal("1 task is waiting on approval or unblock.", item.WorkloadSummary.HealthSummary.Reason);
++        Assert.Equal("Blocked - 1 task is waiting on approval or unblock.", item.WorkloadSummary.Summary);
+         Assert.Contains("Finance", payload.Departments);
+         Assert.Equal(new[] { "active", "paused", "restricted", "archived" }, payload.Statuses);
+     }
+ 
+     [Fact]
+-    public async Task Agent_roster_view_uses_unknown_fallback_when_no_task_activity_exists()
++    public async Task Agent_roster_view_uses_inactive_fallback_when_no_task_activity_exists()
+     {
+         var seed = await SeedManagerDirectoryAsync();
+ 
+         using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+@@ -79,8 +82,11 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         var payload = await response.Content.ReadFromJsonAsync<AgentRosterResponse>();
+         Assert.NotNull(payload);
+         var item = Assert.Single(payload!.Items);
+         Assert.Equal(seed.OperationsAgentId, item.Id);
+-        Assert.Equal("unknown", item.WorkloadSummary.HealthStatus);
+-        Assert.Equal("Unknown · no recent activity", item.WorkloadSummary.Summary);
++        Assert.Equal("inactive", item.WorkloadSummary.HealthStatus);
++        Assert.Equal("inactive", item.WorkloadSummary.HealthSummary.Status);
++        Assert.Equal("Inactive", item.WorkloadSummary.HealthSummary.Label);
++        Assert.Equal("No recent task activity has been recorded yet.", item.WorkloadSummary.HealthSummary.Reason);
++        Assert.Equal("Inactive - No recent task activity has been recorded yet.", item.WorkloadSummary.Summary);
+     }
+ 
+     [Fact]
+@@ -115,6 +121,28 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         Assert.NotEmpty(payload.RecentActivity);
+     }
+ 
++    [Fact]
++    public async Task Agent_profile_view_returns_same_derived_health_summary_as_roster()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++
++        var rosterResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/roster?department=Finance&status=active");
++        var rosterPayload = await rosterResponse.Content.ReadFromJsonAsync<AgentRosterResponse>();
++        var rosterItem = Assert.Single(rosterPayload!.Items);
++
++        var profileResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.FinanceAgentId}");
++        Assert.Equal(HttpStatusCode.OK, profileResponse.StatusCode);
++
++        var profilePayload = await profileResponse.Content.ReadFromJsonAsync<AgentProfileResponse>();
++        Assert.NotNull(profilePayload);
++        Assert.Equal(rosterItem.WorkloadSummary.HealthSummary.Status, profilePayload!.WorkloadSummary.HealthSummary.Status);
++        Assert.Equal(rosterItem.WorkloadSummary.HealthSummary.Label, profilePayload.WorkloadSummary.HealthSummary.Label);
++        Assert.Equal(rosterItem.WorkloadSummary.HealthSummary.Reason, profilePayload.WorkloadSummary.HealthSummary.Reason);
++        Assert.Equal("blocked", profilePayload.WorkloadSummary.HealthStatus);
++        Assert.Equal("Blocked - 1 task is waiting on approval or unblock.", profilePayload.WorkloadSummary.Summary);
++    }
++
+     [Fact]
+     public async Task Agent_profile_view_hides_sensitive_configuration_for_specialized_non_admin_roles()
+     {
+@@ -381,6 +409,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
+         public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
+         public List<AgentRecentActivity> RecentActivity { get; set; } = [];
++        public AgentWorkloadSummary WorkloadSummary { get; set; } = new();
+         public AgentProfileVisibility Visibility { get; set; } = new();
+     }
+ 
+@@ -405,11 +434,19 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         public bool CanPauseOrRestrictAgent { get; set; }
+     }
+ 
++    private sealed class AgentHealthSummary
++    {
++        public string Status { get; set; } = string.Empty;
++        public string Label { get; set; } = string.Empty;
++        public string Reason { get; set; } = string.Empty;
++    }
++
+     private sealed class AgentWorkloadSummary
+     {
+         public int OpenItemsCount { get; set; }
+         public int AwaitingApprovalCount { get; set; }
+         public int ExecutedCount { get; set; }
+         public int FailedCount { get; set; }
+         public DateTime? LastActivityUtc { get; set; }
++        public AgentHealthSummary HealthSummary { get; set; } = new();
+         public string HealthStatus { get; set; } = string.Empty;
+         public string Summary { get; set; } = string.Empty;
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentHealthSummaryCalculatorTests.cs b/tests/VirtualCompany.Api.Tests/AgentHealthSummaryCalculatorTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentHealthSummaryCalculatorTests.cs
+@@ -0,0 +1,96 @@
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentHealthSummaryCalculatorTests
++{
++    private static readonly DateTime UtcNow = new(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc);
++
++    [Fact]
++    public void Calculate_returns_blocked_when_any_blocked_task_exists()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(1, 0, 1, UtcNow),
++            UtcNow);
++
++        Assert.Equal("blocked", summary.Status);
++        Assert.Equal("Blocked", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_returns_needs_attention_when_failed_task_exists_without_blocked_work()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 2, 2, UtcNow),
++            UtcNow);
++
++        Assert.Equal("needs_attention", summary.Status);
++        Assert.Equal("Needs attention", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_returns_inactive_when_last_activity_is_missing()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 0, 0, null),
++            UtcNow);
++
++        Assert.Equal("inactive", summary.Status);
++        Assert.Equal("Inactive", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_returns_inactive_when_last_activity_is_stale()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddDays(-4)),
++            UtcNow);
++
++        Assert.Equal("inactive", summary.Status);
++        Assert.Equal("Inactive", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_returns_busy_when_recent_activity_crosses_threshold()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 0, 3, UtcNow.AddHours(-2)),
++            UtcNow);
++
++        Assert.Equal("busy", summary.Status);
++        Assert.Equal("Busy", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_returns_healthy_when_no_concerning_signals_exist()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 0, 1, UtcNow.AddHours(-1)),
++            UtcNow);
++
++        Assert.Equal("healthy", summary.Status);
++        Assert.Equal("Healthy", summary.Label);
++    }
++
++    [Fact]
++    public void Calculate_prioritizes_blocked_over_inactive()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(1, 0, 1, UtcNow.AddDays(-7)),
++            UtcNow);
++
++        Assert.Equal("blocked", summary.Status);
++    }
++
++    [Fact]
++    public void Calculate_prioritizes_failed_over_inactive_when_no_blocked_work_exists()
++    {
++        var summary = AgentHealthSummaryCalculator.Calculate(
++            new AgentHealthDerivationInput(0, 1, 1, UtcNow.AddDays(-7)),
++            UtcNow);
++
++        Assert.Equal("needs_attention", summary.Status);
++    }
++}
+END_OF_PATCH

@@ -32,6 +32,32 @@ public sealed class AgentApiClient
             ? Task.FromResult(OfflineStore.GetRoster(companyId))
             : GetAsync<IReadOnlyList<CompanyAgentSummaryViewModel>>($"api/companies/{companyId}/agents", cancellationToken);
 
+    public Task<AgentRosterResponseViewModel> GetRosterViewAsync(
+        Guid companyId,
+        string? department = null,
+        string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            return Task.FromResult(OfflineStore.GetRosterView(companyId, department, status));
+        }
+
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(department))
+        {
+            query.Add($"department={Uri.EscapeDataString(department)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query.Add($"status={Uri.EscapeDataString(status)}");
+        }
+
+        var uri = query.Count == 0 ? $"api/companies/{companyId}/agents/roster" : $"api/companies/{companyId}/agents/roster?{string.Join("&", query)}";
+        return GetAsync<AgentRosterResponseViewModel>(uri, cancellationToken);
+    }
+
     public Task<CreateAgentFromTemplateResultViewModel> CreateAgentFromTemplateAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? OfflineStore.CreateFromTemplateAsync(companyId, request, _httpClient, cancellationToken)
@@ -47,6 +73,11 @@ public sealed class AgentApiClient
         _useOfflineMode
             ? OfflineStore.GetOperatingProfileAsync(companyId, agentId, cancellationToken)
             : GetAsync<AgentOperatingProfileViewModel>($"api/companies/{companyId}/agents/{agentId}/profile", cancellationToken);
+
+    public Task<AgentProfileViewModel> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? OfflineStore.GetProfileViewAsync(companyId, agentId, cancellationToken)
+            : GetAsync<AgentProfileViewModel>($"api/companies/{companyId}/agents/{agentId}", cancellationToken);
 
     public Task<AgentOperatingProfileViewModel> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileRequest request, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -143,6 +174,15 @@ public sealed class AgentApiClient
     private sealed class OfflineAgentStore
     {
         private readonly object _sync = new();
+        private static readonly HashSet<string> SupportedStatuses = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "active",
+            "paused",
+            "restricted",
+            "archived"
+        };
+        private static readonly IReadOnlyList<string> SupportedStatusOptions =
+            ["active", "paused", "restricted", "archived"];
         private readonly Dictionary<Guid, List<CompanyAgentSummaryViewModel>> _agentsByCompany = [];
         private readonly Dictionary<Guid, AgentOperatingProfileViewModel> _profilesByAgentId = [];
         private Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>>? _templatesTask;
@@ -166,6 +206,44 @@ public sealed class AgentApiClient
             }
         }
 
+        public AgentRosterResponseViewModel GetRosterView(Guid companyId, string? department, string? status)
+        {
+            lock (_sync)
+            {
+                var allItems = GetRoster(companyId)
+                    .Select(agent => new AgentRosterItemViewModel
+                    {
+                        Id = agent.Id,
+                        CompanyId = agent.CompanyId,
+                        TemplateId = agent.TemplateId,
+                        DisplayName = agent.DisplayName,
+                        RoleName = agent.RoleName,
+                        Department = agent.Department,
+                        Seniority = agent.Seniority,
+                        Status = agent.Status,
+                        AvatarUrl = agent.AvatarUrl,
+                        Personality = agent.Personality,
+                        AutonomyLevel = "level_0",
+                        ProfileRoute = BuildProfileRoute(agent.CompanyId, agent.Id),
+                        WorkloadSummary = new AgentWorkloadSummaryViewModel
+                        {
+                            LastActivityUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : DateTime.UtcNow,
+                            HealthSummary = BuildOfflineHealthSummary(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow),
+                            HealthStatus = BuildOfflineHealthSummary(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow).Status,
+                            Summary = BuildOfflineSummaryText(agent.Status, _profilesByAgentId.TryGetValue(agent.Id, out profile) ? profile.UpdatedUtc : DateTime.UtcNow)
+                        }
+                    })
+                    .ToList();
+
+                return new AgentRosterResponseViewModel
+                {
+                    Items = allItems.Where(x => MatchesFilter(x.Department, department) && MatchesFilter(x.Status, status)).ToList(),
+                    Departments = allItems.Select(x => x.Department).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
+                    Statuses = SupportedStatusOptions.ToList()
+                };
+            }
+        }
+
         public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
         {
             lock (_sync)
@@ -176,6 +254,77 @@ public sealed class AgentApiClient
                 }
 
                 throw new OnboardingApiException("The selected agent profile could not be loaded.");
+            }
+        }
+
+        public Task<AgentProfileViewModel> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+        {
+            lock (_sync)
+            {
+                if (!_profilesByAgentId.TryGetValue(agentId, out var profile) || profile.CompanyId != companyId)
+                {
+                    throw new OnboardingApiException("The selected agent profile could not be loaded.");
+                }
+
+                return Task.FromResult(new AgentProfileViewModel
+                {
+                    Id = profile.Id,
+                    CompanyId = profile.CompanyId,
+                    TemplateId = profile.TemplateId,
+                    DisplayName = profile.DisplayName,
+                    RoleName = profile.RoleName,
+                    Department = profile.Department,
+                    Seniority = profile.Seniority,
+                    Status = profile.Status,
+                    AvatarUrl = profile.AvatarUrl,
+                    Personality = profile.RoleBrief ?? string.Empty,
+                    RoleBrief = profile.RoleBrief,
+                    Objectives = CloneNodes(profile.Objectives),
+                    Kpis = CloneNodes(profile.Kpis),
+                    ToolPermissions = CloneNodes(profile.ToolPermissions),
+                    DataScopes = CloneNodes(profile.DataScopes),
+                    ApprovalThresholds = CloneNodes(profile.ApprovalThresholds),
+                    EscalationRules = CloneNodes(profile.EscalationRules),
+                    WorkingHours = CloneNodes(profile.WorkingHours),
+                    UpdatedUtc = profile.UpdatedUtc,
+                    AutonomyLevel = profile.AutonomyLevel,
+                    Visibility = new AgentProfileVisibilityViewModel
+                    {
+                        CanViewPermissions = true,
+                        CanViewThresholds = true,
+                        CanViewWorkingHours = true,
+                        CanEditAgent = true,
+                        CanEditRoleBrief = true,
+                        CanEditObjectives = true,
+                        CanEditKpis = true,
+                        CanEditWorkingHours = true,
+                        CanEditStatus = true,
+                        CanEditSensitiveGovernance = true,
+                        CanPauseOrRestrictAgent = true
+                    },
+                    WorkloadSummary = new AgentWorkloadSummaryViewModel
+                    {
+                        LastActivityUtc = profile.UpdatedUtc == default ? null : profile.UpdatedUtc,
+                        HealthSummary = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc),
+                        HealthStatus = BuildOfflineHealthSummary(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc).Status,
+                        Summary = BuildOfflineSummaryText(profile.Status, profile.UpdatedUtc == default ? null : profile.UpdatedUtc)
+                    },
+                    ProfileRoute = BuildProfileRoute(profile.CompanyId, profile.Id),
+                    Sections = BuildProfileSections(),
+                    AnalyticsPreview = new AgentProfileAnalyticsPreviewViewModel
+                    {
+                        SectionId = "analytics",
+                        Heading = "Profile analytics",
+                        Description = "Future KPI, workload, health, and trend modules should extend the profile page instead of branching to a separate destination.",
+                        PlannedModules =
+                        [
+                            "Workload and health summary",
+                            "Recent activity rollups",
+                            "KPI and metrics panels",
+                            "Trend and analytics modules"
+                        ]
+                    },
+                });
             }
         }
 
@@ -192,16 +341,17 @@ public sealed class AgentApiClient
                     throw new OnboardingApiException("The selected agent profile could not be loaded.");
                 }
 
-                existing.Status = request.Status.Trim();
+                existing.Status = NormalizeStatus(request.Status);
                 existing.RoleBrief = string.IsNullOrWhiteSpace(request.RoleBrief) ? null : request.RoleBrief.Trim();
-                existing.Objectives = CloneNodes(request.Objectives);
-                existing.Kpis = CloneNodes(request.Kpis);
-                existing.ToolPermissions = CloneNodes(request.ToolPermissions);
-                existing.DataScopes = CloneNodes(request.DataScopes);
-                existing.ApprovalThresholds = CloneNodes(request.ApprovalThresholds);
-                existing.EscalationRules = CloneNodes(request.EscalationRules);
-                existing.TriggerLogic = CloneNodes(request.TriggerLogic);
-                existing.WorkingHours = CloneNodes(request.WorkingHours);
+                existing.AutonomyLevel = string.IsNullOrWhiteSpace(request.AutonomyLevel) ? existing.AutonomyLevel : request.AutonomyLevel.Trim();
+                existing.Objectives = request.Objectives is null ? existing.Objectives : CloneNodes(request.Objectives);
+                existing.Kpis = request.Kpis is null ? existing.Kpis : CloneNodes(request.Kpis);
+                existing.ToolPermissions = request.ToolPermissions is null ? existing.ToolPermissions : CloneNodes(request.ToolPermissions);
+                existing.DataScopes = request.DataScopes is null ? existing.DataScopes : CloneNodes(request.DataScopes);
+                existing.ApprovalThresholds = request.ApprovalThresholds is null ? existing.ApprovalThresholds : CloneNodes(request.ApprovalThresholds);
+                existing.EscalationRules = request.EscalationRules is null ? existing.EscalationRules : CloneNodes(request.EscalationRules);
+                existing.TriggerLogic = request.TriggerLogic is null ? existing.TriggerLogic : CloneNodes(request.TriggerLogic);
+                existing.WorkingHours = request.WorkingHours is null ? existing.WorkingHours : CloneNodes(request.WorkingHours);
                 existing.UpdatedUtc = DateTime.UtcNow;
                 existing.CanReceiveAssignments = !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
 
@@ -321,7 +471,9 @@ public sealed class AgentApiClient
                 TriggerLogic = CloneNodes(profile.TriggerLogic),
                 WorkingHours = CloneNodes(profile.WorkingHours),
                 UpdatedUtc = profile.UpdatedUtc,
-                CanReceiveAssignments = profile.CanReceiveAssignments
+                CanReceiveAssignments = profile.CanReceiveAssignments,
+                Visibility = profile.Visibility,
+                AutonomyLevel = profile.AutonomyLevel
             };
 
         private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
@@ -375,6 +527,24 @@ public sealed class AgentApiClient
                 .ToList();
         }
 
+        private static string NormalizeStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status) || !SupportedStatuses.Contains(status.Trim()))
+            {
+                throw new OnboardingApiException(
+                    "Status must be one of active, paused, restricted, or archived.",
+                    new Dictionary<string, string[]>
+                    {
+                        [nameof(UpdateAgentOperatingProfileRequest.Status)] =
+                        [
+                            "Status must be one of active, paused, restricted, or archived."
+                        ]
+                    });
+            }
+
+            return status.Trim().ToLowerInvariant();
+        }
+
         private static bool TryValidateAvatarReference(string? value, out string? error)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -404,7 +574,183 @@ public sealed class AgentApiClient
             error = null;
             return true;
         }
+
+        private static string BuildProfileRoute(Guid companyId, Guid agentId) =>
+            $"/agents/{agentId}?companyId={companyId}";
+
+        private static List<AgentProfileSectionViewModel> BuildProfileSections() =>
+            [
+                new() { Id = "overview", Title = "Overview", Description = "Identity, current workload, and health summary.", IsAvailable = true },
+                new() { Id = "objectives", Title = "Objectives", Description = "Current objectives and operating intent.", IsAvailable = true },
+                new() { Id = "permissions", Title = "Permissions", Description = "Tool permissions and data scopes.", IsAvailable = true },
+                new() { Id = "thresholds", Title = "Thresholds", Description = "Approval thresholds and escalation rules.", IsAvailable = true },
+                new() { Id = "working-hours", Title = "Working hours", Description = "Availability and coverage windows.", IsAvailable = true },
+                new() { Id = "recent-activity", Title = "Recent activity", Description = "Latest executions, approvals, and tenant-scoped events.", IsAvailable = true },
+                new() { Id = "analytics", Title = "Analytics", Description = "Reserved profile surface for future KPI, health, and trend modules.", IsAvailable = true }
+            ];
+
+        private static AgentHealthSummaryViewModel BuildOfflineHealthSummary(string status, DateTime? lastActivityUtc)
+        {
+            if (string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AgentHealthSummaryViewModel
+                {
+                    Status = "inactive",
+                    Label = "Inactive",
+                    Reason = "Offline mode only has the saved operating profile timestamp available."
+                };
+            }
+
+            if (string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(status, "restricted", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AgentHealthSummaryViewModel
+                {
+                    Status = "needs_attention",
+                    Label = "Needs attention",
+                    Reason = "Offline mode cannot inspect live task state for this agent."
+                };
+            }
+
+            if (lastActivityUtc is null)
+            {
+                return new AgentHealthSummaryViewModel
+                {
+                    Status = "inactive",
+                    Label = "Inactive",
+                    Reason = "Offline mode has not recorded any recent activity yet."
+                };
+            }
+
+            return new AgentHealthSummaryViewModel
+            {
+                Status = "healthy",
+                Label = "Healthy",
+                Reason = "Offline mode uses the saved operating profile timestamp as the activity source."
+            };
+        }
+
+        private static string BuildOfflineSummaryText(string status, DateTime? lastActivityUtc) =>
+            $"{BuildOfflineHealthSummary(status, lastActivityUtc).Label} - {BuildOfflineHealthSummary(status, lastActivityUtc).Reason}";
+
+        private static bool MatchesFilter(string value, string? filter) =>
+            string.IsNullOrWhiteSpace(filter) ||
+            string.Equals(value, filter.Trim(), StringComparison.OrdinalIgnoreCase);
     }
+}
+
+public sealed class AgentRosterResponseViewModel
+{
+    public List<AgentRosterItemViewModel> Items { get; set; } = [];
+    public List<string> Departments { get; set; } = [];
+    public List<string> Statuses { get; set; } = [];
+}
+
+public sealed class AgentRosterItemViewModel
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string TemplateId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Seniority { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
+    public string Personality { get; set; } = string.Empty;
+    public string AutonomyLevel { get; set; } = string.Empty;
+    public AgentWorkloadSummaryViewModel WorkloadSummary { get; set; } = new();
+    public string? ProfileRoute { get; set; }
+}
+
+public sealed class AgentWorkloadSummaryViewModel
+{
+    public int OpenItemsCount { get; set; }
+    public int AwaitingApprovalCount { get; set; }
+    public int ExecutedCount { get; set; }
+    public int FailedCount { get; set; }
+    public DateTime? LastActivityUtc { get; set; }
+    public AgentHealthSummaryViewModel HealthSummary { get; set; } = new();
+    public string HealthStatus { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+}
+
+public sealed class AgentHealthSummaryViewModel
+{
+    public string Status { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class AgentRecentActivityViewModel
+{
+
+    public DateTime OccurredUtc { get; set; }
+    public string ActivityType { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? Detail { get; set; }
+}
+
+public sealed class AgentProfileVisibilityViewModel
+{
+    public bool CanViewPermissions { get; set; }
+    public bool CanViewThresholds { get; set; }
+    public bool CanViewWorkingHours { get; set; }
+    public bool CanEditAgent { get; set; }
+    public bool CanEditRoleBrief { get; set; }
+    public bool CanEditObjectives { get; set; }
+    public bool CanEditKpis { get; set; }
+    public bool CanEditWorkingHours { get; set; }
+    public bool CanEditStatus { get; set; }
+    public bool CanEditSensitiveGovernance { get; set; }
+    public bool CanPauseOrRestrictAgent { get; set; }
+}
+
+public sealed class AgentProfileSectionViewModel
+{
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public bool IsAvailable { get; set; }
+}
+
+public sealed class AgentProfileAnalyticsPreviewViewModel
+{
+    public string SectionId { get; set; } = "analytics";
+    public string Heading { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public List<string> PlannedModules { get; set; } = [];
+}
+
+public sealed class AgentProfileViewModel
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string TemplateId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string Seniority { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
+    public string Personality { get; set; } = string.Empty;
+    public string? RoleBrief { get; set; }
+    public string AutonomyLevel { get; set; } = string.Empty;
+    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public AgentWorkloadSummaryViewModel WorkloadSummary { get; set; } = new();
+    public List<AgentRecentActivityViewModel> RecentActivity { get; set; } = [];
+    public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
+    public string ProfileRoute { get; set; } = string.Empty;
+    public List<AgentProfileSectionViewModel> Sections { get; set; } = [];
+    public AgentProfileAnalyticsPreviewViewModel AnalyticsPreview { get; set; } = new();
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public sealed class AgentTemplateCatalogItemViewModel
@@ -451,22 +797,25 @@ public sealed class AgentOperatingProfileViewModel
     public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
     public DateTime UpdatedUtc { get; set; }
     public bool CanReceiveAssignments { get; set; }
+    public string AutonomyLevel { get; set; } = string.Empty;
 }
 
 public sealed class UpdateAgentOperatingProfileRequest
 {
     public string Status { get; set; } = "active";
     public string? RoleBrief { get; set; }
-    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string? AutonomyLevel { get; set; }
+    public Dictionary<string, JsonNode?>? Objectives { get; set; }
+    public Dictionary<string, JsonNode?>? Kpis { get; set; }
+    public Dictionary<string, JsonNode?>? ToolPermissions { get; set; }
+    public Dictionary<string, JsonNode?>? DataScopes { get; set; }
+    public Dictionary<string, JsonNode?>? ApprovalThresholds { get; set; }
+    public Dictionary<string, JsonNode?>? EscalationRules { get; set; }
+    public Dictionary<string, JsonNode?>? TriggerLogic { get; set; }
+    public Dictionary<string, JsonNode?>? WorkingHours { get; set; }
 }
 
 public sealed class CreateAgentFromTemplateRequest

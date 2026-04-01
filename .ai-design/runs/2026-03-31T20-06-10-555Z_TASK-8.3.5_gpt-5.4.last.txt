@@ -1,0 +1,147 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -39,75 +39,80 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         if (!ToolActionTypeValues.TryParse(request.ActionType, out var actionType))
+         {
+             return Deny(
+-                request, request.ActionType,
++                request,
++                request.ActionType,
+                 [PolicyDecisionReasonCodes.InvalidActionType],
+                 "The requested action type is invalid.",
+                 metadata);
+         }
+ 
+         if (!AgentAutonomyLevelValues.TryParse(request.EvaluatedAutonomyLevel, out var autonomyLevel))
+         {
+             return Deny(
+-                request, request.ActionType,
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.InvalidAutonomyLevel],
+                 "The agent autonomy configuration is missing or invalid.",
+                 metadata);
+         }
+ 
+         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
+             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _))
+         {
++            metadata["toolPolicyState"] = JsonValue.Create("invalid");
+             return Deny(
+-                request, actionType.ToStorageValue(),
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+-                metadata["toolPolicyState"] = JsonValue.Create("invalid");
+-                metadata,
+                 "Tool permissions are missing or invalid, so execution is denied by default.",
+                 metadata);
+         }
+ 
+         if (!allowedToolsExists || allowedTools.Count == 0)
+         {
++            metadata["toolPolicyState"] = JsonValue.Create("missing");
+             return Deny(
+-                request, actionType.ToStorageValue(),
+-                metadata["toolPolicyState"] = JsonValue.Create("missing");
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
+                 "Tool permissions do not define an allowed set for this agent.",
+                 metadata);
+         }
+ 
+         if (allowedTools.Overlaps(deniedTools))
+         {
++            metadata["toolPolicyState"] = JsonValue.Create("ambiguous");
+             return Deny(
+-                request, actionType.ToStorageValue(),
+-                metadata["toolPolicyState"] = JsonValue.Create("ambiguous");
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
+                 "Tool permissions are ambiguous because the same tool is both allowed and denied.",
+                 metadata);
+         }
+ 
+         if (deniedTools.Contains(request.ToolName))
+         {
++            metadata["toolPolicyState"] = JsonValue.Create("configured");
++            metadata["toolAllowed"] = JsonValue.Create(false);
+             return Deny(
+-                request, actionType.ToStorageValue(),
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+-                metadata["toolPolicyState"] = JsonValue.Create("configured");
+-                metadata["toolAllowed"] = JsonValue.Create(false);
+-                request, actionType.ToStorageValue(),
+-                [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
+                 "The requested tool is explicitly denied for this agent.",
+                 metadata);
+         }
+ 
+         if (!allowedTools.Contains(request.ToolName))
+         {
++            metadata["toolPolicyState"] = JsonValue.Create("configured");
++            metadata["toolAllowed"] = JsonValue.Create(false);
+             return Deny(
+-                request, actionType.ToStorageValue(),
++                request,
++                actionType.ToStorageValue(),
+                 [PolicyDecisionReasonCodes.ToolNotPermitted],
+-                metadata["toolPolicyState"] = JsonValue.Create("configured");
+-                metadata["toolAllowed"] = JsonValue.Create(false);
+-                request, actionType.ToStorageValue(),
+-                [PolicyDecisionReasonCodes.ToolNotPermitted],
+                 "The requested tool is outside the agent's allowed tool scope.",
+                 metadata);
+         }
+ 
++        metadata["toolPolicyState"] = JsonValue.Create("configured");
++        metadata["toolAllowed"] = JsonValue.Create(true);
++
+         if (!TryResolveScopePolicyBucket(request.DataScopes, actionType, out var requiredScopeBucket, out var scopes, out var scopeConfigExists, out var usedLegacyScopeAlias) ||
+             !scopeConfigExists)
+         {
+@@ -180,9 +185,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+             return RequireApproval(
+                 request,
+                 actionType.ToStorageValue(),
+                 metadata,
+-                PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,
++                [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],
+                 "Autonomy level 1 requires approval before execute actions can run.");
+         }
+ 
+         if (actionType == ToolActionType.Execute && request.SensitiveAction)
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -229,5 +229,21 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Equal("require_approval", decision.Outcome);
+         Assert.Contains("approval_required_by_policy", decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_default_denies_when_approval_route_is_missing_for_required_approval()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_1",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            escalationRules: Payload()));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("approval_route_missing", decision.ReasonCodes);
++        Assert.False(decision.ApprovalRequired);
++        Assert.True(decision.Metadata["executionBlocked"]!.GetValue<bool>());
++        Assert.False(decision.Metadata["blockedPendingApproval"]!.GetValue<bool>());
++    }
++
+     private static PolicyEvaluationRequest CreateRequest(
+         string autonomyLevel,
+         string toolName,
+END_OF_PATCH

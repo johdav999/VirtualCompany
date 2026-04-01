@@ -121,7 +121,8 @@ public sealed class AgentTemplate
         string? department,
         string? avatarUrl,
         string? personality,
-        AgentSeniority? seniority = null)
+        AgentSeniority? seniority = null,
+        AgentAutonomyLevel? autonomyLevel = null)
     {
         var resolvedSeniority = seniority ?? DefaultSeniority;
         AgentSeniorityValues.EnsureSupported(resolvedSeniority, nameof(seniority));
@@ -138,6 +139,7 @@ public sealed class AgentTemplate
             FirstNonEmpty(avatarUrl, AvatarUrl),
             resolvedSeniority,
             AgentStatusValues.DefaultStatus,
+            autonomyLevel ?? AgentAutonomyLevelValues.DefaultLevel,
             configurationSnapshot.Personality,
             configurationSnapshot.Objectives,
             configurationSnapshot.Kpis,
@@ -322,6 +324,8 @@ public sealed class Agent : ICompanyOwnedEntity
     private const int RoleBriefMaxLength = 4000;
     private const int AvatarUrlMaxLength = 2048;
 
+    public const string ArchivedAssignmentErrorMessage = "Archived agents cannot be assigned new tasks.";
+
     private Agent()
     {
     }
@@ -336,6 +340,7 @@ public sealed class Agent : ICompanyOwnedEntity
         string? avatarUrl,
         AgentSeniority seniority,
         AgentStatus? status = null,
+        AgentAutonomyLevel? autonomyLevel = null,
         IDictionary<string, JsonNode?>? personality = null,
         IDictionary<string, JsonNode?>? objectives = null,
         IDictionary<string, JsonNode?>? kpis = null,
@@ -355,6 +360,8 @@ public sealed class Agent : ICompanyOwnedEntity
         AgentSeniorityValues.EnsureSupported(seniority, nameof(seniority));
         var resolvedStatus = status ?? AgentStatusValues.DefaultStatus;
         AgentStatusValues.EnsureSupported(resolvedStatus, nameof(status));
+        var resolvedAutonomyLevel = autonomyLevel ?? AgentAutonomyLevelValues.DefaultLevel;
+        AgentAutonomyLevelValues.EnsureSupported(resolvedAutonomyLevel, nameof(autonomyLevel));
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
@@ -366,6 +373,7 @@ public sealed class Agent : ICompanyOwnedEntity
         AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
         Seniority = seniority;
         Status = resolvedStatus;
+        AutonomyLevel = resolvedAutonomyLevel;
         Personality = CloneNodes(personality);
         Objectives = CloneNodes(objectives);
         Kpis = CloneNodes(kpis);
@@ -389,6 +397,7 @@ public sealed class Agent : ICompanyOwnedEntity
     public string? AvatarUrl { get; private set; }
     public AgentSeniority Seniority { get; private set; }
     public AgentStatus Status { get; private set; }
+    public AgentAutonomyLevel AutonomyLevel { get; private set; }
     public Dictionary<string, JsonNode?> Personality { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Objectives { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Kpis { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -407,6 +416,7 @@ public sealed class Agent : ICompanyOwnedEntity
     public bool UpdateOperatingProfile(
         string? roleBrief,
         AgentStatus status,
+        AgentAutonomyLevel autonomyLevel,
         IDictionary<string, JsonNode?>? objectives,
         IDictionary<string, JsonNode?>? kpis,
         IDictionary<string, JsonNode?>? tools,
@@ -417,6 +427,7 @@ public sealed class Agent : ICompanyOwnedEntity
         IDictionary<string, JsonNode?>? workingHours)
     {
         AgentStatusValues.EnsureSupported(status, nameof(status));
+        AgentAutonomyLevelValues.EnsureSupported(autonomyLevel, nameof(autonomyLevel));
 
         var normalizedRoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
         var updatedObjectives = CloneNodes(objectives);
@@ -430,6 +441,7 @@ public sealed class Agent : ICompanyOwnedEntity
 
         if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
             Status == status &&
+            AutonomyLevel == autonomyLevel &&
             JsonDictionariesEqual(Objectives, updatedObjectives) &&
             JsonDictionariesEqual(Kpis, updatedKpis) &&
             JsonDictionariesEqual(Tools, updatedTools) &&
@@ -444,6 +456,7 @@ public sealed class Agent : ICompanyOwnedEntity
 
         RoleBrief = normalizedRoleBrief;
         Status = status;
+        AutonomyLevel = autonomyLevel;
         Objectives = updatedObjectives;
         Kpis = updatedKpis;
         Tools = updatedTools;
@@ -460,7 +473,7 @@ public sealed class Agent : ICompanyOwnedEntity
     {
         if (!CanReceiveAssignments)
         {
-            throw new InvalidOperationException("Archived agents cannot receive new assignments.");
+            throw new InvalidOperationException(ArchivedAssignmentErrorMessage);
         }
     }
 

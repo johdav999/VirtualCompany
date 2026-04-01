@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.3.5",
+  "promptPath": ".ai-design/prompts/TASK-8.3.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-03-31T20:06:10.555Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-03-31T20-06-10-555Z_TASK-8.3.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-03-31T20-06-10-555Z_TASK-8.3.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-03-31T20:19:47.354Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "opeBucket, out var scopes, out var scopeConfigExists, out var usedLegacyScopeAlias) ||\n             !scopeConfigExists)\n         {\n@@ -180,9 +185,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine\n             return RequireApproval(\n                 request,\n                 actionType.ToStorageValue(),\n                 metadata,\n-                PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,\n+                [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],\n                 \"Autonomy level 1 requires approval before execute actions can run.\");\n         }\n \n         if (actionType == ToolActionType.Execute && request.SensitiveAction)\ndiff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n@@ -229,5 +229,21 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Equal(\"require_approval\", decision.Outcome);\n         Assert.Contains(\"approval_required_by_policy\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_default_denies_when_approval_route_is_missing_for_required_approval()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_1\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            escalationRules: Payload()));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"approval_route_missing\", decision.ReasonCodes);\n+        Assert.False(decision.ApprovalRequired);\n+        Assert.True(decision.Metadata[\"executionBlocked\"]!.GetValue<bool>());\n+        Assert.False(decision.Metadata[\"blockedPendingApproval\"]!.GetValue<bool>());\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\n",
+  "stderrTail": "copes, out var scopeConfigExists, out var usedLegacyScopeAlias) ||\n             !scopeConfigExists)\n         {\n@@ -180,9 +185,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine\n             return RequireApproval(\n                 request,\n                 actionType.ToStorageValue(),\n                 metadata,\n-                PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,\n+                [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],\n                 \"Autonomy level 1 requires approval before execute actions can run.\");\n         }\n \n         if (actionType == ToolActionType.Execute && request.SensitiveAction)\ndiff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs\n@@ -229,5 +229,21 @@ public sealed class PolicyGuardrailEngineTests\n         Assert.Equal(\"require_approval\", decision.Outcome);\n         Assert.Contains(\"approval_required_by_policy\", decision.ReasonCodes);\n     }\n \n+    [Fact]\n+    public void Evaluate_default_denies_when_approval_route_is_missing_for_required_approval()\n+    {\n+        var decision = _engine.Evaluate(CreateRequest(\n+            autonomyLevel: \"level_1\",\n+            toolName: \"erp\",\n+            actionType: \"execute\",\n+            scope: \"payments\",\n+            escalationRules: Payload()));\n+\n+        Assert.Equal(\"deny\", decision.Outcome);\n+        Assert.Contains(\"approval_route_missing\", decision.ReasonCodes);\n+        Assert.False(decision.ApprovalRequired);\n+        Assert.True(decision.Metadata[\"executionBlocked\"]!.GetValue<bool>());\n+        Assert.False(decision.Metadata[\"blockedPendingApproval\"]!.GetValue<bool>());\n+    }\n+\n     private static PolicyEvaluationRequest CreateRequest(\n         string autonomyLevel,\n         string toolName,\nEND_OF_PATCH\ntokens used\n233,354\n",
+  "verbosityMode": "verbose"
+}

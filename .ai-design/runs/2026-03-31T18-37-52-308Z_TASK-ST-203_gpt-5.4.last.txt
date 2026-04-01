@@ -1,0 +1,2488 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -8,11 +8,13 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class AgentsController : ControllerBase
+ {
+     private readonly ICompanyAgentService _agentService;
++    private readonly IAgentToolExecutionService _agentToolExecutionService;
+ 
+-    public AgentsController(ICompanyAgentService agentService)
++    public AgentsController(ICompanyAgentService agentService, IAgentToolExecutionService agentToolExecutionService)
+     {
+         _agentService = agentService;
++        _agentToolExecutionService = agentToolExecutionService;
+     }
+ 
+     [HttpGet("templates")]
+@@ -114,4 +116,31 @@ public sealed class AgentsController : ControllerBase
+         {
+             return Forbid();
+         }
+     }
++
++    [HttpPost("{agentId:guid}/executions")]
++    public async Task<ActionResult<ExecuteAgentToolResultDto>> ExecuteToolAsync(
++        Guid companyId,
++        Guid agentId,
++        [FromBody] ExecuteAgentToolCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _agentToolExecutionService.ExecuteAsync(companyId, agentId, command, cancellationToken);
++            return Ok(result);
++        }
++        catch (AgentExecutionValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -29,18 +29,20 @@ public sealed record CompanyAgentSummaryDto(
+     string Seniority,
+     string Status,
+     string? AvatarUrl,
+-    string Personality);
++    string Personality,
++    string AutonomyLevel);
+ 
+ public sealed record CreateAgentFromTemplateCommand(
+     string TemplateId,
+     string DisplayName,
+     string? AvatarUrl,
+     string? Department,
+     string? RoleName,
+     string? Personality,
+-    string? Seniority);
++    string? Seniority,
++    string? AutonomyLevel = null);
+ 
+ public sealed record CreateAgentFromTemplateResultDto(CompanyAgentSummaryDto Agent);
+ 
+ public sealed record AgentOperatingProfileDto(
+@@ -60,7 +62,8 @@ public sealed record AgentOperatingProfileDto(
+     Dictionary<string, JsonNode?> EscalationRules,
+     Dictionary<string, JsonNode?> TriggerLogic,
+     Dictionary<string, JsonNode?> WorkingHours,
+     DateTime UpdatedUtc,
+-    bool CanReceiveAssignments);
++    bool CanReceiveAssignments,
++    string AutonomyLevel);
+ 
+ public sealed record UpdateAgentOperatingProfileCommand(
+     string Status,
+@@ -72,7 +75,8 @@ public sealed record UpdateAgentOperatingProfileCommand(
+     Dictionary<string, JsonNode?>? ApprovalThresholds,
+     Dictionary<string, JsonNode?>? EscalationRules,
+     Dictionary<string, JsonNode?>? TriggerLogic,
+-    Dictionary<string, JsonNode?>? WorkingHours);
++    Dictionary<string, JsonNode?>? WorkingHours,
++    string? AutonomyLevel = null);
+ 
+ public sealed record AgentRuntimeProfileDto(
+     Guid Id,
+@@ -91,7 +95,8 @@ public sealed record AgentRuntimeProfileDto(
+     Dictionary<string, JsonNode?> EscalationRules,
+     Dictionary<string, JsonNode?> TriggerLogic,
+     Dictionary<string, JsonNode?> WorkingHours,
+     bool CanReceiveAssignments,
+-    DateTime UpdatedUtc);
++    DateTime UpdatedUtc,
++    string AutonomyLevel);
+ 
+ public interface ICompanyAgentService
+ {
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -0,0 +1,120 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record ExecuteAgentToolCommand(
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    Dictionary<string, JsonNode?>? RequestPayload,
++    string? ThresholdCategory,
++    string? ThresholdKey,
++    decimal? ThresholdValue,
++    bool SensitiveAction = false);
++
++public sealed record ExecuteAgentToolResultDto(
++    Guid ExecutionId,
++    string Status,
++    Guid? ApprovalRequestId,
++    ToolExecutionDecisionDto PolicyDecision,
++    Dictionary<string, JsonNode?>? ExecutionResult,
++    string Message);
++
++public sealed record ToolExecutionDecisionDto(
++    string Outcome,
++    IReadOnlyList<string> ReasonCodes,
++    string Explanation,
++    string EvaluatedAutonomyLevel,
++    bool ApprovalRequired,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record PolicyEvaluationRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    Guid AgentCompanyId,
++    string AgentStatus,
++    string EvaluatedAutonomyLevel,
++    bool CanReceiveAssignments,
++    IReadOnlyDictionary<string, JsonNode?> ToolPermissions,
++    IReadOnlyDictionary<string, JsonNode?> DataScopes,
++    IReadOnlyDictionary<string, JsonNode?> ApprovalThresholds,
++    IReadOnlyDictionary<string, JsonNode?> EscalationRules,
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    IReadOnlyDictionary<string, JsonNode?> RequestPayload,
++    string? ThresholdCategory,
++    string? ThresholdKey,
++    decimal? ThresholdValue,
++    bool SensitiveAction);
++
++public sealed record ToolExecutionRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    IReadOnlyDictionary<string, JsonNode?> RequestPayload);
++
++public sealed record ToolExecutionResult(
++    string Summary,
++    Dictionary<string, JsonNode?> Payload);
++
++public interface IPolicyGuardrailEngine
++{
++    ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request);
++}
++
++public interface IAgentToolExecutionService
++{
++    Task<ExecuteAgentToolResultDto> ExecuteAsync(
++        Guid companyId,
++        Guid agentId,
++        ExecuteAgentToolCommand command,
++        CancellationToken cancellationToken);
++}
++
++public interface ICompanyToolExecutor
++{
++    Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken);
++}
++
++public sealed class AgentExecutionValidationException : Exception
++{
++    public AgentExecutionValidationException(IDictionary<string, string[]> errors)
++        : base("Agent tool execution validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public static class PolicyDecisionOutcomeValues
++{
++    public const string Allow = "allow";
++    public const string Deny = "deny";
++    public const string RequireApproval = "require_approval";
++}
++
++public static class PolicyDecisionReasonCodes
++{
++    public const string PolicyChecksPassed = "policy_checks_passed";
++    public const string InvalidCompanyContext = "invalid_company_context";
++    public const string AgentStatusDisallowsExecution = "agent_status_disallows_execution";
++    public const string MissingPolicyConfiguration = "missing_policy_configuration";
++    public const string AmbiguousPolicyConfiguration = "ambiguous_policy_configuration";
++    public const string ToolExplicitlyDenied = "tool_explicitly_denied";
++    public const string ToolNotPermitted = "tool_not_permitted";
++    public const string ScopeNotPermitted = "scope_not_permitted";
++    public const string AutonomyLevelBlocksAction = "autonomy_level_blocks_action";
++    public const string AutonomyLevelRequiresApproval = "autonomy_level_requires_approval";
++    public const string ApprovalRouteMissing = "approval_route_missing";
++    public const string ThresholdContextMissing = "threshold_context_missing";
++    public const string ThresholdConfigurationMissing = "threshold_configuration_missing";
++    public const string ThresholdExceededRequiresApproval = "threshold_exceeded_requires_approval";
++    public const string SensitiveActionRequiresApproval = "sensitive_action_requires_approval";
++}
+diff --git a/src/VirtualCompany.Application/Agents/ExecuteAgentToolCommandValidator.cs b/src/VirtualCompany.Application/Agents/ExecuteAgentToolCommandValidator.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/ExecuteAgentToolCommandValidator.cs
+@@ -0,0 +1,84 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Agents;
++
++public static class ExecuteAgentToolCommandValidator
++{
++    public static void ValidateAndThrow(ExecuteAgentToolCommand command)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        if (string.IsNullOrWhiteSpace(command.ToolName))
++        {
++            AddError(errors, nameof(command.ToolName), "ToolName is required.");
++        }
++        else if (command.ToolName.Trim().Length > 100)
++        {
++            AddError(errors, nameof(command.ToolName), "ToolName must be 100 characters or fewer.");
++        }
++
++        if (!ToolActionTypeValues.TryParse(command.ActionType, out _))
++        {
++            AddError(errors, nameof(command.ActionType), ToolActionTypeValues.BuildValidationMessage(command.ActionType));
++        }
++
++        if (!string.IsNullOrWhiteSpace(command.Scope) && command.Scope.Trim().Length > 100)
++        {
++            AddError(errors, nameof(command.Scope), "Scope must be 100 characters or fewer.");
++        }
++
++        var hasThresholdCategory = !string.IsNullOrWhiteSpace(command.ThresholdCategory);
++        var hasThresholdKey = !string.IsNullOrWhiteSpace(command.ThresholdKey);
++        var hasThresholdValue = command.ThresholdValue.HasValue;
++
++        if (hasThresholdValue && command.ThresholdValue < 0)
++        {
++            AddError(errors, nameof(command.ThresholdValue), "ThresholdValue must be non-negative.");
++        }
++
++        if (hasThresholdCategory || hasThresholdKey || hasThresholdValue)
++        {
++            if (!hasThresholdCategory)
++            {
++                AddError(errors, nameof(command.ThresholdCategory), "ThresholdCategory is required when threshold context is provided.");
++            }
++
++            if (!hasThresholdKey)
++            {
++                AddError(errors, nameof(command.ThresholdKey), "ThresholdKey is required when threshold context is provided.");
++            }
++
++            if (!hasThresholdValue)
++            {
++                AddError(errors, nameof(command.ThresholdValue), "ThresholdValue is required when threshold context is provided.");
++            }
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new AgentExecutionValidationException(
++                errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static void AddError(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++}
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -50,6 +50,11 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         {
+             AddError(errors, nameof(command.Status), AgentStatusValues.BuildValidationMessage(command.Status));
+         }
++
++        if (!string.IsNullOrWhiteSpace(command.AutonomyLevel) &&
++            !AgentAutonomyLevelValues.TryParse(command.AutonomyLevel, out _))
++        {
++            AddError(errors, nameof(command.AutonomyLevel), AgentAutonomyLevelValues.BuildValidationMessage(command.AutonomyLevel));
++        }
+ 
+         AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
+         ValidateObjectives(errors, nameof(command.Objectives), command.Objectives);
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -32,17 +32,25 @@ public static class AuditTargetTypes
+     public const string CompanyInvitation = "company_invitation";
+     public const string CompanyMembership = "company_membership";
+     public const string Agent = "agent";
++    public const string AgentToolExecution = "agent_tool_execution";
++    public const string ApprovalRequest = "approval_request";
+ }
+ 
+ public static class AuditEventOutcomes
+ {
+     public const string Succeeded = "succeeded";
++    public const string Denied = "denied";
++    public const string Pending = "pending";
+ }
+ 
+ public static class AuditEventActions
+ {
+     public const string CompanyInvitationCreated = "company.invitation.created";
+     public const string CompanyInvitationResent = "company.invitation.resent";
+     public const string CompanyInvitationRevoked = "company.invitation.revoked";
+     public const string CompanyInvitationAccepted = "company.invitation.accepted";
+     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
+     public const string AgentHired = "agent.hired";
+     public const string AgentOperatingProfileUpdated = "agent.operating_profile.updated";
++    public const string AgentToolExecutionDenied = "agent.tool_execution.denied";
++    public const string AgentToolExecutionExecuted = "agent.tool_execution.executed";
++    public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -114,7 +114,8 @@ public sealed class AgentTemplate
+         string? department,
+         string? avatarUrl,
+         string? personality,
+-        AgentSeniority? seniority = null)
++        AgentSeniority? seniority = null,
++        AgentAutonomyLevel? autonomyLevel = null)
+     {
+         var resolvedSeniority = seniority ?? DefaultSeniority;
+         AgentSeniorityValues.EnsureSupported(resolvedSeniority, nameof(seniority));
+@@ -131,6 +132,7 @@ public sealed class AgentTemplate
+             FirstNonEmpty(avatarUrl, AvatarUrl),
+             resolvedSeniority,
+             AgentStatusValues.DefaultStatus,
++            autonomyLevel ?? AgentAutonomyLevelValues.DefaultLevel,
+             configurationSnapshot.Personality,
+             configurationSnapshot.Objectives,
+             configurationSnapshot.Kpis,
+@@ -334,6 +336,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         string? avatarUrl,
+         AgentSeniority seniority,
+         AgentStatus? status = null,
++        AgentAutonomyLevel? autonomyLevel = null,
+         IDictionary<string, JsonNode?>? personality = null,
+         IDictionary<string, JsonNode?>? objectives = null,
+         IDictionary<string, JsonNode?>? kpis = null,
+@@ -353,6 +356,8 @@ public sealed class Agent : ICompanyOwnedEntity
+         AgentSeniorityValues.EnsureSupported(seniority, nameof(seniority));
+         var resolvedStatus = status ?? AgentStatusValues.DefaultStatus;
+         AgentStatusValues.EnsureSupported(resolvedStatus, nameof(status));
++        var resolvedAutonomyLevel = autonomyLevel ?? AgentAutonomyLevelValues.DefaultLevel;
++        AgentAutonomyLevelValues.EnsureSupported(resolvedAutonomyLevel, nameof(autonomyLevel));
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+@@ -364,6 +369,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         AvatarUrl = AvatarReferenceRules.Normalize(avatarUrl, nameof(avatarUrl), AvatarUrlMaxLength);
+         Seniority = seniority;
+         Status = resolvedStatus;
++        AutonomyLevel = resolvedAutonomyLevel;
+         Personality = CloneNodes(personality);
+         Objectives = CloneNodes(objectives);
+         Kpis = CloneNodes(kpis);
+@@ -383,6 +389,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     public string? AvatarUrl { get; private set; }
+     public AgentSeniority Seniority { get; private set; }
+     public AgentStatus Status { get; private set; }
++    public AgentAutonomyLevel AutonomyLevel { get; private set; }
+     public Dictionary<string, JsonNode?> Personality { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> Objectives { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> Kpis { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+@@ -408,6 +415,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     public bool UpdateOperatingProfile(
+         string? roleBrief,
+         AgentStatus status,
++        AgentAutonomyLevel autonomyLevel,
+         IDictionary<string, JsonNode?>? objectives,
+         IDictionary<string, JsonNode?>? kpis,
+         IDictionary<string, JsonNode?>? tools,
+@@ -419,6 +427,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     {
+         AgentStatusValues.EnsureSupported(status, nameof(status));
++        AgentAutonomyLevelValues.EnsureSupported(autonomyLevel, nameof(autonomyLevel));
+ 
+         var normalizedRoleBrief = NormalizeOptional(roleBrief, nameof(roleBrief), RoleBriefMaxLength);
+         var updatedObjectives = CloneNodes(objectives);
+@@ -432,6 +441,7 @@ public sealed class Agent : ICompanyOwnedEntity
+ 
+         if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
+             Status == status &&
++            AutonomyLevel == autonomyLevel &&
+             JsonDictionariesEqual(Objectives, updatedObjectives) &&
+             JsonDictionariesEqual(Kpis, updatedKpis) &&
+             JsonDictionariesEqual(Tools, updatedTools) &&
+@@ -448,6 +458,7 @@ public sealed class Agent : ICompanyOwnedEntity
+ 
+         RoleBrief = normalizedRoleBrief;
+         Status = status;
++        AutonomyLevel = autonomyLevel;
+         Objectives = updatedObjectives;
+         Kpis = updatedKpis;
+         Tools = updatedTools;
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -0,0 +1,233 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
++{
++    private const int ToolNameMaxLength = 100;
++    private const int ScopeMaxLength = 100;
++
++    private ToolExecutionAttempt()
++    {
++    }
++
++    public ToolExecutionAttempt(
++        Guid id,
++        Guid companyId,
++        Guid agentId,
++        string toolName,
++        ToolActionType actionType,
++        string? scope,
++        IDictionary<string, JsonNode?>? requestPayload = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId is required.", nameof(agentId));
++        }
++
++        ToolActionTypeValues.EnsureSupported(actionType, nameof(actionType));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AgentId = agentId;
++        ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
++        ActionType = actionType;
++        Scope = NormalizeOptional(scope, nameof(scope), ScopeMaxLength);
++        Status = ToolExecutionStatus.Denied;
++        RequestPayload = CloneNodes(requestPayload);
++        PolicyDecision = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public string ToolName { get; private set; } = null!;
++    public ToolActionType ActionType { get; private set; }
++    public string? Scope { get; private set; }
++    public ToolExecutionStatus Status { get; private set; }
++    public Guid? ApprovalRequestId { get; private set; }
++    public Dictionary<string, JsonNode?> RequestPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ResultPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? ExecutedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision)
++    {
++        Status = ToolExecutionStatus.Denied;
++        PolicyDecision = CloneNodes(policyDecision);
++        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        ApprovalRequestId = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkAwaitingApproval(Guid approvalRequestId, IDictionary<string, JsonNode?>? policyDecision)
++    {
++        if (approvalRequestId == Guid.Empty)
++        {
++            throw new ArgumentException("ApprovalRequestId is required.", nameof(approvalRequestId));
++        }
++
++        Status = ToolExecutionStatus.AwaitingApproval;
++        ApprovalRequestId = approvalRequestId;
++        PolicyDecision = CloneNodes(policyDecision);
++        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkExecuted(
++        IDictionary<string, JsonNode?>? policyDecision,
++        IDictionary<string, JsonNode?>? resultPayload)
++    {
++        Status = ToolExecutionStatus.Executed;
++        PolicyDecision = CloneNodes(policyDecision);
++        ResultPayload = CloneNodes(resultPayload);
++        ExecutedUtc = DateTime.UtcNow;
++        UpdatedUtc = ExecutedUtc.Value;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
++    {
++        if (nodes is null || nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++}
++
++public sealed class ApprovalRequest : ICompanyOwnedEntity
++{
++    private const int ToolNameMaxLength = 100;
++    private const int ApprovalTargetMaxLength = 100;
++
++    private ApprovalRequest()
++    {
++    }
++
++    public ApprovalRequest(
++        Guid id,
++        Guid companyId,
++        Guid agentId,
++        Guid toolExecutionAttemptId,
++        Guid requestedByUserId,
++        string toolName,
++        ToolActionType actionType,
++        string? approvalTarget,
++        IDictionary<string, JsonNode?>? thresholdContext = null,
++        IDictionary<string, JsonNode?>? policyDecision = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId is required.", nameof(agentId));
++        }
++
++        if (toolExecutionAttemptId == Guid.Empty)
++        {
++            throw new ArgumentException("ToolExecutionAttemptId is required.", nameof(toolExecutionAttemptId));
++        }
++
++        if (requestedByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("RequestedByUserId is required.", nameof(requestedByUserId));
++        }
++
++        ToolActionTypeValues.EnsureSupported(actionType, nameof(actionType));
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AgentId = agentId;
++        ToolExecutionAttemptId = toolExecutionAttemptId;
++        RequestedByUserId = requestedByUserId;
++        ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
++        ActionType = actionType;
++        ApprovalTarget = NormalizeOptional(approvalTarget, nameof(approvalTarget), ApprovalTargetMaxLength);
++        Status = ApprovalRequestStatus.Pending;
++        ThresholdContext = CloneNodes(thresholdContext);
++        PolicyDecision = CloneNodes(policyDecision);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public Guid ToolExecutionAttemptId { get; private set; }
++    public Guid RequestedByUserId { get; private set; }
++    public string ToolName { get; private set; } = null!;
++    public ToolActionType ActionType { get; private set; }
++    public string? ApprovalTarget { get; private set; }
++    public ApprovalRequestStatus Status { get; private set; }
++    public Dictionary<string, JsonNode?> ThresholdContext { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -13,6 +13,28 @@ public enum AgentSeniority
+     Executive = 5
+ }
+ 
++public enum AgentAutonomyLevel
++{
++    Level0 = 0,
++    Level1 = 1,
++    Level2 = 2,
++    Level3 = 3
++}
++
++public enum ToolActionType
++{
++    Read = 1,
++    Recommend = 2,
++    Execute = 3
++}
++
++public enum ToolExecutionStatus
++{
++    Denied = 1,
++    AwaitingApproval = 2,
++    Executed = 3,
++    Failed = 4
++}
++
+ public static class AgentStatusValues
+ {
+     public const string Active = "active";
+@@ -138,3 +160,159 @@ public static class AgentSeniorityValues
+             : $"Unsupported agent seniority value '{attemptedValue}'. Allowed values: {allowedValues}.";
+     }
+ }
++
++public static class AgentAutonomyLevelValues
++{
++    private static readonly IReadOnlyDictionary<AgentAutonomyLevel, string> Values = new Dictionary<AgentAutonomyLevel, string>
++    {
++        [AgentAutonomyLevel.Level0] = "level_0",
++        [AgentAutonomyLevel.Level1] = "level_1",
++        [AgentAutonomyLevel.Level2] = "level_2",
++        [AgentAutonomyLevel.Level3] = "level_3"
++    };
++
++    private static readonly IReadOnlyDictionary<string, AgentAutonomyLevel> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static AgentAutonomyLevel DefaultLevel => AgentAutonomyLevel.Level1;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this AgentAutonomyLevel autonomyLevel)
++    {
++        if (Values.TryGetValue(autonomyLevel, out var value))
++        {
++            return value;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(autonomyLevel), autonomyLevel, BuildValidationMessage());
++    }
++
++    public static bool TryParse(string? value, out AgentAutonomyLevel autonomyLevel)
++    {
++        autonomyLevel = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out autonomyLevel))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(value.Trim(), ignoreCase: true, out autonomyLevel) && Values.ContainsKey(autonomyLevel);
++    }
++
++    public static AgentAutonomyLevel Parse(string value)
++    {
++        if (TryParse(value, out var autonomyLevel))
++        {
++            return autonomyLevel;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static void EnsureSupported(AgentAutonomyLevel autonomyLevel, string paramName)
++    {
++        _ = autonomyLevel.ToStorageValue();
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Agent autonomy level is required. Allowed values: {allowedValues}."
++            : $"Unsupported agent autonomy level '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
++
++public static class ToolActionTypeValues
++{
++    private static readonly IReadOnlyDictionary<ToolActionType, string> Values = new Dictionary<ToolActionType, string>
++    {
++        [ToolActionType.Read] = "read",
++        [ToolActionType.Recommend] = "recommend",
++        [ToolActionType.Execute] = "execute"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ToolActionType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this ToolActionType actionType)
++    {
++        if (Values.TryGetValue(actionType, out var value))
++        {
++            return value;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(actionType), actionType, BuildValidationMessage());
++    }
++
++    public static bool TryParse(string? value, out ToolActionType actionType)
++    {
++        actionType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out actionType))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(value.Trim(), ignoreCase: true, out actionType) && Values.ContainsKey(actionType);
++    }
++
++    public static ToolActionType Parse(string value)
++    {
++        if (TryParse(value, out var actionType))
++        {
++            return actionType;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static void EnsureSupported(ToolActionType actionType, string paramName)
++    {
++        _ = actionType.ToStorageValue();
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Tool action type is required. Allowed values: {allowedValues}."
++            : $"Unsupported tool action type '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
++
++public static class ToolExecutionStatusValues
++{
++    private static readonly IReadOnlyDictionary<ToolExecutionStatus, string> Values = new Dictionary<ToolExecutionStatus, string>
++    {
++        [ToolExecutionStatus.Denied] = "denied",
++        [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
++        [ToolExecutionStatus.Executed] = "executed",
++        [ToolExecutionStatus.Failed] = "failed"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ToolExecutionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ToolExecutionStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported tool execution status.");
++
++    public static ToolExecutionStatus Parse(string value) =>
++        ReverseValues.TryGetValue(value.Trim(), out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported tool execution status.");
++}
++
++public enum ApprovalRequestStatus
++{
++    Pending = 1,
++    Approved = 2,
++    Rejected = 3,
++    Expired = 4
++}
++
++public static class ApprovalRequestStatusValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalRequestStatus, string> Values = new Dictionary<ApprovalRequestStatus, string>
++    {
++        [ApprovalRequestStatus.Pending] = "pending",
++        [ApprovalRequestStatus.Approved] = "approved",
++        [ApprovalRequestStatus.Rejected] = "rejected",
++        [ApprovalRequestStatus.Expired] = "expired"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalRequestStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ApprovalRequestStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported approval request status.");
++
++    public static ApprovalRequestStatus Parse(string value) =>
++        ReverseValues.TryGetValue(value.Trim(), out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported approval request status.");
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -122,6 +122,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         var changed = agent.UpdateOperatingProfile(
+             command.RoleBrief,
+             AgentStatusValues.Parse(command.Status),
++            string.IsNullOrWhiteSpace(command.AutonomyLevel) ? agent.AutonomyLevel : AgentAutonomyLevelValues.Parse(command.AutonomyLevel),
+             command.Objectives,
+             command.Kpis,
+             command.ToolPermissions,
+@@ -145,6 +146,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                     Metadata: new Dictionary<string, string?>
+                     {
+                         ["status"] = agent.Status.ToStorageValue(),
++                        ["autonomyLevel"] = agent.AutonomyLevel.ToStorageValue(),
+                         ["displayName"] = agent.DisplayName
+                     }),
+                 cancellationToken);
+@@ -170,6 +172,10 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             ? template.DefaultSeniority
+             : AgentSeniorityValues.Parse(command.Seniority);
+ 
++        var autonomyLevel = string.IsNullOrWhiteSpace(command.AutonomyLevel)
++            ? AgentAutonomyLevelValues.DefaultLevel
++            : AgentAutonomyLevelValues.Parse(command.AutonomyLevel);
++
+         var agent = template.CreateCompanyAgent(
+             companyId,
+             NormalizeRequired(command.DisplayName),
+@@ -177,7 +183,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             command.Department,
+             command.AvatarUrl,
+             command.Personality,
+-            seniority);
++            seniority,
++            autonomyLevel);
+ 
+         _dbContext.Agents.Add(agent);
+ 
+@@ -194,7 +201,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                     ["displayName"] = agent.DisplayName,
+                     ["roleName"] = agent.RoleName,
+                     ["department"] = agent.Department,
+-                    ["seniority"] = agent.Seniority.ToStorageValue()
++                    ["seniority"] = agent.Seniority.ToStorageValue(),
++                    ["autonomyLevel"] = agent.AutonomyLevel.ToStorageValue()
+                 }),
+             cancellationToken);
+ 
+@@ -242,7 +250,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.Seniority.ToStorageValue(),
+             agent.Status.ToStorageValue(),
+             agent.AvatarUrl, ResolvePersonalitySummary(agent.Personality));
++            agent.AutonomyLevel.ToStorageValue());
+ 
+     private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent) =>
+         new(
+@@ -264,7 +273,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             CloneNodes(agent.EscalationRules),
+             CloneNodes(agent.TriggerLogic),
+             CloneNodes(agent.WorkingHours),
+             agent.UpdatedUtc,
+-            agent.CanReceiveAssignments);
++            agent.CanReceiveAssignments,
++            agent.AutonomyLevel.ToStorageValue());
+@@ -317,6 +327,11 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         {
+             AddError(errors, nameof(command.Seniority), AgentSeniorityValues.BuildValidationMessage(command.Seniority));
+         }
++
++        if (!string.IsNullOrWhiteSpace(command.AutonomyLevel) &&
++            !AgentAutonomyLevelValues.TryParse(command.AutonomyLevel, out _))
++        {
++            AddError(errors, nameof(command.AutonomyLevel), AgentAutonomyLevelValues.BuildValidationMessage(command.AutonomyLevel));
++        }
+ 
+         if (errors.Count > 0)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -0,0 +1,286 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
++    private readonly IPolicyGuardrailEngine _policyGuardrailEngine;
++    private readonly ICompanyToolExecutor _companyToolExecutor;
++    private readonly IAuditEventWriter _auditEventWriter;
++
++    public CompanyAgentToolExecutionService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
++        IPolicyGuardrailEngine policyGuardrailEngine,
++        ICompanyToolExecutor companyToolExecutor,
++        IAuditEventWriter auditEventWriter)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
++        _policyGuardrailEngine = policyGuardrailEngine;
++        _companyToolExecutor = companyToolExecutor;
++        _auditEventWriter = auditEventWriter;
++    }
++
++    public async Task<ExecuteAgentToolResultDto> ExecuteAsync(
++        Guid companyId,
++        Guid agentId,
++        ExecuteAgentToolCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
++
++        var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
++        var policyRequest = new PolicyEvaluationRequest(
++            companyId,
++            agentId,
++            runtimeProfile.CompanyId,
++            runtimeProfile.Status,
++            runtimeProfile.AutonomyLevel,
++            runtimeProfile.CanReceiveAssignments,
++            CloneNodes(runtimeProfile.ToolPermissions),
++            CloneNodes(runtimeProfile.DataScopes),
++            CloneNodes(runtimeProfile.ApprovalThresholds),
++            CloneNodes(runtimeProfile.EscalationRules),
++            command.ToolName,
++            command.ActionType,
++            command.Scope,
++            CloneNodes(command.RequestPayload),
++            command.ThresholdCategory,
++            command.ThresholdKey,
++            command.ThresholdValue,
++            command.SensitiveAction);
++
++        var decision = _policyGuardrailEngine.Evaluate(policyRequest);
++        var attempt = new ToolExecutionAttempt(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            command.ToolName,
++            ToolActionTypeValues.Parse(command.ActionType),
++            command.Scope,
++            command.RequestPayload);
++
++        _dbContext.ToolExecutionAttempts.Add(attempt);
++
++        var serializedDecision = SerializeDecision(decision);
++        if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
++        {
++            attempt.MarkDenied(serializedDecision);
++
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    companyId,
++                    AuditActorTypes.User,
++                    membership.UserId,
++                    AuditEventActions.AgentToolExecutionDenied,
++                    AuditTargetTypes.AgentToolExecution,
++                    attempt.Id.ToString("N"),
++                    AuditEventOutcomes.Denied,
++                    RationaleSummary: decision.Explanation,
++                    Metadata: BuildAuditMetadata(command, decision)),
++                cancellationToken);
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            return new ExecuteAgentToolResultDto(
++                attempt.Id,
++                attempt.Status.ToStorageValue(),
++                null,
++                decision,
++                null,
++                decision.Explanation);
++        }
++
++        if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
++        {
++            var approvalRequest = new ApprovalRequest(
++                Guid.NewGuid(),
++                companyId,
++                agentId,
++                attempt.Id,
++                membership.UserId,
++                command.ToolName,
++                ToolActionTypeValues.Parse(command.ActionType),
++                TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
++                BuildThresholdContext(command, decision),
++                serializedDecision);
++
++            _dbContext.ApprovalRequests.Add(approvalRequest);
++            attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision);
++
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    companyId,
++                    AuditActorTypes.User,
++                    membership.UserId,
++                    AuditEventActions.AgentToolExecutionApprovalRequested,
++                    AuditTargetTypes.ApprovalRequest,
++                    approvalRequest.Id.ToString("N"),
++                    AuditEventOutcomes.Pending,
++                    RationaleSummary: decision.Explanation,
++                    Metadata: BuildAuditMetadata(command, decision, approvalRequest.Id)),
++                cancellationToken);
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            return new ExecuteAgentToolResultDto(
++                attempt.Id,
++                attempt.Status.ToStorageValue(),
++                approvalRequest.Id,
++                decision,
++                null,
++                decision.Explanation);
++        }
++
++        var result = await _companyToolExecutor.ExecuteAsync(
++            new ToolExecutionRequest(
++                companyId,
++                agentId,
++                command.ToolName,
++                command.ActionType,
++                command.Scope,
++                CloneNodes(command.RequestPayload)),
++            cancellationToken);
++
++        attempt.MarkExecuted(serializedDecision, result.Payload);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.AgentToolExecutionExecuted,
++                AuditTargetTypes.AgentToolExecution,
++                attempt.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                RationaleSummary: result.Summary,
++                Metadata: BuildAuditMetadata(command, decision)),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new ExecuteAgentToolResultDto(
++            attempt.Id,
++            attempt.Status.ToStorageValue(),
++            null,
++            decision,
++            CloneNodes(result.Payload),
++            result.Summary);
++    }
++
++    private async Task<VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext> RequireMembershipAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++
++        return membership;
++    }
++
++    private static Dictionary<string, string?> BuildAuditMetadata(
++        ExecuteAgentToolCommand command,
++        ToolExecutionDecisionDto decision,
++        Guid? approvalRequestId = null)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["toolName"] = command.ToolName,
++            ["actionType"] = command.ActionType,
++            ["scope"] = command.Scope,
++            ["policyOutcome"] = decision.Outcome,
++            ["autonomyLevel"] = decision.EvaluatedAutonomyLevel,
++            ["reasonCodes"] = string.Join(",", decision.ReasonCodes)
++        };
++
++        if (approvalRequestId.HasValue)
++        {
++            metadata["approvalRequestId"] = approvalRequestId.Value.ToString("N");
++        }
++
++        return metadata;
++    }
++
++    private static Dictionary<string, JsonNode?> BuildThresholdContext(
++        ExecuteAgentToolCommand command,
++        ToolExecutionDecisionDto decision)
++    {
++        var thresholdContext = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        if (!string.IsNullOrWhiteSpace(command.ThresholdCategory))
++        {
++            thresholdContext["thresholdCategory"] = JsonValue.Create(command.ThresholdCategory.Trim());
++        }
++
++        if (!string.IsNullOrWhiteSpace(command.ThresholdKey))
++        {
++            thresholdContext["thresholdKey"] = JsonValue.Create(command.ThresholdKey.Trim());
++        }
++
++        if (command.ThresholdValue.HasValue)
++        {
++            thresholdContext["thresholdValue"] = JsonValue.Create(command.ThresholdValue.Value);
++        }
++
++        if (decision.Metadata.TryGetValue("configuredThreshold", out var configuredThreshold))
++        {
++            thresholdContext["configuredThreshold"] = configuredThreshold?.DeepClone();
++        }
++
++        if (decision.Metadata.TryGetValue("approvalTarget", out var approvalTarget))
++        {
++            thresholdContext["approvalTarget"] = approvalTarget?.DeepClone();
++        }
++
++        return thresholdContext;
++    }
++
++    private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["outcome"] = JsonValue.Create(decision.Outcome),
++            ["reasonCodes"] = new JsonArray(decision.ReasonCodes.Select(JsonValue.Create).ToArray()),
++            ["explanation"] = JsonValue.Create(decision.Explanation),
++            ["evaluatedAutonomyLevel"] = JsonValue.Create(decision.EvaluatedAutonomyLevel),
++            ["approvalRequired"] = JsonValue.Create(decision.ApprovalRequired),
++            ["metadata"] = ToJsonObject(decision.Metadata)
++        };
++
++        return payload;
++    }
++
++    private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?> nodes)
++    {
++        var jsonObject = new JsonObject();
++        foreach (var (key, value) in nodes)
++        {
++            jsonObject[key] = value?.DeepClone();
++        }
++
++        return jsonObject;
++    }
++
++    private static string? TryGetNonEmptyString(IReadOnlyDictionary<string, JsonNode?> values, string key)
++    {
++        if (!values.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var text))
++        {
++            return null;
++        }
++
++        return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -0,0 +1,28 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
++{
++    public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["mode"] = JsonValue.Create("stub"),
++            ["toolName"] = JsonValue.Create(request.ToolName),
++            ["actionType"] = JsonValue.Create(request.ActionType),
++            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["executedAtUtc"] = JsonValue.Create(DateTime.UtcNow)
++        };
++
++        return Task.FromResult(new ToolExecutionResult(
++            $"Executed '{request.ToolName}' using the default infrastructure stub.",
++            payload));
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+@@ -47,7 +47,8 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
+             CloneNodes(agent.Thresholds),
+             CloneNodes(agent.EscalationRules),
+             CloneNodes(agent.TriggerLogic),
+             CloneNodes(agent.WorkingHours),
+             agent.CanReceiveAssignments,
+-            agent.UpdatedUtc);
++            agent.UpdatedUtc,
++            agent.AutonomyLevel.ToStorageValue());
+     }
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -0,0 +1,303 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
++{
++    public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
++    {
++        var metadata = CreateBaseMetadata(request);
++
++        if (request.CompanyId == Guid.Empty ||
++            request.AgentId == Guid.Empty ||
++            request.AgentCompanyId == Guid.Empty ||
++            request.AgentCompanyId != request.CompanyId)
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.InvalidCompanyContext],
++                "Tenant context is missing or inconsistent for this execution request.",
++                metadata);
++        }
++
++        if (!AgentStatusValues.TryParse(request.AgentStatus, out var status) ||
++            status is AgentStatus.Paused or AgentStatus.Restricted or AgentStatus.Archived ||
++            !request.CanReceiveAssignments)
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.AgentStatusDisallowsExecution],
++                "The agent status does not permit tool execution.",
++                metadata);
++        }
++
++        if (!ToolActionTypeValues.TryParse(request.ActionType, out var actionType))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "The requested action type is invalid.",
++                metadata);
++        }
++
++        if (!AgentAutonomyLevelValues.TryParse(request.EvaluatedAutonomyLevel, out var autonomyLevel))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "The agent autonomy configuration is missing or invalid.",
++                metadata);
++        }
++
++        if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
++            !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "Tool permissions are missing or invalid, so execution is denied by default.",
++                metadata);
++        }
++
++        if (!allowedToolsExists || allowedTools.Count == 0)
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                "Tool permissions do not define an allowed set for this agent.",
++                metadata);
++        }
++
++        if (allowedTools.Overlaps(deniedTools))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
++                "Tool permissions are ambiguous because the same tool is both allowed and denied.",
++                metadata);
++        }
++
++        if (deniedTools.Contains(request.ToolName))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.ToolExplicitlyDenied],
++                "The requested tool is explicitly denied for this agent.",
++                metadata);
++        }
++
++        if (!allowedTools.Contains(request.ToolName))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.ToolNotPermitted],
++                "The requested tool is outside the agent's allowed tool scope.",
++                metadata);
++        }
++
++        if (!string.IsNullOrWhiteSpace(request.Scope))
++        {
++            var requiredScopeBucket = actionType == ToolActionType.Execute ? "write" : "read";
++            if (!TryGetIdentifierSet(request.DataScopes, requiredScopeBucket, out var scopes, out var scopeConfigExists) ||
++                !scopeConfigExists)
++            {
++                return Deny(
++                    request,
++                    [PolicyDecisionReasonCodes.MissingPolicyConfiguration],
++                    "Data scope policy is missing or invalid for the requested action.",
++                    metadata);
++            }
++
++            if (!scopes.Contains(request.Scope))
++            {
++                return Deny(
++                    request,
++                    [PolicyDecisionReasonCodes.ScopeNotPermitted],
++                    "The requested scope is outside the agent's configured data access boundaries.",
++                    metadata);
++            }
++        }
++
++        if (autonomyLevel == AgentAutonomyLevel.Level0 && actionType != ToolActionType.Read)
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.AutonomyLevelBlocksAction],
++                "Autonomy level 0 is limited to read-only activity.",
++                metadata);
++        }
++
++        if (actionType != ToolActionType.Execute)
++        {
++            return Allow(request, metadata, "The requested action is in scope and allowed by policy.");
++        }
++
++        if (autonomyLevel == AgentAutonomyLevel.Level1)
++        {
++            return RequireApproval(
++                request,
++                metadata,
++                PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval,
++                "Autonomy level 1 cannot execute actions directly and must request human approval.");
++        }
++
++        var hasAnyThresholdFields =
++            !string.IsNullOrWhiteSpace(request.ThresholdCategory) ||
++            !string.IsNullOrWhiteSpace(request.ThresholdKey) ||
++            request.ThresholdValue.HasValue;
++
++        if (hasAnyThresholdFields &&
++            (string.IsNullOrWhiteSpace(request.ThresholdCategory) ||
++             string.IsNullOrWhiteSpace(request.ThresholdKey) ||
++             !request.ThresholdValue.HasValue))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.ThresholdContextMissing],
++                "Threshold context is incomplete, so policy evaluation defaults to deny.",
++                metadata);
++        }
++
++        if (request.SensitiveAction)
++        {
++            return RequireApproval(
++                request,
++                metadata,
++                PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
++                "Sensitive actions require human approval before execution.");
++        }
++
++        if (request.ThresholdValue.HasValue)
++        {
++            if (!TryGetThresholdValue(request.ApprovalThresholds, request.ThresholdCategory!, request.ThresholdKey!, out var configuredThreshold))
++            {
++                return Deny(
++                    request,
++                    [PolicyDecisionReasonCodes.ThresholdConfigurationMissing],
++                    "Threshold policy is missing or invalid for the requested action.",
++                    metadata);
++            }
++
++            metadata["configuredThreshold"] = JsonValue.Create(configuredThreshold);
++            metadata["thresholdCategory"] = JsonValue.Create(request.ThresholdCategory);
++            metadata["thresholdKey"] = JsonValue.Create(request.ThresholdKey);
++            metadata["thresholdValue"] = JsonValue.Create(request.ThresholdValue.Value);
++
++            if (request.ThresholdValue.Value > configuredThreshold)
++            {
++                return RequireApproval(
++                    request,
++                    metadata,
++                    PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval,
++                    "The requested action exceeds the configured approval threshold.");
++            }
++        }
++
++        return Allow(request, metadata, "The requested action is within scope, within threshold, and allowed to execute.");
++    }
++
++    private static ToolExecutionDecisionDto Allow(
++        PolicyEvaluationRequest request,
++        Dictionary<string, JsonNode?> metadata,
++        string explanation) =>
++        new(
++            PolicyDecisionOutcomeValues.Allow,
++            [PolicyDecisionReasonCodes.PolicyChecksPassed],
++            explanation,
++            request.EvaluatedAutonomyLevel,
++            false,
++            metadata);
++
++    private static ToolExecutionDecisionDto Deny(
++        PolicyEvaluationRequest request,
++        IReadOnlyList<string> reasonCodes,
++        string explanation,
++        Dictionary<string, JsonNode?> metadata) =>
++        new(
++            PolicyDecisionOutcomeValues.Deny,
++            reasonCodes,
++            explanation,
++            request.EvaluatedAutonomyLevel,
++            false,
++            metadata);
++
++    private static ToolExecutionDecisionDto RequireApproval(
++        PolicyEvaluationRequest request,
++        Dictionary<string, JsonNode?> metadata,
++        string reasonCode,
++        string explanation)
++    {
++        if (!TryGetEscalationTarget(request.EscalationRules, out var approvalTarget))
++        {
++            return Deny(
++                request,
++                [PolicyDecisionReasonCodes.ApprovalRouteMissing],
++                "Approval is required, but the escalation route is missing or invalid.",
++                metadata);
++        }
++
++        metadata["approvalTarget"] = JsonValue.Create(approvalTarget);
++        return new ToolExecutionDecisionDto(
++            PolicyDecisionOutcomeValues.RequireApproval,
++            [reasonCode],
++            explanation,
++            request.EvaluatedAutonomyLevel,
++            true,
++            metadata);
++    }
++
++    private static Dictionary<string, JsonNode?> CreateBaseMetadata(PolicyEvaluationRequest request) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["companyId"] = JsonValue.Create(request.CompanyId),
++            ["agentId"] = JsonValue.Create(request.AgentId),
++            ["toolName"] = JsonValue.Create(request.ToolName),
++            ["actionType"] = JsonValue.Create(request.ActionType),
++            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction)
++        };
++
++    private static bool TryGetIdentifierSet(
++        IReadOnlyDictionary<string, JsonNode?> values,
++        string key,
++        out HashSet<string> results,
++        out bool exists)
++    {
++        results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        exists = values.TryGetValue(key, out var node) && node is not null;
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        if (node is not JsonArray items)
++        {
++            return false;
++        }
++
++        foreach (var item in items)
++        {
++            if (item is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
++            {
++                return false;
++            }
++
++            results.Add(text.Trim());
++        }
++
++        return true;
++    }
++
++    private static bool TryGetThresholdValue(
++        IReadOnlyDictionary<string, JsonNode?> thresholds,
++        string category,
++        string key,
++        out decimal thresholdValue)
++    {
++        thresholdValue = 0;
++
++        if (!thresholds.TryGetValue(category, out var node) || node is not JsonObject categoryObject)
++        {
++            return false;
++        }
++
++        if (!categoryObject.TryGetPropertyValue(key, out var thresholdNode) || thresholdNode is not JsonValue thresholdJson)
++        {
++            return false;
++        }
++
++        if (thresholdJson.TryGetValue<decimal>(out thresholdValue))
++        {
++            return true;
++        }
++
++        if (thresholdJson.TryGetValue<double>(out var doubleValue))
++        {
++            thresholdValue = (decimal)doubleValue;
++            return true;
++        }
++
++        if (thresholdJson.TryGetValue<int>(out var intValue))
++        {
++            thresholdValue = intValue;
++            return true;
++        }
++
++        return false;
++    }
++
++    private static bool TryGetEscalationTarget(
++        IReadOnlyDictionary<string, JsonNode?> escalationRules,
++        out string? escalationTarget)
++    {
++        escalationTarget = null;
++        if (!escalationRules.TryGetValue("escalateTo", out var node) ||
++            node is not JsonValue jsonValue ||
++            !jsonValue.TryGetValue<string>(out var value) ||
++            string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        escalationTarget = value.Trim();
++        return true;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -59,6 +59,9 @@ public static class DependencyInjection
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
++        services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
++        services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
++        services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -427,6 +427,11 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.Property(x => x.Status)
+             .HasConversion(value => value.ToStorageValue(), value => AgentStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .HasDefaultValue(AgentStatusValues.DefaultStatus)
+             .HasSentinel((AgentStatus)0)
+             .IsRequired();
++        builder.Property(x => x.AutonomyLevel)
++            .HasColumnName("autonomy_level")
++            .HasConversion(value => value.ToStorageValue(), value => AgentAutonomyLevelValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(AgentAutonomyLevelValues.DefaultLevel)
++            .IsRequired();
+         builder.Property(x => x.Personality)
+             .HasColumnName("personality_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+@@ -458,3 +463,72 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
++
++internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfiguration<ToolExecutionAttempt>
++{
++    public void Configure(EntityTypeBuilder<ToolExecutionAttempt> builder)
++    {
++        builder.ToTable("tool_execution_attempts");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.AgentId).IsRequired();
++        builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.ActionType)
++            .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Scope).HasMaxLength(100);
++        builder.Property(x => x.Status)
++            .HasConversion(value => value.ToStorageValue(), value => ToolExecutionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.RequestPayload)
++            .HasColumnName("request_payload_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.PolicyDecision)
++            .HasColumnName("policy_decision_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.ResultPayload)
++            .HasColumnName("result_payload_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.Property(x => x.ExecutedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
++{
++    public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
++    {
++        builder.ToTable("approval_requests");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.AgentId).IsRequired();
++        builder.Property(x => x.ToolExecutionAttemptId).IsRequired();
++        builder.Property(x => x.RequestedByUserId).IsRequired();
++        builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
++        builder.Property(x => x.ActionType)
++            .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.ApprovalTarget).HasMaxLength(100);
++        builder.Property(x => x.Status)
++            .HasConversion(value => value.ToStorageValue(), value => ApprovalRequestStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.ThresholdContext)
++            .HasColumnName("threshold_context_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.PolicyDecision)
++            .HasColumnName("policy_decision_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260331220000_AddAgentExecutionPolicyGuardrails.cs
+@@ -0,0 +1,129 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddAgentExecutionPolicyGuardrails : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "autonomy_level",
++            table: "agents",
++            type: "nvarchar(32)",
++            maxLength: 32,
++            nullable: false,
++            defaultValue: "level_1");
++
++        migrationBuilder.CreateTable(
++            name: "tool_execution_attempts",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                AgentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                ToolName = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                ActionType = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                Scope = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
++                Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                ApprovalRequestId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                RequestPayload = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "request_payload_json"),
++                PolicyDecision = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "policy_decision_json"),
++                ResultPayload = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "result_payload_json"),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                ExecutedUtc = table.Column<DateTime>(type: "datetime2", nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_tool_execution_attempts", x => x.Id);
++                table.ForeignKey(
++                    name: "FK_tool_execution_attempts_companies_CompanyId",
++                    column: x => x.CompanyId,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "approval_requests",
++            columns: table => new
++            {
++                Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                CompanyId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                AgentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                ToolExecutionAttemptId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                RequestedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                ToolName = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
++                ActionType = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                ApprovalTarget = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
++                Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                ThresholdContext = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "threshold_context_json"),
++                PolicyDecision = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'", name: "policy_decision_json"),
++                CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
++                UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_approval_requests", x => x.Id);
++                table.ForeignKey(
++                    name: "FK_approval_requests_companies_CompanyId",
++                    column: x => x.CompanyId,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_approval_requests_tool_execution_attempts_ToolExecutionAttemptId",
++                    column: x => x.ToolExecutionAttemptId,
++                    principalTable: "tool_execution_attempts",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_execution_attempts_CompanyId_AgentId_CreatedUtc",
++            table: "tool_execution_attempts",
++            columns: new[] { "CompanyId", "AgentId", "CreatedUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_execution_attempts_CompanyId_Status_CreatedUtc",
++            table: "tool_execution_attempts",
++            columns: new[] { "CompanyId", "Status", "CreatedUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_approval_requests_CompanyId_Status_CreatedUtc",
++            table: "approval_requests",
++            columns: new[] { "CompanyId", "Status", "CreatedUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_approval_requests_ToolExecutionAttemptId",
++            table: "approval_requests",
++            column: "ToolExecutionAttemptId",
++            unique: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "approval_requests");
++
++        migrationBuilder.DropTable(
++            name: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "autonomy_level",
++            table: "agents");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -20,6 +20,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
+     public DbSet<Agent> Agents => Set<Agent>();
++    public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
++    public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -36,5 +38,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<Agent>()
+             .HasQueryFilter(agent =>
+                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ToolExecutionAttempt>()
++            .HasQueryFilter(attempt =>
++                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ApprovalRequest>()
++            .HasQueryFilter(request =>
++                CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -0,0 +1,275 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentExecutionPolicyGuardrailTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++        _factory.ToolExecutor.Reset();
++    }
++
++    [Fact]
++    public async Task Denied_execution_is_blocked_before_tool_executor_runs_and_attempt_is_auditable()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("write", new JsonArray(JsonValue.Create("payments")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "wire_transfer",
++            actionType = "execute",
++            scope = "payments",
++            requestPayload = new { paymentId = "pay-100" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("denied", payload!.Status);
++        Assert.Equal("deny", payload.PolicyDecision.Outcome);
++        Assert.Contains("tool_not_permitted", payload.PolicyDecision.ReasonCodes);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
++        Assert.Equal("wire_transfer", attempt.ToolName);
++        Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Null(attempt.ApprovalRequestId);
++    }
++
++    [Fact]
++    public async Task Above_threshold_execution_creates_pending_approval_and_skips_tool_executor()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("write", new JsonArray(JsonValue.Create("payments")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "erp",
++            actionType = "execute",
++            scope = "payments",
++            thresholdCategory = "approval",
++            thresholdKey = "expenseUsd",
++            thresholdValue = 1500,
++            requestPayload = new { expenseId = "exp-200" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("awaiting_approval", payload!.Status);
++        Assert.Equal("require_approval", payload.PolicyDecision.Outcome);
++        Assert.Contains("threshold_exceeded_requires_approval", payload.PolicyDecision.ReasonCodes);
++        Assert.NotNull(payload.ApprovalRequestId);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var approval = await dbContext.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == payload.ApprovalRequestId);
++        Assert.Equal(ApprovalRequestStatus.Pending, approval.Status);
++        Assert.Equal("founder", approval.ApprovalTarget);
++        Assert.Equal("expenseUsd", approval.ThresholdContext["thresholdKey"]!.GetValue<string>());
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
++        Assert.Equal(payload.ApprovalRequestId, attempt.ApprovalRequestId);
++    }
++
++    [Fact]
++    public async Task Allowed_execution_runs_tool_executor_and_persists_structured_policy_decision_metadata()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("write", new JsonArray(JsonValue.Create("payments")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++            escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "erp",
++            actionType = "execute",
++            scope = "payments",
++            thresholdCategory = "approval",
++            thresholdKey = "expenseUsd",
++            thresholdValue = 750,
++            requestPayload = new { expenseId = "exp-300" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("executed", payload!.Status);
++        Assert.Equal("allow", payload.PolicyDecision.Outcome);
++        Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
++        Assert.NotNull(payload.ExecutionResult);
++        Assert.Equal("erp", payload.ExecutionResult!["toolName"].GetString());
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
++        Assert.NotNull(attempt.ExecutedUtc);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        return client;
++    }
++
++    private async Task<SeededExecutionAgent> SeedAgentAsync(
++        AgentAutonomyLevel autonomyLevel,
++        Dictionary<string, JsonNode?> tools,
++        Dictionary<string, JsonNode?> scopes,
++        Dictionary<string, JsonNode?> thresholds,
++        Dictionary<string, JsonNode?> escalationRules)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "finance",
++                "Nora Ledger",
++                "Finance Manager",
++                "Finance",
++                null,
++                AgentSeniority.Senior,
++                AgentStatus.Active,
++                autonomyLevel: autonomyLevel,
++                objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++                kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++                tools: tools,
++                scopes: scopes,
++                thresholds: thresholds,
++                escalationRules: escalationRules,
++                roleBrief: "Execution-ready finance profile.",
++                triggerLogic: Payload(("enabled", JsonValue.Create(false))),
++                workingHours: Payload(
++                    ("timezone", JsonValue.Create("UTC")),
++                    ("windows", new JsonArray(new JsonObject
++                    {
++                        ["day"] = "monday",
++                        ["start"] = "08:00",
++                        ["end"] = "16:00"
++                    }))));
++            return Task.CompletedTask;
++        });
++
++        return new SeededExecutionAgent(companyId, agentId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record SeededExecutionAgent(Guid CompanyId, Guid AgentId);
++
++    private sealed class AgentToolExecutionResponse
++    {
++        public Guid ExecutionId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public Guid? ApprovalRequestId { get; set; }
++        public PolicyDecisionResponse PolicyDecision { get; set; } = new();
++        public Dictionary<string, JsonElement>? ExecutionResult { get; set; }
++        public string Message { get; set; } = string.Empty;
++    }
++
++    private sealed class PolicyDecisionResponse
++    {
++        public string Outcome { get; set; } = string.Empty;
++        public List<string> ReasonCodes { get; set; } = [];
++        public string Explanation { get; set; } = string.Empty;
++        public string EvaluatedAutonomyLevel { get; set; } = string.Empty;
++        public bool ApprovalRequired { get; set; }
++        public Dictionary<string, JsonElement> Metadata { get; set; } = [];
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -0,0 +1,167 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class PolicyGuardrailEngineTests
++{
++    private readonly PolicyGuardrailEngine _engine = new();
++
++    [Fact]
++    public void Evaluate_allows_in_scope_level_2_execution_within_threshold()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            thresholdCategory: "approval",
++            thresholdKey: "expenseUsd",
++            thresholdValue: 750));
++
++        Assert.Equal("allow", decision.Outcome);
++        Assert.Contains("policy_checks_passed", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_denies_when_tool_is_not_permitted()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_3",
++            toolName: "wire_transfer",
++            actionType: "execute",
++            scope: "payments"));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("tool_not_permitted", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_denies_when_action_exceeds_autonomy_level()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_0",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments"));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("autonomy_level_blocks_action", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_default_denies_when_tool_policy_configuration_is_missing()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolPermissions: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments"));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains("missing_policy_configuration", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_requires_approval_when_threshold_is_exceeded()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            thresholdCategory: "approval",
++            thresholdKey: "expenseUsd",
++            thresholdValue: 1500));
++
++        Assert.Equal("require_approval", decision.Outcome);
++        Assert.Contains("threshold_exceeded_requires_approval", decision.ReasonCodes);
++    }
++
++    [Fact]
++    public void Evaluate_requires_approval_for_level_1_execution_even_when_other_policy_checks_pass()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_1",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments"));
++
++        Assert.Equal("require_approval", decision.Outcome);
++        Assert.Contains("autonomy_level_requires_approval", decision.ReasonCodes);
++    }
++
++    private static PolicyEvaluationRequest CreateRequest(
++        string autonomyLevel,
++        string toolName,
++        string actionType,
++        string? scope,
++        string? thresholdCategory = null,
++        string? thresholdKey = null,
++        decimal? thresholdValue = null,
++        Dictionary<string, JsonNode?>? toolPermissions = null,
++        Dictionary<string, JsonNode?>? dataScopes = null,
++        Dictionary<string, JsonNode?>? thresholds = null,
++        Dictionary<string, JsonNode?>? escalationRules = null)
++    {
++        return new PolicyEvaluationRequest(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "active",
++            autonomyLevel,
++            true,
++            toolPermissions ?? Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            dataScopes ?? Payload(("read", new JsonArray(JsonValue.Create("finance"))), ("write", new JsonArray(JsonValue.Create("payments")))),
++            thresholds ?? Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            escalationRules ?? Payload(("escalateTo", JsonValue.Create("founder"))),
++            toolName,
++            actionType,
++            scope,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            thresholdCategory,
++            thresholdKey,
++            thresholdValue,
++            false);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -1,6 +1,8 @@
+ using System.Collections.Concurrent;
++using System.Text.Json.Nodes;
+ using Microsoft.Data.Sqlite;
+ using Microsoft.AspNetCore.Hosting;
+ using Microsoft.AspNetCore.Mvc.Testing;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Observability;
+@@ -34,6 +36,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ 
+             services.RemoveAll<ICompanyInvitationSender>();
+             services.AddSingleton<TestCompanyInvitationSender>();
++            services.RemoveAll<ICompanyToolExecutor>();
++            services.AddSingleton<TestCompanyToolExecutor>();
++
++            services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
+             services.AddSingleton<ICompanyInvitationSender>(provider => provider.GetRequiredService<TestCompanyInvitationSender>());
+         });
+     }
+@@ -41,6 +47,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+     public TestCompanyInvitationSender InvitationSender =>
+         Services.GetRequiredService<TestCompanyInvitationSender>();
+ 
++    public TestCompanyToolExecutor ToolExecutor =>
++        Services.GetRequiredService<TestCompanyToolExecutor>();
++
+     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
+     {
+         using var scope = Services.CreateScope();
+@@ -104,4 +113,40 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             }
+         }
+     }
++
++    public sealed class TestCompanyToolExecutor : ICompanyToolExecutor
++    {
++        private readonly ConcurrentQueue<ToolExecutionRequest> _requests = new();
++
++        public IReadOnlyList<ToolExecutionRequest> Requests => _requests.ToArray();
++        public int ExecutionCount => _requests.Count;
++
++        public void Reset()
++        {
++            while (_requests.TryDequeue(out _))
++            {
++            }
++        }
++
++        public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
++        {
++            _requests.Enqueue(request);
++
++            var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["toolName"] = JsonValue.Create(request.ToolName),
++                ["actionType"] = JsonValue.Create(request.ActionType),
++                ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++                ["executed"] = JsonValue.Create(true)
++            };
++
++            return Task.FromResult(new ToolExecutionResult(
++                $"Executed '{request.ToolName}' in the test tool executor.",
++                payload));
++        }
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+@@ -32,7 +32,8 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+                     ["day"] = "monday",
+                     ["start"] = "08:00",
+                     ["end"] = "16:00"
+-                }))));
++                })),
++            "level_2");
+ 
+         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+     }
+@@ -57,7 +58,8 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+                     ["day"] = "monday",
+                     ["start"] = "18:00",
+                     ["end"] = "09:00"
+-                }))));
++                })),
++            "level_9");
+ 
+         var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+ 
+@@ -74,6 +76,7 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+         Assert.Contains("TriggerLogic.conditions[0].event", exception.Errors.Keys);
+         Assert.Contains("WorkingHours.timezone", exception.Errors.Keys);
+         Assert.Contains("WorkingHours.windows[0].end", exception.Errors.Keys);
++        Assert.Contains("AutonomyLevel", exception.Errors.Keys);
+     }
+ 
+     [Fact]
+@@ -104,7 +107,8 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+                     ["day"] = "monday",
+                     ["start"] = "08:00",
+                     ["end"] = "16:00"
+-                }))));
++                })),
++            "level_1");
+ 
+         var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+ 
+END_OF_PATCH

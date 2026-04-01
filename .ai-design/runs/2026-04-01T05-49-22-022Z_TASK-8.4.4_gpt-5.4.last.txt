@@ -1,0 +1,1148 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 146e77b..a2a39f2 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -125,7 +125,7 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
+-    [HttpGet("{agentId:guid}/profile")]
++    [HttpGet("{agentId:guid}/profile")]
+-    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+     public async Task<ActionResult<AgentOperatingProfileDto>> GetOperatingProfileAsync(
+         Guid companyId,
+         Guid agentId,
+@@ -147,8 +147,8 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
+-    [HttpPut("{agentId:guid}/profile")]
+-    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    [HttpPut("{agentId:guid}/profile")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+     public async Task<ActionResult<AgentOperatingProfileDto>> UpdateOperatingProfileAsync(
+         Guid companyId,
+         Guid agentId,
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 0d32e72..7421e83 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -76,9 +76,16 @@ public sealed record AgentRecentActivityDto(
+ 
+ public sealed record AgentProfileVisibilityDto(
+     bool CanViewPermissions,
+     bool CanViewThresholds,
++    bool CanViewWorkingHours,
+     bool CanEditAgent,
++    bool CanEditRoleBrief,
++    bool CanEditObjectives,
++    bool CanEditKpis,
++    bool CanEditWorkingHours,
++    bool CanEditStatus,
++    bool CanEditSensitiveGovernance,
+     bool CanPauseOrRestrictAgent);
+ 
+ public sealed record AgentProfileViewDto(
+     Guid Id,
+@@ -128,6 +135,7 @@ public sealed record AgentOperatingProfileDto(
+     Dictionary<string, JsonNode?> ApprovalThresholds,
+     Dictionary<string, JsonNode?> EscalationRules,
+     Dictionary<string, JsonNode?> TriggerLogic,
+     Dictionary<string, JsonNode?> WorkingHours,
++    AgentProfileVisibilityDto Visibility,
+     DateTime UpdatedUtc,
+     bool CanReceiveAssignments,
+     string AutonomyLevel);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 75474c7..070f2d2 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -279,7 +279,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+ 
+     public async Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+     {
+-        await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++        var membership = await EnsureOperatingProfileAccessAsync(companyId, cancellationToken);
++        var visibility = BuildProfileVisibility(membership.MembershipRole);
+ 
+         var agent = await _dbContext.Agents
+             .AsNoTracking()
+@@ -290,13 +291,15 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             throw new KeyNotFoundException("Agent not found.");
+         }
+ 
+-        return ToOperatingProfileDto(agent);
++        return ToOperatingProfileDto(agent, visibility);
+     }
+ 
+     public async Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken)
+     {
+-        var membership = await EnsureAdministrativeAccessAsync(companyId, cancellationToken);
++        var membership = await EnsureOperatingProfileAccessAsync(companyId, cancellationToken);
+         Validate(command);
++
++        var visibility = BuildProfileVisibility(membership.MembershipRole);
+ 
+         var agent = await _dbContext.Agents
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
+@@ -307,21 +310,24 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         }
+ 
+         var beforeSnapshot = CreateOperatingProfileAuditSnapshot(agent);
++        ValidateOperatingProfileUpdateAccess(command, agent, visibility);
+ 
+         var changed = agent.UpdateOperatingProfile(
+-            command.RoleBrief,
+-            AgentStatusValues.Parse(command.Status),
+-            string.IsNullOrWhiteSpace(command.AutonomyLevel) ? agent.AutonomyLevel : AgentAutonomyLevelValues.Parse(command.AutonomyLevel),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules),
+-            AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic),
+-            command.WorkingHours);
++            visibility.CanEditRoleBrief ? command.RoleBrief : agent.RoleBrief,
++            ResolveRequestedStatus(agent, command, visibility),
++            ResolveRequestedAutonomyLevel(agent, command, visibility),
++            visibility.CanEditObjectives ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives) : CloneNodes(agent.Objectives),
++            visibility.CanEditKpis ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis) : CloneNodes(agent.Kpis),
++            visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions) : CloneNodes(agent.Tools),
++            visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes) : CloneNodes(agent.Scopes),
++            visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds) : CloneNodes(agent.Thresholds),
++            visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules) : CloneNodes(agent.EscalationRules),
++            visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic) : CloneNodes(agent.TriggerLogic),
++            visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours));
+ 
+         if (changed)
+         {
+             await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
+@@ -329,7 +335,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+ 
+-        return ToOperatingProfileDto(agent);
++        return ToOperatingProfileDto(agent, visibility);
+     }
+ 
+     public async Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken)
+@@ -388,28 +394,34 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private async Task<ResolvedCompanyMembershipContext> EnsureManagerAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+-        if (membership.MembershipRole != CompanyMembershipRole.Owner &&
+-            membership.MembershipRole != CompanyMembershipRole.Admin &&
+-            membership.MembershipRole != CompanyMembershipRole.Manager)
++        if (!CanAccessDirectory(membership.MembershipRole))
+         {
+             throw new UnauthorizedAccessException("Only owner, admin, and manager memberships can view the agent directory.");
+         }
+ 
+         return membership;
+     }
+ 
+-    private async Task<ResolvedCompanyMembershipContext> EnsureAdministrativeAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<ResolvedCompanyMembershipContext> EnsureOperatingProfileAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+-        if (membership.MembershipRole != CompanyMembershipRole.Owner &&
+-            membership.MembershipRole != CompanyMembershipRole.Admin)
++        if (!CanAccessOperatingProfileEditor(membership.MembershipRole))
+         {
+-            throw new UnauthorizedAccessException("Only owner and admin memberships can manage agent operating profiles.");
++            throw new UnauthorizedAccessException("Only owner, admin, and manager memberships can access agent operating profiles.");
+         }
+ 
+         return membership;
+     }
+ 
++    private static bool CanAccessDirectory(CompanyMembershipRole role) =>
++        role is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager;
++
++    private static bool CanAccessOperatingProfileEditor(CompanyMembershipRole role) =>
++        role is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager;
++
+     private Task WriteAgentCreatedAuditEventAsync(
+         Guid companyId,
+         ResolvedCompanyMembershipContext membership,
+         Agent agent,
+@@ -606,8 +618,11 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             ResolvePersonalitySummary(agent.Personality),
+             agent.AutonomyLevel.ToStorageValue());
+ 
+-    private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent) =>
++    private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent, AgentProfileVisibilityDto visibility) =>
+         new(
+             agent.Id,
+             agent.CompanyId,
+             agent.TemplateId,
+@@ -617,13 +632,14 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.AvatarUrl,
+             agent.RoleBrief,
+             CloneNodes(agent.Objectives),
+             CloneNodes(agent.Kpis),
+-            CloneNodes(agent.Tools),
+-            CloneNodes(agent.Scopes),
+-            CloneNodes(agent.Thresholds),
+-            CloneNodes(agent.EscalationRules),
+-            CloneNodes(agent.TriggerLogic),
+-            CloneNodes(agent.WorkingHours),
++            visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewPermissions ? CloneNodes(agent.Scopes) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewThresholds ? CloneNodes(agent.Thresholds) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewThresholds ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanEditSensitiveGovernance ? CloneNodes(agent.TriggerLogic) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewWorkingHours ? CloneNodes(agent.WorkingHours) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility,
+             agent.UpdatedUtc,
+             agent.CanReceiveAssignments,
+             agent.AutonomyLevel.ToStorageValue());
+@@ -637,8 +653,9 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         IReadOnlyList<ToolExecutionAttempt> executionAttempts,
+         IReadOnlyList<ApprovalRequest> approvalRequests)
+     {
+-        var canViewRestricted = membershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin;
++        var visibility = BuildProfileVisibility(membershipRole);
+         var workloadSummary = BuildWorkloadSummary(
+             agent,
+             execution,
+             approval,
+@@ -652,12 +669,14 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 x.Status.ToStorageValue(),
+                 string.IsNullOrWhiteSpace(x.Scope) ? null : $"Scope: {x.Scope}")))
+             .Concat(approvalRequests.Select(x => new AgentRecentActivityDto(
+                 x.UpdatedUtc,
+@@ -666,7 +685,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 x.Status.ToStorageValue(),
+                 string.IsNullOrWhiteSpace(x.ApprovalTarget) ? null : $"Target: {x.ApprovalTarget}")))
+-            .Concat(auditEvents.Select(x => new AgentRecentActivityDto(
++            .Concat((visibility.CanEditSensitiveGovernance ? auditEvents : []).Select(x => new AgentRecentActivityDto(
+                 x.OccurredUtc,
+                 "audit_event",
+                 x.Action,
+                 x.Outcome,
+@@ -685,15 +704,116 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.RoleBrief,
+             agent.AutonomyLevel.ToStorageValue(),
+             CloneNodes(agent.Objectives),
+             CloneNodes(agent.Kpis),
+-            canViewRestricted ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+-            canViewRestricted ? CloneNodes(agent.Scopes) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+-            canViewRestricted ? CloneNodes(agent.Thresholds) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+-            canViewRestricted ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+-            CloneNodes(agent.WorkingHours),
++            visibility.CanViewPermissions ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewPermissions ? CloneNodes(agent.Scopes) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewThresholds ? CloneNodes(agent.Thresholds) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewThresholds ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanViewWorkingHours ? CloneNodes(agent.WorkingHours) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             workloadSummary,
+             recentActivity,
+-            new AgentProfileVisibilityDto(
+-                canViewRestricted,
+-                canViewRestricted,
+-                canViewRestricted,
+-                canViewRestricted),
++            visibility,
+             agent.UpdatedUtc);
+     }
++
++    private static AgentProfileVisibilityDto BuildProfileVisibility(CompanyMembershipRole membershipRole)
++    {
++        var canEditSensitiveGovernance = membershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin;
++        var canEditOperationalFields = canEditSensitiveGovernance || membershipRole == CompanyMembershipRole.Manager;
++
++        return new AgentProfileVisibilityDto(
++            canEditSensitiveGovernance,
++            canEditSensitiveGovernance,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditOperationalFields,
++            canEditSensitiveGovernance,
++            canEditSensitiveGovernance);
++    }
++
++    private static void ValidateOperatingProfileUpdateAccess(
++        UpdateAgentOperatingProfileCommand command,
++        Agent agent,
++        AgentProfileVisibilityDto visibility)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        EnsureStatusChangeIsAuthorized(errors, command, agent, visibility);
++        EnsureOptionalStringChangeIsAuthorized(errors, nameof(command.RoleBrief), "role brief", visibility.CanEditRoleBrief, command.RoleBrief, agent.RoleBrief);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.Objectives), "objectives", visibility.CanEditObjectives, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Objectives), agent.Objectives);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.Kpis), "KPIs", visibility.CanEditKpis, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.Kpis), agent.Kpis);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.ToolPermissions), "tool permissions", visibility.CanEditSensitiveGovernance, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ToolPermissions), agent.Tools);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.DataScopes), "data scopes", visibility.CanEditSensitiveGovernance, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.DataScopes), agent.Scopes);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.ApprovalThresholds), "approval thresholds", visibility.CanEditSensitiveGovernance, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds), agent.Thresholds);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.EscalationRules), "escalation rules", visibility.CanEditSensitiveGovernance, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules), agent.EscalationRules);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.TriggerLogic), "trigger logic", visibility.CanEditSensitiveGovernance, AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic), agent.TriggerLogic);
++        EnsureJsonChangeIsAuthorized(errors, nameof(command.WorkingHours), "working hours", visibility.CanEditWorkingHours, command.WorkingHours, agent.WorkingHours);
++
++        var requestedAutonomyLevel = NormalizeOptional(command.AutonomyLevel);
++        if (!visibility.CanEditSensitiveGovernance &&
++            requestedAutonomyLevel is not null &&
++            !string.Equals(requestedAutonomyLevel, agent.AutonomyLevel.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            AddError(errors, nameof(command.AutonomyLevel), "Only owner and admin memberships can edit autonomy level.");
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static AgentStatus ResolveRequestedStatus(Agent agent, UpdateAgentOperatingProfileCommand command, AgentProfileVisibilityDto visibility)
++    {
++        var requestedStatus = NormalizeRequired(command.Status);
++        var currentStatus = agent.Status.ToStorageValue();
++
++        if (!string.Equals(requestedStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
++        {
++            return AgentStatusValues.Parse(command.Status);
++        }
++
++        return agent.Status;
++    }
++
++    private static AgentAutonomyLevel ResolveRequestedAutonomyLevel(Agent agent, UpdateAgentOperatingProfileCommand command, AgentProfileVisibilityDto visibility) =>
++        visibility.CanEditSensitiveGovernance && !string.IsNullOrWhiteSpace(command.AutonomyLevel)
++            ? AgentAutonomyLevelValues.Parse(command.AutonomyLevel)
++            : agent.AutonomyLevel;
++
++    private static void EnsureStatusChangeIsAuthorized(
++        IDictionary<string, List<string>> errors,
++        UpdateAgentOperatingProfileCommand command,
++        Agent agent,
++        AgentProfileVisibilityDto visibility)
++    {
++        var requestedStatus = NormalizeRequired(command.Status);
++        var currentStatus = agent.Status.ToStorageValue();
++
++        if (string.Equals(requestedStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        if (!visibility.CanEditStatus)
++        {
++            AddError(errors, nameof(command.Status), "Your membership cannot change agent status.");
++            return;
++        }
++
++        if (!visibility.CanPauseOrRestrictAgent &&
++            (!IsManagerEditableStatus(currentStatus) || !IsManagerEditableStatus(requestedStatus)))
++        {
++            AddError(errors, nameof(command.Status), "Only owner and admin memberships can change an agent to or from restricted or archived status.");
++        }
++    }
++
++    private static void EnsureOptionalStringChangeIsAuthorized(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string fieldName,
++        bool canEdit,
++        string? requestedValue,
++        string? currentValue)
++    {
++        if (canEdit)
++        {
++            return;
++        }
++
++        var normalizedRequested = NormalizeOptional(requestedValue);
++        var normalizedCurrent = NormalizeOptional(currentValue);
++        if (!string.IsNullOrEmpty(normalizedRequested) &&
++            !string.Equals(normalizedRequested, normalizedCurrent, StringComparison.Ordinal))
++        {
++            AddError(errors, key, $"Only owner, admin, or manager memberships with edit access can change {fieldName}.");
++        }
++    }
++
++    private static void EnsureJsonChangeIsAuthorized(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string fieldName,
++        bool canEdit,
++        IDictionary<string, JsonNode?>? requestedValue,
++        IDictionary<string, JsonNode?> currentValue)
++    {
++        if (canEdit || requestedValue is null)
++        {
++            return;
++        }
++
++        if (!JsonDictionaryEquals(requestedValue, currentValue))
++        {
++            AddError(errors, key, $"You do not have permission to edit {fieldName}.");
++        }
++    }
++
++    private static bool JsonDictionaryEquals(IDictionary<string, JsonNode?>? left, IDictionary<string, JsonNode?>? right) =>
++        string.Equals(
++            SerializeJsonDictionary(CloneNodes(left)),
++            SerializeJsonDictionary(CloneNodes(right)),
++            StringComparison.Ordinal);
++
++    private static bool IsManagerEditableStatus(string status) =>
++        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+index b3f8ec1..2aa9fd5 100644
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -149,6 +149,18 @@ else
+                 }
+             </section>
+ 
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Working hours</h2>
++                @if (!profile.Visibility.CanViewWorkingHours)
++                {
++                    <p class="text-body-secondary mb-0">Working hours are hidden for your membership role.</p>
++                }
++                else
++                {
++                    @RenderEntries(profile.WorkingHours)
++                }
++            </section>
++
+             <section class="wizard-card agent-profile-section agent-profile-section--wide">
+                 <h2 class="h5 mb-3">Recent activity</h2>
+ 
+@@ -258,12 +270,14 @@ else
+                 return;
+             }
+ 
+-            if (CompanyId is Guid companyId)
++            if (CompanyId is Guid companyId &&
++                currentUser?.ActiveCompany is not null &&
++                currentUser.ActiveCompany.CompanyId != companyId)
+             {
+                 Navigation.NavigateTo($"/agents/{AgentId}?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                 return;
+             }
+ 
+-            if (CompanyId is Guid companyId)
++            if (CompanyId is Guid companyId)
+             {
+                 profile = await AgentApiClient.GetProfileViewAsync(companyId, AgentId);
+             }
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 8593fd6..17f87c4 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -144,7 +144,7 @@ else
+             </div>
+         </div>
+ 
+-        @if (CanManageProfiles)
++        @if (CanManageProfiles)
+         {
+             <div class="wizard-card mt-4">
+                 <div class="agent-roster-header">
+@@ -177,21 +177,48 @@ else
+                         <div class="row g-3">
+                             <div class="col-md-6">
+                                 <label class="form-label" for="profile-status">Status</label>
+-                                <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
+-                                    @foreach (var status in statusOptions)
++                                <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status" disabled="@(!CanEditSelectedAgentStatus)">
++                                    @foreach (var status in GetStatusOptionsForSelectedAgent())
+                                     {
+                                         <option value="@status">@status</option>
+                                     }
+                                 </InputSelect>
+                                 <ValidationMessage For="@(() => profileModel.Status)" />
+-                                <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
++                                <div class="form-text">
++                                    Archived agents are excluded from new task assignment.
++                                    @if (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent)
++                                    {
++                                        <span> Owner and admin memberships can manage all status states.</span>
++                                    }
++                                    else
++                                    {
++                                        <span> Your membership can only move agents between active and paused while they remain outside restricted or archived states.</span>
++                                    }
++                                </div>
+                                 @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+                                 {
+                                     <div class="text-danger small mt-1">@error</div>
+                                 }
+                             </div>
+                             <div class="col-md-6">
++                                <label class="form-label" for="profile-autonomy">Autonomy</label>
++                                <InputSelect id="profile-autonomy" class="form-select" @bind-Value="profileModel.AutonomyLevel" disabled="@(!selectedAgentProfile.Visibility.CanEditSensitiveGovernance)">
++                                    @foreach (var level in GetAutonomyOptionsForSelectedAgent())
++                                    {
++                                        <option value="@level">@ToDisplayText(level)</option>
++                                    }
++                                </InputSelect>
++                                <div class="form-text">
++                                    @if (selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                                    {
++                                        <span>Autonomy, tools, scopes, thresholds, escalation, and trigger logic are governance settings.</span>
++                                    }
++                                    else
++                                    {
++                                        <span>Autonomy changes require owner or admin access.</span>
++                                    }
++                                </div>
++                            </div>
++                            <div class="col-md-6">
+                                 <label class="form-label" for="profile-updated">Last updated</label>
+                                 <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
+                             </div>
+@@ -199,23 +226,55 @@ else
+ 
+                         <div class="mt-3">
+                             <label class="form-label" for="role-brief">Role brief</label>
+-                            <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
++                            <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" disabled="@(!selectedAgentProfile.Visibility.CanEditRoleBrief)" />
+                             <ValidationMessage For="@(() => profileModel.RoleBrief)" />
+                             @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
+                             {
+                                 <div class="text-danger small mt-1">@error</div>
+                             }
+                         </div>
+ 
+-                        @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
+-                        @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
+-                        @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
+-                        @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
+-                        @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
+-                        @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
+-                        @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
+-                        @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
++                        @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson, !selectedAgentProfile.Visibility.CanEditObjectives)
++                        @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson, !selectedAgentProfile.Visibility.CanEditKpis)
++
++                        @if (selectedAgentProfile.Visibility.CanViewPermissions)
++                        {
++                            @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                            @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                        }
++                        else
++                        {
++                            <p class="text-body-secondary mt-3 mb-0">Tool permissions and data scopes are hidden for your membership role.</p>
++                        }
++
++                        @if (selectedAgentProfile.Visibility.CanViewThresholds)
++                        {
++                            @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                            @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                            @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
++                        }
++                        else
++                        {
++                            <p class="text-body-secondary mt-3 mb-0">Approval thresholds, escalation rules, and trigger logic are hidden for your membership role.</p>
++                        }
++
++                        @if (selectedAgentProfile.Visibility.CanViewWorkingHours)
++                        {
++                            @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson, !selectedAgentProfile.Visibility.CanEditWorkingHours)
++                        }
++                        else
++                        {
++                            <p class="text-body-secondary mt-3 mb-0">Working hours are hidden for your membership role.</p>
++                        }
+ 
+                         <div class="dashboard-actions mt-3">
+-                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
++                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
+                             <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open detail view</a>
+                         </div>
+                     </EditForm>
+@@ -290,7 +349,7 @@ else
+                                         <th scope="row">
+                                             <a class="fw-semibold text-decoration-none" href="@GetProfileRoute(agent)">@agent.DisplayName</a>
+                                             @if (CanManageProfiles)
+                                             {
+                                                 <div class="mt-2">
+-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Load editor</button>
++                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open profile editor</button>
+                                                 </div>
+                                             }
+                                         </th>
+@@ -339,14 +398,16 @@ else
+ @code {
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+@@ -351,6 +412,7 @@ else
+ 
+     private static readonly JsonSerializerOptions JsonEditorOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+     private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
++    private readonly string[] autonomyOptions = [ "level_0", "level_1", "level_2", "level_3" ];
+     private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
+     private bool isLoading = true;
+     private bool isSubmitting;
+@@ -364,9 +426,20 @@ else
+     private AgentTemplateCatalogItemViewModel? selectedTemplate =>
+         templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
+ 
++    // Owner, admin, and manager memberships can open the operating-profile experience.
+     private bool CanManageProfiles =>
+         string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+-        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
++        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
++
++    private bool CanEditSelectedAgentStatus =>
++        selectedAgentProfile is not null &&
++        selectedAgentProfile.Visibility.CanEditStatus &&
++        (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent || IsManagerEditableStatus(selectedAgentProfile.Status));
++
++    private IEnumerable<string> GetStatusOptionsForSelectedAgent() =>
++        EnsureCurrentOption(statusOptions, selectedAgentProfile?.Status, IsManagerEditableStatus, selectedAgentProfile?.Visibility.CanPauseOrRestrictAgent == true);
++
++    private IEnumerable<string> GetAutonomyOptionsForSelectedAgent() => EnsureCurrentOption(autonomyOptions, selectedAgentProfile?.AutonomyLevel, static _ => true, true);
+ 
+     private bool CanViewDirectory =>
+         CanManageProfiles ||
+@@ -505,7 +578,7 @@ else
+             return;
+         }
+ 
+-        if (!profileModel.TryCreateRequest(out var request, out var localErrors))
++        if (!profileModel.TryCreateRequest(selectedAgentProfile.Visibility, out var request, out var localErrors))
+         {
+             profileErrors = localErrors;
+             profileErrorMessage = "Fix the highlighted operating profile fields and try again.";
+@@ -638,7 +711,23 @@ else
+ 
+     private void OpenEditor(Guid agentId) => Navigation.NavigateTo(BuildAgentsUri(CompanyId!.Value, Department, Status, agentId));
+ 
+-    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
++    private static IEnumerable<string> EnsureCurrentOption(IEnumerable<string> options, string? currentValue, Func<string, bool> predicate, bool allowAll)
++    {
++        var resolved = allowAll
++            ? options.ToList()
++            : options.Where(predicate).ToList();
++
++        if (!string.IsNullOrWhiteSpace(currentValue) &&
++            !resolved.Contains(currentValue.Trim(), StringComparer.OrdinalIgnoreCase))
++        {
++            resolved.Add(currentValue.Trim());
++        }
++
++        return resolved;
++    }
++
++    private static bool IsManagerEditableStatus(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
++
++    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor, bool isReadOnly = false) => builder =>
+     {
+         var sequence = 0;
+ 
+@@ -657,6 +746,7 @@ else
+         builder.AddAttribute(sequence++, "class", "form-control");
+         builder.AddAttribute(sequence++, "rows", "8");
+         builder.AddAttribute(sequence++, "value", valueAccessor());
++        builder.AddAttribute(sequence++, "disabled", isReadOnly);
+         builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string>(this, value =>
+         {
+             switch (fieldName)
+@@ -777,6 +867,9 @@ else
+         [StringLength(4000)]
+         public string? RoleBrief { get; set; }
+ 
++        [StringLength(32)]
++        public string AutonomyLevel { get; set; } = "level_0";
++
+         public string ObjectivesJson { get; set; } = "{}";
+         public string KpisJson { get; set; } = "{}";
+         public string ToolPermissionsJson { get; set; } = "{}";
+@@ -790,17 +883,27 @@ else
+             new()
+             {
+                 Status = NormalizeStatus(model.Status),
++                AutonomyLevel = NormalizeToken(model.AutonomyLevel),
+                 RoleBrief = model.RoleBrief,
+                 ObjectivesJson = Serialize(model.Objectives),
+                 KpisJson = Serialize(model.Kpis),
+                 ToolPermissionsJson = Serialize(model.ToolPermissions),
+                 DataScopesJson = Serialize(model.DataScopes),
+                 ApprovalThresholdsJson = Serialize(model.ApprovalThresholds),
+                 EscalationRulesJson = Serialize(model.EscalationRules),
+                 TriggerLogicJson = Serialize(model.TriggerLogic),
+                 WorkingHoursJson = Serialize(model.WorkingHours)
+             };
+ 
+         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+         {
+             if (!IsSupportedStatus(Status))
+             {
+@@ -808,15 +911,29 @@ else
+                     "Status must be one of active, paused, restricted, or archived.",
+                     [nameof(Status)]);
+             }
++
++            if (!IsSupportedAutonomyLevel(AutonomyLevel))
++            {
++                yield return new ValidationResult(
++                    "AutonomyLevel must be one of level_0, level_1, level_2, or level_3.",
++                    [nameof(AutonomyLevel)]);
++            }
+         }
+ 
+-        public bool TryCreateRequest(out UpdateAgentOperatingProfileRequest request, out Dictionary<string, string[]> errors)
++        public bool TryCreateRequest(
++            AgentProfileVisibilityViewModel visibility,
++            out UpdateAgentOperatingProfileRequest request,
++            out Dictionary<string, string[]> errors)
+         {
+             var collectedErrors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
+-            var objectives = ParseJson("Objectives", ObjectivesJson, collectedErrors);
+-            var kpis = ParseJson("Kpis", KpisJson, collectedErrors);
+-            var toolPermissions = ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors);
+-            var dataScopes = ParseJson("DataScopes", DataScopesJson, collectedErrors);
+-            var approvalThresholds = ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors);
+-            var escalationRules = ParseJson("EscalationRules", EscalationRulesJson, collectedErrors);
+-            var triggerLogic = ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors);
+-            var workingHours = ParseJson("WorkingHours", WorkingHoursJson, collectedErrors);
++            var objectives = visibility.CanEditObjectives ? ParseJson("Objectives", ObjectivesJson, collectedErrors) : null;
++            var kpis = visibility.CanEditKpis ? ParseJson("Kpis", KpisJson, collectedErrors) : null;
++            var toolPermissions = visibility.CanEditSensitiveGovernance ? ParseJson("ToolPermissions", ToolPermissionsJson, collectedErrors) : null;
++            var dataScopes = visibility.CanEditSensitiveGovernance ? ParseJson("DataScopes", DataScopesJson, collectedErrors) : null;
++            var approvalThresholds = visibility.CanEditSensitiveGovernance ? ParseJson("ApprovalThresholds", ApprovalThresholdsJson, collectedErrors) : null;
++            var escalationRules = visibility.CanEditSensitiveGovernance ? ParseJson("EscalationRules", EscalationRulesJson, collectedErrors) : null;
++            var triggerLogic = visibility.CanEditSensitiveGovernance ? ParseJson("TriggerLogic", TriggerLogicJson, collectedErrors) : null;
++            var workingHours = visibility.CanEditWorkingHours ? ParseJson("WorkingHours", WorkingHoursJson, collectedErrors) : null;
+ 
+             if (collectedErrors.Count > 0)
+             {
+@@ -828,15 +945,16 @@ else
+             request = new UpdateAgentOperatingProfileRequest
+             {
+                 Status = NormalizeStatus(Status),
+-                RoleBrief = RoleBrief,
++                RoleBrief = visibility.CanEditRoleBrief ? RoleBrief : null,
++                AutonomyLevel = visibility.CanEditSensitiveGovernance ? NormalizeToken(AutonomyLevel) : null,
+                 Objectives = objectives,
+                 Kpis = kpis,
+                 ToolPermissions = toolPermissions,
+                 DataScopes = dataScopes,
+                 ApprovalThresholds = approvalThresholds,
+                 EscalationRules = escalationRules,
+                 TriggerLogic = triggerLogic,
+-                WorkingHours = workingHours
++                WorkingHours = workingHours
+             };
+ 
+             errors = new Dictionary<string, string[]>();
+@@ -873,6 +991,15 @@ else
+         private static string NormalizeStatus(string? status) =>
+             string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
+ 
++        private static string NormalizeToken(string? value) =>
++            string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
++
++        private static bool IsSupportedAutonomyLevel(string? autonomyLevel) =>
++            autonomyLevel?.Trim().ToLowerInvariant() is
++                "level_0" or
++                "level_1" or
++                "level_2" or
++                "level_3";
++
+         private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
+         {
+             if (!errors.TryGetValue(key, out var messages))
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 6744892..98e17d2 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -288,10 +288,17 @@ public sealed class AgentApiClient
+                     EscalationRules = CloneNodes(profile.EscalationRules),
+                     WorkingHours = CloneNodes(profile.WorkingHours),
+                     UpdatedUtc = profile.UpdatedUtc,
++                    AutonomyLevel = profile.AutonomyLevel,
+                     Visibility = new AgentProfileVisibilityViewModel
+                     {
+                         CanViewPermissions = true,
+                         CanViewThresholds = true,
++                        CanViewWorkingHours = true,
+                         CanEditAgent = true,
++                        CanEditRoleBrief = true,
++                        CanEditObjectives = true,
++                        CanEditKpis = true,
++                        CanEditWorkingHours = true,
++                        CanEditStatus = true,
++                        CanEditSensitiveGovernance = true,
+                         CanPauseOrRestrictAgent = true
+                     },
+                     WorkloadSummary = new AgentWorkloadSummaryViewModel
+@@ -329,13 +336,16 @@ public sealed class AgentApiClient
+                 existing.Status = NormalizeStatus(request.Status);
+                 existing.RoleBrief = string.IsNullOrWhiteSpace(request.RoleBrief) ? null : request.RoleBrief.Trim();
+-                existing.Objectives = CloneNodes(request.Objectives);
+-                existing.Kpis = CloneNodes(request.Kpis);
+-                existing.ToolPermissions = CloneNodes(request.ToolPermissions);
+-                existing.DataScopes = CloneNodes(request.DataScopes);
+-                existing.ApprovalThresholds = CloneNodes(request.ApprovalThresholds);
+-                existing.EscalationRules = CloneNodes(request.EscalationRules);
+-                existing.TriggerLogic = CloneNodes(request.TriggerLogic);
+-                existing.WorkingHours = CloneNodes(request.WorkingHours);
++                existing.AutonomyLevel = string.IsNullOrWhiteSpace(request.AutonomyLevel) ? existing.AutonomyLevel : request.AutonomyLevel.Trim();
++                existing.Objectives = request.Objectives is null ? existing.Objectives : CloneNodes(request.Objectives);
++                existing.Kpis = request.Kpis is null ? existing.Kpis : CloneNodes(request.Kpis);
++                existing.ToolPermissions = request.ToolPermissions is null ? existing.ToolPermissions : CloneNodes(request.ToolPermissions);
++                existing.DataScopes = request.DataScopes is null ? existing.DataScopes : CloneNodes(request.DataScopes);
++                existing.ApprovalThresholds = request.ApprovalThresholds is null ? existing.ApprovalThresholds : CloneNodes(request.ApprovalThresholds);
++                existing.EscalationRules = request.EscalationRules is null ? existing.EscalationRules : CloneNodes(request.EscalationRules);
++                existing.TriggerLogic = request.TriggerLogic is null ? existing.TriggerLogic : CloneNodes(request.TriggerLogic);
++                existing.WorkingHours = request.WorkingHours is null ? existing.WorkingHours : CloneNodes(request.WorkingHours);
+                 existing.UpdatedUtc = DateTime.UtcNow;
+                 existing.CanReceiveAssignments = !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
+@@ -449,6 +459,8 @@ public sealed class AgentApiClient
+                 WorkingHours = CloneNodes(profile.WorkingHours),
+                 UpdatedUtc = profile.UpdatedUtc,
+-                CanReceiveAssignments = profile.CanReceiveAssignments
++                CanReceiveAssignments = profile.CanReceiveAssignments,
++                Visibility = profile.Visibility,
++                AutonomyLevel = profile.AutonomyLevel
+             };
+ 
+         private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
+@@ -628,9 +640,16 @@ public sealed class AgentRecentActivityViewModel
+ public sealed class AgentProfileVisibilityViewModel
+ {
+     public bool CanViewPermissions { get; set; }
+     public bool CanViewThresholds { get; set; }
++    public bool CanViewWorkingHours { get; set; }
+     public bool CanEditAgent { get; set; }
++    public bool CanEditRoleBrief { get; set; }
++    public bool CanEditObjectives { get; set; }
++    public bool CanEditKpis { get; set; }
++    public bool CanEditWorkingHours { get; set; }
++    public bool CanEditStatus { get; set; }
++    public bool CanEditSensitiveGovernance { get; set; }
+     public bool CanPauseOrRestrictAgent { get; set; }
+ }
+@@ -701,9 +720,11 @@ public sealed class AgentOperatingProfileViewModel
+     public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
+     public DateTime UpdatedUtc { get; set; }
+     public bool CanReceiveAssignments { get; set; }
++    public string AutonomyLevel { get; set; } = string.Empty;
+ }
+ 
+ public sealed class UpdateAgentOperatingProfileRequest
+ {
+     public string Status { get; set; } = "active";
+     public string? RoleBrief { get; set; }
+-    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+-    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? AutonomyLevel { get; set; }
++    public Dictionary<string, JsonNode?>? Objectives { get; set; }
++    public Dictionary<string, JsonNode?>? Kpis { get; set; }
++    public Dictionary<string, JsonNode?>? ToolPermissions { get; set; }
++    public Dictionary<string, JsonNode?>? DataScopes { get; set; }
++    public Dictionary<string, JsonNode?>? ApprovalThresholds { get; set; }
++    public Dictionary<string, JsonNode?>? EscalationRules { get; set; }
++    public Dictionary<string, JsonNode?>? TriggerLogic { get; set; }
++    public Dictionary<string, JsonNode?>? WorkingHours { get; set; }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 0b99860..cd35d9f 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -777,17 +777,90 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     }
+ 
+     [Fact]
+-    public async Task Operating_profile_endpoints_require_admin_access_and_stay_company_scoped()
++    public async Task Manager_can_get_operating_profile_but_receives_redacted_governance_sections()
++    {
++        var seed = await SeedMembershipWithExistingAgentAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
++        Assert.NotNull(payload);
++        Assert.True(payload!.Visibility.CanEditAgent);
++        Assert.True(payload.Visibility.CanEditObjectives);
++        Assert.True(payload.Visibility.CanEditKpis);
++        Assert.True(payload.Visibility.CanEditWorkingHours);
++        Assert.True(payload.Visibility.CanEditStatus);
++        Assert.False(payload.Visibility.CanEditSensitiveGovernance);
++        Assert.False(payload.Visibility.CanPauseOrRestrictAgent);
++        Assert.NotEmpty(payload.Objectives);
++        Assert.NotEmpty(payload.Kpis);
++        Assert.NotEmpty(payload.WorkingHours);
++        Assert.Empty(payload.ToolPermissions);
++        Assert.Empty(payload.ApprovalThresholds);
++        Assert.Empty(payload.EscalationRules);
++        Assert.Empty(payload.TriggerLogic);
++    }
++
++    [Fact]
++    public async Task Manager_can_update_operational_profile_fields_but_cannot_change_governance_fields_or_restricted_status()
++    {
++        var seed = await SeedMembershipWithExistingAgentAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++
++        var allowedResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
++        {
++            status = "paused",
++            roleBrief = "Manager-adjusted operating profile.",
++            objectives = new { primary = new[] { "Protect cash flow", "Reduce approval queue" } },
++            kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
++            workingHours = new { timezone = "UTC", windows = new[] { new { day = "tuesday", start = "09:00", end = "17:00" } } }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, allowedResponse.StatusCode);
++
++        var allowedPayload = await allowedResponse.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
++        Assert.NotNull(allowedPayload);
++        Assert.Equal("paused", allowedPayload!.Status);
++        Assert.Equal("Manager-adjusted operating profile.", allowedPayload.RoleBrief);
++        Assert.Equal("UTC", allowedPayload.WorkingHours["timezone"].GetString());
++        Assert.Empty(allowedPayload.ToolPermissions);
++
++        var rejectedResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile", new
++        {
++            status = "restricted",
++            roleBrief = "Manager-adjusted operating profile.",
++            autonomyLevel = "level_3",
++            objectives = new { primary = new[] { "Protect cash flow", "Reduce approval queue" } },
++            kpis = new { targets = new[] { "forecast_accuracy", "approval_latency" } },
++            toolPermissions = new { allowed = new[] { "erp", "wire_transfer" } },
++            dataScopes = new { read = new[] { "finance" }, write = new[] { "approval_notes" } },
++            approvalThresholds = new { approval = new { expenseUsd = 1 } },
++            escalationRules = new { critical = new[] { "cash_runway_under_90_days" }, escalateTo = "founder" },
++            triggerLogic = new { enabled = true, conditions = new[] { new { @event = "invoice_created", source = "erp" } } },
++            workingHours = new { timezone = "UTC", windows = new[] { new { day = "wednesday", start = "10:00", end = "18:00" } } }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, rejectedResponse.StatusCode);
++
++        var problem = await rejectedResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.Status), problem!.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.AutonomyLevel), problem.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.ToolPermissions), problem.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.DataScopes), problem.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.ApprovalThresholds), problem.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.EscalationRules), problem.Errors.Keys);
++        Assert.Contains(nameof(UpdateAgentOperatingProfileCommand.TriggerLogic), problem.Errors.Keys);
++    }
++
++    [Fact]
++    public async Task Operating_profile_endpoints_require_manager_access_and_stay_company_scoped()
+     {
+         var seed = await SeedEmployeeAndCrossCompanyAgentAsync();
+ 
+         using var employeeClient = CreateAuthenticatedClient("employee", "employee@example.com", "Employee");
+         Assert.Equal(
+             HttpStatusCode.Forbidden,
+             (await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile")).StatusCode);
+ 
++        using var managerClient = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        Assert.Equal(HttpStatusCode.OK, (await managerClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/profile")).StatusCode);
++
+         using var founderClient = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
+         Assert.Equal(
+             HttpStatusCode.Forbidden,
+@@ -888,12 +961,17 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     private async Task<EditableAgentSeed> SeedMembershipWithExistingAgentAsync()
+     {
+         var userId = Guid.NewGuid();
++        var managerUserId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+         var agentId = Guid.NewGuid();
+         var originalUpdatedUtc = DateTime.UtcNow.AddMinutes(-30);
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+-            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Users.AddRange(
++                new User(userId, "founder@example.com", "Founder", "dev-header", "founder"),
++                new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
+             dbContext.Companies.Add(new Company(companyId, "Company A"));
+-            dbContext.CompanyMemberships.Add(new CompanyMembership(
+-                Guid.NewGuid(),
+-                companyId,
+-                userId,
+-                CompanyMembershipRole.Owner,
+-                CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+ 
+             dbContext.Agents.Add(new Agent(
+                 agentId,
+@@ -943,6 +1021,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     {
+         var ownerUserId = Guid.NewGuid();
+         var employeeUserId = Guid.NewGuid();
++        var managerUserId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+         var agentId = Guid.NewGuid();
+@@ -952,14 +1031,16 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.AddRange(
+                 new User(ownerUserId, "founder@example.com", "Founder", "dev-header", "founder"),
+-                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
++                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"),
++                new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Company A"),
+                 new Company(otherCompanyId, "Company B"));
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+-                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+             dbContext.Agents.AddRange(
+                 new Agent(agentId, companyId, "finance", "Company A Finance", "Finance Manager", "Finance", null, AgentSeniority.Senior, AgentStatus.Active),
+                 new Agent(otherCompanyAgentId, otherCompanyId, "support", "Company B Support", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
+@@ -1046,10 +1127,19 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         public string RoleName { get; set; } = string.Empty;
+         public string? RoleBrief { get; set; }
+         public DateTime UpdatedUtc { get; set; }
+         public bool CanReceiveAssignments { get; set; }
++        public string AutonomyLevel { get; set; } = string.Empty;
+         public Dictionary<string, JsonElement> Objectives { get; set; } = [];
+         public Dictionary<string, JsonElement> Kpis { get; set; } = [];
++        public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
++        public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
++        public Dictionary<string, JsonElement> EscalationRules { get; set; } = [];
++        public Dictionary<string, JsonElement> TriggerLogic { get; set; } = [];
+         public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
++        public AgentProfileVisibilityResponse Visibility { get; set; } = new();
++    }
++
++    private sealed class AgentProfileVisibilityResponse
++    {
++        public bool CanEditAgent { get; set; }
++        public bool CanEditObjectives { get; set; }
++        public bool CanEditKpis { get; set; }
++        public bool CanEditWorkingHours { get; set; }
++        public bool CanEditStatus { get; set; }
++        public bool CanEditSensitiveGovernance { get; set; }
++        public bool CanPauseOrRestrictAgent { get; set; }
+     }
+ 
+     private sealed class AgentTemplateResponse
+diff --git a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+index 44be462..7c47003 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+@@ -139,11 +139,32 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         Assert.False(payload.Visibility.CanViewThresholds);
+         Assert.False(payload.Visibility.CanEditAgent);
+         Assert.NotEmpty(payload.Objectives);
++        Assert.NotEmpty(payload.WorkingHours);
+         Assert.Empty(payload.ToolPermissions);
+         Assert.Empty(payload.ApprovalThresholds);
+         Assert.NotEmpty(payload.RecentActivity);
+     }
+ 
++    [Fact]
++    public async Task Agent_profile_view_hides_sensitive_configuration_for_specialized_non_admin_roles()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("finance-approver", "finance-approver@example.com", "Finance Approver");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.FinanceAgentId}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentProfileResponse>();
++        Assert.NotNull(payload);
++        Assert.False(payload!.Visibility.CanViewPermissions);
++        Assert.False(payload.Visibility.CanViewThresholds);
++        Assert.False(payload.Visibility.CanViewWorkingHours);
++        Assert.False(payload.Visibility.CanEditAgent);
++        Assert.NotEmpty(payload.Objectives);
++        Assert.Empty(payload.ToolPermissions);
++        Assert.Empty(payload.WorkingHours);
++    }
++
+     [Fact]
+     public async Task Agent_profile_view_allows_owner_and_stays_company_scoped()
+     {
+@@ -194,6 +215,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         var ownerUserId = Guid.NewGuid();
+         var managerUserId = Guid.NewGuid();
+         var employeeUserId = Guid.NewGuid();
++        var financeApproverUserId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+         var financeAgentId = Guid.NewGuid();
+@@ -205,7 +227,8 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+         {
+             dbContext.Users.AddRange(
+                 new User(ownerUserId, "owner@example.com", "Owner", "dev-header", "owner"),
+                 new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"),
+-                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
++                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"),
++                new User(financeApproverUserId, "finance-approver@example.com", "Finance Approver", "dev-header", "finance-approver"));
+ 
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Company A"),
+@@ -214,7 +237,8 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+ 
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
+-                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, financeApproverUserId, CompanyMembershipRole.FinanceApprover, CompanyMembershipStatus.Active));
+ 
+             dbContext.Agents.AddRange(
+                 new Agent(
+@@ -232,7 +256,8 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+                     scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
+                     thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+                     escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("cash_runway_under_90_days"))), ("escalateTo", JsonValue.Create("owner"))),
+                     roleBrief: "Finance operating profile.",
+-                    workingHours: Payload(("timezone", JsonValue.Create("UTC")))),
++                    workingHours: Payload(("timezone", JsonValue.Create("UTC"))),
++                    triggerLogic: Payload(("enabled", JsonValue.Create(true)))),
+                 new Agent(
+                     supportAgentId,
+                     companyId,
+@@ -355,15 +380,17 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+     {
+         public Guid Id { get; set; }
+         public Dictionary<string, JsonElement> Objectives { get; set; } = [];
+         public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
+         public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
++        public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
+         public List<AgentRecentActivity> RecentActivity { get; set; } = [];
+         public AgentProfileVisibility Visibility { get; set; } = new();
+     }
+@@ -374,6 +401,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe
+     {
+         public bool CanViewPermissions { get; set; }
+         public bool CanViewThresholds { get; set; }
++        public bool CanViewWorkingHours { get; set; }
+         public bool CanEditAgent { get; set; }
+         public bool CanPauseOrRestrictAgent { get; set; }
+     }
+END_OF_PATCH

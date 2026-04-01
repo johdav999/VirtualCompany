@@ -1,0 +1,312 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 4ec3f0a..a4c1db7 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -101,6 +101,20 @@ public interface IAgentRuntimeProfileResolver
+         CancellationToken cancellationToken);
+ }
+ 
++public sealed record AssignableAgentDto(
++    Guid Id,
++    Guid CompanyId,
++    string Status,
++    bool CanReceiveAssignments);
++
++public interface IAgentAssignmentGuard
++{
++    Task<AssignableAgentDto> GetAssignableAgentAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
++    Task EnsureAgentCanReceiveNewTasksAsync(
++        Guid companyId,
++        Guid agentId,
++        string fieldName,
++        CancellationToken cancellationToken);
++}
+ public sealed class AgentObjectivesInput
+ {
+     [JsonExtensionData]
+@@ -203,6 +217,17 @@ public sealed class AgentValidationException : Exception
+ 
+     public IReadOnlyDictionary<string, string[]> Errors { get; }
+ }
++
++public sealed class AgentAssignmentValidationException : Exception
++{
++    public AgentAssignmentValidationException(IDictionary<string, string[]> errors)
++        : base("Agent assignment validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
+ 
+ public sealed class AgentTemplateNotFoundException : Exception
+ {
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+index 449950c..8bf98ba 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -275,6 +275,8 @@ public sealed class Agent : ICompanyOwnedEntity
+     private const int RoleBriefMaxLength = 4000;
+     private const int AvatarUrlMaxLength = 2048;
+ 
++    public const string ArchivedAssignmentErrorMessage = "Archived agents cannot be assigned new tasks.";
++
+     private Agent()
+     {
+     }
+@@ -471,7 +473,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     {
+         if (!CanReceiveAssignments)
+         {
+-            throw new InvalidOperationException("Archived agents cannot receive new assignments.");
++            throw new InvalidOperationException(ArchivedAssignmentErrorMessage);
+         }
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs
+new file mode 100644
+index 0000000..007fa34
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs
+@@ -0,0 +1,59 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyAgentAssignmentGuard : IAgentAssignmentGuard
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public CompanyAgentAssignmentGuard(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<AssignableAgentDto> GetAssignableAgentAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        var agent = await GetAgentAsync(companyId, agentId, cancellationToken);
++
++        return new AssignableAgentDto(
++            agent.Id,
++            agent.CompanyId,
++            agent.Status.ToStorageValue(),
++            agent.CanReceiveAssignments);
++    }
++
++    public async Task EnsureAgentCanReceiveNewTasksAsync(
++        Guid companyId,
++        Guid agentId,
++        string fieldName,
++        CancellationToken cancellationToken)
++    {
++        var agent = await GetAgentAsync(companyId, agentId, cancellationToken);
++        if (agent.CanReceiveAssignments)
++        {
++            return;
++        }
++
++        throw new AgentAssignmentValidationException(
++            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [fieldName] = [Agent.ArchivedAssignmentErrorMessage]
++            });
++    }
++
++    private async Task<Agent> GetAgentAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        var agent = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        return agent ?? throw new KeyNotFoundException("Agent not found.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 8891df0..331802b 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -61,6 +61,7 @@ public static class DependencyInjection
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
++        services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
+         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
+         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs b/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs
+new file mode 100644
+index 0000000..89f488b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs
+@@ -0,0 +1,143 @@
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentAssignmentGuardTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentAssignmentGuardTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Active_agents_can_still_be_selected_for_new_task_assignment()
++    {
++        var seed = await SeedAgentAsync(AgentStatus.Active);
++
++        using var scope = _factory.Services.CreateScope();
++        var guard = scope.ServiceProvider.GetRequiredService<IAgentAssignmentGuard>();
++
++        await guard.EnsureAgentCanReceiveNewTasksAsync(
++            seed.CompanyId,
++            seed.AgentId,
++            "assignedAgentId",
++            CancellationToken.None);
++
++        var resolved = await guard.GetAssignableAgentAsync(seed.CompanyId, seed.AgentId, CancellationToken.None);
++
++        Assert.Equal(seed.AgentId, resolved.Id);
++        Assert.Equal(seed.CompanyId, resolved.CompanyId);
++        Assert.Equal("active", resolved.Status);
++        Assert.True(resolved.CanReceiveAssignments);
++    }
++
++    [Fact]
++    public async Task Archived_agents_are_rejected_for_new_task_assignment_with_field_level_validation()
++    {
++        var seed = await SeedAgentAsync(AgentStatus.Archived);
++
++        using var scope = _factory.Services.CreateScope();
++        var guard = scope.ServiceProvider.GetRequiredService<IAgentAssignmentGuard>();
++
++        var exception = await Assert.ThrowsAsync<AgentAssignmentValidationException>(() =>
++            guard.EnsureAgentCanReceiveNewTasksAsync(
++                seed.CompanyId,
++                seed.AgentId,
++                "assignedAgentId",
++                CancellationToken.None));
++
++        var error = Assert.Single(exception.Errors);
++        Assert.Equal("assignedAgentId", error.Key);
++        Assert.Equal(Agent.ArchivedAssignmentErrorMessage, Assert.Single(error.Value));
++    }
++
++    [Fact]
++    public async Task Agent_assignment_resolution_remains_company_scoped()
++    {
++        var seed = await SeedCrossTenantAgentsAsync();
++
++        using var scope = _factory.Services.CreateScope();
++        var guard = scope.ServiceProvider.GetRequiredService<IAgentAssignmentGuard>();
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
++            guard.GetAssignableAgentAsync(seed.CompanyId, seed.OtherCompanyAgentId, CancellationToken.None));
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
++            guard.EnsureAgentCanReceiveNewTasksAsync(
++                seed.CompanyId,
++                seed.OtherCompanyAgentId,
++                "assignedAgentId",
++                CancellationToken.None));
++    }
++
++    private async Task<(Guid CompanyId, Guid AgentId)> SeedAgentAsync(AgentStatus status)
++    {
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(companyId, "Assignment Company"));
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "operations",
++                status == AgentStatus.Archived ? "Archived Ops" : "Active Ops",
++                "Operations Manager",
++                "Operations",
++                null,
++                AgentSeniority.Lead,
++                status));
++
++            return Task.CompletedTask;
++        });
++
++        return (companyId, agentId);
++    }
++
++    private async Task<(Guid CompanyId, Guid CompanyAgentId, Guid OtherCompanyId, Guid OtherCompanyAgentId)> SeedCrossTenantAgentsAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var companyAgentId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Company A"),
++                new Company(otherCompanyId, "Company B"));
++
++            dbContext.Agents.AddRange(
++                new Agent(
++                    companyAgentId,
++                    companyId,
++                    "finance",
++                    "Company A Finance",
++                    "Finance Manager",
++                    "Finance",
++                    null,
++                    AgentSeniority.Senior,
++                    AgentStatus.Active),
++                new Agent(
++                    otherCompanyAgentId,
++                    otherCompanyId,
++                    "support",
++                    "Company B Support",
++                    "Support Lead",
++                    "Support",
++                    null,
++                    AgentSeniority.Lead,
++                    AgentStatus.Archived));
++
++            return Task.CompletedTask;
++        });
++
++        return (companyId, companyAgentId, otherCompanyId, otherCompanyAgentId);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 9c4fca6..3f5c476 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -771,7 +771,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+                 }))));
+ 
+         var exception = Assert.Throws<InvalidOperationException>(() => agent.EnsureCanReceiveAssignments());
+-        Assert.Contains("Archived agents cannot receive new assignments.", exception.Message);
++        Assert.Contains(Agent.ArchivedAssignmentErrorMessage, exception.Message);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+END_OF_PATCH

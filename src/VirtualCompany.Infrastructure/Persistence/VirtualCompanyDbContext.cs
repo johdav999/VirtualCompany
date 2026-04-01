@@ -26,6 +26,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
     public DbSet<Agent> Agents => Set<Agent>();
+    public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+    public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
@@ -41,5 +43,11 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ToolExecutionAttempt>()
+            .HasQueryFilter(attempt =>
+                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ApprovalRequest>()
+            .HasQueryFilter(request =>
+                CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
     }
 }

@@ -1,0 +1,1847 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 8db5b2a..6b6f2b9 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -30,6 +30,26 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("roster")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentRosterResponseDto>> GetRosterViewAsync(
++        Guid companyId,
++        [FromQuery] string? department,
++        [FromQuery] string? status,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var roster = await _agentService.GetRosterViewAsync(companyId, department, status, cancellationToken);
++            return Ok(roster);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet]
+     public async Task<ActionResult<IReadOnlyList<CompanyAgentSummaryDto>>> GetRosterAsync(
+         Guid companyId,
+@@ -89,6 +109,25 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("{agentId:guid}")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentProfileViewDto>> GetProfileViewAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var profile = await _agentService.GetProfileViewAsync(companyId, agentId, cancellationToken);
++            return Ok(profile);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("{agentId:guid}/profile")]
+     [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+     public async Task<ActionResult<AgentOperatingProfileDto>> GetOperatingProfileAsync(
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 78457ab..3db7d79 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -27,6 +27,54 @@ public sealed record CompanyAgentSummaryDto(
+     string Personality,
+     string AutonomyLevel);
+ 
++public sealed record AgentWorkloadSummaryDto(
++    int OpenItemsCount,
++    int AwaitingApprovalCount,
++    int ExecutedCount,
++    int FailedCount,
++    DateTime? LastActivityUtc,
++    string HealthStatus,
++    string Summary);
++
++public sealed record AgentRosterItemDto(
++    Guid Id,
++    Guid CompanyId,
++    string TemplateId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    string Seniority,
++    string Status,
++    string? AvatarUrl,
++    string Personality,
++    string AutonomyLevel,
++    AgentWorkloadSummaryDto WorkloadSummary);
++
++public sealed record AgentRosterResponseDto(
++    IReadOnlyList<AgentRosterItemDto> Items,
++    IReadOnlyList<string> Departments,
++    IReadOnlyList<string> Statuses);
++
++public sealed record AgentRecentActivityDto(
++    DateTime OccurredUtc,
++    string ActivityType,
++    string Title,
++    string Status,
++    string? Detail);
++
++public sealed record AgentProfileVisibilityDto(
++    bool CanViewPermissions,
++    bool CanViewThresholds,
++    bool CanEditAgent,
++    bool CanPauseOrRestrictAgent);
++
++public sealed record AgentProfileViewDto(
++    Guid Id,
++    Guid CompanyId,
++    string TemplateId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    string Seniority,
++    string Status,
++    string? AvatarUrl,
++    string Personality,
++    string? RoleBrief,
++    string AutonomyLevel,
++    Dictionary<string, JsonNode?> Objectives,
++    Dictionary<string, JsonNode?> Kpis,
++    Dictionary<string, JsonNode?> ToolPermissions,
++    Dictionary<string, JsonNode?> DataScopes,
++    Dictionary<string, JsonNode?> ApprovalThresholds,
++    Dictionary<string, JsonNode?> EscalationRules,
++    Dictionary<string, JsonNode?> WorkingHours,
++    AgentWorkloadSummaryDto WorkloadSummary,
++    IReadOnlyList<AgentRecentActivityDto> RecentActivity,
++    AgentProfileVisibilityDto Visibility,
++    DateTime UpdatedUtc);
++
+ public sealed record CreateAgentFromTemplateCommand(
+     string TemplateId,
+     string DisplayName,
+@@ -90,6 +138,8 @@ public sealed record AgentRuntimeProfileDto(
+ public interface ICompanyAgentService
+ {
+     Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<AgentRosterResponseDto> GetRosterViewAsync(Guid companyId, string? department, string? status, CancellationToken cancellationToken);
++    Task<AgentProfileViewDto> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
+     Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 308591f..b0df50e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -19,6 +19,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private const int RoleBriefMaxLength = 4000;
+     private const int AvatarUrlMaxLength = 2048;
+     private const int PersonalitySummaryMaxLength = 1000;
++    private const int ActivityStaleAfterDays = 7;
+     private const int AuditMetadataValueMaxLength = 512;
+ 
+     private static readonly HashSet<string> SupportedWorkingDays = new(StringComparer.OrdinalIgnoreCase)
+@@ -73,6 +74,127 @@ public sealed class CompanyAgentService : ICompanyAgentService
+                 CloneNodes(x.EscalationRules)))
+             .ToList();
+     }
++
++    public async Task<AgentRosterResponseDto> GetRosterViewAsync(
++        Guid companyId,
++        string? department,
++        string? status,
++        CancellationToken cancellationToken)
++    {
++        await EnsureManagerAccessAsync(companyId, cancellationToken);
++
++        var agents = await _dbContext.Agents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Department)
++            .ThenBy(x => x.DisplayName)
++            .ToListAsync(cancellationToken);
++
++        var executionSummaries = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentExecutionAggregate(
++                group.Key,
++                group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
++                group.Count(x => x.Status == ToolExecutionStatus.Executed),
++                group.Count(x => x.Status == ToolExecutionStatus.Failed),
++                group.Max(x => (DateTime?)(x.ExecutedUtc ?? x.UpdatedUtc))))
++            .ToListAsync(cancellationToken);
++
++        var approvalSummaries = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentApprovalAggregate(
++                group.Key,
++                group.Count(x => x.Status == ApprovalRequestStatus.Pending),
++                group.Max(x => (DateTime?)x.UpdatedUtc)))
++            .ToListAsync(cancellationToken);
++
++        var auditSummaries = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.TargetType == AuditTargetTypes.Agent)
++            .GroupBy(x => x.TargetId)
++            .Select(group => new AgentAuditAggregate(
++                group.Key,
++                group.Max(x => (DateTime?)x.OccurredUtc)))
++            .ToListAsync(cancellationToken);
++
++        var executionByAgentId = executionSummaries.ToDictionary(x => x.AgentId);
++        var approvalByAgentId = approvalSummaries.ToDictionary(x => x.AgentId);
++        var auditByTargetId = auditSummaries.ToDictionary(x => x.TargetId, StringComparer.OrdinalIgnoreCase);
++
++        var normalizedDepartment = NormalizeFilter(department);
++        var normalizedStatus = NormalizeFilter(status);
++
++        var items = agents
++            .Where(agent =>
++                (normalizedDepartment is null || string.Equals(agent.Department, normalizedDepartment, StringComparison.OrdinalIgnoreCase)) &&
++                (normalizedStatus is null || string.Equals(agent.Status.ToStorageValue(), normalizedStatus, StringComparison.OrdinalIgnoreCase)))
++            .Select(agent =>
++            {
++                executionByAgentId.TryGetValue(agent.Id, out var execution);
++                approvalByAgentId.TryGetValue(agent.Id, out var approval);
++                auditByTargetId.TryGetValue(agent.Id.ToString("N"), out var audit);
++
++                return new AgentRosterItemDto(
++                    agent.Id,
++                    agent.CompanyId,
++                    agent.TemplateId,
++                    agent.DisplayName,
++                    agent.RoleName,
++                    agent.Department,
++                    agent.Seniority.ToStorageValue(),
++                    agent.Status.ToStorageValue(),
++                    agent.AvatarUrl,
++                    ResolvePersonalitySummary(agent.Personality),
++                    agent.AutonomyLevel.ToStorageValue(),
++                    BuildWorkloadSummary(agent, execution, approval, audit?.LastActivityUtc));
++            })
++            .ToList();
++
++        return new AgentRosterResponseDto(
++            items,
++            agents.Select(x => x.Department)
++                .Where(x => !string.IsNullOrWhiteSpace(x))
++                .Distinct(StringComparer.OrdinalIgnoreCase)
++                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++                .ToList(),
++            agents.Select(x => x.Status.ToStorageValue())
++                .Distinct(StringComparer.OrdinalIgnoreCase)
++                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++                .ToList());
++    }
++
++    public async Task<AgentProfileViewDto> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++    {
++        var membership = await EnsureManagerAccessAsync(companyId, cancellationToken);
++
++        var agent = await _dbContext.Agents
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        var executionAttempts = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(8)
++            .ToListAsync(cancellationToken);
++
++        var approvalRequests = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(8)
++            .ToListAsync(cancellationToken);
++
++        var auditEvents = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.TargetType == AuditTargetTypes.Agent &&
++                x.TargetId == agentId.ToString("N"))
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(8)
++            .ToListAsync(cancellationToken);
++
++        var executionSummary = executionAttempts.Count == 0
++            ? null
++            : new AgentExecutionAggregate(
++                agentId,
++                executionAttempts.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
++                executionAttempts.Count(x => x.Status == ToolExecutionStatus.Executed),
++                executionAttempts.Count(x => x.Status == ToolExecutionStatus.Failed),
++                executionAttempts.Max(x => (DateTime?)(x.ExecutedUtc ?? x.UpdatedUtc)));
++
++        var approvalSummary = approvalRequests.Count == 0
++            ? null
++            : new AgentApprovalAggregate(
++                agentId,
++                approvalRequests.Count(x => x.Status == ApprovalRequestStatus.Pending),
++                approvalRequests.Max(x => (DateTime?)x.UpdatedUtc));
++
++        return ToProfileViewDto(agent, membership.MembershipRole, executionSummary, approvalSummary, auditEvents, executionAttempts, approvalRequests);
++    }
+ 
+     public async Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+@@ -174,6 +296,18 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         return membership;
+     }
+ 
++    private async Task<ResolvedCompanyMembershipContext> EnsureManagerAccessAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        if (membership.MembershipRole != CompanyMembershipRole.Owner &&
++            membership.MembershipRole != CompanyMembershipRole.Admin &&
++            membership.MembershipRole != CompanyMembershipRole.Manager)
++        {
++            throw new UnauthorizedAccessException("Only owner, admin, and manager memberships can view the agent directory.");
++        }
++
++        return membership;
++    }
++
+     private async Task<ResolvedCompanyMembershipContext> EnsureAdministrativeAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+@@ -323,6 +457,103 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.AutonomyLevel.ToStorageValue());
+ 
+     private static AgentOperatingProfileDto ToOperatingProfileDto(Agent agent) =>
+@@ -347,6 +578,134 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             agent.CanReceiveAssignments,
+             agent.AutonomyLevel.ToStorageValue());
+ 
++    private static AgentProfileViewDto ToProfileViewDto(
++        Agent agent,
++        CompanyMembershipRole membershipRole,
++        AgentExecutionAggregate? execution,
++        AgentApprovalAggregate? approval,
++        IReadOnlyList<AuditEvent> auditEvents,
++        IReadOnlyList<ToolExecutionAttempt> executionAttempts,
++        IReadOnlyList<ApprovalRequest> approvalRequests)
++    {
++        var canViewRestricted = membershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin;
++        var workloadSummary = BuildWorkloadSummary(
++            agent,
++            execution,
++            approval,
++            auditEvents.Count == 0 ? null : auditEvents.Max(x => (DateTime?)x.OccurredUtc));
++
++        var recentActivity = executionAttempts
++            .Select(x => new AgentRecentActivityDto(
++                x.ExecutedUtc ?? x.UpdatedUtc,
++                "tool_execution",
++                $"{x.ToolName} ({x.ActionType.ToStorageValue()})",
++                x.Status.ToStorageValue(),
++                string.IsNullOrWhiteSpace(x.Scope) ? null : $"Scope: {x.Scope}"))
++            .Concat(approvalRequests.Select(x => new AgentRecentActivityDto(
++                x.UpdatedUtc,
++                "approval_request",
++                $"{x.ToolName} approval",
++                x.Status.ToStorageValue(),
++                string.IsNullOrWhiteSpace(x.ApprovalTarget) ? null : $"Target: {x.ApprovalTarget}")))
++            .Concat(auditEvents.Select(x => new AgentRecentActivityDto(
++                x.OccurredUtc,
++                "audit_event",
++                x.Action,
++                x.Outcome,
++                x.RationaleSummary)))
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(8)
++            .ToList();
++
++        return new AgentProfileViewDto(
++            agent.Id,
++            agent.CompanyId,
++            agent.TemplateId,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Department,
++            agent.Seniority.ToStorageValue(),
++            agent.Status.ToStorageValue(),
++            agent.AvatarUrl,
++            ResolvePersonalitySummary(agent.Personality),
++            agent.RoleBrief,
++            agent.AutonomyLevel.ToStorageValue(),
++            CloneNodes(agent.Objectives),
++            CloneNodes(agent.Kpis),
++            canViewRestricted ? CloneNodes(agent.Tools) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            canViewRestricted ? CloneNodes(agent.Scopes) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            canViewRestricted ? CloneNodes(agent.Thresholds) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            canViewRestricted ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            CloneNodes(agent.WorkingHours),
++            workloadSummary,
++            recentActivity,
++            new AgentProfileVisibilityDto(
++                canViewRestricted,
++                canViewRestricted,
++                canViewRestricted,
++                canViewRestricted),
++            agent.UpdatedUtc);
++    }
++
++    private static AgentWorkloadSummaryDto BuildWorkloadSummary(
++        Agent agent,
++        AgentExecutionAggregate? execution,
++        AgentApprovalAggregate? approval,
++        DateTime? auditActivityUtc)
++    {
++        var awaitingApprovalCount = (execution?.AwaitingApprovalCount ?? 0) + (approval?.PendingApprovalCount ?? 0);
++        var failedCount = execution?.FailedCount ?? 0;
++        var executedCount = execution?.ExecutedCount ?? 0;
++        var openItemsCount = awaitingApprovalCount + failedCount;
++        var lastActivityUtc = MaxUtc(agent.UpdatedUtc, execution?.LastActivityUtc, approval?.LastActivityUtc, auditActivityUtc);
++        var staleThresholdUtc = DateTime.UtcNow.AddDays(-ActivityStaleAfterDays);
++
++        var healthStatus =
++            agent.Status == AgentStatus.Archived ? "archived" :
++            agent.Status is AgentStatus.Paused or AgentStatus.Restricted ? "attention" :
++            lastActivityUtc is null || lastActivityUtc < staleThresholdUtc || openItemsCount >= 3 ? "attention" :
++            "healthy";
++
++        var summary =
++            lastActivityUtc is null
++                ? "No recent activity has been captured yet."
++                : $"{openItemsCount} open items, {awaitingApprovalCount} awaiting approval. Last activity {lastActivityUtc.Value:yyyy-MM-dd HH:mm} UTC.";
++
++        return new AgentWorkloadSummaryDto(
++            openItemsCount,
++            awaitingApprovalCount,
++            executedCount,
++            failedCount,
++            lastActivityUtc,
++            healthStatus,
++            summary);
++    }
++
++    private static DateTime? MaxUtc(params DateTime?[] values)
++    {
++        DateTime? current = null;
++
++        foreach (var value in values)
++        {
++            if (value is null)
++            {
++                continue;
++            }
++
++            current = current is null || value > current ? value : current;
++        }
++
++        return current;
++    }
++
++    private static string? NormalizeFilter(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
+     private static string ResolvePersonalitySummary(IDictionary<string, JsonNode?> personality)
+     {
+         if (!personality.TryGetValue("summary", out var node) || node is null)
+@@ -633,4 +992,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         string ObjectivesJson,
+         string KpisJson,
+         string ToolPermissionsJson,
+@@ -641,4 +1004,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         string TriggerLogicJson,
+         string WorkingHoursJson);
+ 
++    private sealed record AgentExecutionAggregate(Guid AgentId, int AwaitingApprovalCount, int ExecutedCount, int FailedCount, DateTime? LastActivityUtc);
++    private sealed record AgentApprovalAggregate(Guid AgentId, int PendingApprovalCount, DateTime? LastActivityUtc);
++    private sealed record AgentAuditAggregate(string TargetId, DateTime? LastActivityUtc);
++
+     private sealed record AgentOperatingProfileAuditChange(string Field, string? Before, string? After);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+new file mode 100644
+index 0000000..fcbd281
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -0,0 +1,251 @@
++@page "/agents/{AgentId:guid}"
++@using System.Text.Json.Nodes
++@using Microsoft.AspNetCore.Components
++@inject OnboardingApiClient OnboardingApiClient
++@inject AgentApiClient AgentApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Agent Profile</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Agent profile</h1>
++        <p class="text-body-secondary mb-0">Loading agent context...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary mb-0">This view requires an explicit company context.</p>
++        </div>
++    </section>
++}
++else if (!string.IsNullOrWhiteSpace(errorMessage))
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Agent profile</h1>
++            <div class="alert alert-danger mb-0">@errorMessage</div>
++        </div>
++    </section>
++}
++else if (profile is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Agent profile</h1>
++            <p class="text-body-secondary mb-0">The selected agent could not be loaded.</p>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <div class="agent-roster-header">
++                <div>
++                    <span class="dashboard-kicker">Agent directory</span>
++                    <h1 class="mb-2 mt-2">@profile.DisplayName</h1>
++                    <p class="text-body-secondary mb-0">@profile.RoleName | @profile.Department | @profile.Seniority</p>
++                </div>
++                <div class="dashboard-actions">
++                    <a class="btn btn-outline-secondary" href="@($"/agents?companyId={CompanyId}")">Back to roster</a>
++                    @if (profile.Visibility.CanEditAgent)
++                    {
++                        <a class="btn btn-primary" href="@($"/agents?companyId={CompanyId}&agentId={profile.Id}")">Edit operating profile</a>
++                    }
++                </div>
++            </div>
++
++            <div class="summary-pill-grid mt-4">
++                <div class="summary-pill">
++                    <span class="dashboard-kicker">Status</span>
++                    <strong>@ToDisplayText(profile.Status)</strong>
++                </div>
++                <div class="summary-pill">
++                    <span class="dashboard-kicker">Autonomy</span>
++                    <strong>@ToDisplayText(profile.AutonomyLevel)</strong>
++                </div>
++                <div class="summary-pill">
++                    <span class="dashboard-kicker">Health</span>
++                    <strong class="@GetHealthCss(profile.WorkloadSummary.HealthStatus)">@ToDisplayText(profile.WorkloadSummary.HealthStatus)</strong>
++                </div>
++                <div class="summary-pill">
++                    <span class="dashboard-kicker">Workload</span>
++                    <strong>@profile.WorkloadSummary.OpenItemsCount open</strong>
++                </div>
++            </div>
++
++            @if (!string.IsNullOrWhiteSpace(profile.Personality) || !string.IsNullOrWhiteSpace(profile.RoleBrief))
++            {
++                <div class="mt-4">
++                    @if (!string.IsNullOrWhiteSpace(profile.Personality))
++                    {
++                        <p class="mb-2"><strong>Identity:</strong> @profile.Personality</p>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(profile.RoleBrief))
++                    {
++                        <p class="text-body-secondary mb-0">@profile.RoleBrief</p>
++                    }
++                </div>
++            }
++        </div>
++
++        <div class="agent-profile-grid mt-4">
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Objectives</h2>
++                @RenderEntries(profile.Objectives)
++            </section>
++
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Workload and health</h2>
++                <dl class="kv-list mb-0">
++                    <dt>Summary</dt>
++                    <dd>@profile.WorkloadSummary.Summary</dd>
++                    <dt>Awaiting approval</dt>
++                    <dd>@profile.WorkloadSummary.AwaitingApprovalCount</dd>
++                    <dt>Executed</dt>
++                    <dd>@profile.WorkloadSummary.ExecutedCount</dd>
++                    <dt>Failed</dt>
++                    <dd>@profile.WorkloadSummary.FailedCount</dd>
++                    <dt>Last activity</dt>
++                    <dd>@FormatDate(profile.WorkloadSummary.LastActivityUtc)</dd>
++                </dl>
++            </section>
++
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Permissions and scopes</h2>
++                @if (!profile.Visibility.CanViewPermissions)
++                {
++                    <p class="text-body-secondary mb-0">Hidden for your membership role.</p>
++                }
++                else
++                {
++                    <h3 class="h6">Tool permissions</h3>
++                    @RenderEntries(profile.ToolPermissions)
++                    <h3 class="h6 mt-4">Data scopes</h3>
++                    @RenderEntries(profile.DataScopes)
++                }
++            </section>
++
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Thresholds and escalation</h2>
++                @if (!profile.Visibility.CanViewThresholds)
++                {
++                    <p class="text-body-secondary mb-0">Hidden for your membership role.</p>
++                }
++                else
++                {
++                    <h3 class="h6">Approval thresholds</h3>
++                    @RenderEntries(profile.ApprovalThresholds)
++                    <h3 class="h6 mt-4">Escalation rules</h3>
++                    @RenderEntries(profile.EscalationRules)
++                }
++            </section>
++
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Working hours</h2>
++                @RenderEntries(profile.WorkingHours)
++            </section>
++
++            <section class="wizard-card agent-profile-section">
++                <h2 class="h5 mb-3">Recent activity</h2>
++                @if (profile.RecentActivity.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No recent activity is available yet.</p>
++                }
++                else
++                {
++                    <div class="activity-list">
++                        @foreach (var item in profile.RecentActivity)
++                        {
++                            <article class="activity-item">
++                                <div class="agent-template-header">
++                                    <strong>@item.Title</strong>
++                                    <span class="badge text-bg-light">@ToDisplayText(item.Status)</span>
++                                </div>
++                                <div class="text-body-secondary small mt-1">@ToDisplayText(item.ActivityType) | @FormatDate(item.OccurredUtc)</div>
++                                @if (!string.IsNullOrWhiteSpace(item.Detail))
++                                {
++                                    <p class="mb-0 mt-2">@item.Detail</p>
++                                }
++                            </article>
++                        }
++                    </div>
++                }
++            </section>
++        </div>
++    </section>
++}
++
++@code {
++    [Parameter]
++    public Guid AgentId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private bool isLoading = true;
++    private string? errorMessage;
++    private AgentProfileViewModel? profile;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        profile = null;
++
++        try
++        {
++            var currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo($"/agents/{AgentId}?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                profile = await AgentApiClient.GetProfileViewAsync(companyId, AgentId);
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private static string FormatDate(DateTime? value) =>
++        value is null ? "No recent activity" : value.Value.ToLocalTime().ToString("g");
++
++    private static string ToDisplayText(string value) =>
++        value.Replace("_", " ", StringComparison.Ordinal).Trim();
++
++    private static string GetHealthCss(string healthStatus) =>
++        healthStatus.Trim().ToLowerInvariant() switch
++        {
++            "healthy" => "agent-health-healthy",
++            "archived" => "agent-health-archived",
++            _ => "agent-health-attention"
++        };
++
++    private RenderFragment RenderEntries(IReadOnlyDictionary<string, JsonNode?> values) => builder =>
++    {
++        var sequence = 0;
++
++        if (values.Count == 0)
++        {
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
++            builder.AddContent(sequence++, "No details available.");
++            builder.CloseElement();
++            return;
++        }
++
++        builder.OpenElement(sequence++, "dl");
++        builder.AddAttribute(sequence++, "class", "kv-list mb-0");
++
++        foreach (var entry in values.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
++        {
++            builder.OpenElement(sequence++, "dt");
++            builder.AddContent(sequence++, ToDisplayText(entry.Key));
++            builder.CloseElement();
++            builder.OpenElement(sequence++, "dd");
++            builder.AddContent(sequence++, entry.Value is null ? "Not set" : entry.Value.ToJsonString());
++            builder.CloseElement();
++        }
++
++        builder.CloseElement();
++    };
++}
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 5af97ba..ec1ab5d 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -1,6 +1,7 @@
+ @page "/agents"
+ @using System.ComponentModel.DataAnnotations
+ @using System.Text.Json
++@using System.Text
+ @using System.Text.Json.Nodes
+ @using Microsoft.AspNetCore.Components
+ @inject OnboardingApiClient OnboardingApiClient
+@@ -25,6 +26,7 @@ else if (CompanyId is null)
+ }
+ else
+ {
++    var canViewDirectory = CanViewDirectory;
+     <section class="py-4 dashboard-hero">
+         <div class="agent-layout">
+             <div class="wizard-card">
+@@ -131,10 +133,6 @@ else
+             </div>
+         </div>
+ 
+-        <div class="wizard-card mt-4">
+-            <div class="agent-roster-header">
+-                <div>
+-                    <span class="dashboard-kicker">Operating profile</span>
+-                    <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+-                </div>
+-            </div>
++        @if (CanManageProfiles)
++        {
++            <div class="wizard-card mt-4">
++                <div class="agent-roster-header">
++                    <div>
++                        <span class="dashboard-kicker">Operating profile</span>
++                        <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
++                    </div>
++                </div>
+ 
+-            @if (!CanManageProfiles)
+-            {
+-                <p class="text-body-secondary mb-0 mt-3">Owner or admin membership is required to manage operating profiles.</p>
+-            }
+-            else if (selectedAgentProfile is null)
+-            {
+-                <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
+-            }
+-            else
+-            {
+-                @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
++                @if (selectedAgentProfile is null)
+                 {
+-                    <div class="alert alert-danger mt-3">@profileErrorMessage</div>
++                    <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
+                 }
+-
+-                @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
++                else
+                 {
+-                    <div class="alert alert-success mt-3">@profileSuccessMessage</div>
+-                }
+-
+-                <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
+-                    <DataAnnotationsValidator />
+-                    <ValidationSummary />
+-
+-                    <div class="row g-3">
+-                        <div class="col-md-6">
+-                            <label class="form-label" for="profile-status">Status</label>
+-                            <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
+-                                @foreach (var status in statusOptions)
+-                                {
+-                                    <option value="@status">@status</option>
+-                                }
+-                            </InputSelect>
+-                            <ValidationMessage For="@(() => profileModel.Status)" />
+-                            <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
+-                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+-                            {
+-                                <div class="text-danger small mt-1">@error</div>
+-                            }
+-                        </div>
+-                        <div class="col-md-6">
+-                            <label class="form-label" for="profile-updated">Last updated</label>
+-                            <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
+-                        </div>
+-                    </div>
+-
+-                    <div class="mt-3">
+-                        <label class="form-label" for="role-brief">Role brief</label>
+-                        <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
+-                        <ValidationMessage For="@(() => profileModel.RoleBrief)" />
+-                        @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
+-                        {
+-                            <div class="text-danger small mt-1">@error</div>
+-                        }
+-                    </div>
+-
+-                    @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
+-                    @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
+-                    @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
+-                    @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
+-                    @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
+-                    @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
+-                    @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
+-                    @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
+-
+-                    <div class="dashboard-actions mt-3">
+-                        <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
+-                    </div>
+-                </EditForm>
++                    @if (!string.IsNullOrWhiteSpace(profileErrorMessage))
++                    {
++                        <div class="alert alert-danger mt-3">@profileErrorMessage</div>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(profileSuccessMessage))
++                    {
++                        <div class="alert alert-success mt-3">@profileSuccessMessage</div>
++                    }
++
++                    <EditForm Model="@profileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
++                        <DataAnnotationsValidator />
++                        <ValidationSummary />
++
++                        <div class="row g-3">
++                            <div class="col-md-6">
++                                <label class="form-label" for="profile-status">Status</label>
++                                <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status">
++                                    @foreach (var status in statusOptions)
++                                    {
++                                        <option value="@status">@status</option>
++                                    }
++                                </InputSelect>
++                                <ValidationMessage For="@(() => profileModel.Status)" />
++                                <div class="form-text">Archived agents are excluded from new task assignment. Other statuses remain editable for downstream orchestration.</div>
++                                @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
++                                {
++                                    <div class="text-danger small mt-1">@error</div>
++                                }
++                            </div>
++                            <div class="col-md-6">
++                                <label class="form-label" for="profile-updated">Last updated</label>
++                                <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
++                            </div>
++                        </div>
++
++                        <div class="mt-3">
++                            <label class="form-label" for="role-brief">Role brief</label>
++                            <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" />
++                            <ValidationMessage For="@(() => profileModel.RoleBrief)" />
++                            @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
++                            {
++                                <div class="text-danger small mt-1">@error</div>
++                            }
++                        </div>
++
++                        @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson)
++                        @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson)
++                        @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson)
++                        @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson)
++                        @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson)
++                        @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson)
++                        @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson)
++                        @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson)
++
++                        <div class="dashboard-actions mt-3">
++                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
++                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open detail view</a>
++                        </div>
++                    </EditForm>
++                }
+             }
+-        </div>
++            </div>
++        }
+ 
+         <div class="wizard-card mt-4">
+             <div class="agent-roster-header">
+@@ -143,39 +141,78 @@ else
+                     <span class="dashboard-kicker">Company roster</span>
+                     <h2 class="h4 mb-0 mt-2">Company agents</h2>
+                 </div>
+-                <span class="badge text-bg-light">@roster.Count total</span>
++                <span class="badge text-bg-light">@rosterResponse.Items.Count total</span>
+             </div>
+ 
+-            @if (roster.Count == 0)
++            @if (!canViewDirectory)
+             {
+-                <p class="text-body-secondary mb-0 mt-3">No agents have been hired for this company yet.</p>
++                <p class="text-body-secondary mb-0 mt-3">Manager, admin, or owner membership is required to view the agent roster.</p>
+             }
+             else
+             {
+-                <div class="agent-roster-grid mt-4">
+-                    @foreach (var agent in roster)
+-                    {
+-                        <button type="button"
+-                                class="template-card text-start @(selectedAgentId == agent.Id ? "is-selected" : null)"
+-                                disabled="@(!CanManageProfiles && selectedAgentId != agent.Id)"
+-                                @onclick="@(() => SelectAgentAsync(agent.Id))">
+-                            <div class="agent-template-header">
+-                                <strong>@agent.DisplayName</strong>
+-                                <span class="badge @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+-                            </div>
+-                            <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
+-                            <div class="text-body-secondary">@agent.Seniority</div>
+-                            @if (!string.IsNullOrWhiteSpace(agent.AvatarUrl))
++                <div class="agent-filter-bar mt-4">
++                    <div>
++                        <label class="form-label" for="department-filter">Department</label>
++                        <InputSelect id="department-filter" class="form-select" @bind-Value="Department">
++                            <option value="">All departments</option>
++                            @foreach (var department in rosterResponse.Departments)
+                             {
+-                                <div class="text-body-secondary small mt-2">Avatar reference: @agent.AvatarUrl</div>
++                                <option value="@department">@department</option>
+                             }
+-                            @if (!string.IsNullOrWhiteSpace(agent.Personality))
++                        </InputSelect>
++                    </div>
++                    <div>
++                        <label class="form-label" for="status-filter">Status</label>
++                        <InputSelect id="status-filter" class="form-select" @bind-Value="Status">
++                            <option value="">All statuses</option>
++                            @foreach (var status in rosterResponse.Statuses)
+                             {
+-                                <p class="mb-0 mt-3">@agent.Personality</p>
++                                <option value="@status">@GetStatusLabel(status)</option>
+                             }
+-                        </button>
+-                    }
++                        </InputSelect>
++                    </div>
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="button" @onclick="ApplyFilters">Apply filters</button>
++                        <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilters">Clear</button>
++                    </div>
+                 </div>
++
++                @if (rosterResponse.Items.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0 mt-4">No agents matched the current filters.</p>
++                }
++                else
++                {
++                    <div class="agent-roster-grid mt-4">
++                        @foreach (var agent in rosterResponse.Items)
++                        {
++                            <article class="template-card text-start agent-roster-card @(selectedAgentId == agent.Id ? "is-selected" : null)">
++                                <div class="agent-template-header">
++                                    <strong>@agent.DisplayName</strong>
++                                    <span class="badge @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
++                                </div>
++                                <div class="text-body-secondary mt-2">@agent.RoleName | @agent.Department</div>
++                                <div class="text-body-secondary">@agent.Seniority | @agent.AutonomyLevel</div>
++                                <div class="mt-3">
++                                    <div class="small text-body-secondary">Health</div>
++                                    <strong class="@GetHealthCss(agent.WorkloadSummary.HealthStatus)">@ToDisplayText(agent.WorkloadSummary.HealthStatus)</strong>
++                                </div>
++                                <div class="small text-body-secondary mt-3">@agent.WorkloadSummary.Summary</div>
++                                @if (!string.IsNullOrWhiteSpace(agent.Personality))
++                                {
++                                    <p class="mb-0 mt-3">@agent.Personality</p>
++                                }
++                                <div class="dashboard-actions mt-3">
++                                    <a class="btn btn-outline-secondary" href="@BuildProfileUri(agent.Id)">View profile</a>
++                                    @if (CanManageProfiles)
++                                    {
++                                        <button class="btn btn-primary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Load editor</button>
++                                    }
++                                </div>
++                            </article>
++                        }
++                    </div>
++                }
+             }
+-        </div>        
++        </div>
+     </section>
+ }
+ 
+@@ -184,6 +221,13 @@ else
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "department")]
++    public string? Department { get; set; }
++
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? Status { get; set; }
++
++    [SupplyParameterFromQuery(Name = "agentId")]
++    public Guid? AgentId { get; set; }
++
+     private static readonly JsonSerializerOptions JsonEditorOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+     private readonly string[] seniorityOptions = [ "junior", "mid", "senior", "lead", "executive" ];
+     private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
+@@ -196,7 +240,7 @@ else
+     private CurrentUserContextViewModel? currentUser;
+     private CompanyAccessViewModel? companyAccess;
+     private List<AgentTemplateCatalogItemViewModel> templates = [];
+-    private List<CompanyAgentSummaryViewModel> roster = [];
++    private AgentRosterResponseViewModel rosterResponse = new();
+     private HireAgentFormModel hireModel = new();
+     private AgentOperatingProfileViewModel? selectedAgentProfile;
+     private AgentOperatingProfileFormModel profileModel = new();
+@@ -214,6 +258,11 @@ else
+         string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
+ 
++    private bool CanViewDirectory =>
++        CanManageProfiles ||
++        string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
++
++    private string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
++
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -238,7 +287,7 @@ else
+                 {
+                     errorMessage = "The selected company could not be loaded.";
+                     templates = [];
+-                    roster = [];
++                    rosterResponse = new AgentRosterResponseViewModel();
+                 }
+                 else
+                 {
+@@ -246,19 +295,23 @@ else
+                         selectedTemplateId = templates.FirstOrDefault()?.TemplateId;
+                         ResetSelectedTemplate();
+                     }
+-
+-                    if (CanManageProfiles && roster.Count > 0)
++                    rosterResponse = CanViewDirectory
++                        ? await AgentApiClient.GetRosterViewAsync(companyId, Department, Status)
++                        : new AgentRosterResponseViewModel();
++
++                    if (CanManageProfiles && rosterResponse.Items.Count > 0)
+                     {
+-                        var nextSelectedAgent = selectedAgentId.HasValue
+-                            ? roster.FirstOrDefault(x => x.Id == selectedAgentId.Value) ?? roster[0]
+-                            : roster[0];
++                        var nextSelectedAgent = AgentId
++                            ?? selectedAgentId
++                            ?? rosterResponse.Items[0].Id;
+ 
+-                        await SelectAgentAsync(nextSelectedAgent.Id);
++                        await SelectAgentAsync(nextSelectedAgent);
+                     }
+                     else
+                     {
+                         selectedAgentId = null;
+                         selectedAgentProfile = null;
+                         profileModel = new AgentOperatingProfileFormModel();
++                        profileErrors.Clear();
+                     }
+                 }
+             }
+@@ -304,7 +357,7 @@ else
+         {
+             selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
+             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
++            Navigation.NavigateTo(BuildAgentsUri(companyId, Department, Status, agentId), replace: true);
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -338,7 +391,7 @@ else
+         try
+         {
+             selectedAgentProfile = await AgentApiClient.UpdateOperatingProfileAsync(companyId, agentId, request);
+             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+-            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
++            rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
+             profileSuccessMessage = $"{selectedAgentProfile.DisplayName} operating profile was saved.";
+         }
+         catch (OnboardingApiException ex)
+@@ -388,6 +441,31 @@ else
+             _ => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim()
+         };
+ 
++    private static string GetHealthCss(string? healthStatus) =>
++        healthStatus?.Trim().ToLowerInvariant() switch
++        {
++            "healthy" => "agent-health-healthy",
++            "archived" => "agent-health-archived",
++            _ => "agent-health-attention"
++        };
++
++    private static string ToDisplayText(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "Unknown"
++            : value.Replace("_", " ", StringComparison.Ordinal).Trim();
++
++    private void ApplyFilters()
++    {
++        if (CompanyId is Guid companyId)
++        {
++            Navigation.NavigateTo(BuildAgentsUri(companyId, Department, Status, AgentId));
++        }
++    }
++
++    private void ClearFilters()
++    {
++        Department = null;
++        Status = null;
++        ApplyFilters();
++    }
++
+     private static bool IsSupportedStatus(string? status) =>
+         status?.Trim().ToLowerInvariant() is
+             "active" or
+@@ -395,6 +473,27 @@ else
+             "restricted" or
+             "archived";
+ 
++    private string BuildAgentsUri(Guid companyId, string? department, string? status, Guid? agentId)
++    {
++        var query = new List<string> { $"companyId={companyId}" };
++
++        if (!string.IsNullOrWhiteSpace(department))
++        {
++            query.Add($"department={Uri.EscapeDataString(department)}");
++        }
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            query.Add($"status={Uri.EscapeDataString(status)}");
++        }
++
++        if (agentId is Guid selectedAgent)
++        {
++            query.Add($"agentId={selectedAgent}");
++        }
++
++        return $"/agents?{string.Join("&", query)}";
++    }
++
++    private void OpenEditor(Guid agentId) => Navigation.NavigateTo(BuildAgentsUri(CompanyId!.Value, Department, Status, agentId));
++
+     private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor) => builder =>
+     {
+         var sequence = 0;
+@@ -475,7 +574,7 @@ else
+         try
+         {
+             var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
+-            roster = (await AgentApiClient.GetRosterAsync(companyId)).ToList();
++            rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
+             successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
+ 
+             if (CanManageProfiles)
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index d9ed798..d5f9009 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -23,6 +23,28 @@ public sealed class AgentApiClient
+         _useOfflineMode
+             ? Task.FromResult(OfflineStore.GetRoster(companyId))
+             : GetAsync<IReadOnlyList<CompanyAgentSummaryViewModel>>($"api/companies/{companyId}/agents", cancellationToken);
++
++    public Task<AgentRosterResponseViewModel> GetRosterViewAsync(
++        Guid companyId,
++        string? department = null,
++        string? status = null,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineStore.GetRosterView(companyId, department, status));
++        }
++
++        var query = new List<string>();
++        if (!string.IsNullOrWhiteSpace(department))
++        {
++            query.Add($"department={Uri.EscapeDataString(department)}");
++        }
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            query.Add($"status={Uri.EscapeDataString(status)}");
++        }
++
++        var uri = query.Count == 0 ? $"api/companies/{companyId}/agents/roster" : $"api/companies/{companyId}/agents/roster?{string.Join("&", query)}";
++        return GetAsync<AgentRosterResponseViewModel>(uri, cancellationToken);
++    }
+ 
+     public Task<CreateAgentFromTemplateResultViewModel> CreateAgentFromTemplateAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+@@ -42,6 +64,11 @@ public sealed class AgentApiClient
+         _useOfflineMode
+             ? OfflineStore.GetOperatingProfileAsync(companyId, agentId, cancellationToken)
+             : GetAsync<AgentOperatingProfileViewModel>($"api/companies/{companyId}/agents/{agentId}/profile", cancellationToken);
++
++    public Task<AgentProfileViewModel> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? OfflineStore.GetProfileViewAsync(companyId, agentId, cancellationToken)
++            : GetAsync<AgentProfileViewModel>($"api/companies/{companyId}/agents/{agentId}", cancellationToken);
+ 
+     public Task<AgentOperatingProfileViewModel> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileRequest request, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+@@ -169,6 +196,37 @@ public sealed class AgentApiClient
+                     : [];
+             }
+         }
++
++        public AgentRosterResponseViewModel GetRosterView(Guid companyId, string? department, string? status)
++        {
++            lock (_sync)
++            {
++                var allItems = GetRoster(companyId)
++                    .Select(agent => new AgentRosterItemViewModel
++                    {
++                        Id = agent.Id,
++                        CompanyId = agent.CompanyId,
++                        TemplateId = agent.TemplateId,
++                        DisplayName = agent.DisplayName,
++                        RoleName = agent.RoleName,
++                        Department = agent.Department,
++                        Seniority = agent.Seniority,
++                        Status = agent.Status,
++                        AvatarUrl = agent.AvatarUrl,
++                        Personality = agent.Personality,
++                        AutonomyLevel = "level_0",
++                        WorkloadSummary = new AgentWorkloadSummaryViewModel
++                        {
++                            LastActivityUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : DateTime.UtcNow,
++                            HealthStatus = string.Equals(agent.Status, "archived", StringComparison.OrdinalIgnoreCase) ? "archived" : "healthy",
++                            Summary = "Offline mode uses operating profile timestamps as the recent activity source."
++                        }
++                    })
++                    .ToList();
++
++                return new AgentRosterResponseViewModel
++                {
++                    Items = allItems.Where(x => MatchesFilter(x.Department, department) && MatchesFilter(x.Status, status)).ToList(),
++                    Departments = allItems.Select(x => x.Department).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
++                    Statuses = allItems.Select(x => x.Status).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList()
++                };
++            }
++        }
+ 
+         public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+         {
+@@ -183,6 +241,44 @@ public sealed class AgentApiClient
+                 throw new OnboardingApiException("The selected agent profile could not be loaded.");
+             }
+         }
++
++        public Task<AgentProfileViewModel> GetProfileViewAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++        {
++            lock (_sync)
++            {
++                if (!_profilesByAgentId.TryGetValue(agentId, out var profile) || profile.CompanyId != companyId)
++                {
++                    throw new OnboardingApiException("The selected agent profile could not be loaded.");
++                }
++
++                return Task.FromResult(new AgentProfileViewModel
++                {
++                    Id = profile.Id,
++                    CompanyId = profile.CompanyId,
++                    TemplateId = profile.TemplateId,
++                    DisplayName = profile.DisplayName,
++                    RoleName = profile.RoleName,
++                    Department = profile.Department,
++                    Seniority = profile.Seniority,
++                    Status = profile.Status,
++                    AvatarUrl = profile.AvatarUrl,
++                    Personality = profile.RoleBrief ?? string.Empty,
++                    RoleBrief = profile.RoleBrief,
++                    AutonomyLevel = "level_0",
++                    Objectives = CloneNodes(profile.Objectives),
++                    Kpis = CloneNodes(profile.Kpis),
++                    ToolPermissions = CloneNodes(profile.ToolPermissions),
++                    DataScopes = CloneNodes(profile.DataScopes),
++                    ApprovalThresholds = CloneNodes(profile.ApprovalThresholds),
++                    EscalationRules = CloneNodes(profile.EscalationRules),
++                    WorkingHours = CloneNodes(profile.WorkingHours),
++                    UpdatedUtc = profile.UpdatedUtc,
++                    Visibility = new AgentProfileVisibilityViewModel
++                    {
++                        CanViewPermissions = true,
++                        CanViewThresholds = true,
++                        CanEditAgent = true,
++                        CanPauseOrRestrictAgent = true
++                    },
++                    WorkloadSummary = new AgentWorkloadSummaryViewModel
++                    {
++                        LastActivityUtc = profile.UpdatedUtc,
++                        HealthStatus = string.Equals(profile.Status, "archived", StringComparison.OrdinalIgnoreCase) ? "archived" : "healthy",
++                        Summary = "Offline mode uses the saved operating profile as the profile source."
++                    }
++                });
++            }
++        }
+ 
+         public Task<AgentOperatingProfileViewModel> UpdateOperatingProfileAsync(
+             Guid companyId,
+@@ -367,6 +463,13 @@ public sealed class AgentApiClient
+             error = null;
+             return true;
+         }
++
++        private static bool MatchesFilter(string value, string? filter) =>
++            string.IsNullOrWhiteSpace(filter) ||
++            string.Equals(value, filter.Trim(), StringComparison.OrdinalIgnoreCase);
+     }
+ }
+ 
++public sealed class AgentRosterResponseViewModel
++{
++    public List<AgentRosterItemViewModel> Items { get; set; } = [];
++    public List<string> Departments { get; set; } = [];
++    public List<string> Statuses { get; set; } = [];
++}
++
++public sealed class AgentRosterItemViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string TemplateId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Seniority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public string Personality { get; set; } = string.Empty;
++    public string AutonomyLevel { get; set; } = string.Empty;
++    public AgentWorkloadSummaryViewModel WorkloadSummary { get; set; } = new();
++}
++
++public sealed class AgentWorkloadSummaryViewModel
++{
++    public int OpenItemsCount { get; set; }
++    public int AwaitingApprovalCount { get; set; }
++    public int ExecutedCount { get; set; }
++    public int FailedCount { get; set; }
++    public DateTime? LastActivityUtc { get; set; }
++    public string HealthStatus { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++}
++
++public sealed class AgentRecentActivityViewModel
++{
++    public DateTime OccurredUtc { get; set; }
++    public string ActivityType { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string? Detail { get; set; }
++}
++
++public sealed class AgentProfileVisibilityViewModel
++{
++    public bool CanViewPermissions { get; set; }
++    public bool CanViewThresholds { get; set; }
++    public bool CanEditAgent { get; set; }
++    public bool CanPauseOrRestrictAgent { get; set; }
++}
++
++public sealed class AgentProfileViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string TemplateId { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Seniority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string? AvatarUrl { get; set; }
++    public string Personality { get; set; } = string.Empty;
++    public string? RoleBrief { get; set; }
++    public string AutonomyLevel { get; set; } = string.Empty;
++    public Dictionary<string, JsonNode?> Objectives { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Kpis { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ToolPermissions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> DataScopes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ApprovalThresholds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public AgentWorkloadSummaryViewModel WorkloadSummary { get; set; } = new();
++    public List<AgentRecentActivityViewModel> RecentActivity { get; set; } = [];
++    public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
++    public DateTime UpdatedUtc { get; set; }
++}
++
+ public sealed class AgentTemplateCatalogItemViewModel
+ {
+     public string TemplateId { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index d20d0f0..4d543cb 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -241,3 +241,90 @@ code {
+         flex-direction: column;
+     }
+ }
++
++.agent-filter-bar {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++}
++
++.agent-roster-card {
++    display: flex;
++    flex-direction: column;
++    min-height: 100%;
++}
++
++.summary-pill-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
++}
++
++.summary-pill {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    padding: 1rem;
++}
++
++.agent-profile-grid {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++}
++
++.agent-profile-section {
++    min-width: 0;
++}
++
++.kv-list {
++    display: grid;
++    gap: 0.5rem 1rem;
++    grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
++}
++
++.kv-list dt {
++    color: #475569;
++    font-weight: 600;
++    margin: 0;
++}
++
++.kv-list dd {
++    margin: 0;
++    overflow-wrap: anywhere;
++}
++
++.activity-list {
++    display: grid;
++    gap: 0.75rem;
++}
++
++.activity-item {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 1rem;
++    padding: 1rem;
++}
++
++.agent-health-healthy {
++    color: #15803d;
++}
++
++.agent-health-attention {
++    color: #b45309;
++}
++
++.agent-health-archived {
++    color: #475569;
++}
++
++@media (max-width: 575.98px) {
++    .agent-filter-bar,
++    .summary-pill-grid,
++    .agent-profile-grid {
++        grid-template-columns: 1fr;
++    }
++
++    .kv-list {
++        grid-template-columns: 1fr;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+new file mode 100644
+index 0000000..9ec4e7a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentRosterAndProfileIntegrationTests.cs
+@@ -0,0 +1,282 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentRosterAndProfileIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Agent_roster_view_filters_by_department_and_status_and_returns_workload_summary()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/roster?department=Finance&status=active");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentRosterResponse>();
++        Assert.NotNull(payload);
++        var item = Assert.Single(payload!.Items);
++        Assert.Equal(seed.FinanceAgentId, item.Id);
++        Assert.Equal("Finance", item.Department);
++        Assert.Equal("active", item.Status);
++        Assert.True(item.WorkloadSummary.OpenItemsCount >= 2);
++        Assert.Contains("Finance", payload.Departments);
++        Assert.Contains("active", payload.Statuses);
++        Assert.Contains("paused", payload.Statuses);
++    }
++
++    [Fact]
++    public async Task Agent_profile_view_is_available_to_manager_but_hides_restricted_configuration()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.FinanceAgentId}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentProfileResponse>();
++        Assert.NotNull(payload);
++        Assert.False(payload!.Visibility.CanViewPermissions);
++        Assert.False(payload.Visibility.CanViewThresholds);
++        Assert.False(payload.Visibility.CanEditAgent);
++        Assert.NotEmpty(payload.Objectives);
++        Assert.Empty(payload.ToolPermissions);
++        Assert.Empty(payload.ApprovalThresholds);
++        Assert.NotEmpty(payload.RecentActivity);
++    }
++
++    [Fact]
++    public async Task Agent_profile_view_allows_owner_and_stays_company_scoped()
++    {
++        var seed = await SeedManagerDirectoryAsync();
++
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        var ownerResponse = await ownerClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.FinanceAgentId}");
++        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
++
++        var ownerPayload = await ownerResponse.Content.ReadFromJsonAsync<AgentProfileResponse>();
++        Assert.NotNull(ownerPayload);
++        Assert.True(ownerPayload!.Visibility.CanViewPermissions);
++        Assert.True(ownerPayload.Visibility.CanViewThresholds);
++        Assert.True(ownerPayload.Visibility.CanEditAgent);
++        Assert.NotEmpty(ownerPayload.ToolPermissions);
++        Assert.NotEmpty(ownerPayload.ApprovalThresholds);
++
++        var crossTenantResponse = await ownerClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.OtherCompanyAgentId}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantResponse.StatusCode);
++
++        using var employeeClient = CreateAuthenticatedClient("employee", "employee@example.com", "Employee");
++        var employeeResponse = await employeeClient.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.FinanceAgentId}");
++        Assert.Equal(HttpStatusCode.Forbidden, employeeResponse.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<DirectorySeed> SeedManagerDirectoryAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var managerUserId = Guid.NewGuid();
++        var employeeUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var financeAgentId = Guid.NewGuid();
++        var supportAgentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++        var executionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(ownerUserId, "owner@example.com", "Owner", "dev-header", "owner"),
++                new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"),
++                new User(employeeUserId, "employee@example.com", "Employee", "dev-header", "employee"));
++
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Company A"),
++                new Company(otherCompanyId, "Company B"));
++
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, managerUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                new Agent(
++                    financeAgentId,
++                    companyId,
++                    "finance",
++                    "Nora Ledger",
++                    "Finance Manager",
++                    "Finance",
++                    null,
++                    AgentSeniority.Senior,
++                    AgentStatus.Active,
++                    autonomyLevel: AgentAutonomyLevel.Level2,
++                    objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++                    kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++                    tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++                    scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
++                    thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++                    escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("cash_runway_under_90_days"))), ("escalateTo", JsonValue.Create("owner"))),
++                    roleBrief: "Finance operating profile.",
++                    workingHours: Payload(("timezone", JsonValue.Create("UTC")))),
++                new Agent(
++                    supportAgentId,
++                    companyId,
++                    "support",
++                    "Casey Support",
++                    "Support Lead",
++                    "Support",
++                    null,
++                    AgentSeniority.Lead,
++                    AgentStatus.Paused,
++                    objectives: Payload(("primary", new JsonArray(JsonValue.Create("Reduce response time"))))),
++                new Agent(
++                    otherCompanyAgentId,
++                    otherCompanyId,
++                    "support",
++                    "Other Company Support",
++                    "Support Lead",
++                    "Support",
++                    null,
++                    AgentSeniority.Lead,
++                    AgentStatus.Active));
++
++            var execution = new ToolExecutionAttempt(
++                executionId,
++                companyId,
++                financeAgentId,
++                "erp",
++                ToolActionType.Execute,
++                "finance.approval",
++                Payload(("amount", JsonValue.Create(1200))));
++
++            var approval = new ApprovalRequest(
++                approvalId,
++                companyId,
++                financeAgentId,
++                executionId,
++                ownerUserId,
++                "erp",
++                ToolActionType.Execute,
++                "expense",
++                Payload(("expenseUsd", JsonValue.Create(1200))));
++
++            execution.MarkAwaitingApproval(approvalId, Payload(("outcome", JsonValue.Create("require_approval"))));
++
++            dbContext.ToolExecutionAttempts.Add(execution);
++            dbContext.ApprovalRequests.Add(approval);
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompany.Infrastructure.Persistence.VirtualCompanyDbContext>();
++        dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            "user",
++            ownerUserId,
++            "agent.operating_profile.updated",
++            "agent",
++            financeAgentId.ToString("N"),
++            "succeeded",
++            "Updated the finance operating profile.",
++            new[] { "agent_management" },
++            new Dictionary<string, string?>()));
++        await dbContext.SaveChangesAsync();
++
++        return new DirectorySeed(companyId, financeAgentId, otherCompanyAgentId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record DirectorySeed(Guid CompanyId, Guid FinanceAgentId, Guid OtherCompanyAgentId);
++
++    private sealed class AgentRosterResponse
++    {
++        public List<AgentRosterItem> Items { get; set; } = [];
++        public List<string> Departments { get; set; } = [];
++        public List<string> Statuses { get; set; } = [];
++    }
++
++    private sealed class AgentRosterItem
++    {
++        public Guid Id { get; set; }
++        public string Department { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public AgentWorkloadSummary WorkloadSummary { get; set; } = new();
++    }
++
++    private sealed class AgentProfileResponse
++    {
++        public Guid Id { get; set; }
++        public Dictionary<string, JsonElement> Objectives { get; set; } = [];
++        public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
++        public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
++        public List<AgentRecentActivity> RecentActivity { get; set; } = [];
++        public AgentProfileVisibility Visibility { get; set; } = new();
++    }
++
++    private sealed class AgentRecentActivity
++    {
++        public DateTime OccurredUtc { get; set; }
++        public string ActivityType { get; set; } = string.Empty;
++        public string Title { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public string? Detail { get; set; }
++    }
++
++    private sealed class AgentProfileVisibility
++    {
++        public bool CanViewPermissions { get; set; }
++        public bool CanViewThresholds { get; set; }
++        public bool CanEditAgent { get; set; }
++        public bool CanPauseOrRestrictAgent { get; set; }
++    }
++
++    private sealed class AgentWorkloadSummary
++    {
++        public int OpenItemsCount { get; set; }
++        public int AwaitingApprovalCount { get; set; }
++        public int ExecutedCount { get; set; }
++        public int FailedCount { get; set; }
++        public DateTime? LastActivityUtc { get; set; }
++        public string HealthStatus { get; set; } = string.Empty;
++        public string Summary { get; set; } = string.Empty;
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index ec1ab5d..3efc341 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -1,7 +1,6 @@
+ @page "/agents"
+ @using System.ComponentModel.DataAnnotations
+ @using System.Text.Json
+-@using System.Text
+ @using System.Text.Json.Nodes
+ @using Microsoft.AspNetCore.Components
+ @inject OnboardingApiClient OnboardingApiClient
+END_OF_PATCH

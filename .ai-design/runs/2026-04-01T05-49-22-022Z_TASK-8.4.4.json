@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-8.4.4",
+  "promptPath": ".ai-design/prompts/TASK-8.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T05:49:22.022Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T05-49-22-022Z_TASK-8.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T05-49-22-022Z_TASK-8.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T05:58:59.589Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "mpanyMembershipStatus.Active));\n \n             dbContext.Agents.AddRange(\n                 new Agent(\n@@ -232,7 +256,8 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n                     scopes: Payload((\"read\", new JsonArray(JsonValue.Create(\"finance\")))),\n                     thresholds: Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = 5000 })),\n                     escalationRules: Payload((\"critical\", new JsonArray(JsonValue.Create(\"cash_runway_under_90_days\"))), (\"escalateTo\", JsonValue.Create(\"owner\"))),\n                     roleBrief: \"Finance operating profile.\",\n-                    workingHours: Payload((\"timezone\", JsonValue.Create(\"UTC\")))),\n+                    workingHours: Payload((\"timezone\", JsonValue.Create(\"UTC\"))),\n+                    triggerLogic: Payload((\"enabled\", JsonValue.Create(true)))),\n                 new Agent(\n                     supportAgentId,\n                     companyId,\n@@ -355,15 +380,17 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n     {\n         public Guid Id { get; set; }\n         public Dictionary<string, JsonElement> Objectives { get; set; } = [];\n         public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];\n         public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];\n+        public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];\n         public List<AgentRecentActivity> RecentActivity { get; set; } = [];\n         public AgentProfileVisibility Visibility { get; set; } = new();\n     }\n@@ -374,6 +401,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n     {\n         public bool CanViewPermissions { get; set; }\n         public bool CanViewThresholds { get; set; }\n+        public bool CanViewWorkingHours { get; set; }\n         public bool CanEditAgent { get; set; }\n         public bool CanPauseOrRestrictAgent { get; set; }\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "s.Active));\n \n             dbContext.Agents.AddRange(\n                 new Agent(\n@@ -232,7 +256,8 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n                     scopes: Payload((\"read\", new JsonArray(JsonValue.Create(\"finance\")))),\n                     thresholds: Payload((\"approval\", new JsonObject { [\"expenseUsd\"] = 5000 })),\n                     escalationRules: Payload((\"critical\", new JsonArray(JsonValue.Create(\"cash_runway_under_90_days\"))), (\"escalateTo\", JsonValue.Create(\"owner\"))),\n                     roleBrief: \"Finance operating profile.\",\n-                    workingHours: Payload((\"timezone\", JsonValue.Create(\"UTC\")))),\n+                    workingHours: Payload((\"timezone\", JsonValue.Create(\"UTC\"))),\n+                    triggerLogic: Payload((\"enabled\", JsonValue.Create(true)))),\n                 new Agent(\n                     supportAgentId,\n                     companyId,\n@@ -355,15 +380,17 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n     {\n         public Guid Id { get; set; }\n         public Dictionary<string, JsonElement> Objectives { get; set; } = [];\n         public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];\n         public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];\n+        public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];\n         public List<AgentRecentActivity> RecentActivity { get; set; } = [];\n         public AgentProfileVisibility Visibility { get; set; } = new();\n     }\n@@ -374,6 +401,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWe\n     {\n         public bool CanViewPermissions { get; set; }\n         public bool CanViewThresholds { get; set; }\n+        public bool CanViewWorkingHours { get; set; }\n         public bool CanEditAgent { get; set; }\n         public bool CanPauseOrRestrictAgent { get; set; }\n     }\nEND_OF_PATCH\ntokens used\n140,044\n",
+  "verbosityMode": "verbose"
+}

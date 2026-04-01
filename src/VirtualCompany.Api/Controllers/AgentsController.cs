@@ -13,10 +13,12 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class AgentsController : ControllerBase
 {
     private readonly ICompanyAgentService _agentService;
+    private readonly IAgentToolExecutionService _agentToolExecutionService;
 
-    public AgentsController(ICompanyAgentService agentService)
+    public AgentsController(ICompanyAgentService agentService, IAgentToolExecutionService agentToolExecutionService)
     {
         _agentService = agentService;
+        _agentToolExecutionService = agentToolExecutionService;
     }
 
     [HttpGet("templates")]
@@ -28,6 +30,26 @@ public sealed class AgentsController : ControllerBase
         {
             var templates = await _agentService.GetTemplatesAsync(companyId, cancellationToken);
             return Ok(templates);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("roster")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentRosterResponseDto>> GetRosterViewAsync(
+        Guid companyId,
+        [FromQuery] string? department,
+        [FromQuery] string? status,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var filter = new AgentRosterFilterDto(department, status);
+            var roster = await _agentService.GetRosterViewAsync(companyId, filter, cancellationToken);
+            return Ok(roster);
         }
         catch (UnauthorizedAccessException)
         {
@@ -80,17 +102,30 @@ public sealed class AgentsController : ControllerBase
         }
     }
 
-    [HttpPost]
-    public Task<ActionResult<CreateAgentFromTemplateResultDto>> HireAsync(
+    [HttpGet("{agentId:guid}")]
+    [Authorize(Policy = CompanyPolicies.CompanyMember)]
+    public async Task<ActionResult<AgentProfileViewDto>> GetProfileViewAsync(
         Guid companyId,
-        [FromBody] CreateAgentFromTemplateCommand command,
+        Guid agentId,
         CancellationToken cancellationToken)
     {
-        return CreateFromTemplateAsync(companyId, command, cancellationToken);
+        try
+        {
+            var profile = await _agentService.GetProfileViewAsync(companyId, agentId, cancellationToken);
+            return Ok(profile);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
     }
 
     [HttpGet("{agentId:guid}/profile")]
-    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<AgentOperatingProfileDto>> GetOperatingProfileAsync(
         Guid companyId,
         Guid agentId,
@@ -112,7 +147,7 @@ public sealed class AgentsController : ControllerBase
     }
 
     [HttpPut("{agentId:guid}/profile")]
-    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<AgentOperatingProfileDto>> UpdateOperatingProfileAsync(
         Guid companyId,
         Guid agentId,
@@ -125,6 +160,36 @@ public sealed class AgentsController : ControllerBase
             return Ok(profile);
         }
         catch (AgentValidationException ex)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+            {
+                Title = "Validation failed",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("{agentId:guid}/executions")]
+    public async Task<ActionResult<ExecuteAgentToolResultDto>> ExecuteToolAsync(
+        Guid companyId,
+        Guid agentId,
+        [FromBody] ExecuteAgentToolCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _agentToolExecutionService.ExecuteAsync(companyId, agentId, command, cancellationToken);
+            return Ok(result);
+        }
+        catch (AgentExecutionValidationException ex)
         {
             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
             {
