@@ -1,0 +1,796 @@
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -14,6 +14,7 @@
+   <ItemGroup>
+     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
++    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
+     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.AspNetCore.Authentication;
++using Microsoft.Extensions.Caching.StackExchangeRedis;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+@@ -53,6 +54,24 @@ public static class DependencyInjection
+         services.AddOptions<KnowledgeIndexingOptions>()
+             .Bind(configuration.GetSection(KnowledgeIndexingOptions.SectionName));
+ 
++        services.AddOptions<GroundedContextRetrievalCacheOptions>()
++            .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
++
++        var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
++        if (!string.IsNullOrWhiteSpace(redisConnectionString))
++        {
++            services.AddStackExchangeRedisCache(options =>
++            {
++                options.Configuration = redisConnectionString;
++                options.InstanceName = "virtual-company:";
++            });
++        }
++        else
++        {
++            services.AddDistributedMemoryCache();
++        }
++
++        services.AddSingleton<GroundedContextRetrievalCacheKeyBuilder>();
++        services.AddSingleton<IGroundedContextRetrievalSectionCache, GroundedContextRetrievalSectionCache>();
+         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheOptions.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheOptions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheOptions.cs
+@@ -0,0 +1,28 @@
++namespace VirtualCompany.Infrastructure.Context;
++
++public sealed class GroundedContextRetrievalCacheOptions
++{
++    public const string SectionName = "GroundedContextRetrievalCache";
++
++    public bool Enabled { get; set; } = true;
++    public string KeyVersion { get; set; } = "task-9-4-7-v1";
++    public int DefaultTtlSeconds { get; set; } = 60;
++    public int KnowledgeTtlSeconds { get; set; } = 120;
++    public int MemoryTtlSeconds { get; set; } = 30;
++    public int MaxPayloadBytes { get; set; } = 64 * 1024;
++
++    public TimeSpan GetSectionTtl(string sectionId)
++    {
++        var ttlSeconds = string.Equals(sectionId, "knowledge", StringComparison.OrdinalIgnoreCase)
++            ? KnowledgeTtlSeconds
++            : string.Equals(sectionId, "memory", StringComparison.OrdinalIgnoreCase)
++                ? MemoryTtlSeconds
++                : DefaultTtlSeconds;
++
++        return TimeSpan.FromSeconds(Math.Max(0, ttlSeconds));
++    }
++
++    public bool IsPayloadCachingAllowed =>
++        Enabled &&
++        MaxPayloadBytes > 0 &&
++        !string.IsNullOrWhiteSpace(KeyVersion);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheKeyBuilder.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheKeyBuilder.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalCacheKeyBuilder.cs
+@@ -0,0 +1,119 @@
++using System.Globalization;
++using System.Security.Cryptography;
++using System.Text;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Context;
++
++public sealed class GroundedContextRetrievalCacheKeyBuilder
++{
++    public string BuildKnowledgeSectionKey(
++        string keyVersion,
++        GroundedContextRetrievalRequest request,
++        RetrievalAccessDecision accessDecision,
++        string retrievalIntent,
++        int limit) =>
++        BuildSectionKey(
++            keyVersion,
++            "knowledge",
++            request,
++            accessDecision,
++            retrievalIntent,
++            limit,
++            asOfUtc: null);
++
++    public string BuildMemorySectionKey(
++        string keyVersion,
++        GroundedContextRetrievalRequest request,
++        RetrievalAccessDecision accessDecision,
++        string retrievalIntent,
++        int limit,
++        DateTime asOfUtc) =>
++        BuildSectionKey(
++            keyVersion,
++            "memory",
++            request,
++            accessDecision,
++            retrievalIntent,
++            limit,
++            EnsureUtc(asOfUtc));
++
++    private static string BuildSectionKey(
++        string keyVersion,
++        string sectionId,
++        GroundedContextRetrievalRequest request,
++        RetrievalAccessDecision accessDecision,
++        string retrievalIntent,
++        int limit,
++        DateTime? asOfUtc)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        ArgumentNullException.ThrowIfNull(accessDecision);
++        ArgumentException.ThrowIfNullOrWhiteSpace(keyVersion);
++        ArgumentException.ThrowIfNullOrWhiteSpace(sectionId);
++        ArgumentException.ThrowIfNullOrWhiteSpace(retrievalIntent);
++
++        var normalizedScopes = accessDecision.EffectiveReadScopes
++            .Where(static scope => !string.IsNullOrWhiteSpace(scope))
++            .Select(static scope => NormalizeValue(scope) ?? string.Empty)
++            .OrderBy(static scope => scope, StringComparer.Ordinal)
++            .ToArray();
++
++        var payload = string.Join(
++            "|",
++            [
++                NormalizeValue(keyVersion) ?? "default",
++                NormalizeValue(sectionId) ?? "section",
++                request.CompanyId.ToString("N"),
++                request.AgentId.ToString("N"),
++                request.ActorUserId?.ToString("N") ?? "none",
++                accessDecision.ActorMembershipId?.ToString("N") ?? "none",
++                NormalizeValue(accessDecision.ActorMembershipRole?.ToStorageValue()) ?? "none",
++                accessDecision.MembershipResolved ? "1" : "0",
++                accessDecision.CanRetrieve ? "1" : "0",
++                limit.ToString(CultureInfo.InvariantCulture),
++                asOfUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "none",
++                NormalizeValue(retrievalIntent) ?? string.Empty,
++                string.Join(",", normalizedScopes)
++            ]);
++
++        var payloadHash = ComputeSha256(payload);
++        return $"grounded-context:{SanitizeSegment(keyVersion)}:{SanitizeSegment(sectionId)}:company:{request.CompanyId:N}:agent:{request.AgentId:N}:{payloadHash}";
++    }
++
++    private static string ComputeSha256(string value)
++    {
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
++        return Convert.ToHexString(bytes).ToLowerInvariant();
++    }
++
++    private static string? NormalizeValue(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var collapsed = string.Join(" ", value.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
++        return collapsed.ToLowerInvariant();
++    }
++
++    private static string SanitizeSegment(string value)
++    {
++        var normalized = NormalizeValue(value) ?? "default";
++        var builder = new StringBuilder(normalized.Length);
++
++        foreach (var character in normalized)
++        {
++            builder.Append(char.IsLetterOrDigit(character) || character is '-' or '_' or '.'
++                ? character
++                : '-');
++        }
++
++        return builder.ToString();
++    }
++
++    private static DateTime EnsureUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc
++            ? value
++            : value.ToUniversalTime();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalSectionCache.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalSectionCache.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalSectionCache.cs
+@@ -0,0 +1,84 @@
++using System.Text.Json;
++using Microsoft.Extensions.Caching.Distributed;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Context;
++
++namespace VirtualCompany.Infrastructure.Context;
++
++public interface IGroundedContextRetrievalSectionCache
++{
++    Task<RetrievalSectionDto?> TryGetAsync(string cacheKey, CancellationToken cancellationToken);
++    Task TrySetAsync(string cacheKey, RetrievalSectionDto section, TimeSpan timeToLive, CancellationToken cancellationToken);
++}
++
++public sealed class GroundedContextRetrievalSectionCache : IGroundedContextRetrievalSectionCache
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly IDistributedCache _distributedCache;
++    private readonly GroundedContextRetrievalCacheOptions _options;
++
++    public GroundedContextRetrievalSectionCache(
++        IDistributedCache distributedCache,
++        IOptions<GroundedContextRetrievalCacheOptions> options)
++    {
++        _distributedCache = distributedCache;
++        _options = options.Value;
++    }
++
++    public async Task<RetrievalSectionDto?> TryGetAsync(string cacheKey, CancellationToken cancellationToken)
++    {
++        if (!_options.IsPayloadCachingAllowed)
++        {
++            return null;
++        }
++
++        try
++        {
++            var payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++            if (payload is null || payload.Length == 0)
++            {
++                return null;
++            }
++
++            return JsonSerializer.Deserialize<RetrievalSectionDto>(payload, SerializerOptions);
++        }
++        catch (Exception) when (!cancellationToken.IsCancellationRequested)
++        {
++            try
++            {
++                await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
++            }
++            catch (Exception) when (!cancellationToken.IsCancellationRequested)
++            {
++            }
++
++            return null;
++        }
++    }
++
++    public async Task TrySetAsync(string cacheKey, RetrievalSectionDto section, TimeSpan timeToLive, CancellationToken cancellationToken)
++    {
++        if (!_options.IsPayloadCachingAllowed || timeToLive <= TimeSpan.Zero)
++        {
++            return;
++        }
++
++        try
++        {
++            var payload = JsonSerializer.SerializeToUtf8Bytes(section, SerializerOptions);
++            if (payload.Length > _options.MaxPayloadBytes)
++            {
++                return;
++            }
++
++            await _distributedCache.SetAsync(
++                cacheKey,
++                payload,
++                new DistributedCacheEntryOptions
++                {
++                    AbsoluteExpirationRelativeToNow = timeToLive
++                },
++                cancellationToken);
++        }
++        catch (Exception) when (!cancellationToken.IsCancellationRequested)
++        {
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+--- a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+@@ -2,6 +2,7 @@ using System.Security.Cryptography;
+ using System.Text;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Documents;
+@@ -34,6 +35,9 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+     private readonly ICompanyKnowledgeSearchService _companyKnowledgeSearchService;
+     private readonly IRetrievalScopeEvaluator _retrievalScopeEvaluator;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly IGroundedContextRetrievalSectionCache _sectionCache;
++    private readonly GroundedContextRetrievalCacheKeyBuilder _cacheKeyBuilder;
++    private readonly GroundedContextRetrievalCacheOptions _cacheOptions;
+     private readonly TimeProvider _timeProvider;
+ 
+     public GroundedContextRetrievalService(
+@@ -41,12 +45,18 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+         IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
+         ICompanyKnowledgeSearchService companyKnowledgeSearchService,
+         IRetrievalScopeEvaluator retrievalScopeEvaluator,
++        IGroundedContextRetrievalSectionCache sectionCache,
++        GroundedContextRetrievalCacheKeyBuilder cacheKeyBuilder,
++        IOptions<GroundedContextRetrievalCacheOptions> cacheOptions,
+         ICorrelationContextAccessor correlationContextAccessor,
+         TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+         _companyKnowledgeSearchService = companyKnowledgeSearchService;
++        _sectionCache = sectionCache;
++        _cacheKeyBuilder = cacheKeyBuilder;
++        _cacheOptions = cacheOptions.Value;
+         _retrievalScopeEvaluator = retrievalScopeEvaluator;
+         _correlationContextAccessor = correlationContextAccessor;
+         _timeProvider = timeProvider;
+@@ -79,7 +89,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+                 actorMembership?.Role,
+                 agent.DataScopes));
+ 
+-        var knowledgeSection = await LoadKnowledgeSectionAsync(
++        var knowledgeSection = await LoadKnowledgeSectionWithCacheAsync(
+             request,
+             retrievalIntent,
+             accessDecision,
+@@ -87,7 +97,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             cancellationToken);
+ 
+-        var memorySection = await LoadMemorySectionAsync(
++        var memorySection = await LoadMemorySectionWithCacheAsync(
+             request,
+             retrievalIntent,
+             accessDecision,
+@@ -95,6 +105,8 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             asOfUtc,
+             cancellationToken);
+ 
++        // Task history and approval-sensitive records stay live-only because
++        // staleness here is harder to reason about safely than read-mostly knowledge.
+         var recentTaskSection = await LoadRecentTaskSectionAsync(
+             request,
+             retrievalIntent,
+@@ -191,6 +203,64 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             .Select(x => new ResolvedActorMembership(x.Id, x.UserId!.Value, x.Role))
+             .SingleOrDefaultAsync(cancellationToken);
+     }
++
++    private async Task<RetrievalSectionDto> LoadKnowledgeSectionWithCacheAsync(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        RetrievalAccessDecision accessDecision,
++        int limit,
++        CancellationToken cancellationToken)
++    {
++        if (!IsKnowledgeSectionCacheable(accessDecision, limit))
++        {
++            return await LoadKnowledgeSectionAsync(request, retrievalIntent, accessDecision, limit, cancellationToken);
++        }
++
++        var cacheKey = _cacheKeyBuilder.BuildKnowledgeSectionKey(
++            _cacheOptions.KeyVersion,
++            request,
++            accessDecision,
++            retrievalIntent,
++            limit);
++
++        var cached = await _sectionCache.TryGetAsync(cacheKey, cancellationToken);
++        if (cached is not null)
++        {
++            return cached;
++        }
++
++        var liveSection = await LoadKnowledgeSectionAsync(request, retrievalIntent, accessDecision, limit, cancellationToken);
++        await _sectionCache.TrySetAsync(cacheKey, liveSection, _cacheOptions.GetSectionTtl("knowledge"), cancellationToken);
++        return liveSection;
++    }
++
++    private async Task<RetrievalSectionDto> LoadMemorySectionWithCacheAsync(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        RetrievalAccessDecision accessDecision,
++        int limit,
++        DateTime asOfUtc,
++        CancellationToken cancellationToken)
++    {
++        if (!IsMemorySectionCacheable(request, accessDecision, limit))
++        {
++            return await LoadMemorySectionAsync(request, retrievalIntent, accessDecision, limit, asOfUtc, cancellationToken);
++        }
++
++        var cacheKey = _cacheKeyBuilder.BuildMemorySectionKey(
++            _cacheOptions.KeyVersion,
++            request,
++            accessDecision,
++            retrievalIntent,
++            limit,
++            asOfUtc);
++
++        var cached = await _sectionCache.TryGetAsync(cacheKey, cancellationToken);
++        if (cached is not null)
++        {
++            return cached;
++        }
++
++        var liveSection = await LoadMemorySectionAsync(request, retrievalIntent, accessDecision, limit, asOfUtc, cancellationToken);
++        await _sectionCache.TrySetAsync(cacheKey, liveSection, _cacheOptions.GetSectionTtl("memory"), cancellationToken);
++        return liveSection;
++    }
+ 
+     private async Task<RetrievalSectionDto> LoadKnowledgeSectionAsync(
+         GroundedContextRetrievalRequest request,
+@@ -489,6 +559,19 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+     private static RetrievalSectionDto EmptySection(string id, string title) =>
+         new(id, title, Array.Empty<RetrievalItemDto>());
+ 
++    private bool IsKnowledgeSectionCacheable(RetrievalAccessDecision accessDecision, int limit) =>
++        _cacheOptions.IsPayloadCachingAllowed &&
++        accessDecision.CanRetrieve &&
++        limit > 0;
++
++    private bool IsMemorySectionCacheable(
++        GroundedContextRetrievalRequest request,
++        RetrievalAccessDecision accessDecision,
++        int limit) =>
++        _cacheOptions.IsPayloadCachingAllowed &&
++        accessDecision.CanRetrieve &&
++        limit > 0 &&
++        request.AsOfUtc.HasValue;
++
+     private static RetrievalSourceLimitOptions NormalizeLimits(RetrievalSourceLimitOptions? limits)
+     {
+         var normalized = limits ?? new RetrievalSourceLimitOptions();
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -26,6 +26,13 @@
+     "ClaimTimeoutSeconds": 300,
+     "PollIntervalSeconds": 10
+   },
++  "GroundedContextRetrievalCache": {
++    "Enabled": true,
++    "KeyVersion": "task-9-4-7-v1",
++    "DefaultTtlSeconds": 60,
++    "KnowledgeTtlSeconds": 120,
++    "MemoryTtlSeconds": 30
++  },
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+     "BatchSize": 20,
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -26,6 +26,13 @@
+     "ClaimTimeoutSeconds": 300,
+     "PollIntervalSeconds": 10
+   },
++  "GroundedContextRetrievalCache": {
++    "Enabled": true,
++    "KeyVersion": "task-9-4-7-v1",
++    "DefaultTtlSeconds": 60,
++    "KnowledgeTtlSeconds": 120,
++    "MemoryTtlSeconds": 30
++  },
+ 
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -39,6 +39,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
+                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
+                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
++                [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
++                [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
++                [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
++                [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
+                 [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
+             });
+         });
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+@@ -1,6 +1,7 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Caching.Distributed;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Documents;
+@@ -688,6 +689,147 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
+         Assert.Equal(first.MemorySection.Items.Select(x => $"{x.SourceId}:{x.RelevanceScore}"), second.MemorySection.Items.Select(x => $"{x.SourceId}:{x.RelevanceScore}"));
+         Assert.Equal(first.SourceReferences.Select(x => $"{x.SourceType}:{x.SourceId}:{x.Score}"), second.SourceReferences.Select(x => $"{x.SourceType}:{x.SourceId}:{x.Score}"));
+     }
++
++    [Fact]
++    public async Task RetrieveAsync_reuses_cached_knowledge_section_for_identical_scoped_requests()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(
++            ["finance payroll approvals", "finance payroll approvals"],
++            CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "cache-hit@example.com", "Cache Hit User", "dev-header", "cache-hit-user"));
++            dbContext.Companies.Add(new Company(companyId, "Cache Hit Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Cache Hit Agent", ["finance"]));
++
++            var firstDocument = CreateIndexedDocument(companyId, "Finance Controls A");
++            dbContext.CompanyKnowledgeDocuments.Add(firstDocument);
++            dbContext.CompanyKnowledgeChunks.Add(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    firstDocument.Id,
++                    1,
++                    0,
++                    "finance payroll approvals require controller review",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "finance-a#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var request = new GroundedContextRetrievalRequest(
++            companyId,
++            agentId,
++            QueryText: "finance payroll approvals",
++            ActorUserId: actorUserId,
++            Limits: new RetrievalSourceLimitOptions(5, 0, 0, 0));
++
++        var first = await retrievalService.RetrieveAsync(request, CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            var secondDocument = CreateIndexedDocument(companyId, "Finance Controls B");
++            dbContext.CompanyKnowledgeDocuments.Add(secondDocument);
++            dbContext.CompanyKnowledgeChunks.Add(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    secondDocument.Id,
++                    1,
++                    0,
++                    "finance payroll approvals require secondary approval",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "finance-b#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var second = await retrievalService.RetrieveAsync(request, CancellationToken.None);
++
++        Assert.Contains(first.KnowledgeSection.Items, item => item.Title == "Finance Controls A");
++        Assert.Contains(second.KnowledgeSection.Items, item => item.Title == "Finance Controls A");
++        Assert.DoesNotContain(second.KnowledgeSection.Items, item => item.Title == "Finance Controls B");
++    }
++
++    [Fact]
++    public async Task RetrieveAsync_bypasses_cache_for_memory_requests_without_explicit_as_of_utc()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var validFromUtc = new DateTime(2026, 4, 2, 8, 0, 0, DateTimeKind.Utc);
++
++        using var scope = _factory.Services.CreateScope();
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "memory-bypass@example.com", "Memory Bypass User", "dev-header", "memory-bypass-user"));
++            dbContext.Companies.Add(new Company(companyId, "Memory Bypass Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Memory Bypass Agent", ["finance"]));
++            dbContext.MemoryItems.Add(
++                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "General payroll reminder.", null, null, 0.200m, validFromUtc, null));
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var request = new GroundedContextRetrievalRequest(
++            companyId,
++            agentId,
++            QueryText: "finance payroll approvals",
++            ActorUserId: actorUserId,
++            Limits: new RetrievalSourceLimitOptions(0, 5, 0, 0));
++
++        var first = await retrievalService.RetrieveAsync(request, CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.MemoryItems.Add(
++                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Finance payroll approvals require controller signoff.", null, null, 1.000m, validFromUtc, null));
++            await Task.CompletedTask;
++        });
++
++        var second = await retrievalService.RetrieveAsync(request, CancellationToken.None);
++
++        Assert.DoesNotContain(first.MemorySection.Items, item => item.Content.Contains("controller signoff", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(second.MemorySection.Items, item => item.Content.Contains("controller signoff", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task RetrieveAsync_falls_back_to_live_knowledge_retrieval_when_cached_payload_is_invalid()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var actorMembershipId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(["finance payroll approvals"], CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "invalid-cache@example.com", "Invalid Cache User", "dev-header", "invalid-cache-user"));
++            dbContext.Companies.Add(new Company(companyId, "Invalid Cache Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(actorMembershipId, companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Invalid Cache Agent", ["finance"]));
++
++            var document = CreateIndexedDocument(companyId, "Finance Controls");
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            dbContext.CompanyKnowledgeChunks.Add(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    document.Id,
++                    1,
++                    0,
++                    "finance payroll approvals require controller review",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "finance-invalid#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var distributedCache = scope.ServiceProvider.GetRequiredService<IDistributedCache>();
++        var cacheKeyBuilder = scope.ServiceProvider.GetRequiredService<GroundedContextRetrievalCacheKeyBuilder>();
++        var accessDecision = new RetrievalAccessDecision(
++            companyId,
++            agentId,
++            actorUserId,
++            actorMembershipId,
++            CompanyMembershipRole.Manager,
++            ["finance"],
++            ["finance"],
++            MembershipResolved: true,
++            CanRetrieve: true);
++
++        var request = new GroundedContextRetrievalRequest(
++            companyId,
++            agentId,
++            QueryText: "finance payroll approvals",
++            ActorUserId: actorUserId,
++            Limits: new RetrievalSourceLimitOptions(5, 0, 0, 0));
++
++        var cacheKey = cacheKeyBuilder.BuildKnowledgeSectionKey("tests-v1", request, accessDecision, "finance payroll approvals", 5);
++        await distributedCache.SetAsync(cacheKey, [0x01, 0x02, 0x03], CancellationToken.None);
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(request, CancellationToken.None);
++
++        Assert.Contains(result.KnowledgeSection.Items, item => item.Title == "Finance Controls");
++    }
+ 
+     private static Agent CreateAgent(Guid companyId, Guid agentId, string displayName, IReadOnlyList<string> readScopes)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalCacheKeyBuilderTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalCacheKeyBuilderTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalCacheKeyBuilderTests.cs
+@@ -0,0 +1,94 @@
++using VirtualCompany.Application.Context;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Context;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GroundedContextRetrievalCacheKeyBuilderTests
++{
++    private readonly GroundedContextRetrievalCacheKeyBuilder _builder = new();
++
++    [Fact]
++    public void BuildKnowledgeSectionKey_changes_when_company_changes()
++    {
++        var firstRequest = new GroundedContextRetrievalRequest(Guid.NewGuid(), Guid.NewGuid(), "finance payroll approvals", Guid.NewGuid());
++        var secondRequest = firstRequest with { CompanyId = Guid.NewGuid() };
++
++        var firstKey = _builder.BuildKnowledgeSectionKey("tests-v1", firstRequest, CreateDecision(firstRequest), "finance payroll approvals", 5);
++        var secondKey = _builder.BuildKnowledgeSectionKey("tests-v1", secondRequest, CreateDecision(secondRequest), "finance payroll approvals", 5);
++
++        Assert.NotEqual(firstKey, secondKey);
++    }
++
++    [Fact]
++    public void BuildKnowledgeSectionKey_changes_when_agent_scope_or_query_changes()
++    {
++        var request = new GroundedContextRetrievalRequest(Guid.NewGuid(), Guid.NewGuid(), "finance payroll approvals", Guid.NewGuid());
++        var baseDecision = CreateDecision(request, ["finance"]);
++        var differentAgentDecision = baseDecision with { AgentId = Guid.NewGuid() };
++        var differentScopeDecision = CreateDecision(request, ["hr"]);
++
++        var baseKey = _builder.BuildKnowledgeSectionKey("tests-v1", request, baseDecision, "finance payroll approvals", 5);
++        var differentAgentKey = _builder.BuildKnowledgeSectionKey("tests-v1", request with { AgentId = Guid.NewGuid() }, differentAgentDecision, "finance payroll approvals", 5);
++        var differentScopeKey = _builder.BuildKnowledgeSectionKey("tests-v1", request, differentScopeDecision, "finance payroll approvals", 5);
++        var differentQueryKey = _builder.BuildKnowledgeSectionKey("tests-v1", request, baseDecision, "hr staffing approvals", 5);
++
++        Assert.NotEqual(baseKey, differentAgentKey);
++        Assert.NotEqual(baseKey, differentScopeKey);
++        Assert.NotEqual(baseKey, differentQueryKey);
++    }
++
++    [Fact]
++    public void BuildMemorySectionKey_changes_when_key_version_changes()
++    {
++        var asOfUtc = new DateTime(2026, 4, 2, 9, 30, 0, DateTimeKind.Utc);
++        var request = new GroundedContextRetrievalRequest(Guid.NewGuid(), Guid.NewGuid(), "finance payroll approvals", Guid.NewGuid(), AsOfUtc: asOfUtc);
++        var decision = CreateDecision(request);
++
++        var firstKey = _builder.BuildMemorySectionKey("tests-v1", request, decision, "finance payroll approvals", 5, asOfUtc);
++        var secondKey = _builder.BuildMemorySectionKey("tests-v2", request, decision, "finance payroll approvals", 5, asOfUtc);
++
++        Assert.NotEqual(firstKey, secondKey);
++    }
++
++    private static RetrievalAccessDecision CreateDecision(
++        GroundedContextRetrievalRequest request,
++        IReadOnlyList<string>? scopes = null)
++    {
++        var actorMembershipId = request.ActorUserId.HasValue ? Guid.NewGuid() : null;
++
++        return new RetrievalAccessDecision(
++            request.CompanyId,
++            request.AgentId,
++            request.ActorUserId,
++            actorMembershipId,
++            request.ActorUserId.HasValue ? CompanyMembershipRole.Manager : null,
++            scopes ?? ["finance"],
++            scopes ?? ["finance"],
++            MembershipResolved: true,
++            CanRetrieve: true);
++    }
++}
+END_OF_PATCH

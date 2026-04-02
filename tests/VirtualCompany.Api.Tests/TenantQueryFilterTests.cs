@@ -48,6 +48,40 @@ public sealed class TenantQueryFilterTests : IClassFixture<TestWebApplicationFac
         Assert.Equal(ids.CompanyAId, note.CompanyId);
     }
 
+    [Fact]
+    public async Task ContextRetrievalSources_query_filters_rows_to_active_company_context()
+    {
+        var companyAId = Guid.NewGuid();
+        var companyBId = Guid.NewGuid();
+        var retrievalAId = Guid.NewGuid();
+        var retrievalBId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
+            dbContext.ContextRetrievals.AddRange(
+                new ContextRetrieval(retrievalAId, companyAId, Guid.NewGuid(), null, null, "finance retrieval", "hash-a", null, "audit"),
+                new ContextRetrieval(retrievalBId, companyBId, Guid.NewGuid(), null, null, "sales retrieval", "hash-b", null, "audit"));
+            dbContext.ContextRetrievalSources.AddRange(
+                new ContextRetrievalSource(Guid.NewGuid(), retrievalAId, companyAId, "memory_item", "memory-a", null, null, null, "Finance memory", "Finance memory snippet", "memory", "Memory", 1, "fact | company_wide", 1, 0.9d, DateTime.UtcNow),
+                new ContextRetrievalSource(Guid.NewGuid(), retrievalBId, companyBId, "memory_item", "memory-b", null, null, null, "Sales memory", "Sales memory snippet", "memory", "Memory", 1, "fact | company_wide", 1, 0.9d, DateTime.UtcNow));
+
+            return Task.CompletedTask;
+        });
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(companyAId);
+
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var sources = await dbContext.ContextRetrievalSources.AsNoTracking().ToListAsync();
+
+        var source = Assert.Single(sources);
+        Assert.Equal(companyAId, source.CompanyId);
+        Assert.Equal(retrievalAId, source.RetrievalId);
+        Assert.Equal("memory", source.SectionId);
+    }
+
     private async Task<SeedIds> SeedCompanyNotesAsync()
     {
         var companyAId = Guid.NewGuid();

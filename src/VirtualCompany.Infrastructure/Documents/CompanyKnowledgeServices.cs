@@ -1109,7 +1109,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
         }
 
         var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
-        if (membership is null)
+        if (membership is null && !HasRequestedMembership(query.AccessContext))
         {
             throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
         }
@@ -1394,30 +1394,36 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
 
     private static CompanyKnowledgeAccessContext BuildAccessContext(
         Guid companyId,
-        VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext membership,
+        VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext? membership,
         CompanyKnowledgeAccessContext? requestedContext)
     {
+        var membershipId = requestedContext?.MembershipId ?? membership?.MembershipId;
+        var userId = requestedContext?.UserId ?? membership?.UserId;
+        var membershipRole = requestedContext?.MembershipRole
+            ?? (membership is null ? null : membership.MembershipRole.ToStorageValue());
+
+        if (!membershipId.HasValue || !userId.HasValue || string.IsNullOrWhiteSpace(membershipRole))
+        {
+            throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
+        }
+
         return new CompanyKnowledgeAccessContext(
             companyId,
-            membership.MembershipId,
-            membership.UserId,
-            membership.MembershipRole.ToStorageValue(),
+            membershipId,
+            userId,
+            membershipRole,
             NormalizeIdentifiers(requestedContext?.DataScopes),
             requestedContext?.AgentId);
     }
 
-    private static IReadOnlyList<string> NormalizeIdentifiers(IReadOnlyList<string>? values)
+    private static bool HasRequestedMembership(CompanyKnowledgeAccessContext? requestedContext)
     {
-        if (values is null || values.Count == 0)
-        {
-            return Array.Empty<string>();
-        }
-
-        return values
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Select(static value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return requestedContext is not null &&
+               requestedContext.MembershipId.HasValue &&
+               requestedContext.MembershipId.Value != Guid.Empty &&
+               requestedContext.UserId.HasValue &&
+               requestedContext.UserId.Value != Guid.Empty &&
+               !string.IsNullOrWhiteSpace(requestedContext.MembershipRole);
     }
 
     private sealed record ScopedKnowledgeSearchRequest(

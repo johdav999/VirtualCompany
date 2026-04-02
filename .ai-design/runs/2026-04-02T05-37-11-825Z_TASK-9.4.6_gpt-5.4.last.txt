@@ -1,0 +1,452 @@
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+--- a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
++++ b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+@@ -1,7 +1,25 @@
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++
+ namespace VirtualCompany.Application.Context;
++
++public sealed record GroundedPromptContextRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    string? QueryText = null,
++    Guid? ActorUserId = null,
++    Guid? TaskId = null,
++    string? TaskTitle = null,
++    string? TaskDescription = null,
++    RetrievalSourceLimitOptions? Limits = null,
++    string? CorrelationId = null,
++    string? RetrievalPurpose = null,
++    DateTime? AsOfUtc = null)
++{
++    public GroundedContextRetrievalRequest ToRetrievalRequest() =>
++        new(CompanyId, AgentId, QueryText, ActorUserId, TaskId, TaskTitle, TaskDescription, Limits, CorrelationId, RetrievalPurpose, AsOfUtc);
++}
+ 
+ public sealed record GroundedContextRetrievalRequest(
+     Guid CompanyId,
+@@ -92,6 +110,12 @@ public sealed record NormalizedGroundedContextDto(
+         Array.Empty<RetrievalSourceReferenceDto>(),
+         new GroundedContextSectionCountsDto(0, 0, 0, 0, 0));
+ }
++
++public sealed record GroundedPromptContextDto(
++    Guid RetrievalId,
++    DateTime GeneratedAtUtc,
++    CompanyContextSectionDto Company,
++    NormalizedGroundedContextDto Context,
++    RetrievalAppliedFiltersDto AppliedFilters);
+ 
+ public sealed record GroundedContextSectionDescriptorDto(
+     string Id,
+@@ -224,6 +248,18 @@ public interface IGroundedContextRetrievalService
+         GroundedContextRetrievalRequest request,
+         CancellationToken cancellationToken);
+ }
++
++public interface IGroundedContextPromptBuilder
++{
++    GroundedPromptContextDto Build(GroundedContextRetrievalResult result);
++}
++
++public interface IGroundedPromptContextService
++{
++    Task<GroundedPromptContextDto> PrepareAsync(
++        GroundedPromptContextRequest request,
++        CancellationToken cancellationToken);
++}
+ 
+ public static class GroundedContextSourceTypes
+ {
+diff --git a/src/VirtualCompany.Api/Controllers/GroundedContextController.cs b/src/VirtualCompany.Api/Controllers/GroundedContextController.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/GroundedContextController.cs
+@@ -0,0 +1,63 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/agents/{agentId:guid}/grounded-context")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class GroundedContextController : ControllerBase
++{
++    private readonly IGroundedPromptContextService _promptContextService;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++
++    public GroundedContextController(
++        IGroundedPromptContextService promptContextService,
++        ICurrentUserAccessor currentUserAccessor)
++    {
++        _promptContextService = promptContextService;
++        _currentUserAccessor = currentUserAccessor;
++    }
++
++    [HttpPost]
++    public async Task<ActionResult<GroundedPromptContextDto>> PrepareAsync(
++        Guid companyId,
++        Guid agentId,
++        [FromBody] PrepareGroundedContextRequest request,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            // Controllers forward scoped identifiers and raw intent only.
++            var promptContext = await _promptContextService.PrepareAsync(
++                new GroundedPromptContextRequest(
++                    companyId,
++                    agentId,
++                    request.QueryText,
++                    _currentUserAccessor.UserId,
++                    request.TaskId,
++                    request.TaskTitle,
++                    request.TaskDescription,
++                    request.Limits,
++                    request.CorrelationId,
++                    request.RetrievalPurpose,
++                    request.AsOfUtc),
++                cancellationToken);
++
++            return Ok(promptContext);
++        }
++        catch (GroundedContextRetrievalValidationException ex)
++        {
++            return BadRequest(new ProblemDetails { Title = "Invalid grounded context request", Detail = ex.Message, Status = StatusCodes.Status400BadRequest });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++
++    public sealed record PrepareGroundedContextRequest(
++        string? QueryText,
++        Guid? TaskId,
++        string? TaskTitle,
++        string? TaskDescription,
++        RetrievalSourceLimitOptions? Limits,
++        string? CorrelationId,
++        string? RetrievalPurpose,
++        DateTime? AsOfUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedPromptContextService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedPromptContextService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedPromptContextService.cs
+@@ -0,0 +1,50 @@
++using VirtualCompany.Application.Context;
++
++namespace VirtualCompany.Infrastructure.Context;
++
++public sealed class GroundedContextPromptBuilder : IGroundedContextPromptBuilder
++{
++    public GroundedPromptContextDto Build(GroundedContextRetrievalResult result)
++    {
++        ArgumentNullException.ThrowIfNull(result);
++
++        var normalizedContext = GroundedContextPromptReadyMapper.Normalize(
++            result.GeneratedAtUtc,
++            result.KnowledgeSection,
++            result.MemorySection,
++            result.RecentTaskSection,
++            result.RelevantRecordsSection,
++            result.SourceReferences);
++
++        return new GroundedPromptContextDto(
++            result.RetrievalId,
++            result.GeneratedAtUtc,
++            result.CompanyContextSection,
++            normalizedContext,
++            result.AppliedFilters);
++    }
++}
++
++public sealed class GroundedPromptContextService : IGroundedPromptContextService
++{
++    private readonly IGroundedContextRetrievalService _retrievalService;
++    private readonly IGroundedContextPromptBuilder _promptBuilder;
++
++    public GroundedPromptContextService(
++        IGroundedContextRetrievalService retrievalService,
++        IGroundedContextPromptBuilder promptBuilder)
++    {
++        _retrievalService = retrievalService;
++        _promptBuilder = promptBuilder;
++    }
++
++    public async Task<GroundedPromptContextDto> PrepareAsync(
++        GroundedPromptContextRequest request,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++
++        // Prompt-ready shaping stays in orchestration so callers consume structured sections.
++        var retrievalResult = await _retrievalService.RetrieveAsync(
++            request.ToRetrievalRequest(),
++            cancellationToken);
++
++        return _promptBuilder.Build(retrievalResult);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -100,6 +100,8 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+         services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
+         services.AddScoped<IRetrievalScopeEvaluator, RetrievalScopeEvaluator>();
++        services.AddScoped<IGroundedContextPromptBuilder, GroundedContextPromptBuilder>();
++        services.AddScoped<IGroundedPromptContextService, GroundedPromptContextService>();
+         services.AddScoped<IGroundedContextRetrievalService, GroundedContextRetrievalService>();
+         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedPromptContextServiceTests.cs b/tests/VirtualCompany.Api.Tests/GroundedPromptContextServiceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GroundedPromptContextServiceTests.cs
+@@ -0,0 +1,213 @@
++using VirtualCompany.Application.Context;
++using VirtualCompany.Infrastructure.Context;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GroundedPromptContextServiceTests
++{
++    [Fact]
++    public async Task PrepareAsync_returns_structured_prompt_context_sections_from_retrieval_result()
++    {
++        var generatedAtUtc = new DateTime(2026, 4, 2, 9, 30, 0, DateTimeKind.Utc);
++        var retrievalResult = new GroundedContextRetrievalResult(
++            Guid.NewGuid(),
++            new CompanyContextSectionDto(
++                Guid.NewGuid(),
++                Guid.NewGuid(),
++                Guid.NewGuid(),
++                "Finance Agent",
++                "Controller",
++                "Keeps payroll approval routing accurate.",
++                ["finance"],
++                "finance payroll approvals"),
++            new RetrievalSectionDto(
++                "knowledge",
++                "Knowledge",
++                [
++                    new RetrievalItemDto(
++                        GroundedContextSourceTypes.KnowledgeChunk,
++                        "chunk-a",
++                        "Payroll Controls",
++                        "Finance payroll approvals require controller signoff.",
++                        0.91d,
++                        null,
++                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["documentId"] = "document-a",
++                            ["documentType"] = "policy",
++                            ["sourceType"] = "file",
++                            ["sourceRef"] = "companies/1/controls.txt",
++                            ["chunkIndex"] = "0"
++                        })
++                ]),
++            new RetrievalSectionDto(
++                "memory",
++                "Memory",
++                [
++                    new RetrievalItemDto(
++                        GroundedContextSourceTypes.MemoryItem,
++                        "memory-a",
++                        "Fact memory",
++                        "Shared payroll calendar is current.",
++                        0.61d,
++                        generatedAtUtc.AddMinutes(-1),
++                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["memoryType"] = "fact",
++                            ["scope"] = "company_wide",
++                            ["salience"] = "0.65",
++                            ["validFromUtc"] = generatedAtUtc.AddDays(-1).ToString("O")
++                        })
++                ]),
++            new RetrievalSectionDto(
++                "recent_tasks",
++                "Recent Task History",
++                [
++                    new RetrievalItemDto(
++                        GroundedContextSourceTypes.RecentTask,
++                        "attempt-a",
++                        "payroll (read)",
++                        "Status: executed. Summary: Reviewed approval routing.",
++                        0.50d,
++                        generatedAtUtc.AddMinutes(-1),
++                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["toolName"] = "payroll",
++                            ["actionType"] = "read",
++                            ["status"] = "executed",
++                            ["scope"] = "finance",
++                            ["taskId"] = "task-1"
++                        })
++                ]),
++            new RetrievalSectionDto(
++                "relevant_records",
++                "Relevant Records",
++                [
++                    new RetrievalItemDto(
++                        GroundedContextSourceTypes.ApprovalRequest,
++                        "approval-a",
++                        "Approval: payments",
++                        "Status: pending. Action: write.",
++                        0.80d,
++                        generatedAtUtc.AddMinutes(-2),
++                        new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["sourceEntityType"] = "approval_request",
++                            ["status"] = "pending"
++                        })
++                ]),
++            [
++                CreateSourceReference("knowledge", 1, 1, GroundedContextSourceTypes.KnowledgeChunk, "chunk-a", "Payroll Controls", "finance payroll approvals require controller signoff."),
++                CreateSourceReference("memory", 2, 1, GroundedContextSourceTypes.MemoryItem, "memory-a", "Fact memory", "shared payroll calendar is current."),
++                CreateSourceReference("recent_tasks", 3, 1, GroundedContextSourceTypes.RecentTask, "attempt-a", "payroll (read)", "reviewed approval routing."),
++                CreateSourceReference("relevant_records", 4, 1, GroundedContextSourceTypes.ApprovalRequest, "approval-a", "Approval: payments", "status: pending.")
++            ],
++            new RetrievalAppliedFiltersDto(["finance"], MembershipResolved: true, RestrictedKnowledgeExcludedByDefault: true, RestrictedMemoryExcludedByDefault: true, ScopedTaskHistoryExcludedByDefault: true))
++        {
++            GeneratedAtUtc = generatedAtUtc
++        };
++
++        var service = new GroundedPromptContextService(
++            new StubGroundedContextRetrievalService(retrievalResult),
++            new GroundedContextPromptBuilder());
++
++        var result = await service.PrepareAsync(
++            new GroundedPromptContextRequest(
++                retrievalResult.CompanyContextSection.CompanyId,
++                retrievalResult.CompanyContextSection.AgentId,
++                QueryText: "finance payroll approvals",
++                ActorUserId: retrievalResult.CompanyContextSection.ActorUserId,
++                TaskTitle: "Review payroll approvals"),
++            CancellationToken.None);
++
++        Assert.Equal(retrievalResult.RetrievalId, result.RetrievalId);
++        Assert.Equal(retrievalResult.GeneratedAtUtc, result.GeneratedAtUtc);
++        Assert.Equal(retrievalResult.CompanyContextSection, result.Company);
++        Assert.Equal(["knowledge", "memory", "recent_tasks", "relevant_records"], result.Context.Sections.OrderBy(x => x.Order).Select(x => x.Id));
++        Assert.Equal("chunk-a", Assert.Single(result.Context.Documents.Items).ChunkId);
++        Assert.Equal("memory-a", Assert.Single(result.Context.Memory.Items).MemoryId);
++        Assert.Equal("attempt-a", Assert.Single(result.Context.RecentTasks.Items).AttemptId);
++        Assert.Equal("approval-a", Assert.Single(result.Context.RelevantRecords.Items).RecordId);
++        Assert.Equal(retrievalResult.SourceReferences.Select(x => x.SourceId), result.Context.SourceReferences.Select(x => x.SourceId));
++    }
++
++    [Fact]
++    public async Task PrepareAsync_passes_scope_and_tenant_inputs_to_retrieval_service_without_assembling_prompt_text()
++    {
++        var retrievalResult = new GroundedContextRetrievalResult(
++            Guid.NewGuid(),
++            new CompanyContextSectionDto(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "Ops Agent", "Operator", null, ["finance"], "finance approvals"),
++            new RetrievalSectionDto("knowledge", "Knowledge", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("memory", "Memory", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("recent_tasks", "Recent Task History", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("relevant_records", "Relevant Records", Array.Empty<RetrievalItemDto>()),
++            Array.Empty<RetrievalSourceReferenceDto>(),
++            new RetrievalAppliedFiltersDto(["finance"], MembershipResolved: true, RestrictedKnowledgeExcludedByDefault: true, RestrictedMemoryExcludedByDefault: true, ScopedTaskHistoryExcludedByDefault: true))
++        {
++            GeneratedAtUtc = new DateTime(2026, 4, 2, 10, 0, 0, DateTimeKind.Utc)
++        };
++
++        var retrievalService = new CapturingGroundedContextRetrievalService(retrievalResult);
++        var service = new GroundedPromptContextService(retrievalService, new GroundedContextPromptBuilder());
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var asOfUtc = new DateTime(2026, 4, 2, 8, 0, 0, DateTimeKind.Utc);
++
++        await service.PrepareAsync(
++            new GroundedPromptContextRequest(
++                companyId,
++                agentId,
++                QueryText: "finance approvals",
++                ActorUserId: actorUserId,
++                TaskId: taskId,
++                TaskTitle: "Review approval routing",
++                TaskDescription: "Focus on tenant-safe payroll approval paths.",
++                Limits: new RetrievalSourceLimitOptions(2, 3, 4, 5),
++                CorrelationId: "corr-123",
++                RetrievalPurpose: "orchestration_context",
++                AsOfUtc: asOfUtc),
++            CancellationToken.None);
++
++        Assert.NotNull(retrievalService.LastRequest);
++        Assert.Equal(companyId, retrievalService.LastRequest!.CompanyId);
++        Assert.Equal(agentId, retrievalService.LastRequest.AgentId);
++        Assert.Equal(actorUserId, retrievalService.LastRequest.ActorUserId);
++        Assert.Equal(taskId, retrievalService.LastRequest.TaskId);
++        Assert.Equal("finance approvals", retrievalService.LastRequest.QueryText);
++        Assert.Equal("Review approval routing", retrievalService.LastRequest.TaskTitle);
++        Assert.Equal("Focus on tenant-safe payroll approval paths.", retrievalService.LastRequest.TaskDescription);
++        Assert.Equal("corr-123", retrievalService.LastRequest.CorrelationId);
++        Assert.Equal("orchestration_context", retrievalService.LastRequest.RetrievalPurpose);
++        Assert.Equal(asOfUtc, retrievalService.LastRequest.AsOfUtc);
++        Assert.Equal(new RetrievalSourceLimitOptions(2, 3, 4, 5), retrievalService.LastRequest.Limits);
++    }
++
++    private static RetrievalSourceReferenceDto CreateSourceReference(string sectionId, int rank, int sectionRank, string sourceType, string sourceId, string title, string snippet) =>
++        new(
++            sourceType,
++            sourceId,
++            title,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? "knowledge_document" : null,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? $"document-{sourceId}" : null,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? title : null,
++            sectionId,
++            sectionId switch
++            {
++                "knowledge" => "Knowledge",
++                "memory" => "Memory",
++                "recent_tasks" => "Recent Task History",
++                "relevant_records" => "Relevant Records",
++                _ => sectionId
++            },
++            sectionRank,
++            $"{title} | {sectionId}",
++            rank,
++            0.5d,
++            snippet,
++            null,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["retrievalSection"] = sectionId,
++                ["retrievalSectionTitle"] = sectionId,
++                ["retrievalSectionRank"] = sectionRank.ToString()
++            });
++
++    private sealed class StubGroundedContextRetrievalService(GroundedContextRetrievalResult result) : IGroundedContextRetrievalService
++    {
++        public Task<GroundedContextRetrievalResult> RetrieveAsync(GroundedContextRetrievalRequest request, CancellationToken cancellationToken) =>
++            Task.FromResult(result);
++    }
++
++    private sealed class CapturingGroundedContextRetrievalService(GroundedContextRetrievalResult result) : IGroundedContextRetrievalService
++    {
++        public GroundedContextRetrievalRequest? LastRequest { get; private set; }
++
++        public Task<GroundedContextRetrievalResult> RetrieveAsync(GroundedContextRetrievalRequest request, CancellationToken cancellationToken)
++        {
++            LastRequest = request;
++            return Task.FromResult(result);
++        }
++    }
++}
+END_OF_PATCH

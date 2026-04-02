@@ -32,6 +32,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+    public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+    public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -61,5 +63,11 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<MemoryItem>()
             .HasQueryFilter(memoryItem =>
                 CurrentCompanyId.HasValue && memoryItem.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ContextRetrieval>()
+            .HasQueryFilter(retrieval =>
+                CurrentCompanyId.HasValue && retrieval.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ContextRetrievalSource>()
+            .HasQueryFilter(source =>
+                CurrentCompanyId.HasValue && source.CompanyId == CurrentCompanyId.Value);
     }
 }

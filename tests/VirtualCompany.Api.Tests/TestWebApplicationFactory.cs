@@ -20,7 +20,15 @@ namespace VirtualCompany.Api.Tests;
 
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private readonly TimeProvider _timeProvider;
     private SqliteConnection? _connection;
+
+    public TestWebApplicationFactory()
+        : this(TimeProvider.System)
+    {
+    }
+
+    internal TestWebApplicationFactory(TimeProvider timeProvider) => _timeProvider = timeProvider;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -35,6 +43,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
+                [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
+                [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
+                [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
+                [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
                 [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
             });
         });
@@ -42,6 +54,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<DbContextOptions<VirtualCompanyDbContext>>();
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton(_timeProvider);
             services.RemoveAll<VirtualCompanyDbContext>();
 
             _connection ??= CreateOpenConnection();

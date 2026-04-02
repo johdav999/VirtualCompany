@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-304",
+  "promptPath": ".ai-design/prompts/TASK-ST-304.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-02T04:58:40.473Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-02T04-58-40-473Z_TASK-ST-304_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-02T04-58-40-473Z_TASK-ST-304.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-02T05:07:02.924Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\n+    {\n+        return new MemoryItem(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            MemoryType.Fact,\n+            summary,\n+            null,\n+            null,\n+            salience,\n+            DateTime.UtcNow.AddHours(-1),\n+            null,\n+            metadata);\n+    }\n+\n+    private static MemoryItem CreateExpiredMemory(Guid companyId, Guid? agentId, string summary, decimal salience)\n+    {\n+        return new MemoryItem(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            MemoryType.Fact,\n+            summary,\n+            null,\n+            null,\n+            salience,\n+            DateTime.UtcNow.AddDays(-5),\n+            DateTime.UtcNow.AddDays(-1));\n+    }\n+\n+    private static ToolExecutionAttempt CreateAttempt(\n+        Guid companyId,\n+        Guid agentId,\n+        string toolName,\n+        ToolActionType actionType,\n+        ToolExecutionStatus status,\n+        string? scope,\n+        Guid taskId,\n+        string summary)\n+    {\n+        var attempt = new ToolExecutionAttempt(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            toolName,\n+            actionType,\n+            scope,\n+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"taskId\"] = JsonValue.Create(taskId)\n+            });\n+\n+        if (status == ToolExecutionStatus.Executed)\n+        {\n+            attempt.MarkExecuted(\n+                policyDecision: new Dictionary<string, JsonNode?>(),\n+                resultPayload: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+                {\n+                    [\"summary\"] = JsonValue.Create(summary),\n+                    [\"taskId\"] = JsonValue.Create(taskId)\n+                });\n+        }\n+        else\n+        {\n+            attempt.MarkDenied(new Dictionary<string, JsonNode?>());\n+        }\n+\n+        return attempt;\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "urn new MemoryItem(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            MemoryType.Fact,\n+            summary,\n+            null,\n+            null,\n+            salience,\n+            DateTime.UtcNow.AddHours(-1),\n+            null,\n+            metadata);\n+    }\n+\n+    private static MemoryItem CreateExpiredMemory(Guid companyId, Guid? agentId, string summary, decimal salience)\n+    {\n+        return new MemoryItem(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            MemoryType.Fact,\n+            summary,\n+            null,\n+            null,\n+            salience,\n+            DateTime.UtcNow.AddDays(-5),\n+            DateTime.UtcNow.AddDays(-1));\n+    }\n+\n+    private static ToolExecutionAttempt CreateAttempt(\n+        Guid companyId,\n+        Guid agentId,\n+        string toolName,\n+        ToolActionType actionType,\n+        ToolExecutionStatus status,\n+        string? scope,\n+        Guid taskId,\n+        string summary)\n+    {\n+        var attempt = new ToolExecutionAttempt(\n+            Guid.NewGuid(),\n+            companyId,\n+            agentId,\n+            toolName,\n+            actionType,\n+            scope,\n+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+            {\n+                [\"taskId\"] = JsonValue.Create(taskId)\n+            });\n+\n+        if (status == ToolExecutionStatus.Executed)\n+        {\n+            attempt.MarkExecuted(\n+                policyDecision: new Dictionary<string, JsonNode?>(),\n+                resultPayload: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)\n+                {\n+                    [\"summary\"] = JsonValue.Create(summary),\n+                    [\"taskId\"] = JsonValue.Create(taskId)\n+                });\n+        }\n+        else\n+        {\n+            attempt.MarkDenied(new Dictionary<string, JsonNode?>());\n+        }\n+\n+        return attempt;\n+    }\n+}\nEND_OF_PATCH\ntokens used\n112,768\n",
+  "verbosityMode": "verbose"
+}

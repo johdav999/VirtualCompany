@@ -1,0 +1,696 @@
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+index 1d7e6ef..91f0a52 100644
+--- a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
++++ b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+@@ -23,13 +23,13 @@ public sealed record GroundedContextRetrievalResult(
+     RetrievalSectionDto RecentTaskSection,
+     RetrievalSectionDto RelevantRecordsSection,
+     IReadOnlyList<RetrievalSourceReferenceDto> SourceReferences,
+-    RetrievalAppliedFiltersDto AppliedFilters);
++    RetrievalAppliedFiltersDto AppliedFilters)
+ {
+     public DateTime GeneratedAtUtc { get; init; }
+     public NormalizedGroundedContextDto NormalizedContext { get; init; } = NormalizedGroundedContextDto.Empty;
+ }
++
+ public sealed record CompanyContextSectionDto(
+     Guid CompanyId,
+     Guid AgentId,
+@@ -64,6 +64,13 @@ public sealed record RetrievalSourceReferenceDto(
+     string SourceType,
+     string SourceId,
+     string Title,
++    string? ParentSourceType,
++    string? ParentSourceId,
++    string? ParentTitle,
++    string SectionId,
++    string SectionTitle,
++    int SectionRank,
++    string? Locator,
+     int Rank,
+     double? Score,
+     string Snippet,
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+index e0041f4..cf21a76 100644
+--- a/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
++++ b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+@@ -220,7 +220,7 @@ public static class GroundedContextPromptReadyMapper
+             sourceReference.SourceType,
+             sourceReference.SourceId,
+             NormalizeOptional(sourceReference.Title) ?? item.SourceId,
+-            sourceReference.Rank > 0 ? sourceReference.Rank : null,
++            sourceReference.Rank > 0 ? sourceReference.Rank : null,
+             ParseNullableInt(GetMetadata(metadata, "retrievalSectionRank")),
+             sourceReference.Score,
+             sourceReference.TimestampUtc,
+@@ -263,6 +263,13 @@ public static class GroundedContextPromptReadyMapper
+             .Select(reference => new RetrievalSourceReferenceDto(
+                 reference.SourceType,
+                 reference.SourceId,
++                NormalizeOptional(reference.Title) ?? reference.SourceId,
++                NormalizeOptional(reference.ParentSourceType),
++                NormalizeOptional(reference.ParentSourceId),
++                NormalizeOptional(reference.ParentTitle),
++                NormalizeOptional(reference.SectionId) ?? GetMetadata(reference.Metadata, "retrievalSection") ?? string.Empty,
++                NormalizeOptional(reference.SectionTitle) ?? GetMetadata(reference.Metadata, "retrievalSectionTitle") ?? string.Empty,
++                reference.SectionRank > 0 ? reference.SectionRank : ParseNullableInt(GetMetadata(reference.Metadata, "retrievalSectionRank")) ?? 0,
++                NormalizeOptional(reference.Locator),
+                 NormalizeOptional(reference.Title) ?? reference.SourceId,
+                 reference.Rank,
+                 reference.Score,
+diff --git a/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+index 61dddbb..cb63db7 100644
+--- a/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+@@ -91,9 +91,16 @@ public sealed class ContextRetrievalSource : ICompanyOwnedEntity
+         Guid companyId,
+         string sourceType,
+         string sourceEntityId,
++        string? parentSourceType,
++        string? parentSourceEntityId,
++        string? parentTitle,
+         string title,
+         string snippet,
++        string sectionId,
++        string sectionTitle,
++        int sectionRank,
++        string? locator,
+         int rank,
++        double? score,
+         double? score,
+         DateTime? timestampUtc,
+         IReadOnlyDictionary<string, string?>? metadata = null)
+@@ -109,6 +116,11 @@ public sealed class ContextRetrievalSource : ICompanyOwnedEntity
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
++        if (sectionRank <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sectionRank), "SectionRank must be greater than zero.");
++        }
++
+         if (rank <= 0)
+         {
+             throw new ArgumentOutOfRangeException(nameof(rank), "Rank must be greater than zero.");
+@@ -118,9 +130,16 @@ public sealed class ContextRetrievalSource : ICompanyOwnedEntity
+         RetrievalId = retrievalId;
+         CompanyId = companyId;
+         SourceType = NormalizeRequired(sourceType, nameof(sourceType), 64);
+         SourceEntityId = NormalizeRequired(sourceEntityId, nameof(sourceEntityId), 128);
++        ParentSourceType = NormalizeOptional(parentSourceType, nameof(parentSourceType), 64);
++        ParentSourceEntityId = NormalizeOptional(parentSourceEntityId, nameof(parentSourceEntityId), 128);
++        ParentTitle = NormalizeOptional(parentTitle, nameof(parentTitle), 256);
+         Title = NormalizeRequired(title, nameof(title), 256);
+         Snippet = NormalizeRequired(snippet, nameof(snippet), 4000);
++        SectionId = NormalizeRequired(sectionId, nameof(sectionId), 64);
++        SectionTitle = NormalizeRequired(sectionTitle, nameof(sectionTitle), 128);
++        SectionRank = sectionRank;
++        Locator = NormalizeOptional(locator, nameof(locator), 512);
+         Rank = rank;
+         Score = score;
+         TimestampUtc = timestampUtc;
+@@ -133,9 +152,16 @@ public sealed class ContextRetrievalSource : ICompanyOwnedEntity
+     public Guid CompanyId { get; private set; }
+     public string SourceType { get; private set; } = null!;
+     public string SourceEntityId { get; private set; } = null!;
++    public string? ParentSourceType { get; private set; }
++    public string? ParentSourceEntityId { get; private set; }
++    public string? ParentTitle { get; private set; }
+     public string Title { get; private set; } = null!;
+     public string Snippet { get; private set; } = null!;
++    public string SectionId { get; private set; } = null!;
++    public string SectionTitle { get; private set; } = null!;
++    public int SectionRank { get; private set; }
++    public string? Locator { get; private set; }
+     public int Rank { get; private set; }
+     public double? Score { get; private set; }
+     public DateTime? TimestampUtc { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+index 5d7ad9e..d4898dc 100644
+--- a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+@@ -126,9 +126,16 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+                 request.CompanyId,
+                 sourceReference.SourceType,
+                 sourceReference.SourceId,
++                sourceReference.ParentSourceType,
++                sourceReference.ParentSourceId,
++                sourceReference.ParentTitle,
+                 sourceReference.Title,
+                 sourceReference.Snippet,
++                sourceReference.SectionId,
++                sourceReference.SectionTitle,
++                sourceReference.SectionRank,
++                sourceReference.Locator,
+                 sourceReference.Rank,
++                sourceReference.Score,
+                 sourceReference.Score,
+                 sourceReference.TimestampUtc,
+                 sourceReference.Metadata));
+@@ -1030,26 +1037,131 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             .OrderBy(item => SourceTypePriority.TryGetValue(item.Item.SourceType, out var priority) ? priority : int.MaxValue)
+             .ThenByDescending(item => item.Item.RelevanceScore ?? 0d)
+             .ThenByDescending(item => item.Item.TimestampUtc)
+             .ThenBy(item => item.Item.SourceId, StringComparer.Ordinal)
+-            .Select((item, index) => new RetrievalSourceReferenceDto(
+-                item.Item.SourceType,
+-                item.Item.SourceId,
+-                item.Item.Title,
+-                index + 1,
+-                item.Item.RelevanceScore,
+-                item.Item.Content,
+-                item.Item.TimestampUtc,
+-                CreateSourceReferenceMetadata(item)))
++            .Select((item, index) => CreateSourceReference(item, index + 1))
+             .ToArray();
+ 
+         return ordered;
+     }
+ 
+-    private static IReadOnlyDictionary<string, string?> CreateSourceReferenceMetadata(SectionedRetrievalItem item)
++    private static RetrievalSourceReferenceDto CreateSourceReference(SectionedRetrievalItem item, int rank)
+     {
++        var parentSourceType = ResolveParentSourceType(item);
++        var parentSourceId = ResolveParentSourceId(item);
++        var parentTitle = ResolveParentTitle(item);
++        var locator = BuildSourceLocator(item);
++
++        return new RetrievalSourceReferenceDto(
++            item.Item.SourceType,
++            item.Item.SourceId,
++            item.Item.Title,
++            parentSourceType,
++            parentSourceId,
++            parentTitle,
++            item.SectionId,
++            item.SectionTitle,
++            item.SectionItemRank,
++            locator,
++            rank,
++            item.Item.RelevanceScore,
++            item.Item.Content,
++            item.Item.TimestampUtc,
++            CreateSourceReferenceMetadata(item, parentSourceType, parentSourceId, parentTitle, locator));
++    }
++
++    private static IReadOnlyDictionary<string, string?> CreateSourceReferenceMetadata(
++        SectionedRetrievalItem item,
++        string? parentSourceType,
++        string? parentSourceId,
++        string? parentTitle,
++        string? locator)
++    {
+         var metadata = new Dictionary<string, string?>(item.Item.Metadata, StringComparer.OrdinalIgnoreCase)
+         {
+             ["retrievalSection"] = item.SectionId,
+             ["retrievalSectionTitle"] = item.SectionTitle,
+             ["retrievalSectionRank"] = item.SectionItemRank.ToString()
+         };
+ 
++        if (!string.IsNullOrWhiteSpace(parentSourceType))
++        {
++            metadata["parentSourceType"] = parentSourceType;
++        }
++
++        if (!string.IsNullOrWhiteSpace(parentSourceId))
++        {
++            metadata["parentSourceId"] = parentSourceId;
++        }
++
++        if (!string.IsNullOrWhiteSpace(parentTitle))
++        {
++            metadata["parentTitle"] = parentTitle;
++        }
++
++        if (!string.IsNullOrWhiteSpace(locator))
++        {
++            metadata["locator"] = locator;
++        }
++
+         return metadata;
+     }
+ 
++    private static string? ResolveParentSourceType(SectionedRetrievalItem item)
++    {
++        return item.Item.SourceType switch
++        {
++            GroundedContextSourceTypes.KnowledgeChunk => "knowledge_document",
++            GroundedContextSourceTypes.MemoryItem => ReadMetadata(item.Item.Metadata, "sourceEntityType"),
++            GroundedContextSourceTypes.RecentTask => ReadMetadata(item.Item.Metadata, "taskId") is not null
++                ? "task"
++                : ReadMetadata(item.Item.Metadata, "approvalRequestId") is not null
++                    ? GroundedContextSourceTypes.ApprovalRequest
++                    : null,
++            GroundedContextSourceTypes.ApprovalRequest => "tool_execution_attempt",
++            _ => null
++        };
++    }
++
++    private static string? ResolveParentSourceId(SectionedRetrievalItem item)
++    {
++        return item.Item.SourceType switch
++        {
++            GroundedContextSourceTypes.KnowledgeChunk => ReadMetadata(item.Item.Metadata, "documentId"),
++            GroundedContextSourceTypes.MemoryItem => ReadMetadata(item.Item.Metadata, "sourceEntityId"),
++            GroundedContextSourceTypes.RecentTask => ReadMetadata(item.Item.Metadata, "taskId") ?? ReadMetadata(item.Item.Metadata, "approvalRequestId"),
++            GroundedContextSourceTypes.ApprovalRequest => ReadMetadata(item.Item.Metadata, "toolExecutionAttemptId"),
++            _ => null
++        };
++    }
++
++    private static string? ResolveParentTitle(SectionedRetrievalItem item) =>
++        item.Item.SourceType == GroundedContextSourceTypes.KnowledgeChunk
++            ? NormalizeOptional(item.Item.Title, 256)
++            : null;
++
++    private static string? BuildSourceLocator(SectionedRetrievalItem item)
++    {
++        string? locator = item.Item.SourceType switch
++        {
++            GroundedContextSourceTypes.KnowledgeChunk => BuildKnowledgeLocator(item),
++            GroundedContextSourceTypes.MemoryItem => JoinLocatorParts(
++                ReadMetadata(item.Item.Metadata, "memoryType"),
++                ReadMetadata(item.Item.Metadata, "scope"),
++                ReadMetadata(item.Item.Metadata, "sourceEntityType")),
++            GroundedContextSourceTypes.RecentTask => JoinLocatorParts(
++                ReadMetadata(item.Item.Metadata, "toolName"),
++                ReadMetadata(item.Item.Metadata, "actionType"),
++                ReadMetadata(item.Item.Metadata, "scope"),
++                ReadMetadata(item.Item.Metadata, "status")),
++            GroundedContextSourceTypes.ApprovalRequest => JoinLocatorParts(
++                ReadMetadata(item.Item.Metadata, "toolName"),
++                ReadMetadata(item.Item.Metadata, "status"),
++                ReadMetadata(item.Item.Metadata, "approvalTarget")),
++            GroundedContextSourceTypes.AgentRecord or GroundedContextSourceTypes.CompanyRecord => JoinLocatorParts(
++                ReadMetadata(item.Item.Metadata, "sourceEntityType"),
++                item.Item.Title),
++            _ => item.Item.Title
++        };
++
++        return NormalizeOptional(locator ?? item.Item.Title, 512);
++    }
++
++    private static string? BuildKnowledgeLocator(SectionedRetrievalItem item)
++    {
++        var chunkIndex = ParseNullableIntValue(ReadMetadata(item.Item.Metadata, "chunkIndex"));
++        var chunkLabel = chunkIndex.HasValue ? $"chunk {chunkIndex.Value + 1}" : null;
++
++        return JoinLocatorParts(
++            item.Item.Title,
++            chunkLabel,
++            ReadMetadata(item.Item.Metadata, "chunkSourceReference") ?? ReadMetadata(item.Item.Metadata, "sourceRef"));
++    }
++
++    private static string? JoinLocatorParts(params string?[] values)
++    {
++        var parts = values
++            .Where(static value => !string.IsNullOrWhiteSpace(value))
++            .Select(value => CollapseWhitespace(value!))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        return parts.Length == 0 ? null : string.Join(" | ", parts);
++    }
++
++    private static string? ReadMetadata(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
++            ? CollapseWhitespace(value)
++            : null;
++
++    private static int? ParseNullableIntValue(string? value) =>
++        int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
++            ? parsed
++            : null;
++
+     private sealed record SectionedRetrievalItem(
+         string SectionId,
+         string SectionTitle,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0861d78..4fbb52c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -526,10 +526,19 @@ internal sealed class ContextRetrievalSourceConfiguration : IEntityTypeConfigura
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.SourceType).HasMaxLength(64).IsRequired();
+         builder.Property(x => x.SourceEntityId).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.ParentSourceType).HasMaxLength(64);
++        builder.Property(x => x.ParentSourceEntityId).HasMaxLength(128);
++        builder.Property(x => x.ParentTitle).HasMaxLength(256);
+         builder.Property(x => x.Title).HasMaxLength(256).IsRequired();
+         builder.Property(x => x.Snippet).HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.SectionId).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SectionTitle).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.SectionRank).IsRequired();
++        builder.Property(x => x.Locator).HasMaxLength(512);
+         builder.Property(x => x.Rank).IsRequired();
+         builder.Property(x => x.Score);
+         builder.Property(x => x.TimestampUtc);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.Metadata)
+@@ -538,6 +547,8 @@ internal sealed class ContextRetrievalSourceConfiguration : IEntityTypeConfigura
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.RetrievalId, x.Rank }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.RetrievalId, x.SectionId, x.SectionRank });
++        builder.HasIndex(x => new { x.CompanyId, x.ParentSourceType, x.ParentSourceEntityId });
+         builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceEntityId });
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402210000_EnrichContextRetrievalSourceReferences.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402210000_EnrichContextRetrievalSourceReferences.cs
+new file mode 100644
+index 0000000..e667f1c
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402210000_EnrichContextRetrievalSourceReferences.cs
+@@ -0,0 +1,138 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class EnrichContextRetrievalSourceReferences : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "Locator",
++                table: "context_retrieval_sources",
++                maxLength: 512,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "ParentSourceEntityId",
++                table: "context_retrieval_sources",
++                maxLength: 128,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "ParentSourceType",
++                table: "context_retrieval_sources",
++                maxLength: 64,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "ParentTitle",
++                table: "context_retrieval_sources",
++                maxLength: 256,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "SectionId",
++                table: "context_retrieval_sources",
++                maxLength: 64,
++                nullable: false,
++                defaultValue: "unknown");
++
++            migrationBuilder.AddColumn<int>(
++                name: "SectionRank",
++                table: "context_retrieval_sources",
++                nullable: false,
++                defaultValue: 1);
++
++            migrationBuilder.AddColumn<string>(
++                name: "SectionTitle",
++                table: "context_retrieval_sources",
++                maxLength: 128,
++                nullable: false,
++                defaultValue: "Unknown");
++
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE context_retrieval_sources
++                    SET "SectionId" = COALESCE(NULLIF("metadata_json"->>'retrievalSection', ''), 'unknown'),
++                        "SectionTitle" = COALESCE(NULLIF("metadata_json"->>'retrievalSectionTitle', ''), 'Unknown'),
++                        "SectionRank" = COALESCE(CAST(NULLIF("metadata_json"->>'retrievalSectionRank', '') AS integer), "Rank"),
++                        "ParentSourceType" = CASE
++                            WHEN "SourceType" = 'knowledge_chunk' THEN 'knowledge_document'
++                            ELSE NULLIF("metadata_json"->>'parentSourceType', '')
++                        END,
++                        "ParentSourceEntityId" = CASE
++                            WHEN "SourceType" = 'knowledge_chunk' THEN NULLIF("metadata_json"->>'documentId', '')
++                            ELSE NULLIF("metadata_json"->>'parentSourceId', '')
++                        END,
++                        "ParentTitle" = COALESCE(NULLIF("metadata_json"->>'parentTitle', ''), CASE WHEN "SourceType" = 'knowledge_chunk' THEN "Title" ELSE NULL END),
++                        "Locator" = COALESCE(NULLIF("metadata_json"->>'locator', ''), "Title");
++                    """);
++            }
++            else
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE [context_retrieval_sources]
++                    SET [SectionId] = COALESCE(NULLIF(JSON_VALUE([metadata_json], '$.retrievalSection'), N''), N'unknown'),
++                        [SectionTitle] = COALESCE(NULLIF(JSON_VALUE([metadata_json], '$.retrievalSectionTitle'), N''), N'Unknown'),
++                        [SectionRank] = COALESCE(TRY_CAST(JSON_VALUE([metadata_json], '$.retrievalSectionRank') AS int), [Rank]),
++                        [ParentSourceType] = CASE
++                            WHEN [SourceType] = N'knowledge_chunk' THEN N'knowledge_document'
++                            ELSE NULLIF(JSON_VALUE([metadata_json], '$.parentSourceType'), N'')
++                        END,
++                        [ParentSourceEntityId] = CASE
++                            WHEN [SourceType] = N'knowledge_chunk' THEN NULLIF(JSON_VALUE([metadata_json], '$.documentId'), N'')
++                            ELSE NULLIF(JSON_VALUE([metadata_json], '$.parentSourceId'), N'')
++                        END,
++                        [ParentTitle] = COALESCE(NULLIF(JSON_VALUE([metadata_json], '$.parentTitle'), N''), CASE WHEN [SourceType] = N'knowledge_chunk' THEN [Title] ELSE NULL END),
++                        [Locator] = COALESCE(NULLIF(JSON_VALUE([metadata_json], '$.locator'), N''), [Title]);
++                    """);
++            }
++
++            migrationBuilder.CreateIndex(
++                name: "IX_context_retrieval_sources_CompanyId_ParentSourceType_ParentSo~",
++                table: "context_retrieval_sources",
++                columns: new[] { "CompanyId", "ParentSourceType", "ParentSourceEntityId" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_context_retrieval_sources_CompanyId_RetrievalId_SectionId_Sect~",
++                table: "context_retrieval_sources",
++                columns: new[] { "CompanyId", "RetrievalId", "SectionId", "SectionRank" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_context_retrieval_sources_CompanyId_ParentSourceType_ParentSo~",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropIndex(
++                name: "IX_context_retrieval_sources_CompanyId_RetrievalId_SectionId_Sect~",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "Locator",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "ParentSourceEntityId",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "ParentSourceType",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "ParentTitle",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "SectionId",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "SectionRank",
++                table: "context_retrieval_sources");
++
++            migrationBuilder.DropColumn(
++                name: "SectionTitle",
++                table: "context_retrieval_sources");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+index 4cf48b7..a5d40e6 100644
+--- a/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+@@ -191,11 +191,30 @@ public sealed class GroundedContextPromptReadyMapperTests
+     private static RetrievalSourceReferenceDto CreateSourceReference(string sectionId, int rank, string sourceType, string sourceId, string title, string snippet) =>
+         new(
+             sourceType,
+             sourceId,
+             title,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? "knowledge_document" : null,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? $"document-{sourceId}" : null,
++            sourceType == GroundedContextSourceTypes.KnowledgeChunk ? title : null,
++            sectionId,
++            sectionId switch
++            {
++                "knowledge" => "Knowledge",
++                "memory" => "Memory",
++                "recent_tasks" => "Recent Task History",
++                "relevant_records" => "Relevant Records",
++                _ => sectionId
++            },
+             rank,
++            $"{title} | {sectionId}",
+             0.5d,
+             snippet,
+             null,
+             new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["retrievalSection"] = sectionId,
++                ["retrievalSectionTitle"] = sectionId switch
++                {
++                    "knowledge" => "Knowledge",
++                    "memory" => "Memory",
++                    "recent_tasks" => "Recent Task History",
++                    "relevant_records" => "Relevant Records",
++                    _ => sectionId
++                },
+                 ["retrievalSectionRank"] = rank.ToString()
+             });
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+index b21bc7d..9fd1c31 100644
+--- a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+@@ -169,8 +169,12 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
+         Assert.Contains(result.RelevantRecordsSection.Items, x => x.SourceType == GroundedContextSourceTypes.AgentRecord);
+         Assert.Contains(result.RelevantRecordsSection.Items, x => x.SourceType == GroundedContextSourceTypes.CompanyRecord);
+         Assert.All(result.SourceReferences, x => Assert.True(x.Metadata.ContainsKey("retrievalSection")));
++        Assert.All(result.SourceReferences, x => Assert.False(string.IsNullOrWhiteSpace(x.SectionId)));
++        Assert.All(result.SourceReferences, x => Assert.False(string.IsNullOrWhiteSpace(x.SectionTitle)));
++        Assert.All(result.SourceReferences, x => Assert.True(x.SectionRank > 0));
++        Assert.All(result.SourceReferences, x => Assert.False(string.IsNullOrWhiteSpace(x.Locator)));
+         Assert.All(result.SourceReferences, x => Assert.True(x.Metadata.ContainsKey("retrievalSectionRank")));
+ 
+         var returnedItemCount =
+             result.KnowledgeSection.Items.Count +
+             result.MemorySection.Items.Count +
+@@ -195,6 +199,19 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
+         Assert.Equal(taskId, persistedRetrieval.TaskId);
+         Assert.Equal("ctx-test-correlation", persistedRetrieval.CorrelationId);
+         Assert.Equal(result.SourceReferences.Count, persistedSources.Count);
++        Assert.Equal(result.SourceReferences.Select(x => x.SectionId), persistedSources.Select(x => x.SectionId));
++        Assert.Equal(result.SourceReferences.Select(x => x.SectionTitle), persistedSources.Select(x => x.SectionTitle));
++        Assert.Equal(result.SourceReferences.Select(x => x.SectionRank), persistedSources.Select(x => x.SectionRank));
++        Assert.Equal(result.SourceReferences.Select(x => x.Locator), persistedSources.Select(x => x.Locator));
+         Assert.Equal(result.SourceReferences.Select(x => x.SourceId), persistedSources.Select(x => x.SourceEntityId));
++
++        var knowledgeSource = persistedSources.First(x =>
++            x.SourceType == GroundedContextSourceTypes.KnowledgeChunk &&
++            x.Title == "Finance Controls");
++
++        Assert.Equal("knowledge_document", knowledgeSource.ParentSourceType);
++        Assert.False(string.IsNullOrWhiteSpace(knowledgeSource.ParentSourceEntityId));
++        Assert.Equal("Finance Controls", knowledgeSource.ParentTitle);
++        Assert.Equal("knowledge", knowledgeSource.SectionId);
++        Assert.Contains("chunk 1", knowledgeSource.Locator!, StringComparison.OrdinalIgnoreCase);
+     }
+ 
+     [Fact]
+@@ -378,6 +395,57 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
+         Assert.DoesNotContain(result.SourceReferences, x => x.Snippet.Contains("Manager-only finance memory", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    [Fact]
++    public async Task RetrieveAsync_persists_source_references_without_task_context_when_only_company_memory_is_used()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "memory-only@example.com", "Memory Only User", "dev-header", "memory-only-user"));
++            dbContext.Companies.Add(new Company(companyId, "Memory Only Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Memory Agent", ["finance"]));
++            dbContext.MemoryItems.Add(
++                CreateMemory(companyId, null, "Finance policy memory for downstream audit checks.", 0.880m));
++
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(
++            new GroundedContextRetrievalRequest(
++                companyId,
++                agentId,
++                QueryText: "finance policy memory",
++                ActorUserId: actorUserId,
++                Limits: new RetrievalSourceLimitOptions(0, 1, 0, 0)),
++            CancellationToken.None);
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var verificationDbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persistedRetrieval = await verificationDbContext.ContextRetrievals
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == result.RetrievalId);
++        var persistedSource = await verificationDbContext.ContextRetrievalSources
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.RetrievalId == result.RetrievalId);
++
++        Assert.Null(persistedRetrieval.TaskId);
++        Assert.Equal(companyId, persistedSource.CompanyId);
++        Assert.Equal("memory", persistedSource.SectionId);
++        Assert.Equal("Memory", persistedSource.SectionTitle);
++        Assert.Equal(1, persistedSource.SectionRank);
++        Assert.Equal(GroundedContextSourceTypes.MemoryItem, persistedSource.SourceType);
++        Assert.Null(persistedSource.ParentSourceType);
++        Assert.Null(persistedSource.ParentSourceEntityId);
++        Assert.Contains("fact", persistedSource.Locator!, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains("company_wide", persistedSource.Locator!, StringComparison.OrdinalIgnoreCase);
++    }
++
+     [Fact]
+     public async Task RetrieveAsync_returns_fewer_scoped_items_for_a_narrower_agent_scope()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs b/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs
+index 01b4450..4fb8088 100644
+--- a/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TenantQueryFilterTests.cs
+@@ -37,6 +37,38 @@ public sealed class TenantQueryFilterTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal(ids.CompanyAId, note.CompanyId);
+     }
+ 
++    [Fact]
++    public async Task ContextRetrievalSources_query_filters_rows_to_active_company_context()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var retrievalAId = Guid.NewGuid();
++        var retrievalBId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
++            dbContext.ContextRetrievals.AddRange(
++                new ContextRetrieval(retrievalAId, companyAId, Guid.NewGuid(), null, null, "finance retrieval", "hash-a", null, "audit"),
++                new ContextRetrieval(retrievalBId, companyBId, Guid.NewGuid(), null, null, "sales retrieval", "hash-b", null, "audit"));
++            dbContext.ContextRetrievalSources.AddRange(
++                new ContextRetrievalSource(Guid.NewGuid(), retrievalAId, companyAId, "memory_item", "memory-a", null, null, null, "Finance memory", "Finance memory snippet", "memory", "Memory", 1, "fact | company_wide", 1, 0.9d, DateTime.UtcNow),
++                new ContextRetrievalSource(Guid.NewGuid(), retrievalBId, companyBId, "memory_item", "memory-b", null, null, null, "Sales memory", "Sales memory snippet", "memory", "Memory", 1, "fact | company_wide", 1, 0.9d, DateTime.UtcNow));
++
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(companyAId);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var sources = await dbContext.ContextRetrievalSources.AsNoTracking().ToListAsync();
++
++        var source = Assert.Single(sources);
++        Assert.Equal(companyAId, source.CompanyId);
++        Assert.Equal(retrievalAId, source.RetrievalId);
++        Assert.Equal("memory", source.SectionId);
++    }
++
+     private async Task<SeedIds> SeedCompanyNotesAsync()
+     {
+         var companyAId = Guid.NewGuid();
+END_OF_PATCH

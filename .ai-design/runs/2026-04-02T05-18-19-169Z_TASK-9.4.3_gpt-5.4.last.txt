@@ -1,0 +1,793 @@
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+index eab4372..cfac65f 100644
+--- a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
++++ b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+@@ -32,7 +32,10 @@ public sealed record GroundedContextRetrievalResult(
+     RetrievalSectionDto RelevantRecordsSection,
+     IReadOnlyList<RetrievalSourceReferenceDto> SourceReferences,
+     RetrievalAppliedFiltersDto AppliedFilters);
+-
++{
++    public DateTime GeneratedAtUtc { get; init; }
++    public NormalizedGroundedContextDto NormalizedContext { get; init; } = NormalizedGroundedContextDto.Empty;
++}
+ public sealed record CompanyContextSectionDto(
+     Guid CompanyId,
+     Guid AgentId,
+@@ -70,6 +73,84 @@ public sealed record RetrievalAppliedFiltersDto(
+     bool RestrictedMemoryExcludedByDefault,
+     bool ScopedTaskHistoryExcludedByDefault);
+ 
++public sealed record NormalizedGroundedContextDto(
++    IReadOnlyList<GroundedContextSectionDescriptorDto> Sections,
++    DocumentContextSectionDto Documents,
++    MemoryContextSectionDto Memory,
++    RecentTaskContextSectionDto RecentTasks,
++    RelevantRecordContextSectionDto RelevantRecords,
++    IReadOnlyList<RetrievalSourceReferenceDto> SourceReferences,
++    GroundedContextSectionCountsDto Counts)
++{
++    public static NormalizedGroundedContextDto Empty { get; } = new(
++        Array.Empty<GroundedContextSectionDescriptorDto>(),
++        new DocumentContextSectionDto("knowledge", "Knowledge", Array.Empty<DocumentContextItemDto>()),
++        new MemoryContextSectionDto("memory", "Memory", Array.Empty<MemoryContextItemDto>()),
++        new RecentTaskContextSectionDto("recent_tasks", "Recent Task History", Array.Empty<RecentTaskContextItemDto>()),
++        new RelevantRecordContextSectionDto("relevant_records", "Relevant Records", Array.Empty<RelevantRecordContextItemDto>()),
++        Array.Empty<RetrievalSourceReferenceDto>(),
++        new GroundedContextSectionCountsDto(0, 0, 0, 0, 0));
++}
++
++public sealed record GroundedContextSectionDescriptorDto(
++    string Id,
++    string Title,
++    int Order,
++    int ItemCount);
++
++public sealed record GroundedContextSectionCountsDto(
++    int DocumentItems,
++    int MemoryItems,
++    int RecentTaskItems,
++    int RelevantRecordItems,
++    int SourceReferences);
++
++public sealed record GroundedContextItemSourceDto(
++    string SourceType,
++    string SourceId,
++    string Title,
++    int? GlobalRank,
++    int? SectionRank,
++    double? Score,
++    DateTime? TimestampUtc,
++    IReadOnlyDictionary<string, string?> Metadata);
++
++public sealed record DocumentContextSectionDto(
++    string Id,
++    string Title,
++    IReadOnlyList<DocumentContextItemDto> Items);
++
++public sealed record DocumentContextItemDto(
++    string ChunkId,
++    string DocumentId,
++    string Title,
++    string Excerpt,
++    string? DocumentType,
++    string? DocumentSourceType,
++    string? DocumentSourceReference,
++    int? ChunkIndex,
++    double? RelevanceScore,
++    GroundedContextItemSourceDto Source);
++
++public sealed record MemoryContextSectionDto(
++    string Id,
++    string Title,
++    IReadOnlyList<MemoryContextItemDto> Items);
++
++public sealed record MemoryContextItemDto(
++    string MemoryId,
++    string Title,
++    string Summary,
++    string? MemoryType,
++    string? Scope,
++    double? Salience,
++    DateTime? CreatedUtc,
++    DateTime? ValidFromUtc,
++    DateTime? ValidToUtc,
++    double? RelevanceScore,
++    GroundedContextItemSourceDto Source);
++
++public sealed record RecentTaskContextSectionDto(
++    string Id,
++    string Title,
++    IReadOnlyList<RecentTaskContextItemDto> Items);
++
++public sealed record RecentTaskContextItemDto(
++    string AttemptId,
++    string Title,
++    string Summary,
++    string? ToolName,
++    string? ActionType,
++    string? Status,
++    string? Scope,
++    string? TaskId,
++    string? ApprovalRequestId,
++    DateTime? TimestampUtc,
++    double? RelevanceScore,
++    GroundedContextItemSourceDto Source);
++
++public sealed record RelevantRecordContextSectionDto(
++    string Id,
++    string Title,
++    IReadOnlyList<RelevantRecordContextItemDto> Items);
++
++public sealed record RelevantRecordContextItemDto(
++    string RecordId,
++    string RecordType,
++    string Label,
++    string Summary,
++    IReadOnlyDictionary<string, string?> Fields,
++    DateTime? TimestampUtc,
++    double? RelevanceScore,
++    GroundedContextItemSourceDto Source);
++
+ public sealed record RetrievalAccessContext(
+     Guid CompanyId,
+     Guid AgentId,
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+new file mode 100644
+index 0000000..85d7d9d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+@@ -0,0 +1,387 @@
++using System.Globalization;
++using System.Text;
++
++namespace VirtualCompany.Application.Context;
++
++public static class GroundedContextPromptReadyMapper
++{
++    private static readonly IReadOnlyDictionary<string, int> RelevantRecordSourcePriority =
++        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++        {
++            [GroundedContextSourceTypes.ApprovalRequest] = 0,
++            [GroundedContextSourceTypes.AgentRecord] = 1,
++            [GroundedContextSourceTypes.CompanyRecord] = 2
++        };
++
++    public static NormalizedGroundedContextDto Normalize(
++        DateTime generatedAtUtc,
++        RetrievalSectionDto knowledgeSection,
++        RetrievalSectionDto memorySection,
++        RetrievalSectionDto recentTaskSection,
++        RetrievalSectionDto relevantRecordsSection,
++        IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences)
++    {
++        var normalizedSourceReferences = NormalizeSourceReferences(sourceReferences);
++        var sourceLookup = BuildSourceLookup(normalizedSourceReferences);
++
++        var documents = NormalizeDocuments(knowledgeSection, sourceLookup);
++        var memory = NormalizeMemory(memorySection, sourceLookup);
++        var recentTasks = NormalizeRecentTasks(recentTaskSection, sourceLookup);
++        var relevantRecords = NormalizeRelevantRecords(relevantRecordsSection, sourceLookup);
++
++        var sections = new GroundedContextSectionDescriptorDto[]
++        {
++            new(documents.Id, documents.Title, 0, documents.Items.Count),
++            new(memory.Id, memory.Title, 1, memory.Items.Count),
++            new(recentTasks.Id, recentTasks.Title, 2, recentTasks.Items.Count),
++            new(relevantRecords.Id, relevantRecords.Title, 3, relevantRecords.Items.Count)
++        };
++
++        return new NormalizedGroundedContextDto(
++            sections,
++            documents,
++            memory,
++            recentTasks,
++            relevantRecords,
++            normalizedSourceReferences,
++            new GroundedContextSectionCountsDto(
++                documents.Items.Count,
++                memory.Items.Count,
++                recentTasks.Items.Count,
++                relevantRecords.Items.Count,
++                normalizedSourceReferences.Count));
++    }
++
++    private static DocumentContextSectionDto NormalizeDocuments(
++        RetrievalSectionDto section,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var items = section.Items
++            .Select(item => CreateDocumentItem(section.Id, item, sourceLookup))
++            .Where(static item => item is not null)
++            .Cast<DocumentContextItemDto>()
++            .OrderByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenBy(item => item.DocumentId, StringComparer.Ordinal)
++            .ThenBy(item => item.ChunkIndex ?? int.MaxValue)
++            .ThenBy(item => item.ChunkId, StringComparer.Ordinal)
++            .ToArray();
++
++        return new DocumentContextSectionDto(section.Id, section.Title, items);
++    }
++
++    private static MemoryContextSectionDto NormalizeMemory(
++        RetrievalSectionDto section,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var items = section.Items
++            .Select(item => CreateMemoryItem(section.Id, item, sourceLookup))
++            .Where(static item => item is not null)
++            .Cast<MemoryContextItemDto>()
++            .OrderByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenByDescending(item => item.CreatedUtc)
++            .ThenBy(item => item.MemoryId, StringComparer.Ordinal)
++            .ToArray();
++
++        return new MemoryContextSectionDto(section.Id, section.Title, items);
++    }
++
++    private static RecentTaskContextSectionDto NormalizeRecentTasks(
++        RetrievalSectionDto section,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var items = section.Items
++            .Select(item => CreateRecentTaskItem(section.Id, item, sourceLookup))
++            .Where(static item => item is not null)
++            .Cast<RecentTaskContextItemDto>()
++            .OrderByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenByDescending(item => item.TimestampUtc)
++            .ThenBy(item => item.AttemptId, StringComparer.Ordinal)
++            .ToArray();
++
++        return new RecentTaskContextSectionDto(section.Id, section.Title, items);
++    }
++
++    private static RelevantRecordContextSectionDto NormalizeRelevantRecords(
++        RetrievalSectionDto section,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var items = section.Items
++            .Select(item => CreateRelevantRecordItem(section.Id, item, sourceLookup))
++            .Where(static item => item is not null)
++            .Cast<RelevantRecordContextItemDto>()
++            .OrderByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenByDescending(item => item.TimestampUtc)
++            .ThenBy(item => RelevantRecordSourcePriority.TryGetValue(item.RecordType, out var priority) ? priority : int.MaxValue)
++            .ThenBy(item => item.RecordId, StringComparer.Ordinal)
++            .ToArray();
++
++        return new RelevantRecordContextSectionDto(section.Id, section.Title, items);
++    }
++
++    private static DocumentContextItemDto? CreateDocumentItem(
++        string sectionId,
++        RetrievalItemDto item,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var excerpt = NormalizeOptional(item.Content);
++        if (excerpt is null)
++        {
++            return null;
++        }
++
++        var metadata = NormalizeMetadata(item.Metadata);
++        return new DocumentContextItemDto(
++            item.SourceId,
++            GetMetadata(metadata, "documentId") ?? item.SourceId,
++            NormalizeOptional(item.Title) ?? GetMetadata(metadata, "documentTitle") ?? item.SourceId,
++            excerpt,
++            GetMetadata(metadata, "documentType"),
++            GetMetadata(metadata, "sourceType"),
++            GetMetadata(metadata, "sourceRef") ?? GetMetadata(metadata, "chunkSourceReference"),
++            ParseNullableInt(GetMetadata(metadata, "chunkIndex")),
++            item.RelevanceScore,
++            CreateSource(sectionId, item, sourceLookup));
++    }
++
++    private static MemoryContextItemDto? CreateMemoryItem(
++        string sectionId,
++        RetrievalItemDto item,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var summary = NormalizeOptional(item.Content);
++        if (summary is null)
++        {
++            return null;
++        }
++
++        var metadata = NormalizeMetadata(item.Metadata);
++        return new MemoryContextItemDto(
++            item.SourceId,
++            NormalizeOptional(item.Title) ?? item.SourceId,
++            summary,
++            GetMetadata(metadata, "memoryType"),
++            GetMetadata(metadata, "scope"),
++            ParseNullableDouble(GetMetadata(metadata, "salience")),
++            item.TimestampUtc,
++            ParseNullableDateTime(GetMetadata(metadata, "validFromUtc")),
++            ParseNullableDateTime(GetMetadata(metadata, "validToUtc")),
++            item.RelevanceScore,
++            CreateSource(sectionId, item, sourceLookup));
++    }
++
++    private static RecentTaskContextItemDto? CreateRecentTaskItem(
++        string sectionId,
++        RetrievalItemDto item,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var summary = NormalizeOptional(item.Content);
++        if (summary is null)
++        {
++            return null;
++        }
++
++        var metadata = NormalizeMetadata(item.Metadata);
++        return new RecentTaskContextItemDto(
++            item.SourceId,
++            NormalizeOptional(item.Title) ?? item.SourceId,
++            summary,
++            GetMetadata(metadata, "toolName"),
++            GetMetadata(metadata, "actionType"),
++            GetMetadata(metadata, "status"),
++            GetMetadata(metadata, "scope"),
++            GetMetadata(metadata, "taskId"),
++            GetMetadata(metadata, "approvalRequestId"),
++            item.TimestampUtc,
++            item.RelevanceScore,
++            CreateSource(sectionId, item, sourceLookup));
++    }
++
++    private static RelevantRecordContextItemDto? CreateRelevantRecordItem(
++        string sectionId,
++        RetrievalItemDto item,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var summary = NormalizeOptional(item.Content);
++        if (summary is null)
++        {
++            return null;
++        }
++
++        var fields = NormalizeMetadata(item.Metadata);
++        return new RelevantRecordContextItemDto(
++            item.SourceId,
++            GetMetadata(fields, "sourceEntityType") ?? item.SourceType,
++            NormalizeOptional(item.Title) ?? item.SourceId,
++            summary,
++            fields,
++            item.TimestampUtc,
++            item.RelevanceScore,
++            CreateSource(sectionId, item, sourceLookup));
++    }
++
++    private static GroundedContextItemSourceDto CreateSource(
++        string sectionId,
++        RetrievalItemDto item,
++        IReadOnlyDictionary<string, RetrievalSourceReferenceDto> sourceLookup)
++    {
++        var lookupKey = BuildSourceKey(sectionId, item.SourceType, item.SourceId);
++        if (!sourceLookup.TryGetValue(lookupKey, out var sourceReference))
++        {
++            var fallbackMetadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["retrievalSection"] = sectionId
++            };
++
++            return new GroundedContextItemSourceDto(
++                item.SourceType,
++                item.SourceId,
++                NormalizeOptional(item.Title) ?? item.SourceId,
++                null,
++                null,
++                item.RelevanceScore,
++                item.TimestampUtc,
++                fallbackMetadata);
++        }
++
++        var metadata = NormalizeMetadata(sourceReference.Metadata);
++        return new GroundedContextItemSourceDto(
++            sourceReference.SourceType,
++            sourceReference.SourceId,
++            NormalizeOptional(sourceReference.Title) ?? item.SourceId,
++            sourceReference.Rank > 0 ? sourceReference.Rank : null,
++            ParseNullableInt(GetMetadata(metadata, "retrievalSectionRank")),
++            sourceReference.Score,
++            sourceReference.TimestampUtc,
++            metadata);
++    }
++
++    private static IReadOnlyList<RetrievalSourceReferenceDto> NormalizeSourceReferences(
++        IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences) =>
++        sourceReferences
++            .OrderBy(reference => reference.Rank)
++            .ThenBy(reference => reference.SourceType, StringComparer.Ordinal)
++            .ThenBy(reference => reference.SourceId, StringComparer.Ordinal)
++            .Select(reference => new RetrievalSourceReferenceDto(
++                reference.SourceType,
++                reference.SourceId,
++                NormalizeOptional(reference.Title) ?? reference.SourceId,
++                reference.Rank,
++                reference.Score,
++                NormalizeOptional(reference.Snippet) ?? string.Empty,
++                reference.TimestampUtc,
++                NormalizeMetadata(reference.Metadata)))
++            .ToArray();
++
++    private static IReadOnlyDictionary<string, RetrievalSourceReferenceDto> BuildSourceLookup(
++        IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences) =>
++        sourceReferences
++            .GroupBy(reference => BuildSourceKey(GetMetadata(reference.Metadata, "retrievalSection") ?? string.Empty, reference.SourceType, reference.SourceId), StringComparer.OrdinalIgnoreCase)
++            .ToDictionary(
++                group => group.Key,
++                group => group.OrderBy(reference => reference.Rank).First(),
++                StringComparer.OrdinalIgnoreCase);
++
++    private static string BuildSourceKey(string sectionId, string sourceType, string sourceId) =>
++        $"{sectionId}|{sourceType}|{sourceId}";
++
++    private static IReadOnlyDictionary<string, string?> NormalizeMetadata(IReadOnlyDictionary<string, string?> metadata)
++    {
++        var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++
++        foreach (var pair in metadata)
++        {
++            if (string.IsNullOrWhiteSpace(pair.Key))
++            {
++                continue;
++            }
++
++            normalized[pair.Key.Trim()] = NormalizeOptional(pair.Value);
++        }
++
++        return normalized;
++    }
++
++    private static string? GetMetadata(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value)
++            ? value
++            : null;
++
++    private static int? ParseNullableInt(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
++            ? parsed
++            : null;
++    }
++
++    private static double? ParseNullableDouble(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return double.TryParse(value, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var parsed)
++            ? parsed
++            : null;
++    }
++
++    private static DateTime? ParseNullableDateTime(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return DateTime.TryParse(
++            value,
++            CultureInfo.InvariantCulture,
++            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
++            out var parsed)
++            ? parsed
++            : null;
++    }
++
++    private static string? NormalizeOptional(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        return CollapseWhitespace(value);
++    }
++
++    private static string CollapseWhitespace(string value)
++    {
++        var builder = new StringBuilder(value.Length);
++        var previousWasWhitespace = false;
++
++        foreach (var character in value.Trim())
++        {
++            if (char.IsWhiteSpace(character))
++            {
++                if (!previousWasWhitespace)
++                {
++                    builder.Append(' ');
++                }
++
++                previousWasWhitespace = true;
++                continue;
++            }
++
++            previousWasWhitespace = false;
++            builder.Append(character);
++        }
++
++        return builder.ToString();
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+index 8713805..c5871f4 100644
+--- a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+@@ -119,6 +119,14 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             recentTaskSection,
+             relevantRecordsSection);
+ 
++        var normalizedContext = GroundedContextPromptReadyMapper.Normalize(
++            asOfUtc,
++            knowledgeSection,
++            memorySection,
++            recentTaskSection,
++            relevantRecordsSection,
++            sourceReferences);
++
+         var retrievalId = Guid.NewGuid();
+         var retrieval = new ContextRetrieval(
+             retrievalId,
+@@ -166,14 +174,18 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+             sourceReferences,
+             new RetrievalAppliedFiltersDto(
+                 accessDecision.EffectiveReadScopes,
+                 accessDecision.MembershipResolved,
+                 RestrictedKnowledgeExcludedByDefault: true,
+                 RestrictedMemoryExcludedByDefault: true,
+-                ScopedTaskHistoryExcludedByDefault: true));
++                ScopedTaskHistoryExcludedByDefault: true))
++        {
++            GeneratedAtUtc = asOfUtc,
++            NormalizedContext = normalizedContext
++        };
+     }
+@@ -289,7 +301,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
+                     ["memoryType"] = x.Item.MemoryType.ToStorageValue(),
+                     ["scope"] = x.Item.AgentId.HasValue ? "agent_specific" : "company_wide",
+                     ["agentId"] = x.Item.AgentId?.ToString("N"),
+                     ["companyId"] = x.Item.CompanyId.ToString("N"),
+-                    ["sourceEntityType"] = GroundedContextSourceTypes.MemoryItem,
++                    ["sourceType"] = GroundedContextSourceTypes.MemoryItem,
+                     ["sourceEntityType"] = x.Item.SourceEntityType,
+                     ["sourceEntityId"] = x.Item.SourceEntityId?.ToString("N"),
+                     ["salience"] = x.Item.Salience.ToString(System.Globalization.CultureInfo.InvariantCulture),
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+new file mode 100644
+index 0000000..264b5d7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+@@ -0,0 +1,196 @@
++using VirtualCompany.Application.Context;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GroundedContextPromptReadyMapperTests
++{
++    [Fact]
++    public void Normalize_splits_retrieved_context_into_typed_sections_and_preserves_source_references()
++    {
++        var generatedAtUtc = new DateTime(2026, 4, 2, 9, 30, 0, DateTimeKind.Utc);
++
++        var knowledgeSection = new RetrievalSectionDto(
++            "knowledge",
++            "Knowledge",
++            new[]
++            {
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.KnowledgeChunk,
++                    "chunk-b",
++                    "  Payroll Controls  ",
++                    " Finance  payroll approvals   require dual review. ",
++                    0.72d,
++                    null,
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["documentId"] = "document-b",
++                        ["documentType"] = "policy",
++                        ["sourceType"] = "file",
++                        ["sourceRef"] = "companies/1/policy.txt",
++                        ["chunkIndex"] = "1"
++                    }),
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.KnowledgeChunk,
++                    "chunk-a",
++                    "Payroll Controls",
++                    "Finance payroll approvals require controller signoff.",
++                    0.91d,
++                    null,
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["documentId"] = "document-a",
++                        ["documentType"] = "policy",
++                        ["sourceType"] = "file",
++                        ["sourceRef"] = "companies/1/controls.txt",
++                        ["chunkIndex"] = "0"
++                    })
++            });
++
++        var memorySection = new RetrievalSectionDto(
++            "memory",
++            "Memory",
++            new[]
++            {
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.MemoryItem,
++                    "memory-blank",
++                    "Ignore",
++                    "   ",
++                    0.90d,
++                    generatedAtUtc.AddMinutes(-5),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["memoryType"] = "fact",
++                        ["scope"] = "company_wide"
++                    }),
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.MemoryItem,
++                    "memory-a",
++                    " Fact memory ",
++                    " Shared   payroll calendar is current. ",
++                    0.61d,
++                    generatedAtUtc.AddMinutes(-1),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["memoryType"] = "fact",
++                        ["scope"] = "company_wide",
++                        ["salience"] = "0.65",
++                        ["validFromUtc"] = generatedAtUtc.AddDays(-1).ToString("O")
++                    })
++            });
++
++        var recentTaskSection = new RetrievalSectionDto(
++            "recent_tasks",
++            "Recent Task History",
++            new[]
++            {
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.RecentTask,
++                    "attempt-b",
++                    " payroll (read) ",
++                    " Status: executed.   Summary: Reviewed payroll controls. ",
++                    0.50d,
++                    generatedAtUtc.AddMinutes(-10),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["toolName"] = "payroll",
++                        ["actionType"] = "read",
++                        ["status"] = "executed",
++                        ["scope"] = "finance",
++                        ["taskId"] = "task-2"
++                    }),
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.RecentTask,
++                    "attempt-a",
++                    "payroll (read)",
++                    "Status: executed. Summary: Reviewed approval routing.",
++                    0.50d,
++                    generatedAtUtc.AddMinutes(-1),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["toolName"] = "payroll",
++                        ["actionType"] = "read",
++                        ["status"] = "executed",
++                        ["scope"] = "finance",
++                        ["taskId"] = "task-1",
++                        ["approvalRequestId"] = "approval-1"
++                    })
++            });
++
++        var relevantRecordsSection = new RetrievalSectionDto(
++            "relevant_records",
++            "Relevant Records",
++            new[]
++            {
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.CompanyRecord,
++                    "company-a",
++                    " Company Profile: VC ",
++                    " Industry: Finance. ",
++                    0.20d,
++                    generatedAtUtc.AddHours(-1),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["sourceEntityType"] = "company_profile",
++                        ["companyId"] = "company-a"
++                    }),
++                new RetrievalItemDto(
++                    GroundedContextSourceTypes.ApprovalRequest,
++                    "approval-a",
++                    "Approval: payments",
++                    " Status: pending. Action: write. ",
++                    0.80d,
++                    generatedAtUtc.AddMinutes(-2),
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["sourceEntityType"] = "approval_request",
++                        ["status"] = "pending"
++                    })
++            });
++
++        var sourceReferences = new[]
++        {
++            CreateSourceReference("knowledge", 2, GroundedContextSourceTypes.KnowledgeChunk, "chunk-b", "Payroll Controls", "finance payroll approvals require dual review."),
++            CreateSourceReference("knowledge", 1, GroundedContextSourceTypes.KnowledgeChunk, "chunk-a", "Payroll Controls", "finance payroll approvals require controller signoff."),
++            CreateSourceReference("memory", 1, GroundedContextSourceTypes.MemoryItem, "memory-a", "Fact memory", "shared payroll calendar is current."),
++            CreateSourceReference("recent_tasks", 1, GroundedContextSourceTypes.RecentTask, "attempt-a", "payroll (read)", "reviewed approval routing."),
++            CreateSourceReference("recent_tasks", 2, GroundedContextSourceTypes.RecentTask, "attempt-b", "payroll (read)", "reviewed payroll controls."),
++            CreateSourceReference("relevant_records", 1, GroundedContextSourceTypes.ApprovalRequest, "approval-a", "Approval: payments", "status: pending."),
++            CreateSourceReference("relevant_records", 2, GroundedContextSourceTypes.CompanyRecord, "company-a", "Company Profile: VC", "industry: finance.")
++        };
++
++        var normalized = GroundedContextPromptReadyMapper.Normalize(
++            generatedAtUtc,
++            knowledgeSection,
++            memorySection,
++            recentTaskSection,
++            relevantRecordsSection,
++            sourceReferences);
++
++        Assert.Equal(["knowledge", "memory", "recent_tasks", "relevant_records"], normalized.Sections.OrderBy(x => x.Order).Select(x => x.Id));
++        Assert.Equal(2, normalized.Documents.Items.Count);
++        Assert.Equal("chunk-a", normalized.Documents.Items[0].ChunkId);
++        Assert.Equal("Finance payroll approvals require controller signoff.", normalized.Documents.Items[0].Excerpt);
++        Assert.Equal(1, normalized.Documents.Items[0].Source.GlobalRank);
++
++        var memoryItem = Assert.Single(normalized.Memory.Items);
++        Assert.Equal("Shared payroll calendar is current.", memoryItem.Summary);
++        Assert.Equal("fact", memoryItem.MemoryType);
++        Assert.Equal(1, memoryItem.Source.SectionRank);
++
++        Assert.Equal(["attempt-a", "attempt-b"], normalized.RecentTasks.Items.Select(x => x.AttemptId));
++        Assert.Equal("approval_request", normalized.RelevantRecords.Items[0].RecordType);
++        Assert.Equal(sourceReferences.Length, normalized.SourceReferences.Count);
++        Assert.Equal(sourceReferences.Length, normalized.Counts.SourceReferences);
++    }
++
++    [Fact]
++    public void Normalize_returns_empty_sections_when_sources_are_empty()
++    {
++        var normalized = GroundedContextPromptReadyMapper.Normalize(
++            new DateTime(2026, 4, 2, 10, 0, 0, DateTimeKind.Utc),
++            new RetrievalSectionDto("knowledge", "Knowledge", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("memory", "Memory", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("recent_tasks", "Recent Task History", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("relevant_records", "Relevant Records", Array.Empty<RetrievalItemDto>()),
++            Array.Empty<RetrievalSourceReferenceDto>());
++
++        Assert.Empty(normalized.Documents.Items);
++        Assert.Empty(normalized.Memory.Items);
++        Assert.Empty(normalized.RecentTasks.Items);
++        Assert.Empty(normalized.RelevantRecords.Items);
++        Assert.Empty(normalized.SourceReferences);
++    }
++
++    private static RetrievalSourceReferenceDto CreateSourceReference(string sectionId, int rank, string sourceType, string sourceId, string title, string snippet) =>
++        new(
++            sourceType,
++            sourceId,
++            title,
++            rank,
++            0.5d,
++            snippet,
++            null,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["retrievalSection"] = sectionId,
++                ["retrievalSectionRank"] = rank.ToString()
++            });
++}
+END_OF_PATCH

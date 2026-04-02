@@ -1,0 +1,1884 @@
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Application/Context/GroundedContextRetrievalContracts.cs
+@@ -0,0 +1,83 @@
++namespace VirtualCompany.Application.Context;
++
++public sealed record GroundedContextRetrievalRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    string? QueryText = null,
++    Guid? ActorUserId = null,
++    Guid? TaskId = null,
++    string? TaskTitle = null,
++    string? TaskDescription = null,
++    RetrievalSourceLimitOptions? Limits = null,
++    string? CorrelationId = null,
++    string? RetrievalPurpose = null);
++
++public sealed record RetrievalSourceLimitOptions(
++    int KnowledgeItems = 5,
++    int MemoryItems = 5,
++    int RecentTasks = 5,
++    int RelevantRecords = 3);
++
++public sealed record GroundedContextRetrievalResult(
++    Guid RetrievalId,
++    CompanyContextSectionDto CompanyContextSection,
++    RetrievalSectionDto KnowledgeSection,
++    RetrievalSectionDto MemorySection,
++    RetrievalSectionDto RecentTaskSection,
++    RetrievalSectionDto RelevantRecordsSection,
++    IReadOnlyList<RetrievalSourceReferenceDto> SourceReferences,
++    RetrievalAppliedFiltersDto AppliedFilters);
++
++public sealed record CompanyContextSectionDto(
++    Guid CompanyId,
++    Guid AgentId,
++    Guid? ActorUserId,
++    string AgentDisplayName,
++    string AgentRoleName,
++    string? AgentRoleBrief,
++    IReadOnlyList<string> ReadScopes,
++    string RetrievalIntent);
++
++public sealed record RetrievalSectionDto(
++    string Id,
++    string Title,
++    IReadOnlyList<RetrievalItemDto> Items);
++
++public sealed record RetrievalItemDto(
++    string SourceType,
++    string SourceId,
++    string Title,
++    string Content,
++    double? RelevanceScore,
++    DateTime? TimestampUtc,
++    IReadOnlyDictionary<string, string?> Metadata);
++
++public sealed record RetrievalSourceReferenceDto(
++    string SourceType,
++    string SourceId,
++    string Title,
++    int Rank,
++    double? Score,
++    string Snippet,
++    DateTime? TimestampUtc,
++    IReadOnlyDictionary<string, string?> Metadata);
++
++public sealed record RetrievalAppliedFiltersDto(
++    IReadOnlyList<string> ReadScopes,
++    bool MembershipResolved,
++    bool RestrictedKnowledgeExcludedByDefault,
++    bool RestrictedMemoryExcludedByDefault,
++    bool ScopedTaskHistoryExcludedByDefault);
++
++public interface IGroundedContextRetrievalService
++{
++    Task<GroundedContextRetrievalResult> RetrieveAsync(
++        GroundedContextRetrievalRequest request,
++        CancellationToken cancellationToken);
++}
++
++public static class GroundedContextSourceTypes
++{
++    public const string KnowledgeChunk = "knowledge_chunk";
++    public const string MemoryItem = "memory_item";
++    public const string RecentTask = "recent_task";
++    public const string ApprovalRequest = "approval_request";
++}
++
++public sealed class GroundedContextRetrievalValidationException : Exception
++{
++    public GroundedContextRetrievalValidationException(string message) : base(message) { }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+@@ -0,0 +1,214 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ContextRetrieval : ICompanyOwnedEntity
++{
++    private ContextRetrieval()
++    {
++    }
++
++    public ContextRetrieval(
++        Guid id,
++        Guid companyId,
++        Guid agentId,
++        Guid? actorUserId,
++        Guid? taskId,
++        string queryText,
++        string queryHash,
++        string? correlationId,
++        string? retrievalPurpose,
++        DateTime? createdUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId is required.", nameof(agentId));
++        }
++
++        if (actorUserId.HasValue && actorUserId.Value == Guid.Empty)
++        {
++            throw new ArgumentException("ActorUserId cannot be empty.", nameof(actorUserId));
++        }
++
++        if (taskId.HasValue && taskId.Value == Guid.Empty)
++        {
++            throw new ArgumentException("TaskId cannot be empty.", nameof(taskId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AgentId = agentId;
++        ActorUserId = actorUserId;
++        TaskId = taskId;
++        QueryText = NormalizeRequired(queryText, nameof(queryText), 4000);
++        QueryHash = NormalizeRequired(queryHash, nameof(queryHash), 128);
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        RetrievalPurpose = NormalizeOptional(retrievalPurpose, nameof(retrievalPurpose), 256);
++        CreatedUtc = createdUtc ?? DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public Guid? ActorUserId { get; private set; }
++    public Guid? TaskId { get; private set; }
++    public string QueryText { get; private set; } = null!;
++    public string QueryHash { get; private set; } = null!;
++    public string? CorrelationId { get; private set; }
++    public string? RetrievalPurpose { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<ContextRetrievalSource> Sources { get; } = new List<ContextRetrievalSource>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed class ContextRetrievalSource : ICompanyOwnedEntity
++{
++    private ContextRetrievalSource()
++    {
++    }
++
++    public ContextRetrievalSource(
++        Guid id,
++        Guid retrievalId,
++        Guid companyId,
++        string sourceType,
++        string sourceEntityId,
++        string title,
++        string snippet,
++        int rank,
++        double? score,
++        DateTime? timestampUtc,
++        IReadOnlyDictionary<string, string?>? metadata = null)
++    {
++        if (retrievalId == Guid.Empty)
++        {
++            throw new ArgumentException("RetrievalId is required.", nameof(retrievalId));
++        }
++
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (rank <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(rank), "Rank must be greater than zero.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        RetrievalId = retrievalId;
++        CompanyId = companyId;
++        SourceType = NormalizeRequired(sourceType, nameof(sourceType), 64);
++        SourceEntityId = NormalizeRequired(sourceEntityId, nameof(sourceEntityId), 128);
++        Title = NormalizeRequired(title, nameof(title), 256);
++        Snippet = NormalizeRequired(snippet, nameof(snippet), 4000);
++        Rank = rank;
++        Score = score;
++        TimestampUtc = timestampUtc;
++        Metadata = NormalizeMetadata(metadata);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid RetrievalId { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string SourceType { get; private set; } = null!;
++    public string SourceEntityId { get; private set; } = null!;
++    public string Title { get; private set; } = null!;
++    public string Snippet { get; private set; } = null!;
++    public int Rank { get; private set; }
++    public double? Score { get; private set; }
++    public DateTime? TimestampUtc { get; private set; }
++    public Dictionary<string, string?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ContextRetrieval Retrieval { get; private set; } = null!;
++
++    private static Dictionary<string, string?> NormalizeMetadata(IReadOnlyDictionary<string, string?>? metadata)
++    {
++        var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++        if (metadata is null)
++        {
++            return normalized;
++        }
++
++        foreach (var pair in metadata)
++        {
++            if (string.IsNullOrWhiteSpace(pair.Key))
++            {
++                continue;
++            }
++
++            normalized[NormalizeRequired(pair.Key, nameof(metadata), 100)] =
++                NormalizeOptional(pair.Value, nameof(metadata), 512);
++        }
++
++        return normalized;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+@@ -0,0 +1,875 @@
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Context;
++
++public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalService
++{
++    private const int MaxQueryLength = 4000;
++    private const int MaxSectionItems = 20;
++    private const int MaxSnippetLength = 700;
++    private const int TaskCandidateWindow = 24;
++    private const int RelevantRecordCandidateWindow = 12;
++
++    private static readonly IReadOnlyDictionary<string, int> SourceTypePriority =
++        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++        {
++            [GroundedContextSourceTypes.KnowledgeChunk] = 0,
++            [GroundedContextSourceTypes.MemoryItem] = 1,
++            [GroundedContextSourceTypes.RecentTask] = 2,
++            [GroundedContextSourceTypes.ApprovalRequest] = 3
++        };
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
++    private readonly ICompanyKnowledgeSearchService _companyKnowledgeSearchService;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
++
++    public GroundedContextRetrievalService(
++        VirtualCompanyDbContext dbContext,
++        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
++        ICompanyKnowledgeSearchService companyKnowledgeSearchService,
++        ICorrelationContextAccessor correlationContextAccessor)
++    {
++        _dbContext = dbContext;
++        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
++        _companyKnowledgeSearchService = companyKnowledgeSearchService;
++        _correlationContextAccessor = correlationContextAccessor;
++    }
++
++    public async Task<GroundedContextRetrievalResult> RetrieveAsync(
++        GroundedContextRetrievalRequest request,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        EnsureRequest(request);
++
++        var limits = NormalizeLimits(request.Limits);
++        var retrievalIntent = BuildRetrievalIntent(request);
++        var normalizedCorrelationId = NormalizeOptional(
++            string.IsNullOrWhiteSpace(request.CorrelationId) ? _correlationContextAccessor.CorrelationId : request.CorrelationId,
++            128);
++
++        var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
++            request.CompanyId,
++            request.AgentId,
++            cancellationToken);
++
++        var actorMembership = await LoadActorMembershipAsync(request.CompanyId, request.ActorUserId, cancellationToken);
++        var readScopes = ResolveReadScopes(agent.DataScopes);
++
++        var knowledgeSection = await LoadKnowledgeSectionAsync(
++            request,
++            retrievalIntent,
++            actorMembership,
++            readScopes,
++            limits.KnowledgeItems,
++            cancellationToken);
++
++        var memorySection = await LoadMemorySectionAsync(
++            request,
++            retrievalIntent,
++            actorMembership,
++            readScopes,
++            limits.MemoryItems,
++            cancellationToken);
++
++        var recentTaskSection = await LoadRecentTaskSectionAsync(
++            request,
++            retrievalIntent,
++            readScopes,
++            limits.RecentTasks,
++            cancellationToken);
++
++        var relevantRecordsSection = await LoadRelevantRecordsSectionAsync(
++            request,
++            readScopes,
++            limits.RelevantRecords,
++            cancellationToken);
++
++        var sourceReferences = BuildSourceReferences(
++            knowledgeSection,
++            memorySection,
++            recentTaskSection,
++            relevantRecordsSection);
++
++        var retrievalId = Guid.NewGuid();
++        var retrieval = new ContextRetrieval(
++            retrievalId,
++            request.CompanyId,
++            request.AgentId,
++            request.ActorUserId,
++            request.TaskId,
++            retrievalIntent,
++            ComputeSha256(retrievalIntent),
++            normalizedCorrelationId,
++            request.RetrievalPurpose);
++
++        _dbContext.ContextRetrievals.Add(retrieval);
++
++        foreach (var sourceReference in sourceReferences)
++        {
++            _dbContext.ContextRetrievalSources.Add(new ContextRetrievalSource(
++                Guid.NewGuid(),
++                retrievalId,
++                request.CompanyId,
++                sourceReference.SourceType,
++                sourceReference.SourceId,
++                sourceReference.Title,
++                sourceReference.Snippet,
++                sourceReference.Rank,
++                sourceReference.Score,
++                sourceReference.TimestampUtc,
++                sourceReference.Metadata));
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new GroundedContextRetrievalResult(
++            retrievalId,
++            new CompanyContextSectionDto(
++                request.CompanyId,
++                request.AgentId,
++                request.ActorUserId,
++                agent.DisplayName,
++                agent.RoleName,
++                agent.RoleBrief,
++                readScopes,
++                retrievalIntent),
++            knowledgeSection,
++            memorySection,
++            recentTaskSection,
++            relevantRecordsSection,
++            sourceReferences,
++            new RetrievalAppliedFiltersDto(
++                readScopes,
++                actorMembership is not null,
++                RestrictedKnowledgeExcludedByDefault: true,
++                RestrictedMemoryExcludedByDefault: true,
++                ScopedTaskHistoryExcludedByDefault: true));
++    }
++
++    private async Task<ResolvedActorMembership?> LoadActorMembershipAsync(
++        Guid companyId,
++        Guid? actorUserId,
++        CancellationToken cancellationToken)
++    {
++        if (actorUserId is not Guid userId || userId == Guid.Empty)
++        {
++            return null;
++        }
++
++        return await _dbContext.CompanyMemberships
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.UserId == userId &&
++                x.Status == CompanyMembershipStatus.Active)
++            .Select(x => new ResolvedActorMembership(x.Id, x.UserId!.Value, x.Role))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    private async Task<RetrievalSectionDto> LoadKnowledgeSectionAsync(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        ResolvedActorMembership? actorMembership,
++        IReadOnlyList<string> readScopes,
++        int limit,
++        CancellationToken cancellationToken)
++    {
++        if (limit <= 0)
++        {
++            return EmptySection("knowledge", "Knowledge");
++        }
++
++        var accessContext = new CompanyKnowledgeAccessContext(
++            request.CompanyId,
++            actorMembership?.MembershipId,
++            actorMembership?.UserId ?? request.ActorUserId,
++            actorMembership?.Role.ToStorageValue(),
++            readScopes,
++            request.AgentId);
++
++        var results = await _companyKnowledgeSearchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(
++                request.CompanyId,
++                retrievalIntent,
++                limit,
++                accessContext),
++            cancellationToken);
++
++        var ordered = results
++            .OrderByDescending(x => x.Score)
++            .ThenBy(x => x.DocumentId)
++            .ThenBy(x => x.ChunkIndex)
++            .ThenBy(x => x.ChunkId)
++            .Take(limit)
++            .Select(x => new RetrievalItemDto(
++                GroundedContextSourceTypes.KnowledgeChunk,
++                x.ChunkId.ToString("N"),
++                x.DocumentTitle,
++                Truncate(x.Content, MaxSnippetLength),
++                x.Score,
++                null,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["documentId"] = x.DocumentId.ToString("N"),
++                    ["documentType"] = x.SourceDocument.DocumentType,
++                    ["sourceType"] = x.SourceDocument.SourceType,
++                    ["sourceRef"] = x.SourceDocument.SourceRef,
++                    ["chunkIndex"] = x.ChunkIndex.ToString(),
++                    ["chunkSourceReference"] = x.SourceReference
++                }))
++            .ToArray();
++
++        return new RetrievalSectionDto("knowledge", "Knowledge", ordered);
++    }
++
++    private async Task<RetrievalSectionDto> LoadMemorySectionAsync(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        ResolvedActorMembership? actorMembership,
++        IReadOnlyList<string> readScopes,
++        int limit,
++        CancellationToken cancellationToken)
++    {
++        if (limit <= 0)
++        {
++            return EmptySection("memory", "Memory");
++        }
++
++        var nowUtc = DateTime.UtcNow;
++        var candidates = await _dbContext.MemoryItems
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == request.CompanyId &&
++                x.DeletedUtc == null &&
++                x.ValidFromUtc <= nowUtc &&
++                (!x.ValidToUtc.HasValue || x.ValidToUtc.Value > nowUtc) &&
++                (x.AgentId == null || x.AgentId == request.AgentId))
++            .ToListAsync(cancellationToken);
++
++        var ordered = candidates
++            .Where(x => CanAccessMemory(x, readScopes, request.AgentId, actorMembership?.Role))
++            .Select(x => new RankedMemory(
++                x,
++                ComputeMemoryScore(retrievalIntent, x, nowUtc)))
++            .OrderByDescending(x => x.Score)
++            .ThenByDescending(x => x.Item.CreatedUtc)
++            .ThenBy(x => x.Item.Id)
++            .Take(limit)
++            .Select(x => new RetrievalItemDto(
++                GroundedContextSourceTypes.MemoryItem,
++                x.Item.Id.ToString("N"),
++                BuildMemoryTitle(x.Item),
++                Truncate(x.Item.Summary, MaxSnippetLength),
++                x.Score,
++                x.Item.CreatedUtc,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["memoryType"] = x.Item.MemoryType.ToStorageValue(),
++                    ["agentId"] = x.Item.AgentId?.ToString("N"),
++                    ["sourceEntityType"] = x.Item.SourceEntityType,
++                    ["sourceEntityId"] = x.Item.SourceEntityId?.ToString("N"),
++                    ["salience"] = x.Item.Salience.ToString(System.Globalization.CultureInfo.InvariantCulture)
++                }))
++            .ToArray();
++
++        return new RetrievalSectionDto("memory", "Memory", ordered);
++    }
++
++    private async Task<RetrievalSectionDto> LoadRecentTaskSectionAsync(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        IReadOnlyList<string> readScopes,
++        int limit,
++        CancellationToken cancellationToken)
++    {
++        if (limit <= 0)
++        {
++            return EmptySection("recent_tasks", "Recent Task History");
++        }
++
++        var attempts = await _dbContext.ToolExecutionAttempts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == request.CompanyId && x.AgentId == request.AgentId)
++            .OrderByDescending(x => x.ExecutedUtc ?? x.UpdatedUtc)
++            .ThenBy(x => x.Id)
++            .Take(TaskCandidateWindow)
++            .ToListAsync(cancellationToken);
++
++        var ordered = attempts
++            .Where(x => CanAccessTaskScope(x.Scope, readScopes))
++            .Select(x => new RankedAttempt(
++                x,
++                ComputeTaskScore(request, retrievalIntent, x)))
++            .OrderByDescending(x => x.Score)
++            .ThenByDescending(x => x.Attempt.ExecutedUtc ?? x.Attempt.UpdatedUtc)
++            .ThenBy(x => x.Attempt.Id)
++            .Take(limit)
++            .Select(x => new RetrievalItemDto(
++                GroundedContextSourceTypes.RecentTask,
++                x.Attempt.Id.ToString("N"),
++                BuildTaskTitle(x.Attempt),
++                BuildTaskSnippet(x.Attempt),
++                x.Score,
++                x.Attempt.ExecutedUtc ?? x.Attempt.UpdatedUtc,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["toolName"] = x.Attempt.ToolName,
++                    ["actionType"] = x.Attempt.ActionType.ToStorageValue(),
++                    ["status"] = x.Attempt.Status.ToStorageValue(),
++                    ["scope"] = x.Attempt.Scope,
++                    ["approvalRequestId"] = x.Attempt.ApprovalRequestId?.ToString("N")
++                }))
++            .ToArray();
++
++        return new RetrievalSectionDto("recent_tasks", "Recent Task History", ordered);
++    }
++
++    private async Task<RetrievalSectionDto> LoadRelevantRecordsSectionAsync(
++        GroundedContextRetrievalRequest request,
++        IReadOnlyList<string> readScopes,
++        int limit,
++        CancellationToken cancellationToken)
++    {
++        if (limit <= 0)
++        {
++            return EmptySection("relevant_records", "Relevant Records");
++        }
++
++        var approvals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == request.CompanyId && x.AgentId == request.AgentId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .ThenBy(x => x.Id)
++            .Take(RelevantRecordCandidateWindow)
++            .ToListAsync(cancellationToken);
++
++        var ordered = approvals
++            .Where(x => CanAccessTaskScope(x.ApprovalTarget, readScopes))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .ThenBy(x => x.Id)
++            .Take(limit)
++            .Select(x => new RetrievalItemDto(
++                GroundedContextSourceTypes.ApprovalRequest,
++                x.Id.ToString("N"),
++                $"Approval: {x.ToolName}",
++                BuildApprovalSnippet(x),
++                ComputeApprovalScore(x),
++                x.UpdatedUtc,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["status"] = x.Status.ToStorageValue(),
++                    ["approvalTarget"] = x.ApprovalTarget,
++                    ["actionType"] = x.ActionType.ToStorageValue(),
++                    ["toolExecutionAttemptId"] = x.ToolExecutionAttemptId.ToString("N")
++                }))
++            .ToArray();
++
++        return new RetrievalSectionDto("relevant_records", "Relevant Records", ordered);
++    }
++
++    private static RetrievalSectionDto EmptySection(string id, string title) =>
++        new(id, title, Array.Empty<RetrievalItemDto>());
++
++    private static RetrievalSourceLimitOptions NormalizeLimits(RetrievalSourceLimitOptions? limits)
++    {
++        var normalized = limits ?? new RetrievalSourceLimitOptions();
++        return new RetrievalSourceLimitOptions(
++            Math.Clamp(normalized.KnowledgeItems, 0, MaxSectionItems),
++            Math.Clamp(normalized.MemoryItems, 0, MaxSectionItems),
++            Math.Clamp(normalized.RecentTasks, 0, MaxSectionItems),
++            Math.Clamp(normalized.RelevantRecords, 0, MaxSectionItems));
++    }
++
++    private static void EnsureRequest(GroundedContextRetrievalRequest request)
++    {
++        if (request.CompanyId == Guid.Empty)
++        {
++            throw new GroundedContextRetrievalValidationException("CompanyId is required.");
++        }
++
++        if (request.AgentId == Guid.Empty)
++        {
++            throw new GroundedContextRetrievalValidationException("AgentId is required.");
++        }
++
++        if (request.ActorUserId.HasValue && request.ActorUserId.Value == Guid.Empty)
++        {
++            throw new GroundedContextRetrievalValidationException("ActorUserId cannot be empty.");
++        }
++
++        if (request.TaskId.HasValue && request.TaskId.Value == Guid.Empty)
++        {
++            throw new GroundedContextRetrievalValidationException("TaskId cannot be empty.");
++        }
++    }
++
++    private static string BuildRetrievalIntent(GroundedContextRetrievalRequest request)
++    {
++        var parts = new[]
++        {
++            NormalizeQueryPart(request.QueryText),
++            NormalizeQueryPart(request.TaskTitle),
++            NormalizeQueryPart(request.TaskDescription)
++        }.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
++
++        if (parts.Length == 0)
++        {
++            throw new GroundedContextRetrievalValidationException(
++                "A retrieval query, task title, or task description is required.");
++        }
++
++        var combined = string.Join("\n\n", parts);
++        if (combined.Length > MaxQueryLength)
++        {
++            combined = combined[..MaxQueryLength].TrimEnd();
++        }
++
++        return combined;
++    }
++
++    private static string? NormalizeQueryPart(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var normalized = CollapseWhitespace(value);
++        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
++    }
++
++    private static string CollapseWhitespace(string value)
++    {
++        var builder = new StringBuilder(value.Length);
++        var previousWasWhitespace = false;
++
++        foreach (var character in value.Trim())
++        {
++            if (char.IsWhiteSpace(character))
++            {
++                if (!previousWasWhitespace)
++                {
++                    builder.Append(' ');
++                }
++
++                previousWasWhitespace = true;
++                continue;
++            }
++
++            previousWasWhitespace = false;
++            builder.Append(character);
++        }
++
++        return builder.ToString();
++    }
++
++    private static IReadOnlyList<string> ResolveReadScopes(IReadOnlyDictionary<string, JsonNode?> dataScopes)
++    {
++        if (!TryReadConfiguredIdentifiers(dataScopes, "read", out var scopes))
++        {
++            return Array.Empty<string>();
++        }
++
++        return scopes;
++    }
++
++    private static bool TryReadConfiguredIdentifiers(
++        IReadOnlyDictionary<string, JsonNode?> nodes,
++        string key,
++        out string[] values)
++    {
++        values = Array.Empty<string>();
++
++        if (!nodes.TryGetValue(key, out var node) || node is null)
++        {
++            return true;
++        }
++
++        if (node is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var singleValue))
++        {
++            values = string.IsNullOrWhiteSpace(singleValue)
++                ? Array.Empty<string>()
++                : [singleValue.Trim()];
++            return true;
++        }
++
++        if (node is not JsonArray array)
++        {
++            return false;
++        }
++
++        var results = new List<string>(array.Count);
++        foreach (var item in array)
++        {
++            if (item is not JsonValue itemValue || !itemValue.TryGetValue<string>(out var textValue) || string.IsNullOrWhiteSpace(textValue))
++            {
++                values = Array.Empty<string>();
++                return false;
++            }
++
++            results.Add(textValue.Trim());
++        }
++
++        values = results
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++        return true;
++    }
++
++    private static bool CanAccessMemory(
++        MemoryItem item,
++        IReadOnlyList<string> readScopes,
++        Guid agentId,
++        CompanyMembershipRole? membershipRole)
++    {
++        var metadata = item.Metadata;
++        var hasUnsupportedConstraint =
++            HasConfiguredIdentifiers(metadata, ["roles", "allowed_roles", "membership_roles"]) ||
++            HasConfiguredIdentifiers(metadata, ["user_ids", "users"]);
++
++        if (hasUnsupportedConstraint && membershipRole is null)
++        {
++            return false;
++        }
++
++        if (membershipRole.HasValue &&
++            !EvaluateIdentifierConstraint(metadata, ["roles", "allowed_roles", "membership_roles"], membershipRole.Value.ToStorageValue()))
++        {
++            return false;
++        }
++
++        if (!EvaluateIdentifierConstraint(metadata, ["agent_id", "agent_ids", "agents"], agentId.ToString("D")))
++        {
++            return false;
++        }
++
++        if (!EvaluateScopeConstraint(metadata, ["scope", "scopes", "data_scope", "data_scopes", "read_scope"], readScopes))
++        {
++            return false;
++        }
++
++        var hasExplicitConstraint =
++            HasConfiguredIdentifiers(metadata, ["roles", "allowed_roles", "membership_roles"]) ||
++            HasConfiguredIdentifiers(metadata, ["agent_id", "agent_ids", "agents"]) ||
++            HasConfiguredIdentifiers(metadata, ["scope", "scopes", "data_scope", "data_scopes", "read_scope"]);
++
++        if ((HasTrueBoolean(metadata, ["restricted", "is_restricted"]) ||
++             HasTrueBoolean(metadata, ["private", "is_private"])) &&
++            !hasExplicitConstraint)
++        {
++            return false;
++        }
++
++        return true;
++    }
++
++    private static bool EvaluateIdentifierConstraint(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        IReadOnlyList<string> keys,
++        string currentValue)
++    {
++        if (!TryGetConfiguredIdentifiers(metadata, keys, out var configuredValues, out var exists))
++        {
++            return false;
++        }
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        return configuredValues.Contains(currentValue);
++    }
++
++    private static bool EvaluateScopeConstraint(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        IReadOnlyList<string> keys,
++        IReadOnlyList<string> readScopes)
++    {
++        if (!TryGetConfiguredIdentifiers(metadata, keys, out var configuredScopes, out var exists))
++        {
++            return false;
++        }
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        if (readScopes.Count == 0)
++        {
++            return false;
++        }
++
++        return readScopes.Any(configuredScopes.Contains);
++    }
++
++    private static bool HasConfiguredIdentifiers(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        IReadOnlyList<string> keys) =>
++        TryGetConfiguredIdentifiers(metadata, keys, out var configuredValues, out var exists) &&
++        exists &&
++        configuredValues.Count > 0;
++
++    private static bool TryGetConfiguredIdentifiers(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        IReadOnlyList<string> keys,
++        out HashSet<string> configuredValues,
++        out bool exists)
++    {
++        configuredValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        exists = false;
++
++        foreach (var key in keys)
++        {
++            if (!metadata.TryGetValue(key, out var node) || node is null)
++            {
++                continue;
++            }
++
++            exists = true;
++            if (!TryAppendIdentifiers(node, configuredValues))
++            {
++                configuredValues.Clear();
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    private static bool TryAppendIdentifiers(JsonNode node, ISet<string> identifiers)
++    {
++        if (node is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var singleValue))
++        {
++            if (string.IsNullOrWhiteSpace(singleValue))
++            {
++                return false;
++            }
++
++            identifiers.Add(singleValue.Trim());
++            return true;
++        }
++
++        if (node is not JsonArray array)
++        {
++            return false;
++        }
++
++        foreach (var item in array)
++        {
++            if (item is not JsonValue itemValue || !itemValue.TryGetValue<string>(out var textValue) || string.IsNullOrWhiteSpace(textValue))
++            {
++                return false;
++            }
++
++            identifiers.Add(textValue.Trim());
++        }
++
++        return true;
++    }
++
++    private static bool HasTrueBoolean(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        IReadOnlyList<string> keys)
++    {
++        foreach (var key in keys)
++        {
++            if (!metadata.TryGetValue(key, out var node) || node is not JsonValue jsonValue)
++            {
++                continue;
++            }
++
++            if ((jsonValue.TryGetValue<bool>(out var boolValue) && boolValue) ||
++                (jsonValue.TryGetValue<string>(out var textValue) &&
++                 bool.TryParse(textValue, out var parsed) &&
++                 parsed))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
++    private static bool CanAccessTaskScope(string? scope, IReadOnlyList<string> readScopes)
++    {
++        if (string.IsNullOrWhiteSpace(scope))
++        {
++            return true;
++        }
++
++        if (readScopes.Count == 0)
++        {
++            return false;
++        }
++
++        return readScopes.Contains(scope.Trim(), StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static double ComputeMemoryScore(string retrievalIntent, MemoryItem item, DateTime nowUtc)
++    {
++        var overlapScore = ComputeTokenOverlap(retrievalIntent, item.Summary);
++        var salienceScore = (double)item.Salience;
++        var recencyScore = ComputeRecencyScore(item.CreatedUtc, nowUtc, 30d);
++
++        return Math.Round((overlapScore * 0.60d) + (salienceScore * 0.25d) + (recencyScore * 0.15d), 6);
++    }
++
++    private static double ComputeTaskScore(
++        GroundedContextRetrievalRequest request,
++        string retrievalIntent,
++        ToolExecutionAttempt attempt)
++    {
++        var taskText = $"{attempt.ToolName} {attempt.ActionType.ToStorageValue()} {attempt.Scope} {ReadString(attempt.ResultPayload, "summary")}";
++        var overlapScore = ComputeTokenOverlap(retrievalIntent, taskText);
++        var statusScore = attempt.Status switch
++        {
++            ToolExecutionStatus.AwaitingApproval => 0.30d,
++            ToolExecutionStatus.Failed => 0.25d,
++            ToolExecutionStatus.Executed => 0.20d,
++            _ => 0.10d
++        };
++
++        var taskIdScore = request.TaskId.HasValue && TryResolveTaskId(attempt, out var attemptTaskId) && attemptTaskId == request.TaskId
++            ? 0.40d
++            : 0d;
++
++        var timestamp = attempt.ExecutedUtc ?? attempt.UpdatedUtc;
++        var recencyScore = ComputeRecencyScore(timestamp, DateTime.UtcNow, 14d);
++
++        return Math.Round((overlapScore * 0.45d) + statusScore + taskIdScore + (recencyScore * 0.15d), 6);
++    }
++
++    private static double ComputeApprovalScore(ApprovalRequest request)
++    {
++        var statusScore = request.Status == ApprovalRequestStatus.Pending ? 0.35d : 0.15d;
++        var recencyScore = ComputeRecencyScore(request.UpdatedUtc, DateTime.UtcNow, 14d);
++        return Math.Round(statusScore + (recencyScore * 0.20d), 6);
++    }
++
++    private static double ComputeRecencyScore(DateTime timestampUtc, DateTime nowUtc, double windowDays)
++    {
++        var ageDays = Math.Max(0d, (nowUtc - EnsureUtc(timestampUtc)).TotalDays);
++        var normalized = 1d - Math.Min(1d, ageDays / Math.Max(1d, windowDays));
++        return Math.Round(normalized, 6);
++    }
++
++    private static double ComputeTokenOverlap(string left, string right)
++    {
++        var leftTokens = Tokenize(left);
++        var rightTokens = Tokenize(right);
++
++        if (leftTokens.Count == 0 || rightTokens.Count == 0)
++        {
++            return 0d;
++        }
++
++        var overlapCount = leftTokens.Count(rightTokens.Contains);
++        return Math.Round((double)overlapCount / leftTokens.Count, 6);
++    }
++
++    private static HashSet<string> Tokenize(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return value
++            .Split([' ', '\t', '\r', '\n', '.', ',', ';', ':', '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}', '?', '!'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .Where(static token => token.Length > 1)
++            .Select(static token => token.Trim().ToLowerInvariant())
++            .ToHashSet(StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static string BuildMemoryTitle(MemoryItem item) =>
++        item.AgentId.HasValue
++            ? $"{item.MemoryType.ToStorageValue()} memory for agent"
++            : $"{item.MemoryType.ToStorageValue()} company memory";
++
++    private static string BuildTaskTitle(ToolExecutionAttempt attempt) =>
++        $"{attempt.ToolName} ({attempt.ActionType.ToStorageValue()})";
++
++    private static string BuildTaskSnippet(ToolExecutionAttempt attempt)
++    {
++        // Task-history snippets intentionally collapse stored payloads into bounded summaries
++        // so retrieval output stays prompt-ready and never mirrors raw execution blobs.
++        var pieces = new List<string>
++        {
++            $"Status: {attempt.Status.ToStorageValue()}."
++        };
++
++        if (!string.IsNullOrWhiteSpace(attempt.Scope))
++        {
++            pieces.Add($"Scope: {attempt.Scope.Trim()}.");
++        }
++
++        var summary = ReadString(attempt.ResultPayload, "summary");
++        if (!string.IsNullOrWhiteSpace(summary))
++        {
++            pieces.Add($"Summary: {Truncate(summary, 240)}");
++        }
++
++        return Truncate(string.Join(" ", pieces), MaxSnippetLength);
++    }
++
++    private static string BuildApprovalSnippet(ApprovalRequest request)
++    {
++        var pieces = new List<string>
++        {
++            $"Status: {request.Status.ToStorageValue()}.",
++            $"Action: {request.ActionType.ToStorageValue()}."
++        };
++
++        if (!string.IsNullOrWhiteSpace(request.ApprovalTarget))
++        {
++            pieces.Add($"Target: {request.ApprovalTarget.Trim()}.");
++        }
++
++        return string.Join(" ", pieces);
++    }
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> values, string key)
++    {
++        if (!values.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var value))
++        {
++            return null;
++        }
++
++        return string.IsNullOrWhiteSpace(value) ? null : CollapseWhitespace(value);
++    }
++
++    private static bool TryResolveTaskId(ToolExecutionAttempt attempt, out Guid taskId)
++    {
++        taskId = Guid.Empty;
++        return TryReadGuid(attempt.RequestPayload, "taskId", out taskId) ||
++               TryReadGuid(attempt.RequestPayload, "task_id", out taskId) ||
++               TryReadGuid(attempt.ResultPayload, "taskId", out taskId) ||
++               TryReadGuid(attempt.ResultPayload, "task_id", out taskId);
++    }
++
++    private static bool TryReadGuid(IReadOnlyDictionary<string, JsonNode?> values, string key, out Guid value)
++    {
++        value = Guid.Empty;
++
++        if (!values.TryGetValue(key, out var node) || node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        if (jsonValue.TryGetValue<Guid>(out value))
++        {
++            return value != Guid.Empty;
++        }
++
++        if (jsonValue.TryGetValue<string>(out var text) && Guid.TryParse(text, out value))
++        {
++            return value != Guid.Empty;
++        }
++
++        value = Guid.Empty;
++        return false;
++    }
++
++    private static IReadOnlyList<RetrievalSourceReferenceDto> BuildSourceReferences(
++        RetrievalSectionDto knowledgeSection,
++        RetrievalSectionDto memorySection,
++        RetrievalSectionDto recentTaskSection,
++        RetrievalSectionDto relevantRecordsSection)
++    {
++        var ordered = knowledgeSection.Items
++            .Concat(memorySection.Items)
++            .Concat(recentTaskSection.Items)
++            .Concat(relevantRecordsSection.Items)
++            .OrderBy(item => SourceTypePriority.TryGetValue(item.SourceType, out var priority) ? priority : int.MaxValue)
++            .ThenByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenByDescending(item => item.TimestampUtc)
++            .ThenBy(item => item.SourceId, StringComparer.Ordinal)
++            .Select((item, index) => new RetrievalSourceReferenceDto(
++                item.SourceType,
++                item.SourceId,
++                item.Title,
++                index + 1,
++                item.RelevanceScore,
++                item.Content,
++                item.TimestampUtc,
++                item.Metadata))
++            .ToArray();
++
++        return ordered;
++    }
++
++    private static string ComputeSha256(string value)
++    {
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
++        return Convert.ToHexString(bytes).ToLowerInvariant();
++    }
++
++    private static string Truncate(string value, int maxLength)
++    {
++        var normalized = CollapseWhitespace(value);
++        if (normalized.Length <= maxLength)
++        {
++            return normalized;
++        }
++
++        return normalized[..Math.Max(0, maxLength - 1)].TrimEnd() + "…";
++    }
++
++    private static string? NormalizeOptional(string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var normalized = CollapseWhitespace(value);
++        return normalized.Length <= maxLength
++            ? normalized
++            : normalized[..maxLength];
++    }
++
++    private static DateTime EnsureUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private sealed record ResolvedActorMembership(
++        Guid MembershipId,
++        Guid UserId,
++        CompanyMembershipRole Role);
++
++    private sealed record RankedMemory(
++        MemoryItem Item,
++        double Score);
++
++    private sealed record RankedAttempt(
++        ToolExecutionAttempt Attempt,
++        double Score);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 05ff073..69212a2 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Documents;
+@@ -14,6 +15,7 @@ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Authorization;
++using VirtualCompany.Infrastructure.Context;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -91,6 +93,7 @@ public static class DependencyInjection
+         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+         services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
++        services.AddScoped<IGroundedContextRetrievalService, GroundedContextRetrievalService>();
+         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1f4cc7d..2a840af 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -461,3 +461,56 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
++
++internal sealed class ContextRetrievalConfiguration : IEntityTypeConfiguration<ContextRetrieval>
++{
++    public void Configure(EntityTypeBuilder<ContextRetrieval> builder)
++    {
++        builder.ToTable("context_retrievals");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.AgentId).IsRequired();
++        builder.Property(x => x.ActorUserId);
++        builder.Property(x => x.TaskId);
++        builder.Property(x => x.QueryText).HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.QueryHash).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.CorrelationId).HasMaxLength(128);
++        builder.Property(x => x.RetrievalPurpose).HasMaxLength(256);
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId, x.CreatedUtc });
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class ContextRetrievalSourceConfiguration : IEntityTypeConfiguration<ContextRetrievalSource>
++{
++    public void Configure(EntityTypeBuilder<ContextRetrievalSource> builder)
++    {
++        builder.ToTable("context_retrieval_sources");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.SourceType).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasMaxLength(128).IsRequired();
++        builder.Property(x => x.Title).HasMaxLength(256).IsRequired();
++        builder.Property(x => x.Snippet).HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.Rank).IsRequired();
++        builder.Property(x => x.Score);
++        builder.Property(x => x.TimestampUtc);
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, string?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.RetrievalId, x.Rank }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceEntityId });
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Retrieval)
++            .WithMany(x => x.Sources)
++            .HasForeignKey(x => x.RetrievalId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8945a56..8f7fac9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -30,6 +30,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
++    public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
++    public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -56,5 +58,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<MemoryItem>()
+             .HasQueryFilter(memoryItem =>
+                 CurrentCompanyId.HasValue && memoryItem.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ContextRetrieval>()
++            .HasQueryFilter(retrieval =>
++                CurrentCompanyId.HasValue && retrieval.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ContextRetrievalSource>()
++            .HasQueryFilter(source =>
++                CurrentCompanyId.HasValue && source.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+@@ -0,0 +1,390 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public GroundedContextRetrievalIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task RetrieveAsync_composes_structured_sections_and_persists_source_references()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherAgentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(
++            ["finance payroll approvals", "finance payroll approvals", "finance payroll approvals"],
++            CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "grounded@example.com", "Grounded User", "dev-header", "grounded-user"));
++            dbContext.Companies.AddRange(new Company(companyId, "Context Company"), new Company(otherCompanyId, "Other Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                CreateAgent(companyId, agentId, "Finance Agent", ["finance"]),
++                CreateAgent(companyId, otherAgentId, "Other Agent", ["hr"]));
++
++            var generalDocument = CreateIndexedDocument(companyId, "Payroll Playbook");
++            var scopedDocument = CreateIndexedDocument(
++                companyId,
++                "Finance Controls",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["restricted"] = JsonValue.Create(true),
++                    ["scopes"] = new JsonArray(JsonValue.Create("finance"))
++                });
++
++            var otherCompanyDocument = CreateIndexedDocument(otherCompanyId, "Other Company Controls");
++
++            dbContext.CompanyKnowledgeDocuments.AddRange(generalDocument, scopedDocument, otherCompanyDocument);
++            dbContext.CompanyKnowledgeChunks.AddRange(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    generalDocument.Id,
++                    1,
++                    0,
++                    "payroll guidance for approvals and reconciliation",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "payroll#chunk-1"),
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    scopedDocument.Id,
++                    1,
++                    0,
++                    "finance payroll approvals require dual review",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "finance#chunk-1"),
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    otherCompanyDocument.Id,
++                    1,
++                    0,
++                    "finance payroll approvals require cross-company review",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[2].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "other#chunk-1"));
++
++            dbContext.MemoryItems.AddRange(
++                CreateMemory(companyId, agentId, "Finance approvals require controller signoff.", 0.950m,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["scope"] = JsonValue.Create("finance")
++                    }),
++                CreateMemory(companyId, null, "Shared payroll calendar is current.", 0.650m),
++                CreateExpiredMemory(companyId, agentId, "This expired memory should not be returned.", 0.990m),
++                CreateMemory(companyId, agentId, "HR-only staffing guidance.", 0.990m,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["scope"] = JsonValue.Create("hr")
++                    }));
++
++            dbContext.ToolExecutionAttempts.AddRange(
++                CreateAttempt(companyId, agentId, "payroll", ToolActionType.Read, ToolExecutionStatus.Executed, "finance", taskId, "Validated the finance approval workflow."),
++                CreateAttempt(companyId, otherAgentId, "staffing", ToolActionType.Read, ToolExecutionStatus.Executed, "hr", Guid.NewGuid(), "Other agent task should be excluded."));
++
++            dbContext.ApprovalRequests.Add(
++                new ApprovalRequest(
++                    Guid.NewGuid(),
++                    companyId,
++                    agentId,
++                    Guid.NewGuid(),
++                    actorUserId,
++                    "payments",
++                    ToolActionType.Write,
++                    "finance",
++                    policyDecision: new Dictionary<string, JsonNode?>()));
++
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(
++            new GroundedContextRetrievalRequest(
++                companyId,
++                agentId,
++                QueryText: "finance payroll approvals",
++                ActorUserId: actorUserId,
++                TaskId: taskId,
++                TaskTitle: "Review payroll approvals",
++                Limits: new RetrievalSourceLimitOptions(3, 4, 3, 2),
++                CorrelationId: "ctx-test-correlation",
++                RetrievalPurpose: "orchestration_context"),
++            CancellationToken.None);
++
++        Assert.Equal(companyId, result.CompanyContextSection.CompanyId);
++        Assert.Equal(agentId, result.CompanyContextSection.AgentId);
++        Assert.Contains("finance", result.CompanyContextSection.ReadScopes);
++
++        Assert.Contains(result.KnowledgeSection.Items, x => x.Title == "Finance Controls");
++        Assert.DoesNotContain(result.KnowledgeSection.Items, x => x.Title == "Other Company Controls");
++
++        Assert.Contains(result.MemorySection.Items, x => x.Content.Contains("controller signoff", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(result.MemorySection.Items, x => x.Content.Contains("Shared payroll calendar", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(result.MemorySection.Items, x => x.Content.Contains("expired", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(result.MemorySection.Items, x => x.Content.Contains("HR-only", StringComparison.OrdinalIgnoreCase));
++
++        var recentTask = Assert.Single(result.RecentTaskSection.Items);
++        Assert.Equal(GroundedContextSourceTypes.RecentTask, recentTask.SourceType);
++        Assert.Contains("finance", recentTask.Content, StringComparison.OrdinalIgnoreCase);
++
++        var approval = Assert.Single(result.RelevantRecordsSection.Items);
++        Assert.Equal(GroundedContextSourceTypes.ApprovalRequest, approval.SourceType);
++
++        var returnedItemCount =
++            result.KnowledgeSection.Items.Count +
++            result.MemorySection.Items.Count +
++            result.RecentTaskSection.Items.Count +
++            result.RelevantRecordsSection.Items.Count;
++
++        Assert.Equal(returnedItemCount, result.SourceReferences.Count);
++        Assert.Equal(Enumerable.Range(1, result.SourceReferences.Count), result.SourceReferences.Select(x => x.Rank));
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var verificationDbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persistedRetrieval = await verificationDbContext.ContextRetrievals
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == result.RetrievalId);
++        var persistedSources = await verificationDbContext.ContextRetrievalSources
++            .IgnoreQueryFilters()
++            .Where(x => x.RetrievalId == result.RetrievalId)
++            .OrderBy(x => x.Rank)
++            .ToListAsync();
++
++        Assert.Equal(companyId, persistedRetrieval.CompanyId);
++        Assert.Equal(agentId, persistedRetrieval.AgentId);
++        Assert.Equal(actorUserId, persistedRetrieval.ActorUserId);
++        Assert.Equal(taskId, persistedRetrieval.TaskId);
++        Assert.Equal("ctx-test-correlation", persistedRetrieval.CorrelationId);
++        Assert.Equal(result.SourceReferences.Count, persistedSources.Count);
++        Assert.Equal(result.SourceReferences.Select(x => x.SourceId), persistedSources.Select(x => x.SourceEntityId));
++    }
++
++    [Fact]
++    public async Task RetrieveAsync_default_denies_scoped_sources_when_agent_scope_configuration_is_missing()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(["finance approvals", "finance approvals"], CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "noscope@example.com", "No Scope", "dev-header", "no-scope"));
++            dbContext.Companies.Add(new Company(companyId, "No Scope Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "No Scope Agent", []));
++
++            var openDocument = CreateIndexedDocument(companyId, "General Payroll Guide");
++            var restrictedDocument = CreateIndexedDocument(
++                companyId,
++                "Restricted Finance Guide",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["restricted"] = JsonValue.Create(true),
++                    ["scopes"] = new JsonArray(JsonValue.Create("finance"))
++                });
++
++            dbContext.CompanyKnowledgeDocuments.AddRange(openDocument, restrictedDocument);
++            dbContext.CompanyKnowledgeChunks.AddRange(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    openDocument.Id,
++                    1,
++                    0,
++                    "general payroll guide",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "general#chunk-1"),
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    restrictedDocument.Id,
++                    1,
++                    0,
++                    "finance approvals",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Provider,
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, JsonNode?>(),
++                    "restricted#chunk-1"));
++
++            dbContext.MemoryItems.AddRange(
++                CreateMemory(companyId, null, "Finance-only guidance.", 0.900m,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["scope"] = JsonValue.Create("finance")
++                    }),
++                CreateMemory(companyId, null, "General guidance.", 0.500m));
++
++            dbContext.ToolExecutionAttempts.Add(
++                CreateAttempt(companyId, agentId, "payroll", ToolActionType.Read, ToolExecutionStatus.Executed, "finance", Guid.NewGuid(), "Scoped task should be excluded."));
++
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(
++            new GroundedContextRetrievalRequest(
++                companyId,
++                agentId,
++                QueryText: "finance approvals",
++                ActorUserId: actorUserId,
++                Limits: new RetrievalSourceLimitOptions(5, 5, 5, 5)),
++            CancellationToken.None);
++
++        Assert.Contains(result.KnowledgeSection.Items, x => x.Title == "General Payroll Guide");
++        Assert.DoesNotContain(result.KnowledgeSection.Items, x => x.Title == "Restricted Finance Guide");
++        Assert.Contains(result.MemorySection.Items, x => x.Content.Contains("General guidance", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(result.MemorySection.Items, x => x.Content.Contains("Finance-only", StringComparison.OrdinalIgnoreCase));
++        Assert.Empty(result.RecentTaskSection.Items);
++        Assert.Empty(result.CompanyContextSection.ReadScopes);
++    }
++
++    [Fact]
++    public async Task RetrieveAsync_orders_equal_memory_candidates_deterministically_by_created_time_then_id()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var firstMemoryId = Guid.NewGuid();
++        var secondMemoryId = Guid.NewGuid();
++        var createdUtc = new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc);
++
++        using var scope = _factory.Services.CreateScope();
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "order@example.com", "Ordering User", "dev-header", "ordering-user"));
++            dbContext.Companies.Add(new Company(companyId, "Ordering Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Ordering Agent", ["finance"]));
++
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(firstMemoryId, companyId, null, MemoryType.Fact, "Finance guidance alpha.", null, null, 0.800m, createdUtc, null),
++                new MemoryItem(secondMemoryId, companyId, null, MemoryType.Fact, "Finance guidance beta.", null, null, 0.800m, createdUtc, null));
++
++            await Task.CompletedTask;
++        });
++
++        using (var normalizationScope = _factory.Services.CreateScope())
++        {
++            var dbContext = normalizationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            await dbContext.Database.ExecuteSqlRawAsync(
++                """
++                UPDATE memory_items
++                SET "CreatedUtc" = {0}
++                WHERE "Id" IN ({1}, {2});
++                """,
++                createdUtc,
++                firstMemoryId,
++                secondMemoryId);
++        }
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(
++            new GroundedContextRetrievalRequest(
++                companyId,
++                agentId,
++                QueryText: "finance guidance",
++                ActorUserId: actorUserId,
++                Limits: new RetrievalSourceLimitOptions(0, 5, 0, 0)),
++            CancellationToken.None);
++
++        Assert.Equal(
++            result.MemorySection.Items.OrderBy(x => x.SourceId, StringComparer.Ordinal).Select(x => x.SourceId),
++            result.MemorySection.Items.Select(x => x.SourceId));
++    }
++
++    private static Agent CreateAgent(Guid companyId, Guid agentId, string displayName, IReadOnlyList<string> readScopes)
++    {
++        return new Agent(
++            agentId,
++            companyId,
++            "operations",
++            displayName,
++            "Operations",
++            "Finance",
++            null,
++            AgentSeniority.Mid,
++            AgentStatus.Active,
++            AgentAutonomyLevel.Guided,
++            scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["read"] = new JsonArray(readScopes.Select(JsonValue.Create).ToArray())
++            });
++    }
++
++    private static CompanyKnowledgeDocument CreateIndexedDocument(
++        Guid companyId,
++        string title,
++        Dictionary<string, JsonNode?>? accessScopeProperties = null)
++    {
++        var document = new CompanyKnowledgeDocument(
++            Guid.NewGuid(),
++            companyId,
++            title,
++            CompanyKnowledgeDocumentType.Policy,
++            $"companies/{companyId:N}/knowledge/{Guid.NewGuid():N}/policy.txt",
++            null,
++            "policy.txt",
++            "text/plain",
++            ".txt",
++            64,
++            accessScope: new CompanyKnowledgeDocumentAccessScope(
++                companyId,
++                CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
++                accessScopeProperties));
++
++        document.MarkScanClean();
++        document.MarkProcessing();
++        document.MarkProcessed();
++        document.MarkIndexed("finance payroll approvals", 1, 1, "test-provider", "test", "v1", 256, "seed-fingerprint-v1");
++        return document;
++    }
++
++    private static MemoryItem CreateMemory(
++        Guid companyId,
++        Guid? agentId,
++        string summary,
++        decimal salience,
++        Dictionary<string, JsonNode?>? metadata = null)
++    {
++        return new MemoryItem(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            MemoryType.Fact,
++            summary,
++            null,
++            null,
++            salience,
++            DateTime.UtcNow.AddHours(-1),
++            null,
++            metadata);
++    }
++
++    private static MemoryItem CreateExpiredMemory(Guid companyId, Guid? agentId, string summary, decimal salience)
++    {
++        return new MemoryItem(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            MemoryType.Fact,
++            summary,
++            null,
++            null,
++            salience,
++            DateTime.UtcNow.AddDays(-5),
++            DateTime.UtcNow.AddDays(-1));
++    }
++
++    private static ToolExecutionAttempt CreateAttempt(
++        Guid companyId,
++        Guid agentId,
++        string toolName,
++        ToolActionType actionType,
++        ToolExecutionStatus status,
++        string? scope,
++        Guid taskId,
++        string summary)
++    {
++        var attempt = new ToolExecutionAttempt(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            toolName,
++            actionType,
++            scope,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["taskId"] = JsonValue.Create(taskId)
++            });
++
++        if (status == ToolExecutionStatus.Executed)
++        {
++            attempt.MarkExecuted(
++                policyDecision: new Dictionary<string, JsonNode?>(),
++                resultPayload: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["summary"] = JsonValue.Create(summary),
++                    ["taskId"] = JsonValue.Create(taskId)
++                });
++        }
++        else
++        {
++            attempt.MarkDenied(new Dictionary<string, JsonNode?>());
++        }
++
++        return attempt;
++    }
++}
+END_OF_PATCH

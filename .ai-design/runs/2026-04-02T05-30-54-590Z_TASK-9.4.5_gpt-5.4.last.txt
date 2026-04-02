@@ -1,0 +1,424 @@
+diff --git a/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+index 9b2b1d3..0e2a2a1 100644
+--- a/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
++++ b/src/VirtualCompany.Application/Context/GroundedContextPromptReadyMapper.cs
+@@ -6,6 +6,15 @@ namespace VirtualCompany.Application.Context;
+ public static class GroundedContextPromptReadyMapper
+ {
+     private static readonly IReadOnlyDictionary<string, int> RelevantRecordSourcePriority =
++        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["knowledge"] = 0,
++            ["memory"] = 1,
++            ["recent_tasks"] = 2,
++            ["relevant_records"] = 3
++        };
++
++    private static readonly IReadOnlyDictionary<string, int> SectionPriority =
+         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+         {
+             [GroundedContextSourceTypes.ApprovalRequest] = 0,
+@@ -77,6 +86,8 @@ public static class GroundedContextPromptReadyMapper
+             .Where(static item => item is not null)
+             .Cast<MemoryContextItemDto>()
+             .OrderByDescending(item => item.RelevanceScore ?? 0d)
++            .ThenByDescending(item => item.Salience ?? 0d)
++            .ThenByDescending(item => item.ValidFromUtc ?? item.CreatedUtc ?? DateTime.MinValue)
+             .ThenByDescending(item => item.CreatedUtc)
+             .ThenBy(item => item.MemoryId, StringComparer.Ordinal)
+             .ToArray();
+@@ -249,26 +260,32 @@ public static class GroundedContextPromptReadyMapper
+             sourceReference.SourceId,
+             NormalizeOptional(sourceReference.Title) ?? item.SourceId,
+             sourceReference.Rank > 0 ? sourceReference.Rank : null,
+-            ParseNullableInt(GetMetadata(metadata, "retrievalSectionRank")),
++            sourceReference.SectionRank > 0
++                ? sourceReference.SectionRank
++                : ParseNullableInt(GetMetadata(metadata, "retrievalSectionRank")),
+             sourceReference.Score,
+             sourceReference.TimestampUtc,
+             metadata);
+     }
+ 
+     private static IReadOnlyList<RetrievalSourceReferenceDto> NormalizeSourceReferences(
+-        IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences) =>
++        IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences)
++    {
+         sourceReferences
+-            .OrderBy(reference => reference.Rank)
++            .OrderBy(reference => GetSectionPriority(NormalizeOptional(reference.SectionId) ?? GetMetadata(reference.Metadata, "retrievalSection")))
++            .ThenBy(reference => GetSectionRank(reference))
++            .ThenBy(reference => reference.Rank > 0 ? reference.Rank : int.MaxValue)
+             .ThenBy(reference => reference.SourceType, StringComparer.Ordinal)
+             .ThenBy(reference => reference.SourceId, StringComparer.Ordinal)
+             .Select(reference => new RetrievalSourceReferenceDto(
+                 reference.SourceType,
+                 reference.SourceId,
+                 NormalizeOptional(reference.Title) ?? reference.SourceId,
+-                NormalizeOptional(reference.ParentSourceType),
+-                NormalizeOptional(reference.ParentSourceId),
++                NormalizeOptional(reference.ParentSourceType) ?? GetMetadata(reference.Metadata, "parentSourceType"),
++                NormalizeOptional(reference.ParentSourceId) ?? GetMetadata(reference.Metadata, "parentSourceId"),
+                 NormalizeOptional(reference.ParentTitle),
+                 NormalizeOptional(reference.SectionId) ?? GetMetadata(reference.Metadata, "retrievalSection") ?? string.Empty,
+                 NormalizeOptional(reference.SectionTitle) ?? GetMetadata(reference.Metadata, "retrievalSectionTitle") ?? string.Empty,
+-                reference.SectionRank > 0 ? reference.SectionRank : ParseNullableInt(GetMetadata(reference.Metadata, "retrievalSectionRank")) ?? 0,
++                GetSectionRank(reference),
+                 NormalizeOptional(reference.Locator),
+-                NormalizeOptional(reference.Title) ?? reference.SourceId,
+                 reference.Rank,
+                 reference.Score,
+                 NormalizeOptional(reference.Snippet) ?? string.Empty,
+@@ -276,15 +293,25 @@ public static class GroundedContextPromptReadyMapper
+                 NormalizeMetadata(reference.Metadata)))
+             .ToArray();
++    }
+ 
+     private static IReadOnlyDictionary<string, RetrievalSourceReferenceDto> BuildSourceLookup(
+         IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences) =>
+         sourceReferences
+-            .GroupBy(reference => BuildSourceKey(GetMetadata(reference.Metadata, "retrievalSection") ?? string.Empty, reference.SourceType, reference.SourceId), StringComparer.OrdinalIgnoreCase)
++            .GroupBy(reference => BuildSourceKey(reference.SectionId, reference.SourceType, reference.SourceId), StringComparer.OrdinalIgnoreCase)
+             .ToDictionary(
+                 group => group.Key,
+-                group => group.OrderBy(reference => reference.Rank).First(),
++                group => group
++                    .OrderBy(reference => GetSectionRank(reference))
++                    .ThenBy(reference => reference.Rank > 0 ? reference.Rank : int.MaxValue)
++                    .ThenBy(reference => reference.SourceType, StringComparer.Ordinal)
++                    .ThenBy(reference => reference.SourceId, StringComparer.Ordinal)
++                    .First(),
+                 StringComparer.OrdinalIgnoreCase);
+ 
++    private static int GetSectionPriority(string? sectionId) =>
++        sectionId is not null && SectionPriority.TryGetValue(sectionId, out var priority) ? priority : int.MaxValue;
++
++    private static int GetSectionRank(RetrievalSourceReferenceDto reference) =>
++        reference.SectionRank > 0 ? reference.SectionRank : ParseNullableInt(GetMetadata(reference.Metadata, "retrievalSectionRank")) ?? 0;
+     private static string BuildSourceKey(string sectionId, string sourceType, string sourceId) =>
+         $"{sectionId}|{sourceType}|{sourceId}";
+ 
+diff --git a/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+index a1c7cb6..2726295 100644
+--- a/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/ContextRetrievalEntities.cs
+@@ -107,7 +107,6 @@ public sealed class ContextRetrievalSource : ICompanyOwnedEntity
+         string? locator,
+         int rank,
+         double? score,
+-        double? score,
+         DateTime? timestampUtc,
+         IReadOnlyDictionary<string, string?>? metadata = null)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+index 5a80520..7931742 100644
+--- a/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
++++ b/src/VirtualCompany.Infrastructure/Context/GroundedContextRetrievalService.cs
+@@ -36,6 +36,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+     private readonly ICompanyKnowledgeSearchService _companyKnowledgeSearchService;
+     private readonly IRetrievalScopeEvaluator _retrievalScopeEvaluator;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly TimeProvider _timeProvider;
+ 
+     public GroundedContextRetrievalService(
+         VirtualCompanyDbContext dbContext,
+@@ -43,13 +44,15 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+         ICompanyKnowledgeSearchService companyKnowledgeSearchService,
+         IRetrievalScopeEvaluator retrievalScopeEvaluator,
+-        ICorrelationContextAccessor correlationContextAccessor)
++        ICorrelationContextAccessor correlationContextAccessor,
++        TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+         _companyKnowledgeSearchService = companyKnowledgeSearchService;
+         _retrievalScopeEvaluator = retrievalScopeEvaluator;
+         _correlationContextAccessor = correlationContextAccessor;
++        _timeProvider = timeProvider;
+     }
+ 
+     public async Task<GroundedContextRetrievalResult> RetrieveAsync(
+@@ -63,7 +66,9 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+         var normalizedCorrelationId = NormalizeOptional(
+             string.IsNullOrWhiteSpace(request.CorrelationId) ? _correlationContextAccessor.CorrelationId : request.CorrelationId,
+             128);
+-        var asOfUtc = request.AsOfUtc.HasValue ? EnsureUtc(request.AsOfUtc.Value) : DateTime.UtcNow;
++        var asOfUtc = request.AsOfUtc.HasValue
++            ? EnsureUtc(request.AsOfUtc.Value)
++            : _timeProvider.GetUtcNow().UtcDateTime;
+ 
+         var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
+             request.CompanyId,
+@@ -159,7 +164,6 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+                 sourceReference.SectionRank,
+                 sourceReference.Locator,
+                 sourceReference.Rank,
+-                sourceReference.Score,
+                 sourceReference.Score,
+                 sourceReference.TimestampUtc,
+                 sourceReference.Metadata));
+@@ -290,12 +294,15 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+             .Where(x => _retrievalScopeEvaluator.CanAccessMemory(accessDecision, x))
+             .Select(x => new RankedMemory(
+                 x,
+-                ComputeMemoryScore(retrievalIntent, x, asOfUtc)))
++                ComputeMemoryScore(retrievalIntent, x, asOfUtc)))
++            // Deterministic memory ordering is explicit so equal scores stay stable across runs.
+             .OrderByDescending(x => x.Score)
++            .ThenByDescending(x => x.Item.Salience)
++            .ThenByDescending(x => x.Item.ValidFromUtc)
+             .ThenByDescending(x => x.Item.CreatedUtc)
+             .ThenBy(x => x.Item.Id)
+             .Take(limit)
+             .Select(x => new RetrievalItemDto(
++
+                 GroundedContextSourceTypes.MemoryItem,
+                 x.Item.Id.ToString("N"),
+                 BuildMemoryTitle(x.Item),
+@@ -1037,16 +1044,13 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrieva
+         RetrievalSectionDto memorySection,
+         RetrievalSectionDto recentTaskSection,
+         RetrievalSectionDto relevantRecordsSection)
+-    {
+-        var ordered = new[] { knowledgeSection, memorySection, recentTaskSection, relevantRecordsSection }
++        => new[] { knowledgeSection, memorySection, recentTaskSection, relevantRecordsSection }
++            // Persist source references in the same fixed section/item order used by the prompt-ready payload.
+             .SelectMany(section => section.Items.Select((item, index) => new SectionedRetrievalItem(section.Id, section.Title, index + 1, item)))
+-            .OrderBy(item => SourceTypePriority.TryGetValue(item.Item.SourceType, out var priority) ? priority : int.MaxValue)
+-            .ThenByDescending(item => item.Item.RelevanceScore ?? 0d)
+-            .ThenByDescending(item => item.Item.TimestampUtc)
+-            .ThenBy(item => item.Item.SourceId, StringComparer.Ordinal)
+             .Select((item, index) => CreateSourceReference(item, index + 1))
+             .ToArray();
+ 
+-        return ordered;
+-    }
++    
+ 
+     private static RetrievalSourceReferenceDto CreateSourceReference(SectionedRetrievalItem item, int rank)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 345f251..bb2f8d4 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
++using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Context;
+@@ -31,6 +32,8 @@ public static class DependencyInjection
+         var connectionString =
+             configuration.GetConnectionString("VirtualCompanyDb")
+             ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true";
++
++        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+ 
+         services.AddDbContext<VirtualCompanyDbContext>(options =>
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+index 4ce9248..f619ab8 100644
+--- a/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextPromptReadyMapperTests.cs
+@@ -133,13 +133,13 @@ public sealed class GroundedContextPromptReadyMapperTests
+ 
+         var sourceReferences = new[]
+         {
+-            CreateSourceReference("knowledge", 2, GroundedContextSourceTypes.KnowledgeChunk, "chunk-b", "Payroll Controls", "finance payroll approvals require dual review."),
+-            CreateSourceReference("knowledge", 1, GroundedContextSourceTypes.KnowledgeChunk, "chunk-a", "Payroll Controls", "finance payroll approvals require controller signoff."),
+-            CreateSourceReference("memory", 1, GroundedContextSourceTypes.MemoryItem, "memory-a", "Fact memory", "shared payroll calendar is current."),
+-            CreateSourceReference("recent_tasks", 1, GroundedContextSourceTypes.RecentTask, "attempt-a", "payroll (read)", "reviewed approval routing."),
+-            CreateSourceReference("recent_tasks", 2, GroundedContextSourceTypes.RecentTask, "attempt-b", "payroll (read)", "reviewed payroll controls."),
+-            CreateSourceReference("relevant_records", 1, GroundedContextSourceTypes.ApprovalRequest, "approval-a", "Approval: payments", "status: pending."),
+-            CreateSourceReference("relevant_records", 2, GroundedContextSourceTypes.CompanyRecord, "company-a", "Company Profile: VC", "industry: finance.")
++            CreateSourceReference("knowledge", 2, 2, GroundedContextSourceTypes.KnowledgeChunk, "chunk-b", "Payroll Controls", "finance payroll approvals require dual review."),
++            CreateSourceReference("knowledge", 1, 1, GroundedContextSourceTypes.KnowledgeChunk, "chunk-a", "Payroll Controls", "finance payroll approvals require controller signoff."),
++            CreateSourceReference("memory", 3, 1, GroundedContextSourceTypes.MemoryItem, "memory-a", "Fact memory", "shared payroll calendar is current."),
++            CreateSourceReference("recent_tasks", 4, 1, GroundedContextSourceTypes.RecentTask, "attempt-a", "payroll (read)", "reviewed approval routing."),
++            CreateSourceReference("recent_tasks", 5, 2, GroundedContextSourceTypes.RecentTask, "attempt-b", "payroll (read)", "reviewed payroll controls."),
++            CreateSourceReference("relevant_records", 6, 1, GroundedContextSourceTypes.ApprovalRequest, "approval-a", "Approval: payments", "status: pending."),
++            CreateSourceReference("relevant_records", 7, 2, GroundedContextSourceTypes.CompanyRecord, "company-a", "Company Profile: VC", "industry: finance.")
+         };
+ 
+         var normalized = GroundedContextPromptReadyMapper.Normalize(
+@@ -164,10 +164,45 @@ public sealed class GroundedContextPromptReadyMapperTests
+ 
+         Assert.Equal(["attempt-a", "attempt-b"], normalized.RecentTasks.Items.Select(x => x.AttemptId));
+         Assert.Equal("approval_request", normalized.RelevantRecords.Items[0].RecordType);
++        Assert.Equal(["chunk-a", "chunk-b", "memory-a", "attempt-a", "attempt-b", "approval-a", "company-a"], normalized.SourceReferences.Select(x => x.SourceId));
+         Assert.Equal(sourceReferences.Length, normalized.SourceReferences.Count);
+         Assert.Equal(sourceReferences.Length, normalized.Counts.SourceReferences);
+     }
+ 
++    [Fact]
++    public void Normalize_orders_equal_memory_candidates_by_salience_then_valid_from_then_identifier()
++    {
++        var generatedAtUtc = new DateTime(2026, 4, 2, 9, 30, 0, DateTimeKind.Utc);
++        var normalized = GroundedContextPromptReadyMapper.Normalize(
++            generatedAtUtc,
++            new RetrievalSectionDto("knowledge", "Knowledge", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto(
++                "memory",
++                "Memory",
++                new[]
++                {
++                    new RetrievalItemDto(GroundedContextSourceTypes.MemoryItem, "memory-c", "Memory C", "Shared payroll notes.", 0.80d, generatedAtUtc.AddMinutes(-4), new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["salience"] = "0.40", ["validFromUtc"] = generatedAtUtc.AddHours(-1).ToString("O") }),
++                    new RetrievalItemDto(GroundedContextSourceTypes.MemoryItem, "memory-a", "Memory A", "Shared payroll notes.", 0.80d, generatedAtUtc.AddMinutes(-3), new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["salience"] = "0.90", ["validFromUtc"] = generatedAtUtc.AddHours(-4).ToString("O") }),
++                    new RetrievalItemDto(GroundedContextSourceTypes.MemoryItem, "memory-b", "Memory B", "Shared payroll notes.", 0.80d, generatedAtUtc.AddMinutes(-2), new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["salience"] = "0.90", ["validFromUtc"] = generatedAtUtc.AddHours(-2).ToString("O") })
++                }),
++            new RetrievalSectionDto("recent_tasks", "Recent Task History", Array.Empty<RetrievalItemDto>()),
++            new RetrievalSectionDto("relevant_records", "Relevant Records", Array.Empty<RetrievalItemDto>()),
++            Array.Empty<RetrievalSourceReferenceDto>());
++
++        Assert.Equal(["memory-b", "memory-a", "memory-c"], normalized.Memory.Items.Select(x => x.MemoryId));
++    }
++
+     [Fact]
+     public void Normalize_returns_empty_sections_when_sources_are_empty()
+     {
+@@ -184,7 +219,7 @@ public sealed class GroundedContextPromptReadyMapperTests
+         Assert.Empty(normalized.SourceReferences);
+     }
+ 
+-    private static RetrievalSourceReferenceDto CreateSourceReference(string sectionId, int rank, string sourceType, string sourceId, string title, string snippet) =>
++    private static RetrievalSourceReferenceDto CreateSourceReference(string sectionId, int rank, int sectionRank, string sourceType, string sourceId, string title, string snippet) =>
+         new(
+             sourceType,
+             sourceId,
+@@ -201,9 +236,10 @@ public sealed class GroundedContextPromptReadyMapperTests
+                 "recent_tasks" => "Recent Task History",
+                 "relevant_records" => "Relevant Records",
+                 _ => sectionId
+             },
+-            rank,
++            sectionRank,
+             $"{title} | {sectionId}",
++            rank,
+             0.5d,
+             snippet,
+             null,
+@@ -217,7 +253,7 @@ public sealed class GroundedContextPromptReadyMapperTests
+                     "relevant_records" => "Relevant Records",
+                     _ => sectionId
+                 },
+-                ["retrievalSectionRank"] = rank.ToString()
++                ["retrievalSectionRank"] = sectionRank.ToString()
+             });
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+index b4644fd..a61c755 100644
+--- a/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/GroundedContextRetrievalIntegrationTests.cs
+@@ -177,6 +177,14 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Te
+             result.RecentTaskSection.Items.Count +
+             result.RelevantRecordsSection.Items.Count;
+ 
++        var expectedSourceOrder = result.KnowledgeSection.Items.Select(x => $"{x.SourceType}:{x.SourceId}")
++            .Concat(result.MemorySection.Items.Select(x => $"{x.SourceType}:{x.SourceId}"))
++            .Concat(result.RecentTaskSection.Items.Select(x => $"{x.SourceType}:{x.SourceId}"))
++            .Concat(result.RelevantRecordsSection.Items.Select(x => $"{x.SourceType}:{x.SourceId}"))
++            .ToArray();
++
++        Assert.Equal(expectedSourceOrder, result.SourceReferences.Select(x => $"{x.SourceType}:{x.SourceId}"));
++
+         Assert.Equal(returnedItemCount, result.SourceReferences.Count);
+         Assert.Equal(Enumerable.Range(1, result.SourceReferences.Count), result.SourceReferences.Select(x => x.Rank));
+ 
+@@ -688,6 +696,53 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Te
+             result.MemorySection.Items.Select(x => x.SourceId));
+     }
+ 
++    [Fact]
++    public async Task RetrieveAsync_uses_injected_clock_when_request_as_of_utc_is_not_supplied()
++    {
++        var companyId = Guid.NewGuid();
++        var actorUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var fixedUtc = new DateTime(2026, 4, 2, 9, 30, 0, DateTimeKind.Utc);
++
++        using var factory = new TestWebApplicationFactory(new FixedTimeProvider(fixedUtc));
++        using var scope = factory.Services.CreateScope();
++
++        await factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(actorUserId, "clock@example.com", "Clock User", "dev-header", "clock-user"));
++            dbContext.Companies.Add(new Company(companyId, "Clock Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(companyId, agentId, "Clock Agent", ["finance"]));
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Active payroll memory.", null, null, 0.80m, fixedUtc.AddHours(-2), null),
++                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Future payroll memory.", null, null, 0.95m, fixedUtc.AddMinutes(10), null),
++                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Expired payroll memory.", null, null, 0.90m, fixedUtc.AddHours(-3), fixedUtc.AddMinutes(-1)));
++            await Task.CompletedTask;
++        });
++
++        var retrievalService = scope.ServiceProvider.GetRequiredService<IGroundedContextRetrievalService>();
++        var result = await retrievalService.RetrieveAsync(
++            new GroundedContextRetrievalRequest(
++                companyId,
++                agentId,
++                QueryText: "payroll memory",
++                ActorUserId: actorUserId,
++                Limits: new RetrievalSourceLimitOptions(0, 5, 0, 0)),
++            CancellationToken.None);
++
++        Assert.Equal(fixedUtc, result.GeneratedAtUtc);
++        Assert.Contains(result.MemorySection.Items, x => x.Content.Contains("Active payroll memory", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(result.MemorySection.Items, x => x.Content.Contains("Future payroll memory", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(result.MemorySection.Items, x => x.Content.Contains("Expired payroll memory", StringComparison.OrdinalIgnoreCase));
++    }
++
+     [Fact]
+     public async Task RetrieveAsync_uses_as_of_utc_to_keep_memory_ranking_and_source_references_stable()
+     {
+@@ -859,4 +914,15 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Te
+ 
+         return attempt;
+     }
++
++    private sealed class FixedTimeProvider : TimeProvider
++    {
++        private readonly DateTimeOffset _utcNow;
++
++        public FixedTimeProvider(DateTime utcNow)
++        {
++            _utcNow = new DateTimeOffset(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
++        }
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 4d3ee5a..4855fa0 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -18,8 +18,16 @@ namespace VirtualCompany.Api.Tests;
+ 
+ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ {
++    private readonly TimeProvider _timeProvider;
+     private SqliteConnection? _connection;
+ 
++    public TestWebApplicationFactory()
++        : this(TimeProvider.System)
++    {
++    }
++
++    internal TestWebApplicationFactory(TimeProvider timeProvider) => _timeProvider = timeProvider;
++
+     protected override void ConfigureWebHost(IWebHostBuilder builder)
+     {
+         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+@@ -40,6 +48,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+         builder.ConfigureServices(services =>
+         {
+             services.RemoveAll<DbContextOptions<VirtualCompanyDbContext>>();
++            services.RemoveAll<TimeProvider>();
++            services.AddSingleton(_timeProvider);
+             services.RemoveAll<VirtualCompanyDbContext>();
+ 
+             _connection ??= CreateOpenConnection();
+END_OF_PATCH

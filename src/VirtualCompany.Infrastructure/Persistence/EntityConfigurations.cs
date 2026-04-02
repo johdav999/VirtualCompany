@@ -490,6 +490,72 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
     }
 }
 
+internal sealed class ContextRetrievalConfiguration : IEntityTypeConfiguration<ContextRetrieval>
+{
+    public void Configure(EntityTypeBuilder<ContextRetrieval> builder)
+    {
+        builder.ToTable("context_retrievals");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.AgentId).IsRequired();
+        builder.Property(x => x.ActorUserId);
+        builder.Property(x => x.TaskId);
+        builder.Property(x => x.QueryText).HasMaxLength(4000).IsRequired();
+        builder.Property(x => x.QueryHash).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.CorrelationId).HasMaxLength(128);
+        builder.Property(x => x.RetrievalPurpose).HasMaxLength(256);
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.TaskId, x.CreatedUtc });
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class ContextRetrievalSourceConfiguration : IEntityTypeConfiguration<ContextRetrievalSource>
+{
+    public void Configure(EntityTypeBuilder<ContextRetrievalSource> builder)
+    {
+        builder.ToTable("context_retrieval_sources");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.SourceType).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.SourceEntityId).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.ParentSourceType).HasMaxLength(64);
+        builder.Property(x => x.ParentSourceEntityId).HasMaxLength(128);
+        builder.Property(x => x.ParentTitle).HasMaxLength(256);
+        builder.Property(x => x.Title).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Snippet).HasMaxLength(4000).IsRequired();
+        builder.Property(x => x.SectionId).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.SectionTitle).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.SectionRank).IsRequired();
+        builder.Property(x => x.Locator).HasMaxLength(512);
+        builder.Property(x => x.Rank).IsRequired();
+        builder.Property(x => x.Score);
+        builder.Property(x => x.TimestampUtc);
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonConversion<Dictionary<string, string?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.RetrievalId, x.Rank }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.RetrievalId, x.SectionId, x.SectionRank });
+        builder.HasIndex(x => new { x.CompanyId, x.ParentSourceType, x.ParentSourceEntityId });
+        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceEntityId });
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Retrieval)
+            .WithMany(x => x.Sources)
+            .HasForeignKey(x => x.RetrievalId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
 internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfiguration<CompanyKnowledgeDocument>
 {
     public void Configure(EntityTypeBuilder<CompanyKnowledgeDocument> builder)
@@ -557,7 +623,6 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
         builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingRequestedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingStartedUtc });
         builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasMany<CompanyKnowledgeChunk>("Chunks").WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -594,7 +659,7 @@ internal sealed class CompanyKnowledgeChunkConfiguration : IEntityTypeConfigurat
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Document)
-            .WithMany("Chunks")
+            .WithMany()
             .HasForeignKey(x => x.DocumentId)
             .OnDelete(DeleteBehavior.Cascade);
     }

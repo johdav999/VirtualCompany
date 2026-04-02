@@ -1,9 +1,12 @@
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Context;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Documents;
@@ -13,6 +16,7 @@ using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Authorization;
+using VirtualCompany.Infrastructure.Context;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Persistence;
@@ -31,6 +35,8 @@ public static class DependencyInjection
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
             ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true";
+
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
         {
@@ -60,6 +66,25 @@ public static class DependencyInjection
         services.AddOptions<KnowledgeIndexingOptions>()
             .Bind(configuration.GetSection(KnowledgeIndexingOptions.SectionName));
 
+        services.AddOptions<GroundedContextRetrievalCacheOptions>()
+            .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
+
+        var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
+        if (!string.IsNullOrWhiteSpace(redisConnectionString))
+        {
+            services.AddStackExchangeRedisCache(options =>
+            {
+                options.Configuration = redisConnectionString;
+                options.InstanceName = "virtual-company:";
+            });
+        }
+        else
+        {
+            services.AddDistributedMemoryCache();
+        }
+
+        services.AddSingleton<GroundedContextRetrievalCacheKeyBuilder>();
+        services.AddSingleton<IGroundedContextRetrievalSectionCache, GroundedContextRetrievalSectionCache>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
@@ -94,6 +119,10 @@ public static class DependencyInjection
         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
         services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
+        services.AddScoped<IRetrievalScopeEvaluator, RetrievalScopeEvaluator>();
+        services.AddScoped<IGroundedContextPromptBuilder, GroundedContextPromptBuilder>();
+        services.AddScoped<IGroundedPromptContextService, GroundedPromptContextService>();
+        services.AddScoped<IGroundedContextRetrievalService, GroundedContextRetrievalService>();
         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
