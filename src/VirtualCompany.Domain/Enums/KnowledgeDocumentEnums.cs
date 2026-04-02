@@ -25,6 +25,15 @@ public enum CompanyKnowledgeDocumentIngestionStatus
     Failed = 7
 }
 
+public enum CompanyKnowledgeDocumentIndexingStatus
+{
+    NotIndexed = 1,
+    Queued = 2,
+    Indexing = 3,
+    Indexed = 4,
+    Failed = 5
+}
+
 public static class CompanyKnowledgeDocumentTypeValues
 {
     public const string General = "general";
@@ -190,5 +199,68 @@ public static class CompanyKnowledgeDocumentIngestionStatusValues
         return string.IsNullOrWhiteSpace(attemptedValue)
             ? $"Document ingestion status is required. Allowed values: {allowedValues}."
             : $"Unsupported document ingestion status '{attemptedValue}'. Allowed values: {allowedValues}.";
+    }
+}
+
+public static class CompanyKnowledgeDocumentIndexingStatusValues
+{
+    public const string NotIndexed = "not_indexed";
+    public const string Queued = "queued";
+    public const string Indexing = "indexing";
+    public const string Indexed = "indexed";
+    public const string Failed = "failed";
+
+    private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentIndexingStatus, string> Values =
+        new Dictionary<CompanyKnowledgeDocumentIndexingStatus, string>
+        {
+            [CompanyKnowledgeDocumentIndexingStatus.NotIndexed] = NotIndexed,
+            [CompanyKnowledgeDocumentIndexingStatus.Queued] = Queued,
+            [CompanyKnowledgeDocumentIndexingStatus.Indexing] = Indexing,
+            [CompanyKnowledgeDocumentIndexingStatus.Indexed] = Indexed,
+            [CompanyKnowledgeDocumentIndexingStatus.Failed] = Failed
+        };
+
+    private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentIndexingStatus> ReverseValues =
+        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+
+    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
+
+    public static string ToStorageValue(this CompanyKnowledgeDocumentIndexingStatus value) =>
+        Values.TryGetValue(value, out var storageValue)
+            ? storageValue
+            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage());
+
+    public static bool TryParse(string? value, out CompanyKnowledgeDocumentIndexingStatus status)
+    {
+        status = default;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (ReverseValues.TryGetValue(value.Trim(), out status))
+        {
+            return true;
+        }
+
+        return Enum.TryParse(value.Trim(), ignoreCase: true, out status) && Values.ContainsKey(status);
+    }
+
+    public static CompanyKnowledgeDocumentIndexingStatus Parse(string value)
+    {
+        if (TryParse(value, out var status))
+        {
+            return status;
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
+    }
+
+    public static string BuildValidationMessage(string? attemptedValue = null)
+    {
+        var allowedValues = string.Join(", ", AllowedValues);
+        return string.IsNullOrWhiteSpace(attemptedValue)
+            ? $"Document indexing status is required. Allowed values: {allowedValues}."
+            : $"Unsupported document indexing status '{attemptedValue}'. Allowed values: {allowedValues}.";
     }
 }

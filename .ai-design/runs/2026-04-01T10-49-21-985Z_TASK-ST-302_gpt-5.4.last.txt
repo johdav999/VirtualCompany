@@ -1,0 +1,2422 @@
+diff --git a/src/VirtualCompany.Application/Documents/DocumentContracts.cs b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+index 778e982..7b47191 100644
+--- a/src/VirtualCompany.Application/Documents/DocumentContracts.cs
++++ b/src/VirtualCompany.Application/Documents/DocumentContracts.cs
+@@ -38,11 +38,17 @@ public sealed record CompanyKnowledgeDocumentDto(
+     string IngestionStatus,
+     string? FailureCode,
+     string? FailureMessage,
+     string? FailureAction,
+     bool CanRetry,
++    string IndexingStatus,
++    string? IndexingFailureCode,
++    string? IndexingFailureMessage,
++    int CurrentChunkSetVersion,
++    int ActiveChunkCount,
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc,
++    DateTime? IndexedUtc,
+     DateTime? UploadedUtc,
+     DateTime? ProcessingStartedUtc,
+     DateTime? ProcessedUtc,
+     DateTime? FailedUtc);
+@@ -62,6 +68,7 @@ public sealed record DocumentStorageWriteRequest(
+ 
+ public sealed record DocumentStorageWriteResult(string StorageKey, string? StorageUrl);
+ 
+ public interface ICompanyDocumentStorage
+ {
++    Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken);
+     Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken);
+     Task DeleteAsync(string storageKey, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+new file mode 100644
+index 0000000..7e87f27
+--- /dev/null
++++ b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+@@ -0,0 +1,63 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Documents;
++
++public sealed record KnowledgeChunkDraft(
++    int ChunkIndex,
++    string Content,
++    int StartOffset,
++    int EndOffset,
++    string SourceReference,
++    IReadOnlyDictionary<string, JsonNode?> Metadata);
++
++public sealed record EmbeddingVectorResult(IReadOnlyList<float> Values);
++
++public sealed record EmbeddingBatchResult(
++    string Model,
++    string? ModelVersion,
++    int Dimensions,
++    IReadOnlyList<EmbeddingVectorResult> Embeddings);
++
++public sealed record CompanyKnowledgeSemanticSearchQuery(
++    Guid CompanyId,
++    string QueryText,
++    int TopN = 5);
++
++public sealed record CompanyKnowledgeSearchResultDto(
++    Guid ChunkId,
++    string Content,
++    double Score,
++    Guid DocumentId,
++    string DocumentTitle,
++    int ChunkIndex,
++    string SourceReference,
++    IReadOnlyDictionary<string, JsonNode?> SourceMetadata);
++
++public interface ICompanyDocumentTextExtractor
++{
++    Task<string> ExtractAsync(CompanyKnowledgeDocument document, CancellationToken cancellationToken);
++}
++
++public interface IKnowledgeChunker
++{
++    IReadOnlyList<KnowledgeChunkDraft> ChunkDocument(CompanyKnowledgeDocument document, string extractedText);
++}
++
++public interface IEmbeddingGenerator
++{
++    Task<EmbeddingBatchResult> GenerateAsync(IReadOnlyList<string> inputs, CancellationToken cancellationToken);
++}
++
++public interface ICompanyKnowledgeIndexingProcessor
++{
++    Task<int> ProcessPendingAsync(CancellationToken cancellationToken);
++    Task IndexDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
++}
++
++public interface ICompanyKnowledgeSearchService
++{
++    Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchAsync(
++        CompanyKnowledgeSemanticSearchQuery query,
++        CancellationToken cancellationToken);
++}
++
++public sealed class CompanyKnowledgeSearchValidationException : Exception
++{
++    public CompanyKnowledgeSearchValidationException(string message) : base(message) { }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+index 1b23432..2fa21e8 100644
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json.Nodes;
++using System.Security.Cryptography;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Domain.Entities;
+ 
+@@ -55,6 +56,15 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         AccessScope = (accessScope ?? throw new ArgumentNullException(nameof(accessScope))).NormalizeForCompany(companyId);
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
+         CreatedUtc = DateTime.UtcNow;
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.NotIndexed;
++        CurrentChunkSetVersion = 0;
++        ActiveChunkCount = 0;
+         UpdatedUtc = CreatedUtc;
+         UploadedUtc = CreatedUtc;
+     }
+@@ -75,11 +85,21 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public string? FailureMessage { get; private set; }
+     public string? FailureAction { get; private set; }
+     public string? FailureTechnicalDetail { get; private set; }
++    public string? ExtractedText { get; private set; }
++    public CompanyKnowledgeDocumentIndexingStatus IndexingStatus { get; private set; }
++    public string? IndexingFailureCode { get; private set; }
++    public string? IndexingFailureMessage { get; private set; }
++    public string? EmbeddingModel { get; private set; }
++    public string? EmbeddingModelVersion { get; private set; }
++    public int? EmbeddingDimensions { get; private set; }
++    public int CurrentChunkSetVersion { get; private set; }
++    public int ActiveChunkCount { get; private set; }
+     public bool CanRetry { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? UploadedUtc { get; private set; }
++    public DateTime? IndexingRequestedUtc { get; private set; }
+     public DateTime? ProcessingStartedUtc { get; private set; }
++    public DateTime? IndexingStartedUtc { get; private set; }
+     public DateTime? ProcessedUtc { get; private set; }
+     public DateTime? FailedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -91,6 +111,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         UploadedUtc = DateTime.UtcNow;
+         ProcessingStartedUtc = null;
+         ProcessedUtc = null;
++        QueueIndexingInternal();
+         ClearFailure();
+         UpdatedUtc = UploadedUtc.Value;
+         return true;
+@@ -140,6 +161,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.ScanClean;
+         ProcessingStartedUtc = null;
+         ProcessedUtc = null;
++        QueueIndexingInternal();
+         ClearFailure();
+         UpdatedUtc = DateTime.UtcNow;
+         return true;
+@@ -201,6 +223,93 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         return true;
+     }
+ 
++    public bool QueueIndexing()
++    {
++        if (IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued)
++        {
++            return false;
++        }
++
++        if (IngestionStatus is CompanyKnowledgeDocumentIngestionStatus.Uploaded or CompanyKnowledgeDocumentIngestionStatus.PendingScan or CompanyKnowledgeDocumentIngestionStatus.Blocked)
++        {
++            throw new InvalidOperationException("Document indexing can only be queued after the document is scan-clean or processed.");
++        }
++
++        QueueIndexingInternal();
++        UpdatedUtc = DateTime.UtcNow;
++        return true;
++    }
++
++    public bool MarkIndexing()
++    {
++        if (IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexing)
++        {
++            return false;
++        }
++
++        if (IngestionStatus is CompanyKnowledgeDocumentIngestionStatus.Uploaded or CompanyKnowledgeDocumentIngestionStatus.PendingScan or CompanyKnowledgeDocumentIngestionStatus.Blocked)
++        {
++            throw new InvalidOperationException("Document indexing cannot start before the document clears scanning.");
++        }
++
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Indexing;
++        IndexingStartedUtc = DateTime.UtcNow;
++        IndexingRequestedUtc ??= IndexingStartedUtc;
++        ClearIndexingFailure();
++        UpdatedUtc = IndexingStartedUtc.Value;
++        return true;
++    }
++
++    public bool MarkIndexed(
++        string extractedText,
++        int chunkSetVersion,
++        int activeChunkCount,
++        string embeddingModel,
++        string? embeddingModelVersion,
++        int embeddingDimensions)
++    {
++        if (chunkSetVersion <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(chunkSetVersion), "ChunkSetVersion must be greater than zero.");
++        }
++
++        if (activeChunkCount <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(activeChunkCount), "ActiveChunkCount must be greater than zero.");
++        }
++
++        ExtractedText = NormalizeExtractedText(extractedText);
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Indexed;
++        CurrentChunkSetVersion = chunkSetVersion;
++        ActiveChunkCount = activeChunkCount;
++        EmbeddingModel = NormalizeRequired(embeddingModel, nameof(embeddingModel), 200);
++        EmbeddingModelVersion = NormalizeOptional(embeddingModelVersion, nameof(embeddingModelVersion), 100);
++        EmbeddingDimensions = embeddingDimensions > 0 ? embeddingDimensions : throw new ArgumentOutOfRangeException(nameof(embeddingDimensions));
++        IndexedUtc = DateTime.UtcNow;
++        ClearIndexingFailure();
++        UpdatedUtc = IndexedUtc.Value;
++        return true;
++    }
++
++    public bool MarkIndexingFailed(string failureCode, string failureMessage)
++    {
++        var normalizedFailureCode = NormalizeRequired(failureCode, nameof(failureCode), 100);
++        var normalizedFailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), 2000);
++
++        if (IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Failed &&
++            string.Equals(IndexingFailureCode, normalizedFailureCode, StringComparison.Ordinal) &&
++            string.Equals(IndexingFailureMessage, normalizedFailureMessage, StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Failed;
++        IndexingFailureCode = normalizedFailureCode;
++        IndexingFailureMessage = normalizedFailureMessage;
++        IndexingFailedUtc = DateTime.UtcNow;
++        UpdatedUtc = IndexingFailedUtc.Value;
++        return true;
++    }
++
++    public void SetExtractedText(string extractedText) =>
++        ExtractedText = NormalizeExtractedText(extractedText);
++
+     public bool MarkFailed(
+         string failureCode,
+         string failureMessage,
+@@ -276,6 +385,25 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         FailedUtc = null;
+     }
+ 
++    private void QueueIndexingInternal()
++    {
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Queued;
++        IndexingRequestedUtc = DateTime.UtcNow;
++        IndexingStartedUtc = null;
++        IndexingFailedUtc = null;
++        IndexedUtc = null;
++        ClearIndexingFailure();
++    }
++
++    private void ClearIndexingFailure()
++    {
++        IndexingFailureCode = null;
++        IndexingFailureMessage = null;
++    }
++
++    private static string NormalizeExtractedText(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? throw new ArgumentException("ExtractedText is required.", nameof(value))
++            : value.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
++
+     private static Dictionary<string, JsonNode?> NormalizeJsonDictionary(Dictionary<string, JsonNode?>? value)
+     {
+         var normalized = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+@@ -325,3 +453,129 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         return trimmed;
+     }
+ }
++
++public sealed class CompanyKnowledgeChunk : ICompanyOwnedEntity
++{
++    private CompanyKnowledgeChunk()
++    {
++    }
++
++    public CompanyKnowledgeChunk(
++        Guid id,
++        Guid companyId,
++        Guid documentId,
++        int chunkSetVersion,
++        int chunkIndex,
++        string content,
++        string embedding,
++        string embeddingModel,
++        string? embeddingModelVersion,
++        int embeddingDimensions,
++        Dictionary<string, JsonNode?>? metadata = null,
++        string? sourceReference = null,
++        int? startOffset = null,
++        int? endOffset = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (documentId == Guid.Empty)
++        {
++            throw new ArgumentException("DocumentId is required.", nameof(documentId));
++        }
++
++        if (chunkSetVersion <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(chunkSetVersion));
++        }
++
++        if (chunkIndex < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(chunkIndex));
++        }
++
++        if (embeddingDimensions <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(embeddingDimensions));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DocumentId = documentId;
++        ChunkSetVersion = chunkSetVersion;
++        ChunkIndex = chunkIndex;
++        Content = NormalizeRequired(content, nameof(content), 16000);
++        Embedding = NormalizeRequired(embedding, nameof(embedding), 1024 * 1024);
++        Metadata = NormalizeJsonDictionary(metadata);
++        SourceReference = NormalizeOptional(sourceReference, nameof(sourceReference), 1024) ?? $"chunk:{chunkIndex}";
++        StartOffset = startOffset;
++        EndOffset = endOffset;
++        ContentHash = ComputeContentHash(Content);
++        EmbeddingModel = NormalizeRequired(embeddingModel, nameof(embeddingModel), 200);
++        EmbeddingModelVersion = NormalizeOptional(embeddingModelVersion, nameof(embeddingModelVersion), 100);
++        EmbeddingDimensions = embeddingDimensions;
++        IsActive = true;
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DocumentId { get; private set; }
++    public int ChunkSetVersion { get; private set; }
++    public int ChunkIndex { get; private set; }
++    public bool IsActive { get; private set; }
++    public string Content { get; private set; } = null!;
++    public string Embedding { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string SourceReference { get; private set; } = null!;
++    public int? StartOffset { get; private set; }
++    public int? EndOffset { get; private set; }
++    public string ContentHash { get; private set; } = null!;
++    public string EmbeddingModel { get; private set; } = null!;
++    public string? EmbeddingModelVersion { get; private set; }
++    public int EmbeddingDimensions { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public CompanyKnowledgeDocument Document { get; private set; } = null!;
++
++    public void Deactivate()
++    {
++        IsActive = false;
++    }
++
++    private static string ComputeContentHash(string content)
++    {
++        var bytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
++        return Convert.ToHexString(bytes).ToLowerInvariant();
++    }
++
++    private static Dictionary<string, JsonNode?> NormalizeJsonDictionary(Dictionary<string, JsonNode?>? value)
++    {
++        var normalized = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++
++        if (value is null)
++        {
++            return normalized;
++        }
++
++        foreach (var pair in value)
++        {
++            if (string.IsNullOrWhiteSpace(pair.Key))
++            {
++                continue;
++            }
++
++            normalized[pair.Key.Trim()] = pair.Value?.DeepClone();
++        }
++
++        return normalized;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength) =>
++        string.IsNullOrWhiteSpace(value) ? null : NormalizeRequired(value, name, maxLength);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TenantEntities.cs b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+index c8cdb61..f0e4206 100644
+--- a/src/VirtualCompany.Domain/Entities/TenantEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TenantEntities.cs
+@@ -105,6 +105,7 @@ public sealed class Company
+     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
+     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
+     public ICollection<CompanyKnowledgeDocument> Documents { get; } = new List<CompanyKnowledgeDocument>();
++    public ICollection<CompanyKnowledgeChunk> KnowledgeChunks { get; } = new List<CompanyKnowledgeChunk>();
+ 
+     public void Rename(string name)
+     {
+diff --git a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+index 2c90d3e..3929f2d 100644
+--- a/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/KnowledgeDocumentEnums.cs
+@@ -24,6 +24,14 @@ public enum CompanyKnowledgeDocumentIngestionStatus
+     Failed = 7
+ }
+ 
++public enum CompanyKnowledgeDocumentIndexingStatus
++{
++    NotIndexed = 1,
++    Queued = 2,
++    Indexing = 3,
++    Indexed = 4,
++    Failed = 5
++}
++
+ public static class CompanyKnowledgeDocumentTypeValues
+ {
+     public const string General = "general";
+@@ -186,3 +194,64 @@ public static class CompanyKnowledgeDocumentIngestionStatusValues
+             ? $"Document ingestion status is required. Allowed values: {allowedValues}."
+             : $"Unsupported document ingestion status '{attemptedValue}'. Allowed values: {allowedValues}.";
+     }
++}
++
++public static class CompanyKnowledgeDocumentIndexingStatusValues
++{
++    public const string NotIndexed = "not_indexed";
++    public const string Queued = "queued";
++    public const string Indexing = "indexing";
++    public const string Indexed = "indexed";
++    public const string Failed = "failed";
++
++    private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentIndexingStatus, string> Values =
++        new Dictionary<CompanyKnowledgeDocumentIndexingStatus, string>
++        {
++            [CompanyKnowledgeDocumentIndexingStatus.NotIndexed] = NotIndexed,
++            [CompanyKnowledgeDocumentIndexingStatus.Queued] = Queued,
++            [CompanyKnowledgeDocumentIndexingStatus.Indexing] = Indexing,
++            [CompanyKnowledgeDocumentIndexingStatus.Indexed] = Indexed,
++            [CompanyKnowledgeDocumentIndexingStatus.Failed] = Failed
++        };
++
++    private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentIndexingStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this CompanyKnowledgeDocumentIndexingStatus value) =>
++        Values.TryGetValue(value, out var storageValue)
++            ? storageValue
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out CompanyKnowledgeDocumentIndexingStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        if (ReverseValues.TryGetValue(value.Trim(), out status))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(value.Trim(), ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static CompanyKnowledgeDocumentIndexingStatus Parse(string value)
++    {
++        if (TryParse(value, out var status))
++        {
++            return status;
++        }
++
++        throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Document indexing status is required. Allowed values: {allowedValues}."
++            : $"Unsupported document indexing status '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 795f908..b4f73d0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -41,6 +41,15 @@ public static class DependencyInjection
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
++        services.AddOptions<KnowledgeChunkingOptions>()
++            .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
++
++        services.AddOptions<KnowledgeEmbeddingOptions>()
++            .Bind(configuration.GetSection(KnowledgeEmbeddingOptions.SectionName));
++
++        services.AddOptions<KnowledgeIndexingOptions>()
++            .Bind(configuration.GetSection(KnowledgeIndexingOptions.SectionName));
++
++        services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
+ 
+@@ -67,6 +76,12 @@ public static class DependencyInjection
+         services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
+         services.AddScoped<ICompanyDocumentVirusScanner, NoOpCompanyDocumentVirusScanner>();
+         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
++        services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
++        services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
++        services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
++        services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
++        services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
++        services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+index 91e66f1..7c9e035 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentIngestionStatusService.cs
+@@ -202,6 +202,7 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
+             ["failureAction"] = document.FailureAction,
+             ["canRetry"] = document.CanRetry ? "true" : "false",
+             ["failureCode"] = document.FailureCode,
++            ["indexingStatus"] = document.IndexingStatus.ToStorageValue(),
+             ["storageKey"] = document.StorageKey
+         };
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+index ceab4c7..84fe1f8 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+@@ -9,3 +9,36 @@ public sealed class CompanyDocumentOptions
+ {
+     public string RootPath { get; set; } = "App_Data/object-storage";
+     public string? BaseUri { get; set; }
++}
++
++public sealed class KnowledgeChunkingOptions
++{
++    public const string SectionName = "KnowledgeChunking";
++
++    public int TargetChunkLength { get; set; } = 1200;
++    public int OverlapLength { get; set; } = 200;
++    public int MaxChunkCountPerDocument { get; set; } = 256;
++    public string StrategyVersion { get; set; } = "paragraph-overlap-v1";
++}
++
++public sealed class KnowledgeEmbeddingOptions
++{
++    public const string SectionName = "KnowledgeEmbeddings";
++
++    public string Provider { get; set; } = "deterministic";
++    public string BaseUrl { get; set; } = "https://api.openai.com/v1/";
++    public string ApiKey { get; set; } = string.Empty;
++    public string Model { get; set; } = "text-embedding-3-small";
++    public string? ModelVersion { get; set; } = "deterministic-v1";
++    public int Dimensions { get; set; } = 256;
++    public int TimeoutSeconds { get; set; } = 30;
++}
++
++public sealed class KnowledgeIndexingOptions
++{
++    public const string SectionName = "KnowledgeIndexing";
++
++    public bool Enabled { get; set; } = true;
++    public int BatchSize { get; set; } = 5;
++    public int PollIntervalSeconds { get; set; } = 10;
++    public int MaxAttempts { get; set; } = 3;
++    public int RetryDelaySeconds { get; set; } = 5;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+new file mode 100644
+index 0000000..cc4ac53
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -0,0 +1,970 @@
++using System.Data.Common;
++using System.Net.Http.Json;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using System.Text.RegularExpressions;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class CompanyDocumentTextExtractor : ICompanyDocumentTextExtractor
++{
++    private readonly ICompanyDocumentStorage _storage;
++
++    public CompanyDocumentTextExtractor(ICompanyDocumentStorage storage)
++    {
++        _storage = storage;
++    }
++
++    public async Task<string> ExtractAsync(CompanyKnowledgeDocument document, CancellationToken cancellationToken)
++    {
++        if (TryGetMetadataString(document.Metadata, "extracted_text", out var extractedText))
++        {
++            return Normalize(extractedText);
++        }
++
++        if (document.FileExtension is ".txt" or ".md")
++        {
++            await using var stream = await _storage.OpenReadAsync(document.StorageKey, cancellationToken);
++            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
++            return Normalize(await reader.ReadToEndAsync(cancellationToken));
++        }
++
++        throw new PermanentBackgroundJobException(
++            $"No extracted text is available for '{document.OriginalFileName}'. Persist extracted_text metadata or add a document parser for '{document.FileExtension}'.");
++    }
++
++    private static bool TryGetMetadataString(IReadOnlyDictionary<string, JsonNode?> metadata, string key, out string value)
++    {
++        value = string.Empty;
++        if (!metadata.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var rawValue))
++        {
++            return false;
++        }
++
++        value = rawValue?.Trim() ?? string.Empty;
++        return !string.IsNullOrWhiteSpace(value);
++    }
++
++    private static string Normalize(string value)
++    {
++        var normalized = value.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
++        if (string.IsNullOrWhiteSpace(normalized))
++        {
++            throw new PermanentBackgroundJobException("The document text extraction step produced no searchable content.");
++        }
++
++        return normalized;
++    }
++}
++
++public sealed class DefaultKnowledgeChunker : IKnowledgeChunker
++{
++    private readonly KnowledgeChunkingOptions _options;
++
++    public DefaultKnowledgeChunker(IOptions<KnowledgeChunkingOptions> options)
++    {
++        _options = options.Value;
++    }
++
++    public IReadOnlyList<KnowledgeChunkDraft> ChunkDocument(CompanyKnowledgeDocument document, string extractedText)
++    {
++        var normalizedText = extractedText.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
++        if (string.IsNullOrWhiteSpace(normalizedText))
++        {
++            return Array.Empty<KnowledgeChunkDraft>();
++        }
++
++        var segments = SplitSegments(normalizedText, _options.TargetChunkLength);
++        var chunks = new List<KnowledgeChunkDraft>();
++        var builder = new StringBuilder();
++        var chunkStart = 0;
++        var chunkIndex = 0;
++        var cursor = 0;
++
++        foreach (var segment in segments)
++        {
++            if (builder.Length == 0)
++            {
++                chunkStart = segment.StartOffset;
++            }
++
++            if (builder.Length > 0 && builder.Length + 2 + segment.Content.Length > _options.TargetChunkLength)
++            {
++                chunks.Add(CreateChunk(document, normalizedText, chunkIndex++, builder.ToString(), chunkStart, cursor - 1));
++                if (chunks.Count >= _options.MaxChunkCountPerDocument)
++                {
++                    return chunks;
++                }
++
++                var overlap = TakeOverlap(builder.ToString(), _options.OverlapLength);
++                builder.Clear();
++                if (!string.IsNullOrWhiteSpace(overlap))
++                {
++                    builder.Append(overlap);
++                    chunkStart = Math.Max(0, cursor - overlap.Length);
++                }
++                else
++                {
++                    chunkStart = segment.StartOffset;
++                }
++            }
++
++            if (builder.Length > 0)
++            {
++                builder.Append("\n\n");
++            }
++
++            builder.Append(segment.Content);
++            cursor = segment.EndOffset;
++        }
++
++        if (builder.Length > 0 && chunks.Count < _options.MaxChunkCountPerDocument)
++        {
++            chunks.Add(CreateChunk(document, normalizedText, chunkIndex, builder.ToString(), chunkStart, cursor));
++        }
++
++        return chunks;
++    }
++
++    private KnowledgeChunkDraft CreateChunk(
++        CompanyKnowledgeDocument document,
++        string fullText,
++        int chunkIndex,
++        string content,
++        int startOffset,
++        int endOffset)
++    {
++        var trimmedContent = content.Trim();
++        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["strategy"] = JsonValue.Create(_options.StrategyVersion),
++            ["start_offset"] = JsonValue.Create(startOffset),
++            ["end_offset"] = JsonValue.Create(endOffset),
++            ["document_title"] = JsonValue.Create(document.Title),
++            ["document_type"] = JsonValue.Create(document.DocumentType.ToStorageValue()),
++            ["original_file_name"] = JsonValue.Create(document.OriginalFileName)
++        };
++
++        return new KnowledgeChunkDraft(
++            chunkIndex,
++            trimmedContent,
++            startOffset,
++            endOffset,
++            $"{document.OriginalFileName}#chunk-{chunkIndex + 1}",
++            metadata);
++    }
++
++    private static IReadOnlyList<(string Content, int StartOffset, int EndOffset)> SplitSegments(string text, int targetChunkLength)
++    {
++        var segments = new List<(string, int, int)>();
++        var matches = Regex.Matches(text, @"\S(?:.*?\S)?(?:(?:\n\s*\n)|\z)", RegexOptions.Singleline);
++
++        foreach (Match match in matches)
++        {
++            var content = match.Value.Trim();
++            if (string.IsNullOrWhiteSpace(content))
++            {
++                continue;
++            }
++
++            if (content.Length <= targetChunkLength)
++            {
++                segments.Add((content, match.Index, match.Index + content.Length));
++                continue;
++            }
++
++            var localStart = 0;
++            foreach (var piece in SplitLargeSegment(content, targetChunkLength))
++            {
++                var start = content.IndexOf(piece, localStart, StringComparison.Ordinal);
++                if (start < 0)
++                {
++                    start = localStart;
++                }
++
++                localStart = start + piece.Length;
++                segments.Add((piece, match.Index + start, match.Index + start + piece.Length));
++            }
++        }
++
++        return segments;
++    }
++
++    private static IEnumerable<string> SplitLargeSegment(string content, int maxLength)
++    {
++        foreach (var sentence in Regex.Split(content, @"(?<=[\.\!\?])\s+", RegexOptions.Singleline))
++        {
++            if (string.IsNullOrWhiteSpace(sentence))
++            {
++                continue;
++            }
++
++            if (sentence.Length <= maxLength)
++            {
++                yield return sentence.Trim();
++                continue;
++            }
++
++            var start = 0;
++            while (start < sentence.Length)
++            {
++                var length = Math.Min(maxLength, sentence.Length - start);
++                yield return sentence.Substring(start, length).Trim();
++                start += length;
++            }
++        }
++    }
++
++    private static string TakeOverlap(string content, int overlapLength)
++    {
++        if (string.IsNullOrWhiteSpace(content) || overlapLength <= 0)
++        {
++            return string.Empty;
++        }
++
++        var normalized = content.Trim();
++        if (normalized.Length <= overlapLength)
++        {
++            return normalized;
++        }
++
++        return normalized[^overlapLength..].Trim();
++    }
++}
++
++public sealed class OpenAiCompatibleEmbeddingGenerator : IEmbeddingGenerator
++{
++    public const string ClientName = "knowledge-embeddings";
++
++    private readonly IHttpClientFactory _httpClientFactory;
++    private readonly KnowledgeEmbeddingOptions _options;
++
++    public OpenAiCompatibleEmbeddingGenerator(
++        IHttpClientFactory httpClientFactory,
++        IOptions<KnowledgeEmbeddingOptions> options)
++    {
++        _httpClientFactory = httpClientFactory;
++        _options = options.Value;
++    }
++
++    public async Task<EmbeddingBatchResult> GenerateAsync(IReadOnlyList<string> inputs, CancellationToken cancellationToken)
++    {
++        if (inputs.Count == 0)
++        {
++            return new EmbeddingBatchResult(_options.Model, _options.ModelVersion, _options.Dimensions, Array.Empty<EmbeddingVectorResult>());
++        }
++
++        if (string.Equals(_options.Provider, "deterministic", StringComparison.OrdinalIgnoreCase))
++        {
++            var embeddings = inputs.Select(CreateDeterministicEmbedding).ToArray();
++            return new EmbeddingBatchResult(_options.Model, _options.ModelVersion, _options.Dimensions, embeddings);
++        }
++
++        if (!string.Equals(_options.Provider, "openai", StringComparison.OrdinalIgnoreCase))
++        {
++            throw new PermanentBackgroundJobException($"Unsupported knowledge embedding provider '{_options.Provider}'.");
++        }
++
++        if (string.IsNullOrWhiteSpace(_options.BaseUrl))
++        {
++            throw new PermanentBackgroundJobException("Knowledge embedding provider BaseUrl is required.");
++        }
++
++        var client = _httpClientFactory.CreateClient(ClientName);
++        client.BaseAddress = new Uri(_options.BaseUrl, UriKind.Absolute);
++        client.Timeout = TimeSpan.FromSeconds(Math.Max(5, _options.TimeoutSeconds));
++        client.DefaultRequestHeaders.Authorization =
++            string.IsNullOrWhiteSpace(_options.ApiKey) ? null : new("Bearer", _options.ApiKey);
++
++        var request = new Dictionary<string, object?>
++        {
++            ["model"] = _options.Model,
++            ["input"] = inputs
++        };
++
++        if (_options.Dimensions > 0)
++        {
++            request["dimensions"] = _options.Dimensions;
++        }
++
++        using var response = await client.PostAsJsonAsync("embeddings", request, cancellationToken);
++        if (!response.IsSuccessStatusCode)
++        {
++            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
++            throw new HttpRequestException(
++                $"Embedding provider returned {(int)response.StatusCode}: {responseBody}",
++                null,
++                response.StatusCode);
++        }
++
++        var payload = await response.Content.ReadFromJsonAsync<OpenAiEmbeddingResponse>(cancellationToken: cancellationToken)
++            ?? throw new InvalidOperationException("Embedding provider returned an empty response.");
++
++        var orderedEmbeddings = payload.Data
++            .OrderBy(item => item.Index)
++            .Select(item => new EmbeddingVectorResult(item.Embedding))
++            .ToArray();
++
++        return new EmbeddingBatchResult(
++            payload.Model ?? _options.Model,
++            _options.ModelVersion,
++            orderedEmbeddings.FirstOrDefault()?.Values.Count ?? _options.Dimensions,
++            orderedEmbeddings);
++    }
++
++    private EmbeddingVectorResult CreateDeterministicEmbedding(string value)
++    {
++        var normalized = value.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
++        var vector = new float[_options.Dimensions];
++
++        for (var index = 0; index < vector.Length; index++)
++        {
++            var byteValue = bytes[index % bytes.Length];
++            vector[index] = (byteValue / 127.5f) - 1f;
++        }
++
++        Normalize(vector);
++        return new EmbeddingVectorResult(vector);
++    }
++
++    private static void Normalize(float[] vector)
++    {
++        var magnitude = Math.Sqrt(vector.Sum(x => x * x));
++        if (magnitude <= 0d)
++        {
++            return;
++        }
++
++        for (var index = 0; index < vector.Length; index++)
++        {
++            vector[index] = (float)(vector[index] / magnitude);
++        }
++    }
++
++    private sealed class OpenAiEmbeddingResponse
++    {
++        public string? Model { get; set; }
++        public List<OpenAiEmbeddingItem> Data { get; set; } = [];
++    }
++
++    private sealed class OpenAiEmbeddingItem
++    {
++        public int Index { get; set; }
++        public List<float> Embedding { get; set; } = [];
++    }
++}
++
++public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexingProcessor
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyDocumentTextExtractor _textExtractor;
++    private readonly IKnowledgeChunker _chunker;
++    private readonly IEmbeddingGenerator _embeddingGenerator;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
++    private readonly KnowledgeIndexingOptions _options;
++    private readonly ILogger<CompanyKnowledgeIndexingProcessor> _logger;
++
++    public CompanyKnowledgeIndexingProcessor(
++        VirtualCompanyDbContext dbContext,
++        ICompanyDocumentTextExtractor textExtractor,
++        IKnowledgeChunker chunker,
++        IEmbeddingGenerator embeddingGenerator,
++        IBackgroundJobExecutor backgroundJobExecutor,
++        IOptions<KnowledgeIndexingOptions> options,
++        ILogger<CompanyKnowledgeIndexingProcessor> logger)
++    {
++        _dbContext = dbContext;
++        _textExtractor = textExtractor;
++        _chunker = chunker;
++        _embeddingGenerator = embeddingGenerator;
++        _backgroundJobExecutor = backgroundJobExecutor;
++        _options = options.Value;
++        _logger = logger;
++    }
++
++    public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken)
++    {
++        var pendingDocuments = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .Where(document =>
++                document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued &&
++                (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean ||
++                 document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed))
++            .OrderBy(document => document.IndexingRequestedUtc ?? document.UpdatedUtc)
++            .Take(Math.Max(1, _options.BatchSize))
++            .Select(document => new { document.CompanyId, document.Id })
++            .ToListAsync(cancellationToken);
++
++        foreach (var pendingDocument in pendingDocuments)
++        {
++            await ProcessWithRetriesAsync(pendingDocument.CompanyId, pendingDocument.Id, cancellationToken);
++        }
++
++        return pendingDocuments.Count;
++    }
++
++    public async Task IndexDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var document = await _dbContext.CompanyKnowledgeDocuments
++                .IgnoreQueryFilters()
++                .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++            if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean)
++            {
++                document.MarkProcessing();
++            }
++
++            document.MarkIndexing();
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            var extractedText = await _textExtractor.ExtractAsync(document, cancellationToken);
++            var chunkDrafts = _chunker.ChunkDocument(document, extractedText);
++            if (chunkDrafts.Count == 0)
++            {
++                throw new PermanentBackgroundJobException("Chunking produced no searchable content.");
++            }
++
++            var embeddingBatch = await _embeddingGenerator.GenerateAsync(
++                chunkDrafts.Select(chunk => chunk.Content).ToArray(),
++                cancellationToken);
++
++            if (embeddingBatch.Embeddings.Count != chunkDrafts.Count)
++            {
++                throw new InvalidOperationException("Embedding generation did not return a vector for every chunk.");
++            }
++
++            var nextVersion = document.CurrentChunkSetVersion + 1;
++
++            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
++
++            var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
++                .IgnoreQueryFilters()
++                .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
++                .ToListAsync(cancellationToken);
++
++            foreach (var currentActiveChunk in currentActiveChunks)
++            {
++                currentActiveChunk.Deactivate();
++            }
++
++            if (IsPostgreSql())
++            {
++                await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
++            }
++            else
++            {
++                _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
++            }
++
++            document.SetExtractedText(extractedText);
++            if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++            {
++                document.MarkProcessed();
++            }
++
++            document.MarkIndexed(
++                extractedText,
++                nextVersion,
++                chunkDrafts.Count,
++                embeddingBatch.Model,
++                embeddingBatch.ModelVersion,
++                embeddingBatch.Dimensions);
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            await transaction.CommitAsync(cancellationToken);
++
++            _logger.LogInformation(
++                "Knowledge document indexed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkSetVersion: {ChunkSetVersion}, ChunkCount: {ChunkCount}.",
++                companyId,
++                documentId,
++                nextVersion,
++                chunkDrafts.Count);
++        }
++        catch (OperationCanceledException)
++        {
++            throw;
++        }
++        catch (Exception ex)
++        {
++            await HandleFailureAsync(companyId, documentId, ex, cancellationToken);
++        }
++    }
++
++    private async Task ProcessWithRetriesAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        for (var attempt = 1; attempt <= Math.Max(1, _options.MaxAttempts); attempt++)
++        {
++            var result = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    "knowledge-document-indexing",
++                    attempt,
++                    Math.Max(1, _options.MaxAttempts),
++                    companyId),
++                innerToken => IndexDocumentAsync(companyId, documentId, innerToken),
++                TimeSpan.FromSeconds(Math.Max(1, _options.RetryDelaySeconds)),
++                cancellationToken);
++
++            if (result.Outcome == BackgroundJobExecutionOutcome.Succeeded ||
++                result.Outcome == BackgroundJobExecutionOutcome.PermanentFailure ||
++                result.Outcome == BackgroundJobExecutionOutcome.RetryExhausted)
++            {
++                return;
++            }
++
++            if (result.RetryDelay.HasValue && result.RetryDelay.Value > TimeSpan.Zero)
++            {
++                await Task.Delay(result.RetryDelay.Value, cancellationToken);
++            }
++        }
++    }
++
++    private async Task HandleFailureAsync(Guid companyId, Guid documentId, Exception exception, CancellationToken cancellationToken)
++    {
++        if (_dbContext.Database.CurrentTransaction is not null)
++        {
++            await _dbContext.Database.RollbackTransactionAsync(cancellationToken);
++        }
++
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        var retryable = exception is not PermanentBackgroundJobException;
++        var failureMessage = exception is PermanentBackgroundJobException
++            ? exception.Message
++            : "Knowledge indexing failed. Review the indexing error and retry when the dependency is available.";
++
++        if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++        {
++            document.MarkFailed(
++                "knowledge_indexing_failed",
++                failureMessage,
++                retryable
++                    ? "Retry indexing after the embedding dependency or document parser is available."
++                    : "Provide extracted text metadata or upload a supported plain-text document.",
++                exception.Message,
++                retryable);
++        }
++
++        document.MarkIndexingFailed("knowledge_indexing_failed", failureMessage);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogWarning(
++            exception,
++            "Knowledge document indexing failed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, Retryable: {Retryable}.",
++            companyId,
++            documentId,
++            retryable);
++    }
++
++    private IReadOnlyList<CompanyKnowledgeChunk> BuildChunkEntities(
++        CompanyKnowledgeDocument document,
++        int chunkSetVersion,
++        IReadOnlyList<KnowledgeChunkDraft> chunkDrafts,
++        EmbeddingBatchResult embeddingBatch)
++    {
++        var results = new List<CompanyKnowledgeChunk>(chunkDrafts.Count);
++        for (var index = 0; index < chunkDrafts.Count; index++)
++        {
++            var chunk = chunkDrafts[index];
++            var embedding = embeddingBatch.Embeddings[index];
++            results.Add(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    document.CompanyId,
++                    document.Id,
++                    chunkSetVersion,
++                    chunk.ChunkIndex,
++                    chunk.Content,
++                    KnowledgeEmbeddingSerializer.Serialize(embedding.Values),
++                    embeddingBatch.Model,
++                    embeddingBatch.ModelVersion,
++                    embeddingBatch.Dimensions,
++                    chunk.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                    chunk.SourceReference,
++                    chunk.StartOffset,
++                    chunk.EndOffset));
++        }
++
++        return results;
++    }
++
++    private async Task InsertChunksPostgreSqlAsync(
++        CompanyKnowledgeDocument document,
++        int chunkSetVersion,
++        IReadOnlyList<KnowledgeChunkDraft> chunkDrafts,
++        EmbeddingBatchResult embeddingBatch,
++        CancellationToken cancellationToken)
++    {
++        var connection = _dbContext.Database.GetDbConnection();
++        if (connection.State != System.Data.ConnectionState.Open)
++        {
++            await connection.OpenAsync(cancellationToken);
++        }
++
++        for (var index = 0; index < chunkDrafts.Count; index++)
++        {
++            var chunk = chunkDrafts[index];
++            var embedding = KnowledgeEmbeddingSerializer.Serialize(embeddingBatch.Embeddings[index].Values);
++            await using var command = connection.CreateCommand();
++            command.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
++            command.CommandText =
++                """
++                INSERT INTO knowledge_chunks
++                ("Id", "CompanyId", "DocumentId", "ChunkSetVersion", "ChunkIndex", "IsActive", "Content", "Embedding", metadata_json, "SourceReference", "StartOffset", "EndOffset", "ContentHash", "EmbeddingModel", "EmbeddingModelVersion", "EmbeddingDimensions", "CreatedUtc")
++                VALUES
++                (@id, @companyId, @documentId, @chunkSetVersion, @chunkIndex, TRUE, @content, CAST(@embedding AS vector), CAST(@metadata AS jsonb), @sourceReference, @startOffset, @endOffset, @contentHash, @embeddingModel, @embeddingModelVersion, @embeddingDimensions, @createdUtc);
++                """;
++
++            AddParameter(command, "@id", Guid.NewGuid());
++            AddParameter(command, "@companyId", document.CompanyId);
++            AddParameter(command, "@documentId", document.Id);
++            AddParameter(command, "@chunkSetVersion", chunkSetVersion);
++            AddParameter(command, "@chunkIndex", chunk.ChunkIndex);
++            AddParameter(command, "@content", chunk.Content);
++            AddParameter(command, "@embedding", embedding);
++            AddParameter(command, "@metadata", JsonSerializer.Serialize(chunk.Metadata));
++            AddParameter(command, "@sourceReference", chunk.SourceReference);
++            AddParameter(command, "@startOffset", chunk.StartOffset);
++            AddParameter(command, "@endOffset", chunk.EndOffset);
++            AddParameter(command, "@contentHash", ComputeContentHash(chunk.Content));
++            AddParameter(command, "@embeddingModel", embeddingBatch.Model);
++            AddParameter(command, "@embeddingModelVersion", embeddingBatch.ModelVersion);
++            AddParameter(command, "@embeddingDimensions", embeddingBatch.Dimensions);
++            AddParameter(command, "@createdUtc", DateTime.UtcNow);
++            await command.ExecuteNonQueryAsync(cancellationToken);
++        }
++    }
++
++    private static string ComputeContentHash(string content)
++    {
++        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
++        return Convert.ToHexString(bytes).ToLowerInvariant();
++    }
++
++    private static void AddParameter(DbCommand command, string name, object? value)
++    {
++        var parameter = command.CreateParameter();
++        parameter.ParameterName = name;
++        parameter.Value = value ?? DBNull.Value;
++        command.Parameters.Add(parameter);
++    }
++
++    private bool IsPostgreSql() =>
++        string.Equals(_dbContext.Database.ProviderName, "Npgsql.EntityFrameworkCore.PostgreSQL", StringComparison.Ordinal);
++}
++
++public sealed class CompanyKnowledgeIndexingBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<KnowledgeIndexingOptions> _options;
++    private readonly ILogger<CompanyKnowledgeIndexingBackgroundService> _logger;
++
++    public CompanyKnowledgeIndexingBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<KnowledgeIndexingOptions> options,
++        ILogger<CompanyKnowledgeIndexingBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Knowledge indexing background service is disabled.");
++            return;
++        }
++
++        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollIntervalSeconds)));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++                await processor.ProcessPendingAsync(stoppingToken);
++            }
++            catch (OperationCanceledException)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Knowledge indexing polling loop failed unexpectedly.");
++            }
++
++            await timer.WaitForNextTickAsync(stoppingToken);
++        }
++    }
++}
++
++public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IEmbeddingGenerator _embeddingGenerator;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++
++    public CompanyKnowledgeSearchService(
++        VirtualCompanyDbContext dbContext,
++        IEmbeddingGenerator embeddingGenerator,
++        ICompanyMembershipContextResolver membershipContextResolver)
++    {
++        _dbContext = dbContext;
++        _embeddingGenerator = embeddingGenerator;
++        _membershipContextResolver = membershipContextResolver;
++    }
++
++    public async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchAsync(
++        CompanyKnowledgeSemanticSearchQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new CompanyKnowledgeSearchValidationException("CompanyId is required.");
++        }
++
++        if (string.IsNullOrWhiteSpace(query.QueryText))
++        {
++            throw new CompanyKnowledgeSearchValidationException("QueryText is required.");
++        }
++
++        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
++        }
++
++        var topN = Math.Clamp(query.TopN, 1, 20);
++        var embeddingBatch = await _embeddingGenerator.GenerateAsync([query.QueryText.Trim()], cancellationToken);
++        if (embeddingBatch.Embeddings.Count == 0)
++        {
++            return Array.Empty<CompanyKnowledgeSearchResultDto>();
++        }
++
++        var queryEmbedding = KnowledgeEmbeddingSerializer.Serialize(embeddingBatch.Embeddings[0].Values);
++
++        return IsPostgreSql()
++            ? await SearchPostgreSqlAsync(query.CompanyId, queryEmbedding, topN, cancellationToken)
++            : await SearchFallbackAsync(query.CompanyId, embeddingBatch.Embeddings[0].Values, topN, cancellationToken);
++    }
++
++    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchPostgreSqlAsync(
++        Guid companyId,
++        string queryEmbedding,
++        int topN,
++        CancellationToken cancellationToken)
++    {
++        var connection = _dbContext.Database.GetDbConnection();
++        if (connection.State != System.Data.ConnectionState.Open)
++        {
++            await connection.OpenAsync(cancellationToken);
++        }
++
++        await using var command = connection.CreateCommand();
++        command.CommandText =
++            """
++            SELECT
++                kc."Id",
++                kc."Content",
++                kc."DocumentId",
++                d."Title",
++                kc."ChunkIndex",
++                kc."SourceReference",
++                kc.metadata_json,
++                1 - (kc."Embedding" <=> CAST(@queryEmbedding AS vector)) AS score
++            FROM knowledge_chunks kc
++            INNER JOIN knowledge_documents d ON d."Id" = kc."DocumentId"
++            WHERE
++                kc."CompanyId" = @companyId
++                AND d."CompanyId" = @companyId
++                AND kc."IsActive" = TRUE
++                AND d."IndexingStatus" = 'indexed'
++                AND (d.access_scope_json ->> 'visibility') = 'company'
++            ORDER BY kc."Embedding" <=> CAST(@queryEmbedding AS vector)
++            LIMIT @topN;
++            """;
++        AddParameter(command, "@companyId", companyId);
++        AddParameter(command, "@queryEmbedding", queryEmbedding);
++        AddParameter(command, "@topN", topN);
++
++        var results = new List<CompanyKnowledgeSearchResultDto>();
++        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
++        while (await reader.ReadAsync(cancellationToken))
++        {
++            results.Add(
++                new CompanyKnowledgeSearchResultDto(
++                    reader.GetGuid(0),
++                    reader.GetString(1),
++                    reader.GetDouble(7),
++                    reader.GetGuid(2),
++                    reader.GetString(3),
++                    reader.GetInt32(4),
++                    reader.GetString(5),
++                    DeserializeDictionary(reader.IsDBNull(6) ? "{}" : reader.GetString(6))));
++        }
++
++        return results;
++    }
++
++    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchFallbackAsync(
++        Guid companyId,
++        IReadOnlyList<float> queryEmbedding,
++        int topN,
++        CancellationToken cancellationToken)
++    {
++        var candidates = await _dbContext.CompanyKnowledgeChunks
++            .AsNoTracking()
++            .Include(chunk => chunk.Document)
++            .Where(chunk =>
++                chunk.CompanyId == companyId &&
++                chunk.IsActive &&
++                chunk.Document.CompanyId == companyId &&
++                chunk.Document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
++                chunk.Document.AccessScope.Visibility == CompanyKnowledgeDocumentAccessScope.CompanyVisibility)
++            .ToListAsync(cancellationToken);
++
++        return candidates
++            .Select(chunk => new CompanyKnowledgeSearchResultDto(
++                chunk.Id,
++                chunk.Content,
++                CosineSimilarity(queryEmbedding, KnowledgeEmbeddingSerializer.Deserialize(chunk.Embedding)),
++                chunk.DocumentId,
++                chunk.Document.Title,
++                chunk.ChunkIndex,
++                chunk.SourceReference,
++                chunk.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase)))
++            .OrderByDescending(result => result.Score)
++            .ThenBy(result => result.ChunkIndex)
++            .Take(topN)
++            .ToArray();
++    }
++
++    private static double CosineSimilarity(IReadOnlyList<float> left, IReadOnlyList<float> right)
++    {
++        if (left.Count == 0 || right.Count == 0 || left.Count != right.Count)
++        {
++            return 0d;
++        }
++
++        double dot = 0d;
++        double leftMagnitude = 0d;
++        double rightMagnitude = 0d;
++
++        for (var index = 0; index < left.Count; index++)
++        {
++            dot += left[index] * right[index];
++            leftMagnitude += left[index] * left[index];
++            rightMagnitude += right[index] * right[index];
++        }
++
++        if (leftMagnitude <= 0d || rightMagnitude <= 0d)
++        {
++            return 0d;
++        }
++
++        return dot / (Math.Sqrt(leftMagnitude) * Math.Sqrt(rightMagnitude));
++    }
++
++    private static Dictionary<string, JsonNode?> DeserializeDictionary(string json)
++    {
++        var parsed = JsonNode.Parse(json) as JsonObject;
++        if (parsed is null)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return parsed.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++
++    private bool IsPostgreSql() =>
++        string.Equals(_dbContext.Database.ProviderName, "Npgsql.EntityFrameworkCore.PostgreSQL", StringComparison.Ordinal);
++
++    private static void AddParameter(DbCommand command, string name, object? value)
++    {
++        var parameter = command.CreateParameter();
++        parameter.ParameterName = name;
++        parameter.Value = value ?? DBNull.Value;
++        command.Parameters.Add(parameter);
++    }
++}
++
++public static class KnowledgeEmbeddingSerializer
++{
++    public static string Serialize(IReadOnlyList<float> values)
++    {
++        var builder = new StringBuilder();
++        builder.Append('[');
++        for (var index = 0; index < values.Count; index++)
++        {
++            if (index > 0)
++            {
++                builder.Append(',');
++            }
++
++            builder.Append(values[index].ToString("G9", System.Globalization.CultureInfo.InvariantCulture));
++        }
++
++        builder.Append(']');
++        return builder.ToString();
++    }
++
++    public static IReadOnlyList<float> Deserialize(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return Array.Empty<float>();
++        }
++
++        var normalized = value.Trim();
++        if (normalized.StartsWith("[", StringComparison.Ordinal))
++        {
++            normalized = normalized[1..];
++        }
++
++        if (normalized.EndsWith("]", StringComparison.Ordinal))
++        {
++            normalized = normalized[..^1];
++        }
++
++        if (string.IsNullOrWhiteSpace(normalized))
++        {
++            return Array.Empty<float>();
++        }
++
++        return normalized
++            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++            .Select(item => float.Parse(item, System.Globalization.CultureInfo.InvariantCulture))
++            .ToArray();
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index b0ad6de..31b35d5 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -394,9 +394,15 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             document.FailureCode,
+             document.FailureMessage,
+             document.FailureAction,
+             document.CanRetry,
++            document.IndexingStatus.ToStorageValue(),
++            document.IndexingFailureCode,
++            document.IndexingFailureMessage,
++            document.CurrentChunkSetVersion,
++            document.ActiveChunkCount,
+             document.CreatedUtc,
+             document.UpdatedUtc,
++            document.IndexedUtc,
+             document.UploadedUtc,
+             document.ProcessingStartedUtc,
+             document.ProcessedUtc,
+             document.FailedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+index e643b6d..d0116c6 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/LocalCompanyDocumentStorage.cs
+@@ -14,6 +14,12 @@ public sealed class LocalCompanyDocumentStorage : ICompanyDocumentStorage
+         _options = options.Value;
+     }
+ 
++    public Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++        return Task.FromResult<Stream>(new FileStream(ResolveFullPath(storageKey), FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true));
++    }
++
+     public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
+     {
+         if (request.Content.CanSeek)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index e9302d6..44a40ba 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -118,6 +118,11 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
+         builder.HasMany(x => x.Documents)
+             .WithOne(x => x.Company)
+             .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++
++        builder.HasMany(x => x.KnowledgeChunks)
++            .WithOne(x => x.Company)
++            .HasForeignKey(x => x.CompanyId)
+             .OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+@@ -388,12 +393,59 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+         builder.Property(x => x.FailureMessage).HasMaxLength(2000);
+         builder.Property(x => x.FailureAction).HasMaxLength(500);
+         builder.Property(x => x.FailureTechnicalDetail).HasMaxLength(4000);
++        builder.Property(x => x.ExtractedText);
++        builder.Property(x => x.IndexingStatus)
++            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentIndexingStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValueSql("'not_indexed'")
++            .IsRequired();
++        builder.Property(x => x.IndexingFailureCode).HasMaxLength(100);
++        builder.Property(x => x.IndexingFailureMessage).HasMaxLength(2000);
++        builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
++        builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
++        builder.Property(x => x.CurrentChunkSetVersion).HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.ActiveChunkCount).HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.IngestionStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus });
+         builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasMany<CompanyKnowledgeChunk>("Chunks").WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CompanyKnowledgeChunkConfiguration : IEntityTypeConfiguration<CompanyKnowledgeChunk>
++{
++    public void Configure(EntityTypeBuilder<CompanyKnowledgeChunk> builder)
++    {
++        builder.ToTable("knowledge_chunks");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.ChunkSetVersion).IsRequired();
++        builder.Property(x => x.ChunkIndex).IsRequired();
++        builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.Content).IsRequired();
++        builder.Property(x => x.Embedding).HasColumnType("vector").IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.SourceReference).HasMaxLength(1024).IsRequired();
++        builder.Property(x => x.ContentHash).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EmbeddingModel).HasMaxLength(200).IsRequired();
++        builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
++        builder.Property(x => x.EmbeddingDimensions).IsRequired();
++        builder.Property(x => x.CreatedUtc).IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.IsActive, x.DocumentId });
++        builder.HasIndex(x => new { x.DocumentId, x.ChunkSetVersion, x.ChunkIndex }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
++        builder.HasOne(x => x.Company)
++            .WithMany(x => x.KnowledgeChunks)
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Document)
++            .WithMany("Chunks")
++            .HasForeignKey(x => x.DocumentId)
++            .OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402010000_AddKnowledgeChunksAndSemanticRetrieval.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402010000_AddKnowledgeChunksAndSemanticRetrieval.cs
+new file mode 100644
+index 0000000..66498d1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402010000_AddKnowledgeChunksAndSemanticRetrieval.cs
+@@ -0,0 +1,272 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddKnowledgeChunksAndSemanticRetrieval : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "ExtractedText",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.AddColumn<int>(
++                name: "ActiveChunkCount",
++                table: "knowledge_documents",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<int>(
++                name: "CurrentChunkSetVersion",
++                table: "knowledge_documents",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<int>(
++                name: "EmbeddingDimensions",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "EmbeddingModel",
++                table: "knowledge_documents",
++                maxLength: 200,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "EmbeddingModelVersion",
++                table: "knowledge_documents",
++                maxLength: 100,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "IndexingFailureCode",
++                table: "knowledge_documents",
++                maxLength: 100,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "IndexingFailureMessage",
++                table: "knowledge_documents",
++                maxLength: 2000,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "IndexingStatus",
++                table: "knowledge_documents",
++                maxLength: 32,
++                nullable: false,
++                defaultValue: "not_indexed");
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "IndexedUtc",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "IndexingFailedUtc",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "IndexingRequestedUtc",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.AddColumn<DateTime>(
++                name: "IndexingStartedUtc",
++                table: "knowledge_documents",
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_documents_CompanyId_IndexingStatus",
++                table: "knowledge_documents",
++                columns: new[] { "CompanyId", "IndexingStatus" });
++
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql("""CREATE EXTENSION IF NOT EXISTS vector;""");
++
++                migrationBuilder.CreateTable(
++                    name: "knowledge_chunks",
++                    columns: table => new
++                    {
++                        Id = table.Column<Guid>(type: "uuid", nullable: false),
++                        CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
++                        DocumentId = table.Column<Guid>(type: "uuid", nullable: false),
++                        ChunkSetVersion = table.Column<int>(type: "integer", nullable: false),
++                        ChunkIndex = table.Column<int>(type: "integer", nullable: false),
++                        IsActive = table.Column<bool>(type: "boolean", nullable: false, defaultValue: true),
++                        Content = table.Column<string>(type: "text", nullable: false),
++                        Embedding = table.Column<string>(type: "vector", nullable: false),
++                        Metadata = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'{}'", name: "metadata_json"),
++                        SourceReference = table.Column<string>(type: "character varying(1024)", maxLength: 1024, nullable: false),
++                        StartOffset = table.Column<int>(type: "integer", nullable: true),
++                        EndOffset = table.Column<int>(type: "integer", nullable: true),
++                        ContentHash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
++                        EmbeddingModel = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
++                        EmbeddingModelVersion = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
++                        EmbeddingDimensions = table.Column<int>(type: "integer", nullable: false),
++                        CreatedUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
++                    },
++                    constraints: table =>
++                    {
++                        table.PrimaryKey("PK_knowledge_chunks", x => x.Id);
++                        table.ForeignKey(
++                            name: "FK_knowledge_chunks_companies_CompanyId",
++                            column: x => x.CompanyId,
++                            principalTable: "companies",
++                            principalColumn: "Id",
++                            onDelete: ReferentialAction.Cascade);
++                        table.ForeignKey(
++                            name: "FK_knowledge_chunks_knowledge_documents_DocumentId",
++                            column: x => x.DocumentId,
++                            principalTable: "knowledge_documents",
++                            principalColumn: "Id",
++                            onDelete: ReferentialAction.Cascade);
++                    });
++            }
++            else
++            {
++                migrationBuilder.CreateTable(
++                    name: "knowledge_chunks",
++                    columns: table => new
++                    {
++                        Id = table.Column<Guid>(nullable: false),
++                        CompanyId = table.Column<Guid>(nullable: false),
++                        DocumentId = table.Column<Guid>(nullable: false),
++                        ChunkSetVersion = table.Column<int>(nullable: false),
++                        ChunkIndex = table.Column<int>(nullable: false),
++                        IsActive = table.Column<bool>(nullable: false, defaultValue: true),
++                        Content = table.Column<string>(nullable: false),
++                        Embedding = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                        Metadata = table.Column<string>(nullable: false, defaultValue: "{}", name: "metadata_json"),
++                        SourceReference = table.Column<string>(maxLength: 1024, nullable: false),
++                        StartOffset = table.Column<int>(nullable: true),
++                        EndOffset = table.Column<int>(nullable: true),
++                        ContentHash = table.Column<string>(maxLength: 64, nullable: false),
++                        EmbeddingModel = table.Column<string>(maxLength: 200, nullable: false),
++                        EmbeddingModelVersion = table.Column<string>(maxLength: 100, nullable: true),
++                        EmbeddingDimensions = table.Column<int>(nullable: false),
++                        CreatedUtc = table.Column<DateTime>(nullable: false)
++                    },
++                    constraints: table =>
++                    {
++                        table.PrimaryKey("PK_knowledge_chunks", x => x.Id);
++                        table.ForeignKey(
++                            name: "FK_knowledge_chunks_companies_CompanyId",
++                            column: x => x.CompanyId,
++                            principalTable: "companies",
++                            principalColumn: "Id",
++                            onDelete: ReferentialAction.Cascade);
++                        table.ForeignKey(
++                            name: "FK_knowledge_chunks_knowledge_documents_DocumentId",
++                            column: x => x.DocumentId,
++                            principalTable: "knowledge_documents",
++                            principalColumn: "Id",
++                            onDelete: ReferentialAction.Cascade);
++                    });
++            }
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_chunks_CompanyId_CreatedUtc",
++                table: "knowledge_chunks",
++                columns: new[] { "CompanyId", "CreatedUtc" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_chunks_CompanyId_IsActive_DocumentId",
++                table: "knowledge_chunks",
++                columns: new[] { "CompanyId", "IsActive", "DocumentId" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_chunks_DocumentId_ChunkSetVersion_ChunkIndex",
++                table: "knowledge_chunks",
++                columns: new[] { "DocumentId", "ChunkSetVersion", "ChunkIndex" },
++                unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "knowledge_chunks");
++
++            migrationBuilder.DropIndex(
++                name: "IX_knowledge_documents_CompanyId_IndexingStatus",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "ExtractedText",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "ActiveChunkCount",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "CurrentChunkSetVersion",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "EmbeddingDimensions",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "EmbeddingModel",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "EmbeddingModelVersion",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingFailureCode",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingFailureMessage",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingStatus",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexedUtc",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingFailedUtc",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingRequestedUtc",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "IndexingStartedUtc",
++                table: "knowledge_documents");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 26a7fb4..0a4c62f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -20,6 +20,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+     public DbSet<CompanyKnowledgeDocument> CompanyKnowledgeDocuments => Set<CompanyKnowledgeDocument>();
+     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
++    public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
+     public DbSet<Agent> Agents => Set<Agent>();
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+@@ -50,5 +51,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyKnowledgeDocument>()
+             .HasQueryFilter(document =>
+                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyKnowledgeChunk>()
++            .HasQueryFilter(chunk =>
++                CurrentCompanyId.HasValue && chunk.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs b/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs
+index d2928b5..ee75ef3 100644
+--- a/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/CompanyDocumentsController.cs
+@@ -13,11 +13,13 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class CompanyDocumentsController : ControllerBase
+ {
+     private readonly ICompanyDocumentService _documentService;
++    private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+ 
+-    public CompanyDocumentsController(ICompanyDocumentService documentService)
++    public CompanyDocumentsController(ICompanyDocumentService documentService, ICompanyKnowledgeSearchService knowledgeSearchService)
+     {
+         _documentService = documentService;
++        _knowledgeSearchService = knowledgeSearchService;
+     }
+ 
+     [HttpGet]
+     public Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(
+@@ -41,6 +43,20 @@ public sealed class CompanyDocumentsController : ControllerBase
+         return document is null ? NotFound() : Ok(document);
+     }
+ 
++    [HttpGet("semantic-search")]
++    public async Task<ActionResult<IReadOnlyList<CompanyKnowledgeSearchResultDto>>> SemanticSearchAsync(
++        Guid companyId,
++        [FromQuery(Name = "q")] string? query,
++        [FromQuery(Name = "top")] int top,
++        CancellationToken cancellationToken)
++    {
++        if (string.IsNullOrWhiteSpace(query))
++        {
++            throw BuildValidationException("Query", "A semantic search query is required.");
++        }
++
++        return Ok(await _knowledgeSearchService.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(companyId, query, top <= 0 ? 5 : top), cancellationToken));
++    }
++
+     [HttpPost]
+     [Authorize(Policy = CompanyPolicies.CompanyManager)]
+     [Consumes("multipart/form-data")]
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index e32b39b..b1ce45c 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -72,6 +72,7 @@ using (var scope = app.Services.CreateScope())
+ 
+     if (isPostgreSql)
+     {
++        await dbContext.Database.ExecuteSqlRawAsync("""CREATE EXTENSION IF NOT EXISTS vector;""");
+         // The repo still carries historical SQL Server migrations; PostgreSQL environments
+         // bootstrap from the current model until the provider history is rebased.
+         await dbContext.Database.EnsureCreatedAsync();
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 3582331..8c74c06 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -10,6 +10,25 @@
+       "RootPath": "App_Data/object-storage",
+       "BaseUri": ""
+     }
++  },
++  "KnowledgeChunking": {
++    "TargetChunkLength": 1200,
++    "OverlapLength": 200,
++    "MaxChunkCountPerDocument": 256,
++    "StrategyVersion": "paragraph-overlap-v1"
++  },
++  "KnowledgeEmbeddings": {
++    "Provider": "deterministic",
++    "BaseUrl": "https://api.openai.com/v1/",
++    "ApiKey": "",
++    "Model": "text-embedding-3-small",
++    "ModelVersion": "deterministic-v1",
++    "Dimensions": 256,
++    "TimeoutSeconds": 30
++  },
++  "KnowledgeIndexing": {
++    "Enabled": true,
++    "BatchSize": 5,
++    "PollIntervalSeconds": 10
+   },
+ 
+   "CompanyOutboxDispatcher": {
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index bbca783..2afd09a 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -10,6 +10,25 @@
+       "RootPath": "App_Data/object-storage",
+       "BaseUri": ""
+     }
++  },
++  "KnowledgeChunking": {
++    "TargetChunkLength": 1200,
++    "OverlapLength": 200,
++    "MaxChunkCountPerDocument": 256,
++    "StrategyVersion": "paragraph-overlap-v1"
++  },
++  "KnowledgeEmbeddings": {
++    "Provider": "deterministic",
++    "BaseUrl": "https://api.openai.com/v1/",
++    "ApiKey": "",
++    "Model": "text-embedding-3-small",
++    "ModelVersion": "deterministic-v1",
++    "Dimensions": 256,
++    "TimeoutSeconds": 30
++  },
++  "KnowledgeIndexing": {
++    "Enabled": true,
++    "BatchSize": 5,
++    "PollIntervalSeconds": 10
+   },
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+new file mode 100644
+index 0000000..df2b8aa
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -0,0 +1,274 @@
++using System.Text;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public KnowledgeRetrievalIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public void Chunker_produces_stable_ordered_chunks_with_overlap()
++    {
++        var chunker = new DefaultKnowledgeChunker(
++            Microsoft.Extensions.Options.Options.Create(
++                new KnowledgeChunkingOptions
++                {
++                    TargetChunkLength = 80,
++                    OverlapLength = 16,
++                    MaxChunkCountPerDocument = 16,
++                    StrategyVersion = "test-v1"
++                }));
++
++        var companyId = Guid.NewGuid();
++        var document = new CompanyKnowledgeDocument(
++            Guid.NewGuid(),
++            companyId,
++            "Handbook",
++            CompanyKnowledgeDocumentType.Reference,
++            $"companies/{companyId:N}/knowledge/handbook.txt",
++            null,
++            "handbook.txt",
++            "text/plain",
++            ".txt",
++            100,
++            accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++
++        var chunks = chunker.ChunkDocument(
++            document,
++            "First paragraph has important onboarding guidance.\n\nSecond paragraph repeats context for overlap and retrieval.\n\nThird paragraph closes with escalation procedures.");
++
++        Assert.True(chunks.Count >= 2);
++        Assert.Equal(Enumerable.Range(0, chunks.Count), chunks.Select(chunk => chunk.ChunkIndex));
++        Assert.Contains("overlap", chunks[1].Content, StringComparison.OrdinalIgnoreCase);
++        Assert.All(chunks, chunk => Assert.Equal("test-v1", chunk.Metadata["strategy"]!.GetValue<string>()));
++    }
++
++    [Fact]
++    public async Task Semantic_search_is_company_scoped_and_returns_source_references()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(
++            ["payroll policy for remote employees", "payroll policy for remote employees"],
++            CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "searcher@example.com", "Searcher", "dev-header", "searcher"));
++            dbContext.Companies.AddRange(new Company(companyAId, "Company A"), new Company(companyBId, "Company B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var documentA = CreateIndexedDocument(companyAId, "A Payroll Policy");
++            var documentB = CreateIndexedDocument(companyBId, "B Payroll Policy");
++
++            dbContext.CompanyKnowledgeDocuments.AddRange(documentA, documentB);
++            dbContext.CompanyKnowledgeChunks.AddRange(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyAId,
++                    documentA.Id,
++                    1,
++                    0,
++                    "payroll policy for remote employees",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?> { ["section"] = System.Text.Json.Nodes.JsonValue.Create("remote-payroll") },
++                    "a-policy#chunk-1"),
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyBId,
++                    documentB.Id,
++                    1,
++                    0,
++                    "payroll policy for remote employees",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?> { ["section"] = System.Text.Json.Nodes.JsonValue.Create("remote-payroll") },
++                    "b-policy#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
++        var results = await searchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(companyAId, "payroll policy for remote employees", 5),
++            CancellationToken.None);
++
++        var result = Assert.Single(results);
++        Assert.Equal(companyAId, await GetCompanyIdForDocumentAsync(result.DocumentId));
++        Assert.Equal("A Payroll Policy", result.DocumentTitle);
++        Assert.Equal("a-policy#chunk-1", result.SourceReference);
++        Assert.Equal("remote-payroll", result.SourceMetadata["section"]!.GetValue<string>());
++    }
++
++    [Fact]
++    public async Task Reindexing_replaces_active_chunk_set_without_leaking_old_results()
++    {
++        _factory.DocumentStorage.Reset();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var storageKey = $"companies/{companyId:N}/knowledge/{documentId:N}/manual.txt";
++
++        _factory.DocumentStorage.Seed(storageKey, "The original procedure says to fax the form.");
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "indexer@example.com", "Indexer", "dev-header", "indexer"));
++            dbContext.Companies.Add(new Company(companyId, "Indexed Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var document = new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Operations Manual",
++                CompanyKnowledgeDocumentType.Procedure,
++                storageKey,
++                null,
++                "manual.txt",
++                "text/plain",
++                ".txt",
++                128,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++            document.MarkScanClean();
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            await Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        _factory.DocumentStorage.Seed(storageKey, "The updated procedure requires a secure portal upload.");
++
++        using (var requeueScope = _factory.Services.CreateScope())
++        {
++            var dbContext = requeueScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++            document.QueueIndexing();
++            await dbContext.SaveChangesAsync();
++        }
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        using (var verificationScope = _factory.Services.CreateScope())
++        {
++            var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var chunks = await dbContext.CompanyKnowledgeChunks.IgnoreQueryFilters()
++                .Where(chunk => chunk.DocumentId == documentId)
++                .OrderBy(chunk => chunk.ChunkSetVersion)
++                .ToListAsync();
++
++            Assert.Contains(chunks, chunk => chunk.ChunkSetVersion == 1 && !chunk.IsActive);
++            Assert.Contains(chunks, chunk => chunk.ChunkSetVersion == 2 && chunk.IsActive);
++        }
++
++        var results = await searchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(companyId, "secure portal upload", 5),
++            CancellationToken.None);
++
++        Assert.NotEmpty(results);
++        Assert.DoesNotContain(results, result => result.Content.Contains("fax the form", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(results, result => result.Content.Contains("secure portal upload", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task Indexing_failure_marks_document_failed_when_no_text_is_available()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "failure@example.com", "Failure", "dev-header", "failure"));
++            dbContext.Companies.Add(new Company(companyId, "Failure Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var document = new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Unsupported PDF",
++                CompanyKnowledgeDocumentType.Reference,
++                $"companies/{companyId:N}/knowledge/{documentId:N}/unsupported.pdf",
++                null,
++                "unsupported.pdf",
++                "application/pdf",
++                ".pdf",
++                512,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++            document.MarkScanClean();
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            await Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Failed, document.IngestionStatus);
++        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Failed, document.IndexingStatus);
++        Assert.Equal("knowledge_indexing_failed", document.IndexingFailureCode);
++        Assert.NotNull(document.FailureAction);
++    }
++
++    private static CompanyKnowledgeDocument CreateIndexedDocument(Guid companyId, string title)
++    {
++        var document = new CompanyKnowledgeDocument(
++            Guid.NewGuid(),
++            companyId,
++            title,
++            CompanyKnowledgeDocumentType.Policy,
++            $"companies/{companyId:N}/knowledge/{Guid.NewGuid():N}/policy.txt",
++            null,
++            "policy.txt",
++            "text/plain",
++            ".txt",
++            64,
++            accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++
++        document.MarkScanClean();
++        document.MarkProcessing();
++        document.MarkProcessed();
++        document.MarkIndexed("payroll policy for remote employees", 1, 1, "test", "v1", 256);
++        return document;
++    }
++
++    private async Task<Guid> GetCompanyIdForDocumentAsync(Guid documentId)
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        return await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters()
++            .Where(document => document.Id == documentId)
++            .Select(document => document.CompanyId)
++            .SingleAsync();
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index da95ae1..e11ceff 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -24,7 +24,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
++                [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
++                [$"{KnowledgeEmbeddingsOptions.SectionName}:Provider"] = "deterministic",
+                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
++                [$"{KnowledgeEmbeddingsOptions.SectionName}:Dimensions"] = "256",
+                 [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
+             });
+         });
+@@ -176,6 +179,20 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             Interlocked.Exchange(ref _remainingFailures, Math.Max(0, count));
+ 
++        public void Seed(string storageKey, string content) =>
++            _storedObjects[storageKey] = Encoding.UTF8.GetBytes(content);
++
++        public Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++            if (!_storedObjects.TryGetValue(storageKey, out var bytes))
++            {
++                throw new FileNotFoundException("Configured document object was not found.", storageKey);
++            }
++
++            Stream stream = new MemoryStream(bytes, writable: false);
++            return Task.FromResult(stream);
++        }
++
+         public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
+         {
+             if (TryConsumeFailure())
+END_OF_PATCH

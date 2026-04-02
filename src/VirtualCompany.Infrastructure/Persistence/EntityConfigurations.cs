@@ -127,6 +127,11 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
             .WithOne(x => x.Company)
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(x => x.KnowledgeChunks)
+            .WithOne(x => x.Company)
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -527,12 +532,119 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
         builder.Property(x => x.FailureMessage).HasMaxLength(2000);
         builder.Property(x => x.FailureAction).HasMaxLength(500);
         builder.Property(x => x.FailureTechnicalDetail).HasMaxLength(4000);
+        builder.Property(x => x.ExtractedText);
+        builder.Property(x => x.IndexingStatus)
+            .HasConversion(value => value.ToStorageValue(), value => CompanyKnowledgeDocumentIndexingStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValueSql("'not_indexed'")
+            .IsRequired();
+        builder.Property(x => x.IndexingFailureCode).HasMaxLength(100);
+        builder.Property(x => x.IndexingFailureMessage).HasMaxLength(2000);
+        builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+        builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
+        builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
+        builder.Property(x => x.CurrentChunkSetFingerprint).HasMaxLength(128);
+        builder.Property(x => x.CurrentChunkSetVersion).HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.ActiveChunkCount).HasDefaultValue(0).IsRequired();
         builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.Property(x => x.IndexedUtc);
+        builder.Property(x => x.IndexingFailedUtc);
         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.IngestionStatus });
+        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus });
+        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingRequestedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingStartedUtc });
         builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany<CompanyKnowledgeChunk>("Chunks").WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class CompanyKnowledgeChunkConfiguration : IEntityTypeConfiguration<CompanyKnowledgeChunk>
+{
+    public void Configure(EntityTypeBuilder<CompanyKnowledgeChunk> builder)
+    {
+        builder.ToTable("knowledge_chunks");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.ChunkSetVersion).IsRequired();
+        builder.Property(x => x.ChunkIndex).IsRequired();
+        builder.Property(x => x.IsActive).HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.Content).IsRequired();
+        builder.Property(x => x.Embedding).HasColumnType("vector").IsRequired();
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.SourceReference).HasMaxLength(1024).IsRequired();
+        builder.Property(x => x.ContentHash).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+        builder.Property(x => x.EmbeddingModel).HasMaxLength(200).IsRequired();
+        builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
+        builder.Property(x => x.EmbeddingDimensions).IsRequired();
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.IsActive, x.DocumentId });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentId, x.ChunkSetVersion, x.IsActive });
+        builder.HasIndex(x => new { x.DocumentId, x.ChunkSetVersion, x.ChunkIndex }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+        builder.HasOne(x => x.Company)
+            .WithMany(x => x.KnowledgeChunks)
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Document)
+            .WithMany("Chunks")
+            .HasForeignKey(x => x.DocumentId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class MemoryItemConfiguration : IEntityTypeConfiguration<MemoryItem>
+{
+    public void Configure(EntityTypeBuilder<MemoryItem> builder)
+    {
+        builder.ToTable("memory_items", tableBuilder =>
+        {
+            tableBuilder.HasCheckConstraint("CK_memory_items_memory_type", MemoryTypeValues.BuildCheckConstraintSql("\"MemoryType\""));
+        });
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.MemoryType)
+            .HasConversion(value => value.ToStorageValue(), value => MemoryTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Summary).HasMaxLength(4000).IsRequired();
+        builder.Property(x => x.SourceEntityType).HasMaxLength(100);
+        builder.Property(x => x.Salience).HasColumnType("numeric(4,3)").IsRequired();
+        builder.Property(x => x.ValidFromUtc).IsRequired();
+        builder.Property(x => x.ValidToUtc);
+        builder.Property(x => x.DeletedUtc);
+        builder.Property(x => x.DeletedByActorType).HasMaxLength(64);
+        builder.Property(x => x.DeletedByActorId);
+        builder.Property(x => x.DeletionReason).HasMaxLength(512);
+        builder.Property(x => x.ExpiredByActorType).HasMaxLength(64);
+        builder.Property(x => x.ExpiredByActorId);
+        builder.Property(x => x.ExpirationReason).HasMaxLength(512);
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Embedding).HasColumnType("vector");
+        builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+        builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
+        builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
+        builder.Property(x => x.AgentId).IsRequired(false);
+        builder.Property(x => x.CreatedUtc).IsRequired();
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId });
+        builder.HasIndex(x => new { x.CompanyId, x.MemoryType });
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.DeletedUtc, x.ValidToUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ValidToUtc });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Agent).WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

@@ -1,0 +1,870 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 84fcc96..7b42c6f 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -32,6 +32,7 @@ public static class AuditTargetTypes
+     public const string AgentToolExecution = "agent_tool_execution";
+     public const string CompanyDocument = "company_document";
+     public const string ApprovalRequest = "approval_request";
++    public const string MemoryItem = "memory_item";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -56,4 +57,6 @@ public static class AuditEventActions
+     public const string CompanyDocumentUploadFailed = "company.document.upload_failed";
+     public const string CompanyDocumentProcessed = "company.document.processed";
+     public const string CompanyDocumentFailed = "company.document.failed";
++    public const string MemoryItemExpired = "memory.item.expired";
++    public const string MemoryItemDeleted = "memory.item.deleted";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+ }
+diff --git a/src/VirtualCompany.Application/Memory/MemoryContracts.cs b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+index a44a381..b15cc37 100644
+--- a/src/VirtualCompany.Application/Memory/MemoryContracts.cs
++++ b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+@@ -19,6 +19,7 @@ public sealed record MemorySearchFilters(
+     DateTime? CreatedBeforeUtc,
+     decimal? MinSalience,
+     bool OnlyActive = true,
++    bool IncludeDeleted = false,
+     bool IncludeCompanyWide = true,
+     string? QueryText = null,
+     int Offset = 0,
+@@ -33,7 +34,8 @@ public sealed record MemoryRetrievalRequest(
+     bool IncludeCompanyWide = true,
+     string? Scope = null);
+ 
+-public sealed record ExpireMemoryItemCommand(DateTime? ValidToUtc);
++public sealed record ExpireMemoryItemCommand(DateTime? ValidToUtc, string? Reason = null);
++public sealed record DeleteMemoryItemCommand(string? Reason = null);
+ 
+ public sealed record MemoryItemDto(
+     Guid Id,
+@@ -63,7 +65,7 @@ public interface ICompanyMemoryService
+     Task<MemoryItemDto?> GetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken);
+     Task<MemoryItemDto> CreateAsync(Guid companyId, CreateMemoryItemCommand command, CancellationToken cancellationToken);
+     Task<MemorySearchResultDto> SearchAsync(Guid companyId, MemorySearchFilters filters, CancellationToken cancellationToken);
+     Task<MemoryItemDto> ExpireAsync(Guid companyId, Guid memoryId, ExpireMemoryItemCommand command, CancellationToken cancellationToken);
+-    Task DeleteAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken);
++    Task DeleteAsync(Guid companyId, Guid memoryId, DeleteMemoryItemCommand command, CancellationToken cancellationToken);
+ }
+ 
+ public interface IMemoryRetrievalService
+diff --git a/src/VirtualCompany.Api/Controllers/MemoryController.cs b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+index 6145306..f7f0bcb 100644
+--- a/src/VirtualCompany.Api/Controllers/MemoryController.cs
++++ b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+@@ -29,6 +29,7 @@ public sealed class MemoryController : ControllerBase
+         [FromQuery] DateTime? createdBeforeUtc,
+         [FromQuery] decimal? minSalience,
+         [FromQuery] bool? onlyActive,
++        [FromQuery] bool? includeDeleted,
+         [FromQuery] bool? includeCompanyWide,
+         [FromQuery(Name = "q")] string? queryText,
+         [FromQuery] int? offset,
+@@ -44,6 +45,7 @@ public sealed class MemoryController : ControllerBase
+                 createdAfterUtc,
+                 createdBeforeUtc,
+                 minSalience,
+                 onlyActive ?? true,
++                includeDeleted ?? false,
+                 includeCompanyWide ?? true,
+                 queryText,
+                 offset ?? 0,
+@@ -151,6 +153,10 @@ public sealed class MemoryController : ControllerBase
+                 Title = "Validation failed",
+                 Status = StatusCodes.Status400BadRequest
+             });
++        }
++        catch (InvalidOperationException ex)
++        {
++            return BadRequest(new ProblemDetails { Title = "Invalid memory lifecycle operation", Detail = ex.Message, Status = StatusCodes.Status400BadRequest });
+         }
+         catch (KeyNotFoundException)
+         {
+@@ -163,12 +169,20 @@ public sealed class MemoryController : ControllerBase
+ 
+     [HttpDelete("{memoryId:guid}")]
+     [Authorize(Policy = CompanyPolicies.CompanyManager)]
+-    public async Task<IActionResult> DeleteAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
++    public async Task<IActionResult> DeleteAsync(Guid companyId, Guid memoryId, [FromBody] DeleteMemoryItemCommand? command, CancellationToken cancellationToken)
+     {
+         try
+         {
+-            await _memoryService.DeleteAsync(companyId, memoryId, cancellationToken);
++            await _memoryService.DeleteAsync(companyId, memoryId, command ?? new DeleteMemoryItemCommand(), cancellationToken);
+             return NoContent();
++        }
++        catch (MemoryValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
+         }
+         catch (KeyNotFoundException)
+         {
+diff --git a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+index 4bc0e14..b89ae4d 100644
+--- a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+@@ -7,6 +7,8 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+ {
+     private const int SummaryMaxLength = 4000;
+     private const int SourceEntityTypeMaxLength = 100;
++    private const int ActorTypeMaxLength = 64;
++    private const int LifecycleReasonMaxLength = 512;
+ 
+     private MemoryItem()
+     {
+@@ -69,10 +71,21 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+     public string? EmbeddingModelVersion { get; private set; }
+     public int? EmbeddingDimensions { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public string? DeletedByActorType { get; private set; }
++    public Guid? DeletedByActorId { get; private set; }
++    public string? DeletionReason { get; private set; }
++    public string? ExpiredByActorType { get; private set; }
++    public Guid? ExpiredByActorId { get; private set; }
++    public string? ExpirationReason { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Agent? Agent { get; private set; }
+     public bool IsCompanyWide => AgentId is null;
+     public bool IsAgentSpecific => AgentId is not null;
++    public bool IsDeleted => DeletedUtc.HasValue;
++
++    public bool IsExpired(DateTime asOfUtc) =>
++        ValidToUtc.HasValue &&
++        EnsureUtc(ValidToUtc.Value) <= EnsureUtc(asOfUtc);
+ 
+     public void AttachEmbedding(
+         string embedding,
+@@ -93,8 +106,13 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+         EmbeddingDimensions = dimensions;
+     }
+ 
+-    public bool Expire(DateTime validToUtc)
++    public bool Expire(DateTime validToUtc, string actorType, Guid? actorId, string? reason)
+     {
++        if (IsDeleted)
++        {
++            throw new InvalidOperationException("Deleted memory items cannot be expired.");
++        }
++
+         var normalizedValidToUtc = EnsureUtc(validToUtc);
+         if (normalizedValidToUtc < ValidFromUtc)
+         {
+@@ -102,12 +120,41 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+         }
+ 
+         if (ValidToUtc.HasValue && ValidToUtc.Value == normalizedValidToUtc)
+         {
++            ExpiredByActorType = NormalizeOptional(actorType, nameof(actorType), ActorTypeMaxLength);
++            ExpiredByActorId = NormalizeActorId(actorId, nameof(actorId));
++            ExpirationReason = NormalizeOptional(reason, nameof(reason), LifecycleReasonMaxLength);
+             return false;
+         }
+ 
+         ValidToUtc = normalizedValidToUtc;
++        ExpiredByActorType = NormalizeRequired(actorType, nameof(actorType), ActorTypeMaxLength);
++        ExpiredByActorId = NormalizeActorId(actorId, nameof(actorId));
++        ExpirationReason = NormalizeOptional(reason, nameof(reason), LifecycleReasonMaxLength);
+         return true;
+     }
++
++    public bool Delete(string actorType, Guid? actorId, string? reason)
++    {
++        if (IsDeleted)
++        {
++            DeletedByActorType = NormalizeOptional(actorType, nameof(actorType), ActorTypeMaxLength);
++            DeletedByActorId = NormalizeActorId(actorId, nameof(actorId));
++            DeletionReason = NormalizeOptional(reason, nameof(reason), LifecycleReasonMaxLength);
++            return false;
++        }
++
++        DeletedUtc = DateTime.UtcNow;
++        DeletedByActorType = NormalizeRequired(actorType, nameof(actorType), ActorTypeMaxLength);
++        DeletedByActorId = NormalizeActorId(actorId, nameof(actorId));
++        DeletionReason = NormalizeOptional(reason, nameof(reason), LifecycleReasonMaxLength);
++        return true;
++    }
++
++    private static Guid? NormalizeActorId(Guid? value, string name)
++    {
++        if (value.HasValue && value.Value == Guid.Empty)
++        {
++            throw new ArgumentException($"{name} cannot be empty.", name);
++        }
++
++        return value;
++    }
+ 
+     private static decimal NormalizeSalience(decimal value, string name)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+index 3c54721..1f0b8f0 100644
+--- a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
++++ b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+@@ -3,12 +3,14 @@ using System.Text;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Memory;
+@@ -22,18 +24,26 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+     private const int MaxSemanticCandidateCount = 200;
+     private const int MaxSearchLimit = 100;
+     private const double RecencyWindowDays = 14d;
++    private const int AuditMetadataValueMaxLength = 512;
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IEmbeddingGenerator _embeddingGenerator;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public CompanyMemoryService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        IEmbeddingGenerator embeddingGenerator)
++        IEmbeddingGenerator embeddingGenerator,
++        IAuditEventWriter auditEventWriter,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _embeddingGenerator = embeddingGenerator;
++        _auditEventWriter = auditEventWriter;
++        _correlationContextAccessor = correlationContextAccessor;
+     }
+ 
+     public async Task<MemoryItemDto?> GetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
+@@ -42,7 +52,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+ 
+         var item = await _dbContext.MemoryItems
+             .AsNoTracking()
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId && x.DeletedUtc == null, cancellationToken);
+ 
+         return item is null ? null : ToDto(item);
+     }
+@@ -84,49 +94,92 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+     public async Task<MemorySearchResultDto> SearchAsync(Guid companyId, MemorySearchFilters filters, CancellationToken cancellationToken)
+     {
+         EnsureCompanyId(companyId);
+-        await RequireMembershipAsync(companyId, cancellationToken);
+         var criteria = await ValidateAndNormalizeFiltersAsync(companyId, filters, cancellationToken);
+         return await ExecuteSearchAsync(criteria, includeTotalCount: true, cancellationToken);
+     }
+ 
+     public async Task<MemoryItemDto> ExpireAsync(Guid companyId, Guid memoryId, ExpireMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+         EnsureCompanyId(companyId);
+-        await EnsureManagerAccessAsync(companyId, cancellationToken);
+         var item = await _dbContext.MemoryItems
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+ 
+         if (item is null)
+         {
+             throw new KeyNotFoundException("Memory item not found.");
+         }
+ 
++        ValidateLifecycleReason(nameof(command.Reason), command.Reason);
++
++        var membership = await EnsureLifecycleAccessAsync(
++            companyId,
++            MemoryLifecycleAction.Expire,
++            item,
++            command.Reason,
++            cancellationToken);
++
++        var previousValidToUtc = item.ValidToUtc;
+         var validToUtc = command.ValidToUtc?.ToUniversalTime() ?? DateTime.UtcNow;
+-        item.Expire(validToUtc);
++        try
++        {
++            item.Expire(validToUtc, AuditActorTypes.User, membership.UserId, command.Reason);
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            throw CreateValidationException(nameof(command.ValidToUtc), ex.Message);
++        }
++        catch (ArgumentException ex)
++        {
++            throw CreateValidationException(nameof(command.ValidToUtc), ex.Message);
++        }
++        catch (InvalidOperationException ex)
++        {
++            throw CreateValidationException(nameof(command.ValidToUtc), ex.Message);
++        }
++
++        await WriteLifecycleAuditEventAsync(
++            companyId,
++            membership,
++            item,
++            MemoryLifecycleAction.Expire,
++            AuditEventOutcomes.Succeeded,
++            command.Reason,
++            previousValidToUtc);
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(item);
+     }
+ 
+-    public async Task DeleteAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
++    public async Task DeleteAsync(Guid companyId, Guid memoryId, DeleteMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+         EnsureCompanyId(companyId);
+-        await EnsureManagerAccessAsync(companyId, cancellationToken);
+         var item = await _dbContext.MemoryItems
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+ 
+         if (item is null)
+         {
+             throw new KeyNotFoundException("Memory item not found.");
+         }
+ 
+-        _dbContext.MemoryItems.Remove(item);
++        ValidateLifecycleReason(nameof(command.Reason), command.Reason);
++
++        var membership = await EnsureLifecycleAccessAsync(
++            companyId,
++            MemoryLifecycleAction.Delete,
++            item,
++            command.Reason,
++            cancellationToken);
++
++        item.Delete(AuditActorTypes.User, membership.UserId, command.Reason);
++
++        await WriteLifecycleAuditEventAsync(
++            companyId,
++            membership,
++            item,
++            MemoryLifecycleAction.Delete,
++            AuditEventOutcomes.Succeeded,
++            command.Reason);
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
+     private async Task<MemorySearchResultDto> ExecuteSearchAsync(
+         MemoryRetrievalCriteria criteria,
+@@ -253,8 +306,8 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+             resolvedScope,
+             memoryTypes,
+             null,
+-            null,
+-            null,
++            createdAfterUtc: null,
++            createdBeforeUtc: null,
+             onlyActive: true,
+             request.AsOfUtc?.ToUniversalTime() ?? DateTime.UtcNow,
+             queryText,
+@@ -280,6 +333,14 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+         Guid companyId,
+         MemorySearchFilters filters,
+         CancellationToken cancellationToken)
+     {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        if ((!filters.OnlyActive || filters.IncludeDeleted) &&
++            membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin))
++        {
++            throw new UnauthorizedAccessException("Only owner and admin memberships can query inactive memory.");
++        }
++
+         var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+         var memoryTypes = ParseMemoryTypes(filters.MemoryType, filters.MemoryTypes, errors);
+         MemoryScope? explicitScope = null;
+@@ -354,6 +415,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+             filters.CreatedAfterUtc?.ToUniversalTime(),
+             filters.CreatedBeforeUtc?.ToUniversalTime(),
+             filters.MinSalience,
++            filters.IncludeDeleted,
+             filters.OnlyActive,
+             filters.AsOfUtc?.ToUniversalTime() ?? DateTime.UtcNow,
+             queryText,
+@@ -414,6 +476,11 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+         IQueryable<MemoryItem> query,
+         MemoryRetrievalCriteria criteria)
+     {
++        if (!criteria.IncludeDeleted)
++        {
++            query = query.Where(x => x.DeletedUtc == null);
++        }
++
+         query = criteria.Scope switch
+         {
+             MemoryScope.CompanyWide => query.Where(x => x.AgentId == null),
+@@ -546,6 +613,11 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+             WHERE
+                 m."CompanyId" = @companyId
+                 AND m."Embedding" IS NOT NULL
+             """);
++
++        if (!criteria.IncludeDeleted)
++        {
++            sql.Append(" AND m.\"DeletedUtc\" IS NULL");
++        }
+ 
+         if (criteria.MemoryTypes.Count > 0)
+         {
+@@ -712,6 +784,107 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+         return membership;
+     }
+ 
++    private async Task<ResolvedCompanyMembershipContext> EnsureLifecycleAccessAsync(
++        Guid companyId,
++        MemoryLifecycleAction action,
++        MemoryItem item,
++        string? rationale,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var allowed = action switch
++        {
++            MemoryLifecycleAction.Delete => membership.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin,
++            MemoryLifecycleAction.Expire => membership.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin ||
++                                            (membership.MembershipRole == CompanyMembershipRole.Manager &&
++                                             item.IsAgentSpecific &&
++                                             item.MemoryType is not MemoryType.CompanyMemory),
++            _ => false
++        };
++
++        if (allowed)
++        {
++            return membership;
++        }
++
++        await WriteLifecycleAuditEventAsync(
++            companyId,
++            membership,
++            item,
++            action,
++            AuditEventOutcomes.Denied,
++            rationale);
++
++        throw new UnauthorizedAccessException("The current user is not allowed to manage the requested memory item.");
++    }
++
++    private async Task WriteLifecycleAuditEventAsync(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        MemoryItem item,
++        MemoryLifecycleAction action,
++        string outcome,
++        string? rationale,
++        DateTime? previousValidToUtc = null)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["memoryType"] = item.MemoryType.ToStorageValue(),
++            ["scope"] = item.IsCompanyWide ? MemoryScopeValues.CompanyWide : MemoryScopeValues.AgentSpecific,
++            ["agentId"] = item.AgentId?.ToString("D"),
++            ["previousValidToUtc"] = previousValidToUtc?.ToString("O"),
++            ["validToUtc"] = item.ValidToUtc?.ToString("O"),
++            ["deletedUtc"] = item.DeletedUtc?.ToString("O"),
++            ["policyRole"] = membership.MembershipRole.ToStorageValue()
++        };
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                action == MemoryLifecycleAction.Delete ? AuditEventActions.MemoryItemDeleted : AuditEventActions.MemoryItemExpired,
++                AuditTargetTypes.MemoryItem,
++                item.Id.ToString("N"),
++                outcome,
++                PrepareMetadataValue(rationale),
++                Metadata: metadata.ToDictionary(
++                    pair => pair.Key,
++                    pair => PrepareMetadataValue(pair.Value),
++                    StringComparer.OrdinalIgnoreCase),
++                CorrelationId: _correlationContextAccessor.CorrelationId),
++            cancellationToken);
++    }
++
++    private static void ValidateLifecycleReason(string key, string? reason)
++    {
++        if (!string.IsNullOrWhiteSpace(reason) && reason.Trim().Length > AuditMetadataValueMaxLength)
++        {
++            throw CreateValidationException(key, $"{key} must be {AuditMetadataValueMaxLength} characters or fewer.");
++        }
++    }
++
++    private static MemoryValidationException CreateValidationException(string key, string message) =>
++        new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++        {
++            [key] = [message]
++        });
++
++    private static string? PrepareMetadataValue(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= AuditMetadataValueMaxLength
++            ? trimmed
++            : $"{trimmed[..(AuditMetadataValueMaxLength - 3)]}...";
++    }
++
+     private static double NormalizeCosineSimilarity(double similarity) =>
+         Clamp01((similarity + 1d) / 2d);
+@@ -901,9 +1074,18 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetrievalService
+         Guid? AgentId,
+         MemoryScope Scope,
+         IReadOnlyList<MemoryType> MemoryTypes,
+-        DateTime? CreatedAfterUtc,
+-        DateTime? CreatedBeforeUtc,
+-        decimal? MinSalience,
++        DateTime? CreatedAfterUtc = null,
++        DateTime? CreatedBeforeUtc = null,
++        decimal? MinSalience = null,
++        bool IncludeDeleted = false,
+         bool OnlyActive,
+         DateTime AsOfUtc,
+         string? QueryText,
+         IReadOnlyList<float>? QueryEmbedding,
+         int Offset,
+         int Limit);
++
++    private enum MemoryLifecycleAction
++    {
++        Expire = 1,
++        Delete = 2
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index f7ffbaa..77522ff 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -625,6 +625,12 @@ internal sealed class MemoryItemConfiguration : IEntityTypeConfiguration<MemoryItem>
+         builder.Property(x => x.Salience).HasColumnType("numeric(4,3)").IsRequired();
+         builder.Property(x => x.ValidFromUtc).IsRequired();
+         builder.Property(x => x.ValidToUtc);
++        builder.Property(x => x.DeletedUtc);
++        builder.Property(x => x.DeletedByActorType).HasMaxLength(64);
++        builder.Property(x => x.DeletedByActorId);
++        builder.Property(x => x.DeletionReason).HasMaxLength(512);
++        builder.Property(x => x.ExpiredByActorType).HasMaxLength(64);
++        builder.Property(x => x.ExpiredByActorId);
++        builder.Property(x => x.ExpirationReason).HasMaxLength(512);
+         builder.Property(x => x.Metadata)
+             .HasColumnName("metadata_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+@@ -637,6 +643,7 @@ internal sealed class MemoryItemConfiguration : IEntityTypeConfiguration<MemoryItem>
+         builder.HasIndex(x => new { x.CompanyId, x.MemoryType });
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.DeletedUtc, x.ValidToUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ValidToUtc });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Agent).WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402194500_AddMemoryLifecycleControls.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402194500_AddMemoryLifecycleControls.cs
+new file mode 100644
+index 0000000..67f4c1d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402194500_AddMemoryLifecycleControls.cs
+@@ -0,0 +1,125 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddMemoryLifecycleControls : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<DateTime>(
++                name: "DeletedUtc",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "timestamp with time zone" : "datetime2",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "DeletedByActorType",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)",
++                maxLength: 64,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "DeletedByActorId",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "DeletionReason",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(512)" : "nvarchar(512)",
++                maxLength: 512,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "ExpiredByActorType",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)",
++                maxLength: 64,
++                nullable: true);
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "ExpiredByActorId",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "ExpirationReason",
++                table: "memory_items",
++                type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(512)" : "nvarchar(512)",
++                maxLength: 512,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_memory_items_CompanyId_DeletedUtc_ValidToUtc",
++                table: "memory_items",
++                columns: new[] { "CompanyId", "DeletedUtc", "ValidToUtc" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_memory_items_CompanyId_DeletedUtc_ValidToUtc",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "DeletedUtc",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "DeletedByActorType",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "DeletedByActorId",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "DeletionReason",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "ExpiredByActorType",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "ExpiredByActorId",
++                table: "memory_items");
++
++            migrationBuilder.DropColumn(
++                name: "ExpirationReason",
++                table: "memory_items");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+index efabbd7..6bfc445 100644
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -534,6 +535,56 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal("Expense reimbursements above ten thousand dollars require controller review.", payload!.Items[0].Summary);
+     }
+ 
++    [Fact]
++    public async Task Manager_policy_is_scope_and_type_restricted_for_memory_lifecycle_operations()
++    {
++        var seed = await SeedMembershipWithAgentAsync(
++            CompanyMembershipRole.Manager,
++            "memory-manager",
++            "memory-manager@example.com",
++            "Memory Manager");
++
++        var companyWideMemoryId = Guid.NewGuid();
++        var agentScopedMemoryId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(companyWideMemoryId, seed.CompanyId, null, MemoryType.CompanyMemory, "Company-wide policy memory", null, null, 0.80m, DateTime.UtcNow.AddDays(-1), null),
++                new MemoryItem(agentScopedMemoryId, seed.CompanyId, seed.AgentId, MemoryType.Preference, "Agent preference memory", null, null, 0.75m, DateTime.UtcNow.AddDays(-1), null));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var deniedExpire = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/memory/{companyWideMemoryId}/expire",
++            new
++            {
++                validToUtc = DateTime.UtcNow,
++                reason = "Manager should not expire company-wide company memory."
++            });
++
++        Assert.Equal(HttpStatusCode.Forbidden, deniedExpire.StatusCode);
++
++        var allowedExpire = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/memory/{agentScopedMemoryId}/expire",
++            new
++            {
++                validToUtc = DateTime.UtcNow,
++                reason = "Agent-specific preference is no longer current."
++            });
++
++        Assert.Equal(HttpStatusCode.OK, allowedExpire.StatusCode);
++
++        var deniedDelete = await client.SendAsync(CreateDeleteMemoryRequest(
++            seed.CompanyId,
++            agentScopedMemoryId,
++            "Manager should not delete memory items."));
++
++        Assert.Equal(HttpStatusCode.Forbidden, deniedDelete.StatusCode);
++    }
++
+     [Fact]
+     public async Task Expire_and_delete_memory_items_enforce_tenant_boundaries()
+     {
+@@ -548,7 +599,11 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+ 
+         var expireResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory/{ownMemoryId}/expire", new
+         {
+-            validToUtc = DateTime.UtcNow
++            validToUtc = DateTime.UtcNow,
++            reason = "This memory should no longer be considered active."
+         });
+ 
+         Assert.Equal(HttpStatusCode.OK, expireResponse.StatusCode);
+@@ -558,7 +613,8 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.NotNull(activeAfterExpire);
+         Assert.DoesNotContain(activeAfterExpire!.Items, x => x.Id == ownMemoryId);
+ 
+         var crossTenantExpire = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory/{otherMemoryId}/expire", new
+         {
+-            validToUtc = DateTime.UtcNow
++            validToUtc = DateTime.UtcNow,
++            reason = "Cross-tenant expiration must not disclose anything."
+         });
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantExpire.StatusCode);
+ 
+@@ -566,18 +622,39 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantDelete.StatusCode);
+ 
+-        var deleteResponse = await client.DeleteAsync($"/api/companies/{seed.CompanyId}/memory/{ownMemoryId}");
++        var deleteResponse = await client.SendAsync(CreateDeleteMemoryRequest(
++            seed.CompanyId,
++            ownMemoryId,
++            "Superseded by a new privacy-safe memory record."));
+         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+         companyContextAccessor.SetCompanyId(seed.CompanyId);
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var stored = await dbContext.MemoryItems.AsNoTracking().SingleAsync(x => x.Id == ownMemoryId);
++        var auditEvents = await dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == seed.CompanyId && x.TargetType == AuditTargetTypes.MemoryItem && x.TargetId == ownMemoryId.ToString("N"))
++            .OrderBy(x => x.OccurredUtc)
++            .ToListAsync();
+ 
+-        Assert.False(await dbContext.MemoryItems.AsNoTracking().AnyAsync(x => x.Id == ownMemoryId));
++        Assert.NotNull(stored.DeletedUtc);
++        Assert.Equal(seed.UserId, stored.DeletedByActorId);
++        Assert.Equal("Superseded by a new privacy-safe memory record.", stored.DeletionReason);
++        Assert.Contains(auditEvents, x => x.Action == AuditEventActions.MemoryItemExpired && x.Outcome == AuditEventOutcomes.Succeeded);
++        Assert.Contains(auditEvents, x => x.Action == AuditEventActions.MemoryItemDeleted && x.Outcome == AuditEventOutcomes.Succeeded);
++
++        var activeAfterDelete = await client.GetFromJsonAsync<MemorySearchResponse>(
++            $"/api/companies/{seed.CompanyId}/memory?onlyActive=true");
++        Assert.NotNull(activeAfterDelete);
++        Assert.DoesNotContain(activeAfterDelete!.Items, x => x.Id == ownMemoryId);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -588,13 +665,18 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         return client;
+     }
+ 
+-    private async Task<SeededCompanyContext> SeedMembershipWithAgentAsync()
++    private static HttpRequestMessage CreateDeleteMemoryRequest(Guid companyId, Guid memoryId, string? reason = null)
++    {
++        var request = new HttpRequestMessage(HttpMethod.Delete, $"/api/companies/{companyId}/memory/{memoryId}");
++        request.Content = JsonContent.Create(new { reason });
++        return request;
++    }
++
++    private async Task<SeededCompanyContext> SeedMembershipWithAgentAsync(CompanyMembershipRole role = CompanyMembershipRole.Owner, string subject = "memory-owner", string email = "memory-owner@example.com", string displayName = "Memory Owner")
+     {
+         var userId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+         var agentId = Guid.NewGuid();
+-        const string subject = "memory-owner";
+-        const string email = "memory-owner@example.com";
+-        const string displayName = "Memory Owner";
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+@@ -603,7 +685,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+             dbContext.CompanyMemberships.Add(new CompanyMembership(
+                 Guid.NewGuid(),
+                 companyId,
+                 userId,
+-                CompanyMembershipRole.Owner,
++                role,
+                 CompanyMembershipStatus.Active));
+             dbContext.Agents.Add(new Agent(
+                 agentId,
+@@ -618,7 +700,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+             return Task.CompletedTask;
+         });
+ 
+-        return new SeededCompanyContext(companyId, agentId, subject, email, displayName);
++        return new SeededCompanyContext(companyId, agentId, userId, subject, email, displayName);
+     }
+ 
+     private async Task<SeededCompanyContext> SeedSecondCompanyAsync()
+@@ -642,7 +724,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+             return Task.CompletedTask;
+         });
+ 
+-        return new SeededCompanyContext(companyId, Guid.Empty, subject, email, displayName);
++        return new SeededCompanyContext(companyId, Guid.Empty, userId, subject, email, displayName);
+     }
+ 
+     private static async Task SetCreatedUtcAsync(VirtualCompanyDbContext dbContext, Guid memoryId, DateTime createdUtc)
+@@ -653,7 +735,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         await dbContext.SaveChangesAsync();
+     }
+ 
+-    private sealed record SeededCompanyContext(Guid CompanyId, Guid AgentId, string Subject, string Email, string DisplayName);
++    private sealed record SeededCompanyContext(Guid CompanyId, Guid AgentId, Guid UserId, string Subject, string Email, string DisplayName);
+ 
+     private sealed class CreateMemoryRequest
+     {
+END_OF_PATCH

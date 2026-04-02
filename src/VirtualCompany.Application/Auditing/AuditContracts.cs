@@ -36,6 +36,7 @@ public static class AuditTargetTypes
     public const string AgentToolExecution = "agent_tool_execution";
     public const string CompanyDocument = "company_document";
     public const string ApprovalRequest = "approval_request";
+    public const string MemoryItem = "memory_item";
 }
 
 public static class AuditEventOutcomes
@@ -62,5 +63,7 @@ public static class AuditEventActions
     public const string CompanyDocumentUploadFailed = "company.document.upload_failed";
     public const string CompanyDocumentProcessed = "company.document.processed";
     public const string CompanyDocumentFailed = "company.document.failed";
+    public const string MemoryItemExpired = "memory.item.expired";
+    public const string MemoryItemDeleted = "memory.item.deleted";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
 }

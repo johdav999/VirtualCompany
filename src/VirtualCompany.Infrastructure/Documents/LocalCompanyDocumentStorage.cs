@@ -15,6 +15,12 @@ public sealed class LocalCompanyDocumentStorage : ICompanyDocumentStorage
         _options = options.Value;
     }
 
+    public Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<Stream>(new FileStream(ResolveFullPath(storageKey), FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true));
+    }
+
     public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
     {
         if (request.Content.CanSeek)

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.3.5",
+  "promptPath": ".ai-design/prompts/TASK-9.3.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T13:51:09.488Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T13-51-09-488Z_TASK-9.3.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T13-51-09-488Z_TASK-9.3.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T13:55:38.286Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\"/api/companies/{seed.CompanyId}/memory\", new\r\n+        {\r\n+            agentId = seed.AgentId,\r\n+            memoryType = \"summary\",\r\n+            summary = \"Hidden reasoning: inspect the invoice trail, compare private notes, then decide what to store.\",\r\n+            salience = 0.5m,\r\n+            reasoning = \"This internal reasoning must never be persisted.\",\r\n+            metadata = new Dictionary<string, JsonNode?>\r\n+            {\r\n+                [\"category\"] = JsonValue.Create(\"finance\"),\r\n+                [\"scratchpad\"] = JsonValue.Create(\"private working notes\")\r\n+            }\r\n+        });\r\n+\r\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\r\n+\r\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\r\n+        Assert.NotNull(problem);\r\n+        Assert.Contains(nameof(CreateMemoryRequest.Summary), problem!.Errors.Keys);\r\n+        Assert.Contains(nameof(CreateMemoryRequest.Metadata), problem.Errors.Keys);\r\n+        Assert.Contains(\"reasoning\", problem.Errors.Keys);\r\n+\r\n+        using var scope = _factory.Services.CreateScope();\r\n+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\r\n+        companyContextAccessor.SetCompanyId(seed.CompanyId);\r\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\r\n+        Assert.False(await dbContext.MemoryItems.AsNoTracking().AnyAsync(x => x.CompanyId == seed.CompanyId));\r\n+    }\r\n+\r\n     [Fact]\r\n     public async Task Create_memory_rejects_agent_from_another_company()\r\n     {\r\n@@ -662,6 +696,8 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac\n     private sealed class CreateMemoryRequest\r\n     {\r\n         public string? MemoryType { get; set; }\r\n+        public string? Summary { get; set; }\r\n+        public Dictionary<string, JsonNode?>? Metadata { get; set; }\r\n         public DateTime? ValidToUtc { get; set; }\r\n     }\r\n \r\nEND_OF_PATCH\n",
+  "stderrTail": "d.CompanyId}/memory\", new\r\n+        {\r\n+            agentId = seed.AgentId,\r\n+            memoryType = \"summary\",\r\n+            summary = \"Hidden reasoning: inspect the invoice trail, compare private notes, then decide what to store.\",\r\n+            salience = 0.5m,\r\n+            reasoning = \"This internal reasoning must never be persisted.\",\r\n+            metadata = new Dictionary<string, JsonNode?>\r\n+            {\r\n+                [\"category\"] = JsonValue.Create(\"finance\"),\r\n+                [\"scratchpad\"] = JsonValue.Create(\"private working notes\")\r\n+            }\r\n+        });\r\n+\r\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\r\n+\r\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\r\n+        Assert.NotNull(problem);\r\n+        Assert.Contains(nameof(CreateMemoryRequest.Summary), problem!.Errors.Keys);\r\n+        Assert.Contains(nameof(CreateMemoryRequest.Metadata), problem.Errors.Keys);\r\n+        Assert.Contains(\"reasoning\", problem.Errors.Keys);\r\n+\r\n+        using var scope = _factory.Services.CreateScope();\r\n+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\r\n+        companyContextAccessor.SetCompanyId(seed.CompanyId);\r\n+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\r\n+        Assert.False(await dbContext.MemoryItems.AsNoTracking().AnyAsync(x => x.CompanyId == seed.CompanyId));\r\n+    }\r\n+\r\n     [Fact]\r\n     public async Task Create_memory_rejects_agent_from_another_company()\r\n     {\r\n@@ -662,6 +696,8 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac\n     private sealed class CreateMemoryRequest\r\n     {\r\n         public string? MemoryType { get; set; }\r\n+        public string? Summary { get; set; }\r\n+        public Dictionary<string, JsonNode?>? Metadata { get; set; }\r\n         public DateTime? ValidToUtc { get; set; }\r\n     }\r\n \r\nEND_OF_PATCH\ntokens used\n213,776\n",
+  "verbosityMode": "verbose"
+}

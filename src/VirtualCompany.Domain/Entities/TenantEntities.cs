@@ -105,6 +105,7 @@ public sealed class Company
     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
     public ICollection<CompanyKnowledgeDocument> Documents { get; } = new List<CompanyKnowledgeDocument>();
+    public ICollection<CompanyKnowledgeChunk> KnowledgeChunks { get; } = new List<CompanyKnowledgeChunk>();
 
     public void Rename(string name)
     {

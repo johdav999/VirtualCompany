@@ -1,0 +1,325 @@
+diff --git a/src/VirtualCompany.Domain/Enums/MemoryEnums.cs b/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
+index 8e75141..30b7765 100644
+--- a/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
+@@ -26,6 +26,15 @@ public static class MemoryTypeValues
+         [MemoryType.CompanyMemory] = CompanyMemory
+     };
+ 
++    private static readonly IReadOnlyDictionary<string, MemoryType> LegacyAliases =
++        new Dictionary<string, MemoryType>(StringComparer.OrdinalIgnoreCase)
++        {
++            [BuildAliasKey(Preference)] = MemoryType.Preference,
++            [BuildAliasKey(DecisionPattern)] = MemoryType.DecisionPattern,
++            [BuildAliasKey(Summary)] = MemoryType.Summary,
++            [BuildAliasKey(RoleMemory)] = MemoryType.RoleMemory,
++            [BuildAliasKey(CompanyMemory)] = MemoryType.CompanyMemory
++        };
++
+     private static readonly IReadOnlyDictionary<string, MemoryType> ReverseValues =
+         Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+ 
+@@ -46,12 +55,32 @@ public static class MemoryTypeValues
+             return false;
+         }
+ 
+-        if (ReverseValues.TryGetValue(value.Trim(), out memoryType))
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out memoryType))
+         {
+             return true;
+         }
+ 
+-        return Enum.TryParse(value.Trim(), ignoreCase: true, out memoryType) && Values.ContainsKey(memoryType);
++        if (LegacyAliases.TryGetValue(BuildAliasKey(trimmed), out memoryType))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out memoryType) && Values.ContainsKey(memoryType);
++    }
++
++    public static string BuildCheckConstraintSql(string columnName)
++    {
++        if (string.IsNullOrWhiteSpace(columnName))
++        {
++            throw new ArgumentException("Column name is required.", nameof(columnName));
++        }
++
++        var allowedValues = string.Join(", ", AllowedValues.Select(value => $"'{value}'"));
++        return $"{columnName} IN ({allowedValues})";
++    }
++
++    private static string BuildAliasKey(string value) =>
++        new(value.Where(char.IsLetterOrDigit).ToArray());
+     }
+ 
+     public static MemoryType Parse(string value)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0a5cc52..24d995b 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -604,7 +604,10 @@ internal sealed class MemoryItemConfiguration : IEntityTypeConfiguration<MemoryI
+ {
+     public void Configure(EntityTypeBuilder<MemoryItem> builder)
+     {
+-        builder.ToTable("memory_items");
++        builder.ToTable("memory_items", tableBuilder =>
++        {
++            tableBuilder.HasCheckConstraint("CK_memory_items_memory_type", MemoryTypeValues.BuildCheckConstraintSql("\"MemoryType\""));
++        });
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.MemoryType)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402193000_EnforceCanonicalMemoryTypes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402193000_EnforceCanonicalMemoryTypes.cs
+new file mode 100644
+index 0000000..d40adf0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402193000_EnforceCanonicalMemoryTypes.cs
+@@ -0,0 +1,78 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class EnforceCanonicalMemoryTypes : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE memory_items
++                    SET "MemoryType" = CASE REPLACE(REPLACE(LOWER(TRIM("MemoryType")), '-', ''), '_', '')
++                        WHEN 'preference' THEN 'preference'
++                        WHEN 'decisionpattern' THEN 'decision_pattern'
++                        WHEN 'summary' THEN 'summary'
++                        WHEN 'rolememory' THEN 'role_memory'
++                        WHEN 'companymemory' THEN 'company_memory'
++                        ELSE LOWER(TRIM("MemoryType"))
++                    END
++                    WHERE "MemoryType" IS NOT NULL;
++
++                    ALTER TABLE memory_items
++                    DROP CONSTRAINT IF EXISTS "CK_memory_items_memory_type";
++
++                    ALTER TABLE memory_items
++                    ADD CONSTRAINT "CK_memory_items_memory_type"
++                    CHECK ("MemoryType" IN ('company_memory', 'decision_pattern', 'preference', 'role_memory', 'summary'));
++                    """);
++            }
++            else
++            {
++                migrationBuilder.Sql(
++                    """
++                    UPDATE [memory_items]
++                    SET [MemoryType] = CASE REPLACE(REPLACE(LOWER(LTRIM(RTRIM([MemoryType]))), '-', ''), '_', '')
++                        WHEN 'preference' THEN 'preference'
++                        WHEN 'decisionpattern' THEN 'decision_pattern'
++                        WHEN 'summary' THEN 'summary'
++                        WHEN 'rolememory' THEN 'role_memory'
++                        WHEN 'companymemory' THEN 'company_memory'
++                        ELSE LOWER(LTRIM(RTRIM([MemoryType])))
++                    END
++                    WHERE [MemoryType] IS NOT NULL;
++
++                    IF EXISTS (
++                        SELECT 1
++                        FROM sys.check_constraints
++                        WHERE [name] = N'CK_memory_items_memory_type')
++                    BEGIN
++                        ALTER TABLE [memory_items]
++                        DROP CONSTRAINT [CK_memory_items_memory_type];
++                    END
++
++                    ALTER TABLE [memory_items]
++                    ADD CONSTRAINT [CK_memory_items_memory_type]
++                    CHECK ([MemoryType] IN (N'company_memory', N'decision_pattern', N'preference', N'role_memory', N'summary'));
++                    """);
++            }
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++            {
++                migrationBuilder.Sql(
++                    """
++                    ALTER TABLE memory_items
++                    DROP CONSTRAINT IF EXISTS "CK_memory_items_memory_type";
++                    """);
++            }
++            else
++            {
++                migrationBuilder.Sql(
++                    """
++                    ALTER TABLE [memory_items]
++                    DROP CONSTRAINT [CK_memory_items_memory_type];
++                    """);
++            }
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+index f908996..0c0d97d 100644
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -64,6 +64,71 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.NotNull(agentSpecific.Embedding);
+     }
+ 
++    [Theory]
++    [InlineData("preference", true)]
++    [InlineData("decision_pattern", true)]
++    [InlineData("summary", true)]
++    [InlineData("role_memory", true)]
++    [InlineData("company_memory", false)]
++    public async Task Create_memory_accepts_all_supported_types(string memoryType, bool agentSpecific)
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var payload = new Dictionary<string, object?>
++        {
++            ["memoryType"] = memoryType,
++            ["summary"] = $"Canonical {memoryType} memory item.",
++            ["salience"] = 0.55m
++        };
++
++        if (agentSpecific)
++        {
++            payload["agentId"] = seed.AgentId;
++        }
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory", payload);
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var created = await response.Content.ReadFromJsonAsync<MemoryItemResponse>();
++        Assert.NotNull(created);
++        Assert.Equal(memoryType, created!.MemoryType);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var stored = await dbContext.MemoryItems.AsNoTracking().SingleAsync(x => x.Id == created.Id);
++        Assert.Equal(memoryType, stored.MemoryType.ToStorageValue());
++    }
++
++    [Theory]
++    [InlineData("decisionPattern", "decision_pattern")]
++    [InlineData("role-memory", "role_memory")]
++    [InlineData("companyMemory", "company_memory")]
++    public async Task Create_memory_normalizes_supported_aliases_to_canonical_storage_value(string requestedType, string expectedType)
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory", new
++        {
++            agentId = seed.AgentId,
++            memoryType = requestedType,
++            summary = $"Alias-backed {requestedType} memory item.",
++            salience = 0.50m
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var created = await response.Content.ReadFromJsonAsync<MemoryItemResponse>();
++        Assert.NotNull(created);
++        Assert.Equal(expectedType, created!.MemoryType);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.Equal(expectedType, (await dbContext.MemoryItems.AsNoTracking().SingleAsync(x => x.Id == created.Id)).MemoryType.ToStorageValue());
++    }
++
+     [Fact]
+     public async Task Create_memory_rejects_invalid_type_and_invalid_validity_window()
+     {
+@@ -119,6 +184,22 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Search_memory_rejects_invalid_memory_type_filter()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/memory?memoryType=unsupported");
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains(nameof(CreateMemoryRequest.MemoryType), problem!.Errors.Keys);
++        Assert.Contains("Unsupported memory type", problem.Errors[nameof(CreateMemoryRequest.MemoryType)][0]);
++    }
++
++
+     [Fact]
+     public async Task Listing_memory_for_agent_can_include_company_wide_records()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs
+new file mode 100644
+index 0000000..e7fc8a7
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs
+@@ -0,0 +1,47 @@
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MemoryTypeValuesTests
++{
++    [Theory]
++    [InlineData(MemoryType.Preference, "preference")]
++    [InlineData(MemoryType.DecisionPattern, "decision_pattern")]
++    [InlineData(MemoryType.Summary, "summary")]
++    [InlineData(MemoryType.RoleMemory, "role_memory")]
++    [InlineData(MemoryType.CompanyMemory, "company_memory")]
++    public void ToStorageValue_returns_canonical_values(MemoryType memoryType, string expected)
++    {
++        Assert.Equal(expected, memoryType.ToStorageValue());
++    }
++
++    [Theory]
++    [InlineData("preference", MemoryType.Preference)]
++    [InlineData("decision_pattern", MemoryType.DecisionPattern)]
++    [InlineData("summary", MemoryType.Summary)]
++    [InlineData("role_memory", MemoryType.RoleMemory)]
++    [InlineData("company_memory", MemoryType.CompanyMemory)]
++    [InlineData("decisionPattern", MemoryType.DecisionPattern)]
++    [InlineData("role-memory", MemoryType.RoleMemory)]
++    [InlineData("companyMemory", MemoryType.CompanyMemory)]
++    public void TryParse_accepts_canonical_values_and_supported_aliases(string value, MemoryType expected)
++    {
++        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);
++
++        Assert.True(parsed);
++        Assert.Equal(expected, memoryType);
++    }
++
++    [Theory]
++    [InlineData("")]
++    [InlineData(" ")]
++    [InlineData("unsupported")]
++    [InlineData("role")]
++    [InlineData("company")]
++    public void TryParse_rejects_unsupported_values(string value)
++    {
++        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);
++
++        Assert.False(parsed);
++        Assert.Equal(default, memoryType);
++    }
++}
+END_OF_PATCH

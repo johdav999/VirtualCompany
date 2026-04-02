@@ -1,0 +1,767 @@
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -91,10 +91,32 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public DateTime? IndexingRequestedUtc { get; private set; }
+     public DateTime? ProcessingStartedUtc { get; private set; }
+     public DateTime? IndexingStartedUtc { get; private set; }
++    public DateTime? IndexedUtc { get; private set; }
++    public DateTime? IndexingFailedUtc { get; private set; }
+     public DateTime? ProcessedUtc { get; private set; }
+     public DateTime? FailedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
++    public bool TryAcquireIndexingLease(DateTime utcNow, TimeSpan claimTimeout)
++    {
++        if (IngestionStatus is CompanyKnowledgeDocumentIngestionStatus.Uploaded or
++            CompanyKnowledgeDocumentIngestionStatus.PendingScan or
++            CompanyKnowledgeDocumentIngestionStatus.Blocked)
++        {
++            return false;
++        }
++
++        if (IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued)
++        {
++            IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Indexing;
++            IndexingRequestedUtc ??= utcNow;
++            IndexingStartedUtc = utcNow;
++            ClearIndexingFailure();
++            UpdatedUtc = utcNow;
++            return true;
++        }
++
++        return IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexing && IndexingStartedUtc.HasValue && IndexingStartedUtc.Value <= utcNow.Subtract(claimTimeout) && RefreshIndexingLease(utcNow);
++    }
++
+     public bool MarkUploaded(string storageKey, string? storageUrl = null)
+     {
+         StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
+@@ -414,6 +436,17 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         FailedUtc = null;
+     }
+ 
++    private bool RefreshIndexingLease(DateTime utcNow)
++    {
++        if (IndexingStatus != CompanyKnowledgeDocumentIndexingStatus.Indexing)
++        {
++            return false;
++        }
++
++        IndexingStartedUtc = utcNow;
++        UpdatedUtc = utcNow;
++        return true;
++    }
++
+     private void QueueIndexingInternal()
+     {
++        if (IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Failed &&
++            string.Equals(FailureCode, "knowledge_indexing_failed", StringComparison.Ordinal))
++        {
++            IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.ScanClean;
++            ProcessingStartedUtc = null;
++            ProcessedUtc = null;
++            ClearFailure();
++        }
++
+         IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Queued;
+         IndexingRequestedUtc = DateTime.UtcNow;
+         IndexingStartedUtc = null;
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+@@ -41,4 +41,5 @@ public sealed class KnowledgeIndexingOptions
+     public bool Enabled { get; set; } = true;
+     public int BatchSize { get; set; } = 5;
+     public int PollIntervalSeconds { get; set; } = 10;
++    public int ClaimTimeoutSeconds { get; set; } = 300;
+     public int MaxAttempts { get; set; } = 3;
+     public int RetryDelaySeconds { get; set; } = 5;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+index 5555555..6666666 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -6,6 +6,7 @@ using System.Security.Cryptography;
+ using System.Text;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using System.Net;
+ using System.Text.RegularExpressions;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -397,27 +398,121 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+         _logger = logger;
+     }
+ 
++    private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.ClaimTimeoutSeconds));
++
+     public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken)
+     {
+-        var pendingDocuments = await _dbContext.CompanyKnowledgeDocuments
++        var candidateDocuments = await _dbContext.CompanyKnowledgeDocuments
+             .IgnoreQueryFilters()
+             .Where(document =>
+-                document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued &&
++                (document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued ||
++                 (document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexing &&
++                  document.IndexingStartedUtc != null &&
++                  document.IndexingStartedUtc <= DateTime.UtcNow - ClaimTimeout)) &&
+                 (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean ||
+                  document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed))
+             .OrderBy(document => document.IndexingRequestedUtc ?? document.UpdatedUtc)
+-            .Take(Math.Max(1, _options.BatchSize))
++            .Take(Math.Max(1, _options.BatchSize) * 2)
+             .Select(document => new { document.CompanyId, document.Id })
+             .ToListAsync(cancellationToken);
+ 
+-        foreach (var pendingDocument in pendingDocuments)
++        var claimedDocuments = new List<(Guid CompanyId, Guid DocumentId)>(Math.Max(1, _options.BatchSize));
++        foreach (var candidateDocument in candidateDocuments)
+         {
+-            await ProcessWithRetriesAsync(pendingDocument.CompanyId, pendingDocument.Id, cancellationToken);
++            if (claimedDocuments.Count >= Math.Max(1, _options.BatchSize))
++            {
++                break;
++            }
++
++            if (await TryClaimDocumentAsync(candidateDocument.CompanyId, candidateDocument.Id, cancellationToken))
++            {
++                claimedDocuments.Add((candidateDocument.CompanyId, candidateDocument.Id));
++            }
+         }
+ 
+-        return pendingDocuments.Count;
++        foreach (var claimedDocument in claimedDocuments)
++        {
++            _logger.LogInformation(
++                "Claimed knowledge indexing job. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ClaimTimeoutSeconds: {ClaimTimeoutSeconds}.",
++                claimedDocument.CompanyId,
++                claimedDocument.DocumentId,
++                ClaimTimeout.TotalSeconds);
++
++            await ProcessWithRetriesAsync(claimedDocument.CompanyId, claimedDocument.DocumentId, cancellationToken);
++        }
++
++        return claimedDocuments.Count;
++    }
++
++    private async Task<bool> TryClaimDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        var utcNow = DateTime.UtcNow;
++
++        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
++        try
++        {
++            await LockDocumentRowAsync(companyId, documentId, cancellationToken);
++
++            var document = await _dbContext.CompanyKnowledgeDocuments
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++            if (document is null || !document.TryAcquireIndexingLease(utcNow, ClaimTimeout))
++            {
++                await transaction.RollbackAsync(cancellationToken);
++                return false;
++            }
++
++            document.SetMetadataValue(
++                "last_indexing_attempt",
++                BuildIndexingAttemptMetadata(
++                    utcNow,
++                    document.IndexingRequestedUtc,
++                    document.IndexingStartedUtc,
++                    ClaimTimeout,
++                    _options.MaxAttempts));
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            await transaction.CommitAsync(cancellationToken);
++            return true;
++        }
++        catch (DbUpdateConcurrencyException ex)
++        {
++            _logger.LogDebug(
++                ex,
++                "Knowledge indexing claim contention detected. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
++                companyId,
++                documentId);
++
++            _dbContext.ChangeTracker.Clear();
++            await transaction.RollbackAsync(cancellationToken);
++            return false;
++        }
++        catch
++        {
++            await transaction.RollbackAsync(cancellationToken);
++            throw;
++        }
++    }
++
++    private static JsonObject BuildIndexingAttemptMetadata(
++        DateTime claimedUtc,
++        DateTime? requestedUtc,
++        DateTime? startedUtc,
++        TimeSpan claimTimeout,
++        int maxAttempts)
++    {
++        return new JsonObject
++        {
++            ["claimed_utc"] = claimedUtc,
++            ["requested_utc"] = requestedUtc,
++            ["started_utc"] = startedUtc,
++            ["claim_timeout_seconds"] = (int)Math.Max(0, claimTimeout.TotalSeconds),
++            ["max_attempts"] = Math.Max(1, maxAttempts)
++        };
+     }
+ 
+     public async Task IndexDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+-        try
++        var indexedChunkSetVersion = 0;
++        var indexedChunkCount = 0;
++
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean)
+         {
+-            var document = await _dbContext.CompanyKnowledgeDocuments
+-                .IgnoreQueryFilters()
+-                .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+-
+-            if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean)
+-            {
+-                document.MarkProcessing();
+-            }
+-
+-            document.MarkIndexing();
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-
+-            var extractedText = await _textExtractor.ExtractAsync(document, cancellationToken);
+-            var chunkDrafts = _chunker.ChunkDocument(document, extractedText);
+-            if (chunkDrafts.Count == 0)
+-            {
+-                throw new PermanentBackgroundJobException("Chunking produced no searchable content.");
+-            }
+-
+-            var embeddingBatch = await _embeddingGenerator.GenerateAsync(
+-                chunkDrafts.Select(chunk => chunk.Content).ToArray(),
+-                cancellationToken);
+-
+-            if (embeddingBatch.Embeddings.Count != chunkDrafts.Count)
+-            {
+-                throw new InvalidOperationException("Embedding generation did not return a vector for every chunk.");
+-            }
+-
+-            var chunkSetFingerprint = ComputeChunkSetFingerprint(chunkDrafts, embeddingBatch);
+-
+-            try
+-            {
+-                await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+-                await LockDocumentForActivationAsync(companyId, documentId, cancellationToken);
+-                await _dbContext.Entry(document).ReloadAsync(cancellationToken);
+-
+-                var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
+-                    .IgnoreQueryFilters()
+-                    .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
+-                    .ToListAsync(cancellationToken);
+-
+-                if (CanReuseCurrentChunkSet(document, currentActiveChunks, chunkDrafts.Count, chunkSetFingerprint))
+-                {
+-                    document.SetExtractedText(extractedText);
+-                    document.Metadata.Remove("last_indexing_failure");
+-                    if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+-                    {
+-                        document.MarkProcessed();
+-                    }
+-
+-                    document.MarkIndexed(
+-                        extractedText,
+-                        document.CurrentChunkSetVersion,
+-                        currentActiveChunks.Count,
+-                        embeddingBatch.Model,
+-                        embeddingBatch.ModelVersion,
+-                        embeddingBatch.Dimensions,
+-                        chunkSetFingerprint);
+-
+-                    await _dbContext.SaveChangesAsync(cancellationToken);
+-                    await transaction.CommitAsync(cancellationToken);
+-                    return;
+-                }
+-
+-                var nextVersion = document.CurrentChunkSetVersion + 1;
+-
+-                foreach (var currentActiveChunk in currentActiveChunks)
+-                {
+-                    currentActiveChunk.Deactivate();
+-                }
+-
+-                if (IsPostgreSql())
+-                {
+-                    await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
+-                }
+-                else
+-                {
+-                    _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
+-                }
+-
+-                document.SetExtractedText(extractedText);
+-                document.Metadata.Remove("last_indexing_failure");
+-                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+-                {
+-                    document.MarkProcessed();
+-                }
+-
+-                document.MarkIndexed(
+-                    extractedText,
+-                    nextVersion,
+-                    chunkDrafts.Count,
+-                    embeddingBatch.Model,
+-                    embeddingBatch.ModelVersion,
+-                    embeddingBatch.Dimensions,
+-                    chunkSetFingerprint);
+-
+-                await _dbContext.SaveChangesAsync(cancellationToken);
+-                await transaction.CommitAsync(cancellationToken);
+-            }
+-            catch (Exception)
+-            {
+-                if (await TryTreatActivationConflictAsSuccessfulRetryAsync(
+-                    companyId,
+-                    documentId,
+-                    chunkSetFingerprint,
+-                    chunkDrafts.Count,
+-                    cancellationToken))
+-                {
+-                    _logger.LogInformation(
+-                        "Knowledge document indexing converged on an existing active chunk set. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
+-                        companyId,
+-                        documentId);
+-                    return;
+-                }
+-
+-                throw;
+-            }
+-
+-            _logger.LogInformation(
+-                "Knowledge document indexed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkSetVersion: {ChunkSetVersion}, ChunkCount: {ChunkCount}.",
+-                companyId,
+-                documentId,
+-                nextVersion,
+-                chunkDrafts.Count);
++            document.MarkProcessing();
+         }
+-        catch (OperationCanceledException)
++
++        document.MarkIndexing();
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogInformation(
++            "Knowledge document indexing started. CompanyId: {CompanyId}, DocumentId: {DocumentId}, IngestionStatus: {IngestionStatus}.",
++            companyId,
++            documentId,
++            document.IngestionStatus.ToStorageValue());
++
++        var extractedText = await _textExtractor.ExtractAsync(document, cancellationToken);
++        var chunkDrafts = _chunker.ChunkDocument(document, extractedText);
++        if (chunkDrafts.Count == 0)
+         {
+-            throw;
++            throw new PermanentBackgroundJobException("Chunking produced no searchable content.");
+         }
+-        catch (Exception ex)
++
++        _logger.LogInformation(
++            "Knowledge document chunking completed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkCount: {ChunkCount}.",
++            companyId,
++            documentId,
++            chunkDrafts.Count);
++
++        _logger.LogInformation(
++            "Knowledge embedding generation started. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkCount: {ChunkCount}.",
++            companyId,
++            documentId,
++            chunkDrafts.Count);
++
++        var embeddingBatch = await _embeddingGenerator.GenerateAsync(
++            chunkDrafts.Select(chunk => chunk.Content).ToArray(),
++            cancellationToken);
++
++        if (embeddingBatch.Embeddings.Count != chunkDrafts.Count)
+         {
+-            await HandleFailureAsync(companyId, documentId, ex, cancellationToken);
++            throw new InvalidOperationException("Embedding generation did not return a vector for every chunk.");
+         }
++
++        _logger.LogInformation(
++            "Knowledge embedding generation completed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, EmbeddingModel: {EmbeddingModel}, Dimensions: {Dimensions}.",
++            companyId,
++            documentId,
++            embeddingBatch.Model,
++            embeddingBatch.Dimensions);
++
++        var chunkSetFingerprint = ComputeChunkSetFingerprint(chunkDrafts, embeddingBatch);
++
++        try
++        {
++            await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
++            await LockDocumentRowAsync(companyId, documentId, cancellationToken);
++            await _dbContext.Entry(document).ReloadAsync(cancellationToken);
++
++            var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
++                .IgnoreQueryFilters()
++                .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
++                .ToListAsync(cancellationToken);
++
++            if (CanReuseCurrentChunkSet(document, currentActiveChunks, chunkDrafts.Count, chunkSetFingerprint))
++            {
++                document.SetExtractedText(extractedText);
++                document.Metadata.Remove("last_indexing_failure");
++                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++                {
++                    document.MarkProcessed();
++                }
++
++                document.MarkIndexed(
++                    extractedText,
++                    document.CurrentChunkSetVersion,
++                    currentActiveChunks.Count,
++                    embeddingBatch.Model,
++                    embeddingBatch.ModelVersion,
++                    embeddingBatch.Dimensions,
++                    chunkSetFingerprint);
++
++                indexedChunkSetVersion = document.CurrentChunkSetVersion;
++                indexedChunkCount = currentActiveChunks.Count;
++
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                await transaction.CommitAsync(cancellationToken);
++            }
++            else
++            {
++                var nextVersion = document.CurrentChunkSetVersion + 1;
++
++                foreach (var currentActiveChunk in currentActiveChunks)
++                {
++                    currentActiveChunk.Deactivate();
++                }
++
++                if (IsPostgreSql())
++                {
++                    await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
++                }
++                else
++                {
++                    _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
++                }
++
++                document.SetExtractedText(extractedText);
++                document.Metadata.Remove("last_indexing_failure");
++                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++                {
++                    document.MarkProcessed();
++                }
++
++                document.MarkIndexed(
++                    extractedText,
++                    nextVersion,
++                    chunkDrafts.Count,
++                    embeddingBatch.Model,
++                    embeddingBatch.ModelVersion,
++                    embeddingBatch.Dimensions,
++                    chunkSetFingerprint);
++
++                indexedChunkSetVersion = nextVersion;
++                indexedChunkCount = chunkDrafts.Count;
++
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                await transaction.CommitAsync(cancellationToken);
++            }
++        }
++        catch (Exception) when (await TryTreatActivationConflictAsSuccessfulRetryAsync(
++            companyId,
++            documentId,
++            chunkSetFingerprint,
++            chunkDrafts.Count,
++            cancellationToken))
++        {
++            _logger.LogInformation(
++                "Knowledge document indexing converged on an existing active chunk set. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
++                companyId,
++                documentId);
++            return;
++        }
++
++        _logger.LogInformation(
++            "Knowledge document indexed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkSetVersion: {ChunkSetVersion}, ChunkCount: {ChunkCount}.",
++            companyId,
++            documentId,
++            indexedChunkSetVersion,
++            indexedChunkCount);
+     }
+ 
+     private async Task ProcessWithRetriesAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+         for (var attempt = 1; attempt <= Math.Max(1, _options.MaxAttempts); attempt++)
+         {
++            Exception? attemptException = null;
+             var result = await _backgroundJobExecutor.ExecuteAsync(
+                 new BackgroundJobExecutionContext(
+                     "knowledge-document-indexing",
+@@ -425,7 +520,16 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                     Math.Max(1, _options.MaxAttempts),
+                     companyId),
+-                innerToken => IndexDocumentAsync(companyId, documentId, innerToken),
++                async innerToken =>
++                {
++                    try
++                    {
++                        await IndexDocumentAsync(companyId, documentId, innerToken);
++                    }
++                    catch (Exception ex)
++                    {
++                        attemptException = ex;
++                        throw;
++                    }
++                },
+                 TimeSpan.FromSeconds(Math.Max(1, _options.RetryDelaySeconds)),
+                 cancellationToken);
+ 
+@@ -434,10 +538,31 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                 result.Outcome == BackgroundJobExecutionOutcome.PermanentFailure ||
+                 result.Outcome == BackgroundJobExecutionOutcome.RetryExhausted)
+             {
++                if (result.Outcome != BackgroundJobExecutionOutcome.Succeeded)
++                {
++                    await HandleFailureAsync(
++                        companyId,
++                        documentId,
++                        attemptException ?? new InvalidOperationException(result.ErrorMessage ?? "Knowledge indexing failed."),
++                        cancellationToken);
++                }
++
+                 return;
+             }
+ 
+             if (result.RetryDelay.HasValue && result.RetryDelay.Value > TimeSpan.Zero)
+             {
++                _logger.LogWarning(
++                    "Retrying knowledge document indexing. CompanyId: {CompanyId}, DocumentId: {DocumentId}, Attempt: {Attempt}, MaxAttempts: {MaxAttempts}, RetryDelaySeconds: {RetryDelaySeconds}.",
++                    companyId,
++                    documentId,
++                    attempt,
++                    Math.Max(1, _options.MaxAttempts),
++                    result.RetryDelay.Value.TotalSeconds);
++
++                await RefreshIndexingLeaseAsync(companyId, documentId, cancellationToken);
+                 await Task.Delay(result.RetryDelay.Value, cancellationToken);
+             }
+         }
+@@ -466,6 +591,9 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                     : "Provide extracted text metadata or upload a supported plain-text document.",
+                 exception.Message,
+                 retryable);
++
++            document.MarkIndexingFailed("knowledge_indexing_failed", failureMessage);
++            document.SetMetadataValue("last_indexing_failure", BuildIndexingFailureMetadata(failureMessage, retryable, exception.Message));
+         }
+ 
+         if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed && document.HasIndexedChunkSet())
+@@ -485,6 +613,22 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+             retryable);
+     }
+ 
++    private async Task RefreshIndexingLeaseAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        if (document is null || document.IndexingStatus != CompanyKnowledgeDocumentIndexingStatus.Indexing)
++        {
++            return;
++        }
++
++        document.SetMetadataValue("last_indexing_attempt", BuildIndexingAttemptMetadata(DateTime.UtcNow, document.IndexingRequestedUtc, DateTime.UtcNow, ClaimTimeout, _options.MaxAttempts));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
+     private static JsonObject BuildIndexingFailureMetadata(string failureMessage, bool retryable, string technicalDetail)
+     {
+         return new JsonObject
+@@ -693,7 +837,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+         return activeChunkCount == expectedChunkCount;
+     }
+ 
+-    private async Task LockDocumentForActivationAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    private async Task LockDocumentRowAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
+         if (!IsPostgreSql())
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 7777777..8888888 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -542,10 +542,14 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+         builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.Property(x => x.IndexedUtc);
++        builder.Property(x => x.IndexingFailedUtc);
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.IngestionStatus });
+         builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingRequestedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingStartedUtc });
+         builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasMany<CompanyKnowledgeChunk>("Chunks").WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
+     }
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 9999999..aaaaaaa 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -30,6 +30,7 @@
+   "KnowledgeIndexing": {
+     "Enabled": true,
+     "BatchSize": 5,
++    "ClaimTimeoutSeconds": 300,
+     "PollIntervalSeconds": 10
+   },
+   "CompanyOutboxDispatcher": {
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index bbbbbbb..ccccccc 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -30,6 +30,7 @@
+   "KnowledgeIndexing": {
+     "Enabled": true,
+     "BatchSize": 5,
++    "ClaimTimeoutSeconds": 300,
+     "PollIntervalSeconds": 10
+   },
+   "CompanyOutboxDispatcher": {
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+index ddddddd..eeeeeee 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyKnowledgeDocumentTests.cs
+@@ -106,6 +106,50 @@ public sealed class CompanyKnowledgeDocumentTests
+         Assert.Contains("cannot transition", exception.Message, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public void Queued_document_can_acquire_and_refresh_an_indexing_lease()
++    {
++        var document = CreateDocument();
++        document.MarkPendingScan();
++        document.MarkScanClean();
++
++        var acquired = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
++        Assert.True(acquired);
++        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Indexing, document.IndexingStatus);
++        Assert.NotNull(document.IndexingStartedUtc);
++
++        var immediateReclaim = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
++        Assert.False(immediateReclaim);
++
++        var property = typeof(CompanyKnowledgeDocument).GetProperty(nameof(CompanyKnowledgeDocument.IndexingStartedUtc));
++        property!.SetValue(document, DateTime.UtcNow.AddMinutes(-10));
++
++        var reclaimed = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
++        Assert.True(reclaimed);
++    }
++
++    [Fact]
++    public void Queue_indexing_recovers_a_document_from_initial_indexing_failure()
++    {
++        var document = CreateDocument();
++        document.MarkPendingScan();
++        document.MarkScanClean();
++        document.MarkProcessing();
++        document.MarkFailed(
++            "knowledge_indexing_failed",
++            "Knowledge indexing failed.",
++            "Retry indexing after the embedding dependency is available.",
++            canRetry: true);
++        document.MarkIndexingFailed("knowledge_indexing_failed", "Knowledge indexing failed.");
++
++        var changed = document.QueueIndexing();
++
++        Assert.True(changed);
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.ScanClean, document.IngestionStatus);
++        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Queued, document.IndexingStatus);
++        Assert.Null(document.FailureCode);
++        Assert.Null(document.FailureMessage);
++        Assert.Null(document.FailureAction);
++        Assert.False(document.CanRetry);
++    }
++
+     [Fact]
+     public void New_document_normalizes_access_scope_to_document_company()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+index fffffff..1212121 100644
+--- a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -259,6 +259,55 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal("finance#chunk-1", result.SourceReference);
+     }
+ 
++    [Fact]
++    public async Task Process_pending_async_claims_and_indexes_a_queued_document()
++    {
++        _factory.DocumentStorage.Reset();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var storageKey = $"companies/{companyId:N}/knowledge/{documentId:N}/playbook.txt";
++
++        _factory.DocumentStorage.Seed(storageKey, "Escalation playbooks must document the owner, timeline, and rollback plan.");
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "worker@example.com", "Worker", "dev-header", "worker"));
++            dbContext.Companies.Add(new Company(companyId, "Worker Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var document = new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Escalation Playbook",
++                CompanyKnowledgeDocumentType.Reference,
++                storageKey,
++                null,
++                "playbook.txt",
++                "text/plain",
++                ".txt",
++                128,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++
++            document.MarkScanClean();
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            await Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++
++        var processedCount = await processor.ProcessPendingAsync(CancellationToken.None);
++
++        Assert.Equal(1, processedCount);
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++        var chunks = await dbContext.CompanyKnowledgeChunks.IgnoreQueryFilters().Where(x => x.DocumentId == documentId && x.IsActive).ToListAsync();
++
++        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
++        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Indexed, document.IndexingStatus);
++        Assert.NotEmpty(chunks);
++    }
++
+     [Fact]
+     public async Task Reindexing_replaces_active_chunk_set_without_leaking_old_results()
+     {
+END_OF_PATCH

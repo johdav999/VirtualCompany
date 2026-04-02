@@ -7,6 +7,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
@@ -15,6 +16,7 @@ using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Memory;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -49,6 +51,16 @@ public static class DependencyInjection
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
+        services.AddOptions<KnowledgeChunkingOptions>()
+            .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
+
+        services.AddOptions<KnowledgeEmbeddingOptions>()
+            .Bind(configuration.GetSection(KnowledgeEmbeddingOptions.SectionName));
+
+        services.AddOptions<KnowledgeIndexingOptions>()
+            .Bind(configuration.GetSection(KnowledgeIndexingOptions.SectionName));
+
+        services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
 
@@ -76,9 +88,19 @@ public static class DependencyInjection
         services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
         services.AddScoped<ICompanyDocumentVirusScanner, NoOpCompanyDocumentVirusScanner>();
         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
+        services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
+        services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
+        services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
+        services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+        services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+        services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
+        services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+        services.AddScoped<CompanyMemoryService>();
+        services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+        services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();

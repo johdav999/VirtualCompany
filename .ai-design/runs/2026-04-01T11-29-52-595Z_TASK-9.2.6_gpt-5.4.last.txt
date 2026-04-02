@@ -1,0 +1,367 @@
+diff --git a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+--- a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
++++ b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+@@ -15,6 +15,7 @@ public sealed record EmbeddingVectorResult(IReadOnlyList<float> Values);
+ 
+ public sealed record EmbeddingBatchResult(
++    string Provider,
+     string Model,
+     string? ModelVersion,
+     int Dimensions,
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -76,6 +76,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public CompanyKnowledgeDocumentIndexingStatus IndexingStatus { get; private set; }
+     public string? IndexingFailureCode { get; private set; }
+     public string? IndexingFailureMessage { get; private set; }
++    public string? EmbeddingProvider { get; private set; }
+     public string? EmbeddingModel { get; private set; }
+     public string? EmbeddingModelVersion { get; private set; }
+     public int? EmbeddingDimensions { get; private set; }
+@@ -286,6 +287,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public bool MarkIndexed(
+         string extractedText,
+         int chunkSetVersion,
+         int activeChunkCount,
++        string embeddingProvider,
+         string embeddingModel,
+         string? embeddingModelVersion,
+         int embeddingDimensions,
+@@ -304,6 +306,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         ExtractedText = NormalizeExtractedText(extractedText);
+         IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Indexed;
+         CurrentChunkSetVersion = chunkSetVersion;
+         ActiveChunkCount = activeChunkCount;
++        EmbeddingProvider = NormalizeRequired(embeddingProvider, nameof(embeddingProvider), 100);
+         EmbeddingModel = NormalizeRequired(embeddingModel, nameof(embeddingModel), 200);
+         EmbeddingModelVersion = NormalizeOptional(embeddingModelVersion, nameof(embeddingModelVersion), 100);
+         EmbeddingDimensions = embeddingDimensions > 0 ? embeddingDimensions : throw new ArgumentOutOfRangeException(nameof(embeddingDimensions));
+@@ -554,6 +557,7 @@ public sealed class CompanyKnowledgeChunk : ICompanyOwnedEntity
+         int chunkIndex,
+         string content,
+         string embedding,
++        string embeddingProvider,
+         string embeddingModel,
+         string? embeddingModelVersion,
+         int embeddingDimensions,
+@@ -599,6 +603,7 @@ public sealed class CompanyKnowledgeChunk : ICompanyOwnedEntity
+         StartOffset = startOffset;
+         EndOffset = endOffset;
+         ContentHash = ComputeContentHash(Content);
++        EmbeddingProvider = NormalizeRequired(embeddingProvider, nameof(embeddingProvider), 100);
+         EmbeddingModel = NormalizeRequired(embeddingModel, nameof(embeddingModel), 200);
+         EmbeddingModelVersion = NormalizeOptional(embeddingModelVersion, nameof(embeddingModelVersion), 100);
+         EmbeddingDimensions = embeddingDimensions;
+@@ -617,6 +622,7 @@ public sealed class CompanyKnowledgeChunk : ICompanyOwnedEntity
+     public int? StartOffset { get; private set; }
+     public int? EndOffset { get; private set; }
+     public string ContentHash { get; private set; } = null!;
++    public string? EmbeddingProvider { get; private set; }
+     public string EmbeddingModel { get; private set; } = null!;
+     public string? EmbeddingModelVersion { get; private set; }
+     public int EmbeddingDimensions { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentOptions.cs
+@@ -29,6 +29,7 @@ public sealed class KnowledgeEmbeddingOptions
+     public string Provider { get; set; } = "deterministic";
+     public string BaseUrl { get; set; } = "https://api.openai.com/v1/";
+     public string ApiKey { get; set; } = string.Empty;
+     public string Model { get; set; } = "text-embedding-3-small";
++    // Persist a deployment label or provider-specific version tag when no immutable model revision is returned by the API.
+     public string? ModelVersion { get; set; } = "deterministic-v1";
+     public int Dimensions { get; set; } = 256;
+     public int TimeoutSeconds { get; set; } = 30;
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -264,24 +264,26 @@ public sealed class OpenAiCompatibleEmbeddingGenerator : IEmbeddingGenerator
+     public async Task<EmbeddingBatchResult> GenerateAsync(IReadOnlyList<string> inputs, CancellationToken cancellationToken)
+     {
++        var provider = NormalizeProvider(_options.Provider);
++
+         if (inputs.Count == 0)
+         {
+-            return new EmbeddingBatchResult(_options.Model, _options.ModelVersion, _options.Dimensions, Array.Empty<EmbeddingVectorResult>());
++            return new EmbeddingBatchResult(provider, _options.Model, _options.ModelVersion, _options.Dimensions, Array.Empty<EmbeddingVectorResult>());
+         }
+ 
+-        if (string.Equals(_options.Provider, "deterministic", StringComparison.OrdinalIgnoreCase))
++        if (string.Equals(provider, "deterministic", StringComparison.Ordinal))
+         {
+             var embeddings = inputs.Select(CreateDeterministicEmbedding).ToArray();
+-            return new EmbeddingBatchResult(_options.Model, _options.ModelVersion, _options.Dimensions, embeddings);
++            return new EmbeddingBatchResult(provider, _options.Model, _options.ModelVersion, _options.Dimensions, embeddings);
+         }
+ 
+-        if (!string.Equals(_options.Provider, "openai", StringComparison.OrdinalIgnoreCase))
++        if (!string.Equals(provider, "openai", StringComparison.Ordinal))
+         {
+-            throw new PermanentBackgroundJobException($"Unsupported knowledge embedding provider '{_options.Provider}'.");
++            throw new PermanentBackgroundJobException($"Unsupported knowledge embedding provider '{provider}'.");
+         }
+ 
+         if (string.IsNullOrWhiteSpace(_options.BaseUrl))
+         {
+-            throw new PermanentBackgroundJobException("Knowledge embedding provider BaseUrl is required.");
++            throw new PermanentBackgroundJobException("Knowledge embedding provider BaseUrl is required.");
+         }
+ 
+         var client = _httpClientFactory.CreateClient(ClientName);
+@@ -322,6 +324,7 @@ public sealed class OpenAiCompatibleEmbeddingGenerator : IEmbeddingGenerator
+ 
+         return new EmbeddingBatchResult(
++            provider,
+             payload.Model ?? _options.Model,
+             _options.ModelVersion,
+             orderedEmbeddings.FirstOrDefault()?.Values.Count ?? _options.Dimensions,
+@@ -344,6 +347,14 @@ public sealed class OpenAiCompatibleEmbeddingGenerator : IEmbeddingGenerator
+         return new EmbeddingVectorResult(vector);
+     }
+ 
++    private static string NormalizeProvider(string provider)
++    {
++        if (string.IsNullOrWhiteSpace(provider))
++        {
++            throw new PermanentBackgroundJobException("Knowledge embedding provider is required.");
++        }
++
++        return provider.Trim().ToLowerInvariant();
++    }
+     private static void Normalize(float[] vector)
+     {
+         var magnitude = Math.Sqrt(vector.Sum(x => x * x));
+@@ -564,12 +575,13 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+ 
+         _logger.LogInformation(
+-            "Knowledge embedding generation completed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, EmbeddingModel: {EmbeddingModel}, Dimensions: {Dimensions}.",
++            "Knowledge embedding generation completed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, EmbeddingProvider: {EmbeddingProvider}, EmbeddingModel: {EmbeddingModel}, Dimensions: {Dimensions}.",
+             companyId,
+             documentId,
++            embeddingBatch.Provider,
+             embeddingBatch.Model,
+             embeddingBatch.Dimensions);
+ 
+         var chunkSetFingerprint = ComputeChunkSetFingerprint(chunkDrafts, embeddingBatch);
+@@ -597,6 +609,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                 document.MarkIndexed(
+                     extractedText,
+                     document.CurrentChunkSetVersion,
+                     currentActiveChunks.Count,
++                    embeddingBatch.Provider,
+                     embeddingBatch.Model,
+                     embeddingBatch.ModelVersion,
+                     embeddingBatch.Dimensions,
+@@ -637,6 +650,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                 document.MarkIndexed(
+                     extractedText,
+                     nextVersion,
+                     chunkDrafts.Count,
++                    embeddingBatch.Provider,
+                     embeddingBatch.Model,
+                     embeddingBatch.ModelVersion,
+                     embeddingBatch.Dimensions,
+@@ -905,6 +919,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                     chunkSetVersion,
+                     chunk.ChunkIndex,
+                     chunk.Content,
+                     KnowledgeEmbeddingSerializer.Serialize(embedding.Values),
++                    embeddingBatch.Provider,
+                     embeddingBatch.Model,
+                     embeddingBatch.ModelVersion,
+                     embeddingBatch.Dimensions,
+@@ -938,8 +953,8 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+             command.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
+             command.CommandText =
+                 """
+                 INSERT INTO knowledge_chunks
+-                ("Id", "CompanyId", "DocumentId", "ChunkSetVersion", "ChunkIndex", "IsActive", "Content", "Embedding", metadata_json, "SourceReference", "StartOffset", "EndOffset", "ContentHash", "EmbeddingModel", "EmbeddingModelVersion", "EmbeddingDimensions", "CreatedUtc")
++                ("Id", "CompanyId", "DocumentId", "ChunkSetVersion", "ChunkIndex", "IsActive", "Content", "Embedding", metadata_json, "SourceReference", "StartOffset", "EndOffset", "ContentHash", "EmbeddingProvider", "EmbeddingModel", "EmbeddingModelVersion", "EmbeddingDimensions", "CreatedUtc")
+                 VALUES
+-                (@id, @companyId, @documentId, @chunkSetVersion, @chunkIndex, TRUE, @content, CAST(@embedding AS vector), CAST(@metadata AS jsonb), @sourceReference, @startOffset, @endOffset, @contentHash, @embeddingModel, @embeddingModelVersion, @embeddingDimensions, @createdUtc);
++                (@id, @companyId, @documentId, @chunkSetVersion, @chunkIndex, TRUE, @content, CAST(@embedding AS vector), CAST(@metadata AS jsonb), @sourceReference, @startOffset, @endOffset, @contentHash, @embeddingProvider, @embeddingModel, @embeddingModelVersion, @embeddingDimensions, @createdUtc);
+                 """;
+ 
+             AddParameter(command, "@id", Guid.NewGuid());
+@@ -954,6 +969,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+             AddParameter(command, "@sourceReference", chunk.SourceReference);
+             AddParameter(command, "@startOffset", chunk.StartOffset);
+             AddParameter(command, "@endOffset", chunk.EndOffset);
+             AddParameter(command, "@contentHash", ComputeContentHash(chunk.Content));
++            AddParameter(command, "@embeddingProvider", embeddingBatch.Provider);
+             AddParameter(command, "@embeddingModel", embeddingBatch.Model);
+             AddParameter(command, "@embeddingModelVersion", embeddingBatch.ModelVersion);
+             AddParameter(command, "@embeddingDimensions", embeddingBatch.Dimensions);
+@@ -973,6 +989,8 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+     {
+         var builder = new StringBuilder();
+-        builder.Append(embeddingBatch.Model)
++        builder.Append(embeddingBatch.Provider)
++            .Append('|')
++            .Append(embeddingBatch.Model)
+             .Append('|')
+             .Append(embeddingBatch.ModelVersion)
+             .Append('|')
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -536,6 +536,7 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+             .IsRequired();
+         builder.Property(x => x.IndexingFailureCode).HasMaxLength(100);
+         builder.Property(x => x.IndexingFailureMessage).HasMaxLength(2000);
++        builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+         builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
+         builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
+         builder.Property(x => x.CurrentChunkSetFingerprint).HasMaxLength(128);
+@@ -578,6 +579,7 @@ internal sealed class CompanyKnowledgeChunkConfiguration : IEntityTypeConfigurat
+         builder.Property(x => x.SourceReference).HasMaxLength(1024).IsRequired();
+         builder.Property(x => x.ContentHash).HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+         builder.Property(x => x.EmbeddingModel).HasMaxLength(200).IsRequired();
+         builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
+         builder.Property(x => x.EmbeddingDimensions).IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402153000_AddEmbeddingProviderProvenance.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402153000_AddEmbeddingProviderProvenance.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402153000_AddEmbeddingProviderProvenance.cs
+@@ -0,0 +1,42 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddEmbeddingProviderProvenance : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "EmbeddingProvider",
++                table: "knowledge_documents",
++                maxLength: 100,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "EmbeddingProvider",
++                table: "knowledge_chunks",
++                maxLength: 100,
++                nullable: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropColumn(
++                name: "EmbeddingProvider",
++                table: "knowledge_documents");
++
++            migrationBuilder.DropColumn(
++                name: "EmbeddingProvider",
++                table: "knowledge_chunks");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -519,6 +519,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+                         1,
+                         0,
+                         "secure remote payroll submission policy",
+                         KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                        embeddings.Provider,
+                         embeddings.Model,
+                         embeddings.ModelVersion,
+                         embeddings.Dimensions,
+@@ -532,6 +533,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+                         1,
+                         0,
+                         "expense reimbursement handbook",
+                         KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                        embeddings.Provider,
+                         embeddings.Model,
+                         embeddings.ModelVersion,
+                         embeddings.Dimensions,
+@@ -632,7 +634,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+ 
+         document.MarkScanClean();
+         document.MarkProcessing();
+         document.MarkProcessed();
+-        document.MarkIndexed(title, 1, 1, "test", "v1", 256, "seed-fingerprint-v1");
++        document.MarkIndexed(title, 1, 1, "test-provider", "test", "v1", 256, "seed-fingerprint-v1");
+         return document;
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -89,6 +89,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                     1,
+                     0,
+                     "payroll policy for remote employees",
+                     KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
+                     embeddings.Model,
+                     embeddings.ModelVersion,
+                     embeddings.Dimensions,
+@@ -102,6 +103,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                     1,
+                     0,
+                     "payroll policy for remote employees",
+                     KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Provider,
+                     embeddings.Model,
+                     embeddings.ModelVersion,
+                     embeddings.Dimensions,
+@@ -175,6 +177,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                     1,
+                     0,
+                     "remote staff payroll handbook",
+                     KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Provider,
+                     embeddings.Model,
+                     embeddings.ModelVersion,
+                     embeddings.Dimensions,
+@@ -188,6 +191,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                     1,
+                     0,
+                     "payroll policy for remote employees",
+                     KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
+                     embeddings.Model,
+                     embeddings.ModelVersion,
+                     embeddings.Dimensions,
+@@ -242,6 +246,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                     1,
+                     0,
+                     "finance controls for payroll approvals",
+                     KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Provider,
+                     embeddings.Model,
+                     embeddings.ModelVersion,
+                     embeddings.Dimensions,
+@@ -320,8 +325,13 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+ 
+         Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
+         Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Indexed, document.IndexingStatus);
++        Assert.False(string.IsNullOrWhiteSpace(document.EmbeddingProvider));
+         Assert.NotEmpty(chunks);
++        Assert.All(
++            chunks,
++            chunk =>
++            {
++                Assert.Equal(document.EmbeddingProvider, chunk.EmbeddingProvider);
++                Assert.False(string.IsNullOrWhiteSpace(chunk.EmbeddingProvider));
++            });
+     }
+ 
+     [Fact]
+@@ -607,7 +617,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         document.MarkScanClean();
+         document.MarkProcessing();
+         document.MarkProcessed();
+-        document.MarkIndexed("payroll policy for remote employees", 1, 1, "test", "v1", 256, "seed-fingerprint-v1");
++        document.MarkIndexed("payroll policy for remote employees", 1, 1, "test-provider", "test", "v1", 256, "seed-fingerprint-v1");
+         return document;
+     }
+ 
+END_OF_PATCH

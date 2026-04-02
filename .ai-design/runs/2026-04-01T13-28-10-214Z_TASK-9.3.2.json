@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.3.2",
+  "promptPath": ".ai-design/prompts/TASK-9.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T13:28:10.214Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T13-28-10-214Z_TASK-9.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T13-28-10-214Z_TASK-9.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T13:33:23.150Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "i.Tests/MemoryTypeValuesTests.cs b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs\nnew file mode 100644\nindex 0000000..e7fc8a7\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs\n@@ -0,0 +1,47 @@\n+using VirtualCompany.Domain.Enums;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class MemoryTypeValuesTests\n+{\n+    [Theory]\n+    [InlineData(MemoryType.Preference, \"preference\")]\n+    [InlineData(MemoryType.DecisionPattern, \"decision_pattern\")]\n+    [InlineData(MemoryType.Summary, \"summary\")]\n+    [InlineData(MemoryType.RoleMemory, \"role_memory\")]\n+    [InlineData(MemoryType.CompanyMemory, \"company_memory\")]\n+    public void ToStorageValue_returns_canonical_values(MemoryType memoryType, string expected)\n+    {\n+        Assert.Equal(expected, memoryType.ToStorageValue());\n+    }\n+\n+    [Theory]\n+    [InlineData(\"preference\", MemoryType.Preference)]\n+    [InlineData(\"decision_pattern\", MemoryType.DecisionPattern)]\n+    [InlineData(\"summary\", MemoryType.Summary)]\n+    [InlineData(\"role_memory\", MemoryType.RoleMemory)]\n+    [InlineData(\"company_memory\", MemoryType.CompanyMemory)]\n+    [InlineData(\"decisionPattern\", MemoryType.DecisionPattern)]\n+    [InlineData(\"role-memory\", MemoryType.RoleMemory)]\n+    [InlineData(\"companyMemory\", MemoryType.CompanyMemory)]\n+    public void TryParse_accepts_canonical_values_and_supported_aliases(string value, MemoryType expected)\n+    {\n+        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);\n+\n+        Assert.True(parsed);\n+        Assert.Equal(expected, memoryType);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"\")]\n+    [InlineData(\" \")]\n+    [InlineData(\"unsupported\")]\n+    [InlineData(\"role\")]\n+    [InlineData(\"company\")]\n+    public void TryParse_rejects_unsupported_values(string value)\n+    {\n+        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);\n+\n+        Assert.False(parsed);\n+        Assert.Equal(default, memoryType);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "luesTests.cs b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs\nnew file mode 100644\nindex 0000000..e7fc8a7\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/MemoryTypeValuesTests.cs\n@@ -0,0 +1,47 @@\n+using VirtualCompany.Domain.Enums;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class MemoryTypeValuesTests\n+{\n+    [Theory]\n+    [InlineData(MemoryType.Preference, \"preference\")]\n+    [InlineData(MemoryType.DecisionPattern, \"decision_pattern\")]\n+    [InlineData(MemoryType.Summary, \"summary\")]\n+    [InlineData(MemoryType.RoleMemory, \"role_memory\")]\n+    [InlineData(MemoryType.CompanyMemory, \"company_memory\")]\n+    public void ToStorageValue_returns_canonical_values(MemoryType memoryType, string expected)\n+    {\n+        Assert.Equal(expected, memoryType.ToStorageValue());\n+    }\n+\n+    [Theory]\n+    [InlineData(\"preference\", MemoryType.Preference)]\n+    [InlineData(\"decision_pattern\", MemoryType.DecisionPattern)]\n+    [InlineData(\"summary\", MemoryType.Summary)]\n+    [InlineData(\"role_memory\", MemoryType.RoleMemory)]\n+    [InlineData(\"company_memory\", MemoryType.CompanyMemory)]\n+    [InlineData(\"decisionPattern\", MemoryType.DecisionPattern)]\n+    [InlineData(\"role-memory\", MemoryType.RoleMemory)]\n+    [InlineData(\"companyMemory\", MemoryType.CompanyMemory)]\n+    public void TryParse_accepts_canonical_values_and_supported_aliases(string value, MemoryType expected)\n+    {\n+        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);\n+\n+        Assert.True(parsed);\n+        Assert.Equal(expected, memoryType);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"\")]\n+    [InlineData(\" \")]\n+    [InlineData(\"unsupported\")]\n+    [InlineData(\"role\")]\n+    [InlineData(\"company\")]\n+    public void TryParse_rejects_unsupported_values(string value)\n+    {\n+        var parsed = MemoryTypeValues.TryParse(value, out var memoryType);\n+\n+        Assert.False(parsed);\n+        Assert.Equal(default, memoryType);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n187,829\n",
+  "verbosityMode": "verbose"
+}

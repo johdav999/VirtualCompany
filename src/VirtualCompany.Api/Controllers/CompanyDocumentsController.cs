@@ -15,10 +15,12 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class CompanyDocumentsController : ControllerBase
 {
     private readonly ICompanyDocumentService _documentService;
+    private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
 
-    public CompanyDocumentsController(ICompanyDocumentService documentService)
+    public CompanyDocumentsController(ICompanyDocumentService documentService, ICompanyKnowledgeSearchService knowledgeSearchService)
     {
         _documentService = documentService;
+        _knowledgeSearchService = knowledgeSearchService;
     }
 
     [HttpGet]
@@ -35,6 +37,21 @@ public sealed class CompanyDocumentsController : ControllerBase
     {
         var document = await _documentService.GetAsync(companyId, documentId, cancellationToken);
         return document is null ? NotFound() : Ok(document);
+    }
+
+    [HttpGet("semantic-search")]
+    public async Task<ActionResult<IReadOnlyList<CompanyKnowledgeSearchResultDto>>> SemanticSearchAsync(
+        Guid companyId,
+        [FromQuery(Name = "q")] string? query,
+        [FromQuery(Name = "top")] int top,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            throw BuildValidationException("Query", "A semantic search query is required.");
+        }
+
+        return Ok(await _knowledgeSearchService.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(companyId, query, top <= 0 ? 5 : top), cancellationToken));
     }
 
     [HttpPost]

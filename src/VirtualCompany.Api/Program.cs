@@ -82,6 +82,7 @@ using (var scope = app.Services.CreateScope())
 
     if (isPostgreSql)
     {
+        await dbContext.Database.ExecuteSqlRawAsync("""CREATE EXTENSION IF NOT EXISTS vector;""");
         // The repo still carries historical SQL Server migrations; PostgreSQL environments
         // bootstrap from the current model until the provider history is rebased.
         await dbContext.Database.EnsureCreatedAsync();

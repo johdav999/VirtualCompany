@@ -1,0 +1,214 @@
+diff --git a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+index dddb9ae..4534cd8 100644
+--- a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+@@ -100,10 +100,19 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+     public bool IsCompanyWide => AgentId is null;
+     public bool IsAgentSpecific => AgentId is not null;
+     public bool IsDeleted => DeletedUtc.HasValue;
++    public bool IsNotYetValid(DateTime asOfUtc) => ValidFromUtc > EnsureUtc(asOfUtc);
+ 
+     public bool IsExpired(DateTime asOfUtc) =>
+         ValidToUtc.HasValue &&
+         EnsureUtc(ValidToUtc.Value) <= EnsureUtc(asOfUtc);
++
++    public bool IsActive(DateTime asOfUtc)
++    {
++        var normalizedAsOfUtc = EnsureUtc(asOfUtc);
++        return !IsDeleted &&
++               ValidFromUtc <= normalizedAsOfUtc &&
++               (!ValidToUtc.HasValue || ValidToUtc.Value > normalizedAsOfUtc);
++    }
+ 
+     public void AttachEmbedding(
+         string embedding,
+diff --git a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+index 65c692f..fbc06a6 100644
+--- a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
++++ b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+@@ -48,14 +48,16 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+     public async Task<MemoryItemDto?> GetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
+     {
+         EnsureCompanyId(companyId);
+         await RequireMembershipAsync(companyId, cancellationToken);
++        var nowUtc = DateTime.UtcNow;
+ 
+         var item = await _dbContext.MemoryItems
+             .AsNoTracking()
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId && x.DeletedUtc == null, cancellationToken);
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId && x.Id == memoryId && x.DeletedUtc == null && x.ValidFromUtc <= nowUtc && (!x.ValidToUtc.HasValue || x.ValidToUtc.Value > nowUtc),
++                cancellationToken);
+ 
+         return item is null ? null : ToDto(item);
+     }
+-
+     public async Task<MemoryItemDto> CreateAsync(Guid companyId, CreateMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+         EnsureCompanyId(companyId);
+@@ -610,7 +612,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+ 
+         if (criteria.OnlyActive)
+         {
+-            query = query.Where(x => x.ValidFromUtc <= criteria.AsOfUtc && (!x.ValidToUtc.HasValue || x.ValidToUtc.Value >= criteria.AsOfUtc));
++            query = query.Where(x => x.ValidFromUtc <= criteria.AsOfUtc && (!x.ValidToUtc.HasValue || x.ValidToUtc.Value > criteria.AsOfUtc));
+         }
+ 
+         return query;
+@@ -722,7 +724,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+ 
+         if (criteria.OnlyActive)
+         {
+-            sql.Append(" AND m.\"ValidFromUtc\" <= @asOfUtc AND (m.\"ValidToUtc\" IS NULL OR m.\"ValidToUtc\" >= @asOfUtc)");
++            sql.Append(" AND m.\"ValidFromUtc\" <= @asOfUtc AND (m.\"ValidToUtc\" IS NULL OR m.\"ValidToUtc\" > @asOfUtc)");
+             AddParameter(command, "@asOfUtc", criteria.AsOfUtc);
+         }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+index 7ab60d1..9a728c1 100644
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -64,6 +64,39 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.NotNull(agentSpecific.Embedding);
+     }
+ 
++    [Fact]
++    public async Task Create_memory_defaults_valid_from_to_creation_time_when_omitted()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var beforeRequestUtc = DateTime.UtcNow;
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory", new
++        {
++            memoryType = "company_memory",
++            summary = "Default validity window should start immediately.",
++            salience = 0.73m
++        });
++
++        var afterRequestUtc = DateTime.UtcNow;
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var created = await response.Content.ReadFromJsonAsync<MemoryItemResponse>();
++        Assert.NotNull(created);
++        Assert.True(created!.ValidFromUtc >= beforeRequestUtc.AddSeconds(-1));
++        Assert.True(created.ValidFromUtc <= afterRequestUtc.AddSeconds(1));
++        Assert.Null(created.ValidToUtc);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var stored = await dbContext.MemoryItems.AsNoTracking().SingleAsync(x => x.Id == created.Id);
++        Assert.Equal(created.ValidFromUtc, stored.ValidFromUtc);
++        Assert.Null(stored.ValidToUtc);
++    }
++
+     [Theory]
+     [InlineData("preference", true)]
+     [InlineData("decision_pattern", true)]
+@@ -402,6 +435,38 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal(1, result.TotalCount);
+     }
+ 
++    [Fact]
++    public async Task Listing_memory_only_active_excludes_future_and_expired_windows()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var asOfUtc = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Summary, "Active open-ended memory", null, null, 0.90m, asOfUtc.AddHours(-3), null),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Summary, "Active bounded memory", null, null, 0.85m, asOfUtc.AddHours(-3), asOfUtc.AddHours(2)),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Summary, "Future memory", null, null, 0.95m, asOfUtc.AddMinutes(10), null),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Summary, "Expired memory", null, null, 0.99m, asOfUtc.AddHours(-5), asOfUtc.AddMinutes(-1)));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var result = await client.GetFromJsonAsync<MemorySearchResponse>(
++            $"/api/companies/{seed.CompanyId}/memory?agentId={seed.AgentId}&scope=agent_specific&onlyActive=true&asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
++
++        Assert.NotNull(result);
++        Assert.Equal(2, result!.Items.Count);
++        Assert.Contains(result.Items, item => item.Summary == "Active open-ended memory");
++        Assert.Contains(result.Items, item => item.Summary == "Active bounded memory");
++        Assert.DoesNotContain(result.Items, item => item.Summary == "Future memory");
++        Assert.DoesNotContain(result.Items, item => item.Summary == "Expired memory");
++    }
++
++    [Fact]
++    public async Task Listing_memory_treats_valid_to_equal_to_as_of_as_inactive()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var asOfUtc = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.Add(new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Summary, "Boundary memory", null, null, 0.88m, asOfUtc.AddHours(-1), asOfUtc));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var result = await client.GetFromJsonAsync<MemorySearchResponse>(
++            $"/api/companies/{seed.CompanyId}/memory?agentId={seed.AgentId}&scope=agent_specific&onlyActive=true&asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}");
++
++        Assert.NotNull(result);
++        Assert.Empty(result!.Items);
++    }
++
+     [Fact]
+     public async Task Listing_memory_orders_by_salience_when_no_semantic_query_is_supplied()
+     {
+@@ -716,6 +781,40 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.DoesNotContain(activeAfterDelete!.Items, x => x.Id == ownMemoryId);
+     }
+ 
++    [Fact]
++    public async Task Get_memory_by_id_excludes_not_yet_valid_and_expired_items_by_default()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var futureMemoryId = Guid.NewGuid();
++        var expiredMemoryId = Guid.NewGuid();
++        var activeMemoryId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(futureMemoryId, seed.CompanyId, null, MemoryType.CompanyMemory, "Future memory", null, null, 0.70m, DateTime.UtcNow.AddHours(1), null),
++                new MemoryItem(expiredMemoryId, seed.CompanyId, null, MemoryType.CompanyMemory, "Expired memory", null, null, 0.70m, DateTime.UtcNow.AddHours(-2), DateTime.UtcNow.AddMinutes(-5)),
++                new MemoryItem(activeMemoryId, seed.CompanyId, null, MemoryType.CompanyMemory, "Active memory", null, null, 0.70m, DateTime.UtcNow.AddHours(-2), DateTime.UtcNow.AddHours(1)));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var futureResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/memory/{futureMemoryId}");
++        var expiredResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/memory/{expiredMemoryId}");
++        var activeResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/memory/{activeMemoryId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, futureResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.NotFound, expiredResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, activeResponse.StatusCode);
++
++        var activePayload = await activeResponse.Content.ReadFromJsonAsync<MemoryItemResponse>();
++        Assert.NotNull(activePayload);
++        Assert.Equal(activeMemoryId, activePayload!.Id);
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -794,6 +893,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         public Guid? AgentId { get; set; }
+         public string Scope { get; set; } = string.Empty;
+         public string MemoryType { get; set; } = string.Empty;
++        public string? SourceEntityType { get; set; }
+         public string Summary { get; set; } = string.Empty;
+         public decimal Salience { get; set; }
+         public DateTime ValidFromUtc { get; set; }
+END_OF_PATCH

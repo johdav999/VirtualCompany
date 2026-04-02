@@ -1,0 +1,592 @@
+diff --git a/src/VirtualCompany.Domain/Enums/MemoryEnums.cs b/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/MemoryEnums.cs
+@@ -58,3 +58,56 @@ public static class MemoryTypeValues
+             ? $"Memory type is required. Allowed values: {allowedValues}."
+             : $"Unsupported memory type '{attemptedValue}'. Allowed values: {allowedValues}.";
+     }
++}
++
++public enum MemoryScope
++{
++    All = 1,
++    CompanyWide = 2,
++    AgentSpecific = 3,
++    CombinedForAgent = 4
++}
++
++public static class MemoryScopeValues
++{
++    public const string All = "all";
++    public const string CompanyWide = "company_wide";
++    public const string AgentSpecific = "agent_specific";
++    public const string CombinedForAgent = "combined_for_agent";
++
++    private static readonly IReadOnlyDictionary<MemoryScope, string> Values = new Dictionary<MemoryScope, string>
++    {
++        [MemoryScope.All] = All,
++        [MemoryScope.CompanyWide] = CompanyWide,
++        [MemoryScope.AgentSpecific] = AgentSpecific,
++        [MemoryScope.CombinedForAgent] = CombinedForAgent
++    };
++
++    private static readonly IReadOnlyDictionary<string, MemoryScope> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this MemoryScope value) =>
++        Values.TryGetValue(value, out var storageValue)
++            ? storageValue
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out MemoryScope scope)
++    {
++        scope = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        return ReverseValues.TryGetValue(value.Trim(), out scope);
++    }
++
++    public static MemoryScope Parse(string value) =>
++        TryParse(value, out var scope)
++            ? scope
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Memory scope is required. Allowed values: {allowedValues}."
++            : $"Unsupported memory scope '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+@@ -22,6 +22,11 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
++        if (agentId.HasValue && agentId.Value == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId cannot be empty.", nameof(agentId));
++        }
++
+         if (sourceEntityId.HasValue && sourceEntityId.Value == Guid.Empty)
+         {
+             throw new ArgumentException("SourceEntityId cannot be empty.", nameof(sourceEntityId));
+@@ -63,6 +68,8 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Agent? Agent { get; private set; }
++    public bool IsCompanyWide => AgentId is null;
++    public bool IsAgentSpecific => AgentId is not null;
+ 
+     public void AttachEmbedding(
+         string embedding,
+diff --git a/src/VirtualCompany.Application/Memory/MemoryContracts.cs b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+--- a/src/VirtualCompany.Application/Memory/MemoryContracts.cs
++++ b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+@@ -23,7 +23,8 @@ public sealed record MemorySearchFilters(
+     bool IncludeCompanyWide = true,
+     string? QueryText = null,
+     int Offset = 0,
+-    int Limit = 20);
++    int Limit = 20,
++    string? Scope = null);
+ 
+ public sealed record ExpireMemoryItemCommand(DateTime? ValidToUtc);
+ 
+@@ -31,6 +32,7 @@ public sealed record MemoryItemDto(
+     Guid Id,
+     Guid CompanyId,
+     Guid? AgentId,
++    string Scope,
+     string MemoryType,
+     string Summary,
+     string? SourceEntityType,
+diff --git a/src/VirtualCompany.Api/Controllers/MemoryController.cs b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+--- a/src/VirtualCompany.Api/Controllers/MemoryController.cs
++++ b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+@@ -23,6 +23,7 @@ public sealed class MemoryController : ControllerBase
+         [FromQuery] Guid? agentId,
+         [FromQuery] string? memoryType,
+         [FromQuery] DateTime? createdAfterUtc,
++        [FromQuery] string? scope,
+         [FromQuery] DateTime? createdBeforeUtc,
+         [FromQuery] decimal? minSalience,
+         [FromQuery] bool? onlyActive,
+@@ -39,7 +40,8 @@ public sealed class MemoryController : ControllerBase
+                 onlyActive ?? true,
+                 includeCompanyWide ?? true,
+                 queryText,
+-                offset ?? 0,
+-                limit ?? 20);
++                offset ?? 0,
++                limit ?? 20,
++                scope);
+ 
+             return Ok(await _memoryService.SearchAsync(companyId, filters, cancellationToken));
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -626,9 +626,11 @@ internal sealed class MemoryItemConfiguration : IEntityTypeConfiguration<MemoryI
+         builder.Property(x => x.EmbeddingProvider).HasMaxLength(100);
+         builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
+         builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
++        builder.Property(x => x.AgentId).IsRequired(false);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId });
+         builder.HasIndex(x => new { x.CompanyId, x.MemoryType });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ValidToUtc });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+diff --git a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+--- a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
++++ b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+@@ -27,6 +27,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+     public async Task<MemoryItemDto?> GetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
+     {
++        EnsureCompanyId(companyId);
+         await RequireMembershipAsync(companyId, cancellationToken);
+ 
+         var item = await _dbContext.MemoryItems
+@@ -38,6 +39,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+     public async Task<MemoryItemDto> CreateAsync(Guid companyId, CreateMemoryItemCommand command, CancellationToken cancellationToken)
+     {
++        EnsureCompanyId(companyId);
+         await EnsureManagerAccessAsync(companyId, cancellationToken);
+         var memoryType = await ValidateCreateCommandAsync(companyId, command, cancellationToken);
+ 
+@@ -70,8 +72,9 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+     public async Task<MemorySearchResultDto> SearchAsync(Guid companyId, MemorySearchFilters filters, CancellationToken cancellationToken)
+     {
++        EnsureCompanyId(companyId);
+         await RequireMembershipAsync(companyId, cancellationToken);
+-        var normalized = ValidateAndNormalizeFilters(filters);
++        var normalized = await ValidateAndNormalizeFiltersAsync(companyId, filters, cancellationToken);
+         var nowUtc = DateTime.UtcNow;
+ 
+         if (!string.IsNullOrWhiteSpace(normalized.QueryText))
+@@ -97,6 +100,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+     public async Task<MemoryItemDto> ExpireAsync(Guid companyId, Guid memoryId, ExpireMemoryItemCommand command, CancellationToken cancellationToken)
+     {
++        EnsureCompanyId(companyId);
+         await EnsureManagerAccessAsync(companyId, cancellationToken);
+         var item = await _dbContext.MemoryItems
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+@@ -114,6 +118,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+     public async Task DeleteAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
+     {
++        EnsureCompanyId(companyId);
+         await EnsureManagerAccessAsync(companyId, cancellationToken);
+         var item = await _dbContext.MemoryItems
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+@@ -172,6 +177,11 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+ 
+         if (command.AgentId.HasValue)
+         {
++            if (command.AgentId.Value == Guid.Empty)
++            {
++                errors[nameof(command.AgentId)] = ["AgentId cannot be empty."];
++            }
++
+             var agentExists = await _dbContext.Agents
+                 .IgnoreQueryFilters()
+                 .AsNoTracking()
+@@ -195,10 +205,11 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+         return memoryType;
+     }
+ 
+-    private static ValidatedMemorySearchFilters ValidateAndNormalizeFilters(MemorySearchFilters filters)
++    private async Task<ValidatedMemorySearchFilters> ValidateAndNormalizeFiltersAsync(
++        Guid companyId,
++        MemorySearchFilters filters,
++        CancellationToken cancellationToken)
+     {
+         var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+-        MemoryType? memoryType = null;
++        MemoryType? memoryType = null;
++        MemoryScope? explicitScope = null;
+ 
+         if (!string.IsNullOrWhiteSpace(filters.MemoryType))
+         {
+@@ -209,6 +220,16 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+             else
+             {
+                 errors[nameof(filters.MemoryType)] = [MemoryTypeValues.BuildValidationMessage(filters.MemoryType)];
++            }
++        }
++
++        if (!string.IsNullOrWhiteSpace(filters.Scope))
++        {
++            if (MemoryScopeValues.TryParse(filters.Scope, out var parsedScope))
++            {
++                explicitScope = parsedScope;
++            }
++            else
++            {
++                errors[nameof(filters.Scope)] = [MemoryScopeValues.BuildValidationMessage(filters.Scope)];
+             }
+         }
+ 
+@@ -232,24 +253,60 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+             errors[nameof(filters.Limit)] = ["Limit must be between 1 and 100."];
+         }
+ 
++        var resolvedScope = ResolveSearchScope(filters.AgentId, filters.IncludeCompanyWide, explicitScope);
++
++        if (filters.AgentId.HasValue && filters.AgentId.Value == Guid.Empty)
++        {
++            errors[nameof(filters.AgentId)] = ["AgentId cannot be empty."];
++        }
++        else if (resolvedScope is MemoryScope.AgentSpecific or MemoryScope.CombinedForAgent &&
++                 !filters.AgentId.HasValue)
++        {
++            errors[nameof(filters.AgentId)] = ["AgentId is required when scope targets agent-specific memory."];
++        }
++
++        if (filters.AgentId.HasValue && !errors.ContainsKey(nameof(filters.AgentId)))
++        {
++            var agentExists = await _dbContext.Agents
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(x => x.CompanyId == companyId && x.Id == filters.AgentId.Value, cancellationToken);
++
++            if (!agentExists)
++            {
++                errors[nameof(filters.AgentId)] = ["AgentId must reference an agent that belongs to the requested company."];
++            }
++        }
++
+         if (errors.Count > 0)
+         {
+             throw new MemoryValidationException(errors);
+         }
+ 
+         return new ValidatedMemorySearchFilters(
+             filters.AgentId,
++            resolvedScope,
+             memoryType,
+             filters.CreatedAfterUtc?.ToUniversalTime(),
+             filters.CreatedBeforeUtc?.ToUniversalTime(),
+             filters.MinSalience,
+             filters.OnlyActive,
+-            filters.IncludeCompanyWide,
+             string.IsNullOrWhiteSpace(filters.QueryText) ? null : filters.QueryText.Trim(),
+             filters.Offset,
+             filters.Limit);
+     }
+ 
++    private static MemoryScope ResolveSearchScope(Guid? agentId, bool includeCompanyWide, MemoryScope? explicitScope)
++    {
++        if (explicitScope.HasValue)
++        {
++            return explicitScope.Value;
++        }
++
++        if (agentId.HasValue)
++        {
++            return includeCompanyWide ? MemoryScope.CombinedForAgent : MemoryScope.AgentSpecific;
++        }
++
++        return MemoryScope.All;
++    }
++
+     private IQueryable<MemoryItem> ApplyFilters(
+         IQueryable<MemoryItem> query,
+         ValidatedMemorySearchFilters filters,
+@@ -257,13 +314,13 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+     {
+-        if (filters.AgentId.HasValue)
++        query = filters.Scope switch
+         {
+-            query = filters.IncludeCompanyWide
+-                ? query.Where(x => x.AgentId == filters.AgentId.Value || x.AgentId == null)
+-                : query.Where(x => x.AgentId == filters.AgentId.Value);
+-        }
++            MemoryScope.CompanyWide => query.Where(x => x.AgentId == null),
++            MemoryScope.AgentSpecific => query.Where(x => x.AgentId == filters.AgentId!.Value),
++            MemoryScope.CombinedForAgent => query.Where(x => x.AgentId == filters.AgentId!.Value || x.AgentId == null),
++            _ => query
++        };
+ 
+-        if (filters.MemoryType.HasValue)
++        if (filters.MemoryType.HasValue)
+         {
+             query = query.Where(x => x.MemoryType == filters.MemoryType.Value);
+         }
+@@ -372,16 +429,10 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+                 AND (@memoryType IS NULL OR m."MemoryType" = @memoryType)
+                 AND (@createdAfterUtc IS NULL OR m."CreatedUtc" >= @createdAfterUtc)
+                 AND (@createdBeforeUtc IS NULL OR m."CreatedUtc" <= @createdBeforeUtc)
+                 AND (@minSalience IS NULL OR m."Salience" >= @minSalience)
+-                AND (
+-                    @agentId IS NULL OR
+-                    (
+-                        (@includeCompanyWide = TRUE AND (m."AgentId" = @agentId OR m."AgentId" IS NULL))
+-                        OR
+-                        (@includeCompanyWide = FALSE AND m."AgentId" = @agentId)
+-                    )
+-                )
++                AND (@scope = 'all'
++                    OR (@scope = 'company_wide' AND m."AgentId" IS NULL)
++                    OR (@scope = 'agent_specific' AND m."AgentId" = @agentId)
++                    OR (@scope = 'combined_for_agent' AND (m."AgentId" = @agentId OR m."AgentId" IS NULL)))
+                 AND (
+                     @onlyActive = FALSE OR
+                     (m."ValidFromUtc" <= @nowUtc AND (m."ValidToUtc" IS NULL OR m."ValidToUtc" > @nowUtc))
+                 )
+@@ -394,7 +445,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+         AddParameter(command, "@createdAfterUtc", filters.CreatedAfterUtc);
+         AddParameter(command, "@createdBeforeUtc", filters.CreatedBeforeUtc);
+         AddParameter(command, "@minSalience", filters.MinSalience);
++        AddParameter(command, "@scope", filters.Scope.ToStorageValue());
+         AddParameter(command, "@agentId", filters.AgentId);
+-        AddParameter(command, "@includeCompanyWide", filters.IncludeCompanyWide);
+         AddParameter(command, "@onlyActive", filters.OnlyActive);
+         AddParameter(command, "@nowUtc", nowUtc);
+         AddParameter(command, "@offset", filters.Offset);
+@@ -407,6 +458,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+             items.Add(new MemoryItemDto(
+                 reader.GetGuid(0),
+                 reader.GetGuid(1),
+                 reader.IsDBNull(2) ? null : reader.GetGuid(2),
++                reader.IsDBNull(2) ? MemoryScopeValues.CompanyWide : MemoryScopeValues.AgentSpecific,
+                 reader.GetString(3),
+                 reader.GetString(4),
+                 reader.IsDBNull(5) ? null : reader.GetString(5),
+@@ -498,6 +550,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+         new(
+             item.Id,
+             item.CompanyId,
+             item.AgentId,
++            item.IsCompanyWide ? MemoryScopeValues.CompanyWide : MemoryScopeValues.AgentSpecific,
+             item.MemoryType.ToStorageValue(),
+             item.Summary,
+             item.SourceEntityType,
+@@ -518,9 +571,16 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+     private bool IsPostgreSql() =>
+         string.Equals(_dbContext.Database.ProviderName, "Npgsql.EntityFrameworkCore.PostgreSQL", StringComparison.Ordinal);
+ 
++    private static void EnsureCompanyId(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++    }
++
+     private static void AddParameter(DbCommand command, string name, object? value)
+     {
+         var parameter = command.CreateParameter();
+         parameter.ParameterName = name;
+         parameter.Value = value ?? DBNull.Value;
+@@ -531,11 +591,10 @@ public sealed class CompanyMemoryService : ICompanyMemoryService
+     private sealed record RankedMemoryItem(MemoryItem Item, double Score);
+ 
+     private sealed record ValidatedMemorySearchFilters(
+         Guid? AgentId,
++        MemoryScope Scope,
+         MemoryType? MemoryType,
+         DateTime? CreatedAfterUtc,
+         DateTime? CreatedBeforeUtc,
+         decimal? MinSalience,
+         bool OnlyActive,
+-        bool IncludeCompanyWide,
+         string? QueryText,
+         int Offset,
+         int Limit);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402180000_AddMemoryScopeIndexes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402180000_AddMemoryScopeIndexes.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402180000_AddMemoryScopeIndexes.cs
+@@ -0,0 +1,24 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddMemoryScopeIndexes : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateIndex(
++                name: "IX_memory_items_CompanyId_AgentId_CreatedUtc",
++                table: "memory_items",
++                columns: new[] { "CompanyId", "AgentId", "CreatedUtc" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_memory_items_CompanyId_AgentId_CreatedUtc",
++                table: "memory_items");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -58,12 +58,14 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         var companyWide = Assert.Single(items, x => x.AgentId is null);
+         Assert.Equal(seed.CompanyId, companyWide.CompanyId);
+         Assert.Equal(MemoryType.CompanyMemory, companyWide.MemoryType);
++        Assert.True(companyWide.IsCompanyWide);
+         Assert.Equal("Payroll approvals require dual sign-off.", companyWide.Summary);
+         Assert.Equal(0.920m, companyWide.Salience);
+         Assert.NotNull(companyWide.Embedding);
+ 
+         var agentSpecific = Assert.Single(items, x => x.AgentId == seed.AgentId);
+         Assert.Equal(MemoryType.Preference, agentSpecific.MemoryType);
++        Assert.True(agentSpecific.IsAgentSpecific);
+         Assert.Equal("Prefers concise stand-up updates before 09:00 UTC.", agentSpecific.Summary);
+         Assert.Equal(seed.AgentId, agentSpecific.AgentId);
+         Assert.NotNull(agentSpecific.Embedding);
+@@ -90,6 +92,37 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Contains(nameof(CreateMemoryRequest.ValidToUtc), problem.Errors.Keys);
+     }
+ 
++    [Fact]
++    public async Task Create_memory_rejects_agent_from_another_company()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var foreignCompanyId = Guid.NewGuid();
++        var foreignAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(foreignCompanyId, "Foreign Memory Company"));
++            dbContext.Agents.Add(new Agent(
++                foreignAgentId,
++                foreignCompanyId,
++                "support",
++                "Foreign Agent",
++                "Support Lead",
++                "Support",
++                null,
++                AgentSeniority.Lead,
++                AgentStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory", new
++        {
++            agentId = foreignAgentId,
++            memoryType = "preference",
++            summary = "Cross-tenant memory should be rejected.",
++            salience = 0.5m
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Listing_memory_for_agent_can_include_company_wide_records()
+     {
+@@ -100,10 +133,13 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Agents.Add(new Agent(otherAgentId, seed.CompanyId, "support", "Other Agent", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
++            var otherCompanyId = Guid.NewGuid();
++            dbContext.Companies.Add(new Company(otherCompanyId, "Isolated Company"));
+             dbContext.MemoryItems.AddRange(
+                 new MemoryItem(Guid.NewGuid(), seed.CompanyId, null, MemoryType.CompanyMemory, "Company policy memory", null, null, 0.9m, DateTime.UtcNow.AddHours(-2), null),
+                 new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.RoleMemory, "Agent-specific role memory", null, null, 0.8m, DateTime.UtcNow.AddHours(-2), null),
+-                new MemoryItem(Guid.NewGuid(), seed.CompanyId, otherAgentId, MemoryType.Preference, "Other agent preference", null, null, 0.7m, DateTime.UtcNow.AddHours(-2), null));
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, otherAgentId, MemoryType.Preference, "Other agent preference", null, null, 0.7m, DateTime.UtcNow.AddHours(-2), null),
++                new MemoryItem(Guid.NewGuid(), otherCompanyId, null, MemoryType.CompanyMemory, "Other company memory", null, null, 1.0m, DateTime.UtcNow.AddHours(-2), null));
+             return Task.CompletedTask;
+         });
+ 
+@@ -113,9 +149,57 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.NotNull(result);
+         Assert.Equal(2, result!.Items.Count);
+         Assert.Contains(result.Items, x => x.AgentId is null && x.MemoryType == "company_memory");
++        Assert.Contains(result.Items, x => x.Scope == "company_wide");
+         Assert.Contains(result.Items, x => x.AgentId == seed.AgentId && x.MemoryType == "role_memory");
++        Assert.Contains(result.Items, x => x.Scope == "agent_specific");
+         Assert.DoesNotContain(result.Items, x => x.AgentId == otherAgentId);
++        Assert.DoesNotContain(result.Items, x => x.Summary == "Other company memory");
++    }
++
++    [Fact]
++    public async Task Listing_memory_can_return_company_wide_scope_only()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, null, MemoryType.CompanyMemory, "Company memory", null, null, 0.9m, DateTime.UtcNow.AddHours(-2), null),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Preference, "Agent memory", null, null, 0.8m, DateTime.UtcNow.AddHours(-2), null));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var result = await client.GetFromJsonAsync<MemorySearchResponse>(
++            $"/api/companies/{seed.CompanyId}/memory?scope=company_wide&onlyActive=true");
++
++        Assert.NotNull(result);
++        var item = Assert.Single(result!.Items);
++        Assert.Null(item.AgentId);
++        Assert.Equal("company_wide", item.Scope);
++        Assert.Equal("Company memory", item.Summary);
++    }
++
++    [Fact]
++    public async Task Listing_memory_can_return_agent_specific_scope_only()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var otherAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Agents.Add(new Agent(otherAgentId, seed.CompanyId, "support", "Other Agent", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, null, MemoryType.CompanyMemory, "Company memory", null, null, 0.9m, DateTime.UtcNow.AddHours(-2), null),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, seed.AgentId, MemoryType.Preference, "Target agent memory", null, null, 0.8m, DateTime.UtcNow.AddHours(-2), null),
++                new MemoryItem(Guid.NewGuid(), seed.CompanyId, otherAgentId, MemoryType.Preference, "Other agent memory", null, null, 0.7m, DateTime.UtcNow.AddHours(-2), null));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var result = await client.GetFromJsonAsync<MemorySearchResponse>(
++            $"/api/companies/{seed.CompanyId}/memory?agentId={seed.AgentId}&scope=agent_specific&onlyActive=true");
++
++        Assert.NotNull(result);
++        var item = Assert.Single(result!.Items);
++        Assert.Equal(seed.AgentId, item.AgentId);
++        Assert.Equal("agent_specific", item.Scope);
++        Assert.Equal("Target agent memory", item.Summary);
+     }
+ 
+     [Fact]
+@@ -286,6 +370,7 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         public Guid Id { get; set; }
+         public Guid CompanyId { get; set; }
+         public Guid? AgentId { get; set; }
++        public string Scope { get; set; } = string.Empty;
+         public string MemoryType { get; set; } = string.Empty;
+         public string Summary { get; set; } = string.Empty;
+         public decimal Salience { get; set; }
+@@ -294,4 +379,4 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         public DateTime? ValidToUtc { get; set; }
+         public DateTime CreatedUtc { get; set; }
+     }
+-}
++}
+END_OF_PATCH

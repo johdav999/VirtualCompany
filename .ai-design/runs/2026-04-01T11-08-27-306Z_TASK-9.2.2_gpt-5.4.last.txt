@@ -1,0 +1,878 @@
+diff --git a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+--- a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
++++ b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json.Nodes;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Application.Documents;
+@@ -17,17 +18,33 @@ public sealed record EmbeddingBatchResult(
+     int Dimensions,
+     IReadOnlyList<EmbeddingVectorResult> Embeddings);
+ 
++public sealed record CompanyKnowledgeAccessContext(
++    Guid CompanyId,
++    Guid? MembershipId = null,
++    Guid? UserId = null,
++    string? MembershipRole = null,
++    IReadOnlyList<string>? DataScopes = null,
++    Guid? AgentId = null);
++
+ public sealed record CompanyKnowledgeSemanticSearchQuery(
+     Guid CompanyId,
+     string QueryText,
+-    int TopN = 5);
++    int TopN = 5,
++    CompanyKnowledgeAccessContext? AccessContext = null);
++
++public sealed record CompanyKnowledgeSourceDocumentDto(
++    Guid DocumentId,
++    string Title,
++    string DocumentType,
++    string SourceType,
++    string? SourceRef);
+ 
+ public sealed record CompanyKnowledgeSearchResultDto(
+     Guid ChunkId,
+     string Content,
+     double Score,
+     Guid DocumentId,
+     string DocumentTitle,
+     int ChunkIndex,
+     string SourceReference,
+-    IReadOnlyDictionary<string, JsonNode?> SourceMetadata);
++    IReadOnlyDictionary<string, JsonNode?> SourceMetadata,
++    CompanyKnowledgeSourceDocumentDto SourceDocument);
+ 
+ public interface ICompanyDocumentTextExtractor
+ {
+@@ -56,6 +73,11 @@ public interface ICompanyKnowledgeSearchService
+         CompanyKnowledgeSemanticSearchQuery query,
+         CancellationToken cancellationToken);
+ }
++
++public interface IKnowledgeAccessPolicyEvaluator
++{
++    bool CanAccess(CompanyKnowledgeAccessContext accessContext, CompanyKnowledgeDocument document);
++}
+ 
+ public sealed class CompanyKnowledgeSearchValidationException : Exception
+ {
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -77,6 +77,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
+         services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
+         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
++        services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
+         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
+         services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
+         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -720,16 +720,18 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServic
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IEmbeddingGenerator _embeddingGenerator;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IKnowledgeAccessPolicyEvaluator _accessPolicyEvaluator;
+ 
+     public CompanyKnowledgeSearchService(
+         VirtualCompanyDbContext dbContext,
+         IEmbeddingGenerator embeddingGenerator,
+-        ICompanyMembershipContextResolver membershipContextResolver)
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator)
+     {
+         _dbContext = dbContext;
+         _embeddingGenerator = embeddingGenerator;
+         _membershipContextResolver = membershipContextResolver;
++        _accessPolicyEvaluator = accessPolicyEvaluator;
+     }
+ 
+     public async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchAsync(
+@@ -747,6 +749,11 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServic
+             throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
+         }
+ 
++        if (query.AccessContext is not null && query.AccessContext.CompanyId != Guid.Empty && query.AccessContext.CompanyId != query.CompanyId)
++        {
++            throw new CompanyKnowledgeSearchValidationException("AccessContext.CompanyId must match CompanyId.");
++        }
++
+         var topN = Math.Clamp(query.TopN, 1, 20);
+         var embeddingBatch = await _embeddingGenerator.GenerateAsync([query.QueryText.Trim()], cancellationToken);
+         if (embeddingBatch.Embeddings.Count == 0)
+@@ -754,71 +761,172 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServic
+             return Array.Empty<CompanyKnowledgeSearchResultDto>();
+         }
+ 
++        var accessContext = BuildAccessContext(query.CompanyId, membership, query.AccessContext);
++
++        // Access policy evaluation must run before similarity ranking so the final top-K is
++        // selected from the authorized document set only.
++        var allowedDocuments = await LoadAllowedDocumentsAsync(query.CompanyId, accessContext, cancellationToken);
++        if (allowedDocuments.Count == 0)
++        {
++            return Array.Empty<CompanyKnowledgeSearchResultDto>();
++        }
++
+         var queryEmbedding = KnowledgeEmbeddingSerializer.Serialize(embeddingBatch.Embeddings[0].Values);
+ 
+         return IsPostgreSql()
+-            ? await SearchPostgreSqlAsync(query.CompanyId, queryEmbedding, topN, cancellationToken)
+-            : await SearchFallbackAsync(query.CompanyId, embeddingBatch.Embeddings[0].Values, topN, cancellationToken);
++            ? await SearchPostgreSqlAsync(query.CompanyId, queryEmbedding, topN, allowedDocuments, cancellationToken)
++            : await SearchFallbackAsync(query.CompanyId, embeddingBatch.Embeddings[0].Values, topN, allowedDocuments, cancellationToken);
+     }
+ 
+-    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchPostgreSqlAsync(
++    private async Task<IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor>> LoadAllowedDocumentsAsync(
+         Guid companyId,
+-        string queryEmbedding,
+-        int topN,
++        CompanyKnowledgeAccessContext accessContext,
+         CancellationToken cancellationToken)
+     {
+-        var connection = _dbContext.Database.GetDbConnection();
+-        if (connection.State != System.Data.ConnectionState.Open)
++        var documents = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(document =>
++                document.CompanyId == companyId &&
++                document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
++                document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
++                document.ActiveChunkCount > 0)
++            .ToListAsync(cancellationToken);
++
++        return documents
++            .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
++            .ToDictionary(
++                document => document.Id,
++                document => new AllowedKnowledgeDocumentDescriptor(
++                    document.Id,
++                    document.Title,
++                    document.DocumentType.ToStorageValue(),
++                    document.SourceType.ToStorageValue(),
++                    document.SourceRef));
++    }
++
++    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchPostgreSqlAsync(
++        Guid companyId,
++        string queryEmbedding,
++        int topN,
++        IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor> allowedDocuments,
++        CancellationToken cancellationToken)
++    {
++        if (allowedDocuments.Count == 0)
+         {
+-            await connection.OpenAsync(cancellationToken);
++            return Array.Empty<CompanyKnowledgeSearchResultDto>();
+         }
+ 
++        var connection = _dbContext.Database.GetDbConnection();
++        if (connection.State != System.Data.ConnectionState.Open)
++        {
++            await connection.OpenAsync(cancellationToken);
++        }
++
++        var allowedDocumentIds = allowedDocuments.Keys.ToArray();
+         await using var command = connection.CreateCommand();
+-        command.CommandText =
+-            """
+-            SELECT
+-                kc."Id",
+-                kc."Content",
+-                kc."DocumentId",
+-                d."Title",
+-                kc."ChunkIndex",
+-                kc."SourceReference",
+-                kc.metadata_json,
+-                1 - (kc."Embedding" <=> CAST(@queryEmbedding AS vector)) AS score
+-            FROM knowledge_chunks kc
+-            INNER JOIN knowledge_documents d ON d."Id" = kc."DocumentId"
+-            WHERE
+-                kc."CompanyId" = @companyId
+-                AND d."CompanyId" = @companyId
+-                AND kc."IsActive" = TRUE
+-                AND d."IndexingStatus" = 'indexed'
+-                AND (d.access_scope_json ->> 'visibility') = 'company'
+-            ORDER BY kc."Embedding" <=> CAST(@queryEmbedding AS vector)
+-            LIMIT @topN;
+-            """;
++        var sql = new StringBuilder(
++            """
++            SELECT
++                kc."Id",
++                kc."Content",
++                kc."DocumentId",
++                kc."ChunkIndex",
++                kc."SourceReference",
++                kc.metadata_json,
++                1 - (kc."Embedding" <=> CAST(@queryEmbedding AS vector)) AS score
++            FROM knowledge_chunks kc
++            INNER JOIN knowledge_documents d ON d."Id" = kc."DocumentId"
++            WHERE
++                kc."CompanyId" = @companyId
++                AND d."CompanyId" = @companyId
++                AND kc."IsActive" = TRUE
++                AND d."IngestionStatus" = 'processed'
++                AND d."IndexingStatus" = 'indexed'
++                AND kc."DocumentId" IN (
++            """);
++
++        for (var index = 0; index < allowedDocumentIds.Length; index++)
++        {
++            if (index > 0)
++            {
++                sql.Append(", ");
++            }
++
++            var parameterName = $"@documentId{index}";
++            sql.Append(parameterName);
++            AddParameter(command, parameterName, allowedDocumentIds[index]);
++        }
++
++        sql.AppendLine(")");
++        sql.AppendLine("""ORDER BY kc."Embedding" <=> CAST(@queryEmbedding AS vector), kc."ChunkIndex" ASC""");
++        sql.AppendLine("LIMIT @topN;");
++
++        command.CommandText = sql.ToString();
+         AddParameter(command, "@companyId", companyId);
+         AddParameter(command, "@queryEmbedding", queryEmbedding);
+         AddParameter(command, "@topN", topN);
+ 
+         var results = new List<CompanyKnowledgeSearchResultDto>();
+         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
++
+         while (await reader.ReadAsync(cancellationToken))
+         {
++            var documentId = reader.GetGuid(2);
++            if (!allowedDocuments.TryGetValue(documentId, out var sourceDocument))
++            {
++                continue;
++            }
++
+             results.Add(
+                 new CompanyKnowledgeSearchResultDto(
+                     reader.GetGuid(0),
+                     reader.GetString(1),
+-                    reader.GetDouble(7),
+-                    reader.GetGuid(2),
+-                    reader.GetString(3),
+-                    reader.GetInt32(4),
+-                    reader.GetString(5),
+-                    DeserializeDictionary(reader.IsDBNull(6) ? "{}" : reader.GetString(6))));
++                    reader.GetDouble(6),
++                    documentId,
++                    sourceDocument.Title,
++                    reader.GetInt32(3),
++                    reader.GetString(4),
++                    DeserializeDictionary(reader.IsDBNull(5) ? "{}" : reader.GetString(5)),
++                    new CompanyKnowledgeSourceDocumentDto(
++                        sourceDocument.DocumentId,
++                        sourceDocument.Title,
++                        sourceDocument.DocumentType,
++                        sourceDocument.SourceType,
++                        sourceDocument.SourceRef)));
+         }
+ 
+         return results;
+     }
+ 
++    private static CompanyKnowledgeAccessContext BuildAccessContext(
++        Guid companyId,
++        ResolvedCompanyMembershipContext membership,
++        CompanyKnowledgeAccessContext? requestedContext)
++    {
++        return new CompanyKnowledgeAccessContext(
++            companyId,
++            membership.MembershipId,
++            membership.UserId,
++            membership.MembershipRole.ToStorageValue(),
++            NormalizeIdentifiers(requestedContext?.DataScopes),
++            requestedContext?.AgentId);
++    }
++
++    private static IReadOnlyList<string> NormalizeIdentifiers(IReadOnlyList<string>? values)
++    {
++        if (values is null || values.Count == 0)
++        {
++            return Array.Empty<string>();
++        }
++
++        return values
++            .Where(static value => !string.IsNullOrWhiteSpace(value))
++            .Select(static value => value.Trim())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++    }
++
+     private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchFallbackAsync(
+         Guid companyId,
+         IReadOnlyList<float> queryEmbedding,
+         int topN,
++        IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor> allowedDocuments,
+         CancellationToken cancellationToken)
+     {
++        var allowedDocumentIds = allowedDocuments.Keys.ToArray();
++        if (allowedDocumentIds.Length == 0)
++        {
++            return Array.Empty<CompanyKnowledgeSearchResultDto>();
++        }
++
+         var candidates = await _dbContext.CompanyKnowledgeChunks
++            .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Include(chunk => chunk.Document)
+             .Where(chunk =>
+                 chunk.CompanyId == companyId &&
+                 chunk.IsActive &&
+-                chunk.Document.CompanyId == companyId &&
+-                chunk.Document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
+-                chunk.Document.AccessScope.Visibility == CompanyKnowledgeDocumentAccessScope.CompanyVisibility)
++                allowedDocumentIds.Contains(chunk.DocumentId))
+             .ToListAsync(cancellationToken);
+ 
+         return candidates
+-            .Select(chunk => new CompanyKnowledgeSearchResultDto(
+-                chunk.Id,
+-                chunk.Content,
+-                CosineSimilarity(queryEmbedding, KnowledgeEmbeddingSerializer.Deserialize(chunk.Embedding)),
+-                chunk.DocumentId,
+-                chunk.Document.Title,
+-                chunk.ChunkIndex,
+-                chunk.SourceReference,
+-                chunk.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase)))
++            .Select(chunk =>
++            {
++                var sourceDocument = allowedDocuments[chunk.DocumentId];
++                return new CompanyKnowledgeSearchResultDto(
++                    chunk.Id,
++                    chunk.Content,
++                    CosineSimilarity(queryEmbedding, KnowledgeEmbeddingSerializer.Deserialize(chunk.Embedding)),
++                    chunk.DocumentId,
++                    sourceDocument.Title,
++                    chunk.ChunkIndex,
++                    chunk.SourceReference,
++                    chunk.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                    new CompanyKnowledgeSourceDocumentDto(
++                        sourceDocument.DocumentId,
++                        sourceDocument.Title,
++                        sourceDocument.DocumentType,
++                        sourceDocument.SourceType,
++                        sourceDocument.SourceRef));
++            })
+             .OrderByDescending(result => result.Score)
+             .ThenBy(result => result.ChunkIndex)
++            .ThenBy(result => result.DocumentId)
+             .Take(topN)
+             .ToArray();
+     }
+@@ -867,6 +975,14 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServic
+     private static void AddParameter(DbCommand command, string name, object? value)
+     {
+         var parameter = command.CreateParameter();
+         parameter.ParameterName = name;
+         parameter.Value = value ?? DBNull.Value;
+         command.Parameters.Add(parameter);
+     }
++
++    private sealed record AllowedKnowledgeDocumentDescriptor(
++        Guid DocumentId,
++        string Title,
++        string DocumentType,
++        string SourceType,
++        string? SourceRef);
+ }
+ 
+ public static class KnowledgeEmbeddingSerializer
+diff --git a/src/VirtualCompany.Infrastructure/Documents/KnowledgeAccessPolicyEvaluator.cs b/src/VirtualCompany.Infrastructure/Documents/KnowledgeAccessPolicyEvaluator.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Documents/KnowledgeAccessPolicyEvaluator.cs
+@@ -0,0 +1,173 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Documents;
++
++public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvaluator
++{
++    private static readonly string[] RestrictedKeys = ["restricted", "is_restricted"];
++    private static readonly string[] PrivateKeys = ["private", "is_private"];
++    private static readonly string[] RoleKeys = ["roles", "allowed_roles", "membership_roles"];
++    private static readonly string[] ScopeKeys = ["scopes", "data_scopes", "allowed_scopes", "read", "recommend", "execute", "write"];
++    private static readonly string[] AgentKeys = ["agent_ids", "agents"];
++
++    public bool CanAccess(CompanyKnowledgeAccessContext accessContext, CompanyKnowledgeDocument document)
++    {
++        ArgumentNullException.ThrowIfNull(document);
++
++        if (accessContext.CompanyId == Guid.Empty || document.CompanyId != accessContext.CompanyId)
++        {
++            return false;
++        }
++
++        var accessScope = document.AccessScope;
++        if (accessScope is null ||
++            !string.Equals(accessScope.Visibility, CompanyKnowledgeDocumentAccessScope.CompanyVisibility, StringComparison.OrdinalIgnoreCase) ||
++            (accessScope.CompanyId != Guid.Empty && accessScope.CompanyId != accessContext.CompanyId))
++        {
++            return false;
++        }
++
++        var properties = accessScope.AdditionalProperties;
++
++        if (!EvaluateIdentifierConstraint(properties, RoleKeys, accessContext.MembershipRole))
++        {
++            return false;
++        }
++
++        if (!EvaluateScopeConstraint(properties, accessContext.DataScopes))
++        {
++            return false;
++        }
++
++        if (!EvaluateAgentConstraint(properties, accessContext.AgentId))
++        {
++            return false;
++        }
++
++        var hasExplicitConstraint =
++            HasConfiguredIdentifiers(properties, RoleKeys) ||
++            HasConfiguredIdentifiers(properties, ScopeKeys) ||
++            HasConfiguredIdentifiers(properties, AgentKeys);
++
++        if ((HasTrueBoolean(properties, RestrictedKeys) || HasTrueBoolean(properties, PrivateKeys)) && !hasExplicitConstraint)
++        {
++            return false;
++        }
++
++        return true;
++    }
++
++    private static bool EvaluateIdentifierConstraint(
++        IReadOnlyDictionary<string, JsonNode?> properties,
++        IReadOnlyList<string> keys,
++        string? currentValue)
++    {
++        if (!TryGetConfiguredIdentifiers(properties, keys, out var configuredValues, out var exists))
++        {
++            return false;
++        }
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        return !string.IsNullOrWhiteSpace(currentValue) && configuredValues.Contains(currentValue.Trim());
++    }
++
++    private static bool EvaluateScopeConstraint(
++        IReadOnlyDictionary<string, JsonNode?> properties,
++        IReadOnlyList<string>? currentScopes)
++    {
++        if (!TryGetConfiguredIdentifiers(properties, ScopeKeys, out var configuredScopes, out var exists))
++        {
++            return false;
++        }
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        if (currentScopes is null || currentScopes.Count == 0)
++        {
++            return false;
++        }
++
++        return currentScopes.Any(configuredScopes.Contains);
++    }
++
++    private static bool EvaluateAgentConstraint(
++        IReadOnlyDictionary<string, JsonNode?> properties,
++        Guid? agentId)
++    {
++        if (!TryGetConfiguredIdentifiers(properties, AgentKeys, out var configuredAgents, out var exists))
++        {
++            return false;
++        }
++
++        if (!exists)
++        {
++            return true;
++        }
++
++        return agentId.HasValue && configuredAgents.Contains(agentId.Value.ToString("D"));
++    }
++
++    private static bool HasConfiguredIdentifiers(IReadOnlyDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys) =>
++        TryGetConfiguredIdentifiers(properties, keys, out var configuredValues, out var exists) && exists && configuredValues.Count > 0;
++
++    private static bool TryGetConfiguredIdentifiers(
++        IReadOnlyDictionary<string, JsonNode?> properties,
++        IReadOnlyList<string> keys,
++        out HashSet<string> configuredValues,
++        out bool exists)
++    {
++        configuredValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        exists = false;
++
++        foreach (var key in keys)
++        {
++            if (!properties.TryGetValue(key, out var node) || node is null)
++            {
++                continue;
++            }
++
++            exists = true;
++            if (!TryAppendIdentifiers(node, configuredValues))
++            {
++                configuredValues.Clear();
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    private static bool TryAppendIdentifiers(JsonNode node, ISet<string> results)
++    {
++        switch (node)
++        {
++            case JsonValue jsonValue when jsonValue.TryGetValue<string>(out var singleValue) && !string.IsNullOrWhiteSpace(singleValue):
++                results.Add(singleValue.Trim());
++                return true;
++            case JsonArray array:
++                foreach (var item in array)
++                {
++                    if (item is not JsonValue itemValue || !itemValue.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
++                    {
++                        return false;
++                    }
++
++                    results.Add(text.Trim());
++                }
++
++                return true;
++            default:
++                return false;
++        }
++    }
++
++    private static bool HasTrueBoolean(IReadOnlyDictionary<string, JsonNode?> properties, IReadOnlyList<string> keys)
++    {
++        foreach (var key in keys)
++        {
++            if (!properties.TryGetValue(key, out var node) || node is not JsonValue value)
++            {
++                continue;
++            }
++
++            if ((value.TryGetValue<bool>(out var booleanValue) && booleanValue) ||
++                (value.TryGetValue<string>(out var textValue) && bool.TryParse(textValue, out var parsedBoolean) && parsedBoolean))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeAccessPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeAccessPolicyEvaluatorTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeAccessPolicyEvaluatorTests.cs
+@@ -0,0 +1,124 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Documents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Documents;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class KnowledgeAccessPolicyEvaluatorTests
++{
++    private readonly KnowledgeAccessPolicyEvaluator _evaluator = new();
++
++    [Fact]
++    public void Company_visible_document_is_accessible_to_same_company_member()
++    {
++        var companyId = Guid.NewGuid();
++        var document = CreateDocument(companyId);
++        var accessContext = new CompanyKnowledgeAccessContext(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "manager",
++            Array.Empty<string>());
++
++        var allowed = _evaluator.CanAccess(accessContext, document);
++
++        Assert.True(allowed);
++    }
++
++    [Fact]
++    public void Cross_company_document_is_denied()
++    {
++        var companyId = Guid.NewGuid();
++        var document = CreateDocument(Guid.NewGuid());
++        var accessContext = new CompanyKnowledgeAccessContext(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "manager",
++            Array.Empty<string>());
++
++        var allowed = _evaluator.CanAccess(accessContext, document);
++
++        Assert.False(allowed);
++    }
++
++    [Fact]
++    public void Restricted_document_is_denied_when_role_and_scope_do_not_match()
++    {
++        var companyId = Guid.NewGuid();
++        var document = CreateDocument(
++            companyId,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["restricted"] = JsonValue.Create(true),
++                ["roles"] = new JsonArray(JsonValue.Create("owner")),
++                ["scopes"] = new JsonArray(JsonValue.Create("finance"))
++            });
++
++        var accessContext = new CompanyKnowledgeAccessContext(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "manager",
++            ["operations"]);
++
++        var allowed = _evaluator.CanAccess(accessContext, document);
++
++        Assert.False(allowed);
++    }
++
++    [Fact]
++    public void Restricted_document_is_allowed_when_role_matches()
++    {
++        var companyId = Guid.NewGuid();
++        var document = CreateDocument(
++            companyId,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["private"] = JsonValue.Create(true),
++                ["roles"] = new JsonArray(JsonValue.Create("manager"))
++            });
++
++        var accessContext = new CompanyKnowledgeAccessContext(
++            companyId,
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "manager",
++            Array.Empty<string>());
++
++        var allowed = _evaluator.CanAccess(accessContext, document);
++
++        Assert.True(allowed);
++    }
++
++    private static CompanyKnowledgeDocument CreateDocument(
++        Guid companyId,
++        Dictionary<string, JsonNode?>? accessScopeProperties = null)
++    {
++        return new CompanyKnowledgeDocument(
++            Guid.NewGuid(),
++            companyId,
++            "Finance Policy",
++            CompanyKnowledgeDocumentType.Policy,
++            $"companies/{companyId:N}/knowledge/{Guid.NewGuid():N}/finance-policy.txt",
++            null,
++            "finance-policy.txt",
++            "text/plain",
++            ".txt",
++            128,
++            accessScope: new CompanyKnowledgeDocumentAccessScope(
++                companyId,
++                CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
++                accessScopeProperties));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -105,8 +105,84 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(companyAId, await GetCompanyIdForDocumentAsync(result.DocumentId));
+         Assert.Equal("A Payroll Policy", result.DocumentTitle);
+         Assert.Equal("a-policy#chunk-1", result.SourceReference);
++        Assert.Equal(result.DocumentId, result.SourceDocument.DocumentId);
++        Assert.Equal("A Payroll Policy", result.SourceDocument.Title);
++        Assert.Equal("policy", result.SourceDocument.DocumentType);
++        Assert.Equal("upload", result.SourceDocument.SourceType);
++        Assert.Null(result.SourceDocument.SourceRef);
+         Assert.Equal("remote-payroll", result.SourceMetadata["section"]!.GetValue<string>());
+     }
++
++    [Fact]
++    public async Task Semantic_search_excludes_restricted_documents_before_similarity_ranking()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(
++            ["payroll policy for remote employees", "remote staff payroll handbook"],
++            CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "ranking@example.com", "Ranking", "dev-header", "ranking"));
++            dbContext.Companies.Add(new Company(companyId, "Scoped Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var accessibleDocument = CreateIndexedDocument(companyId, "Accessible Payroll Handbook");
++            var restrictedDocument = CreateIndexedDocument(
++                companyId,
++                "Restricted Payroll Handbook",
++                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["restricted"] = System.Text.Json.Nodes.JsonValue.Create(true),
++                    ["roles"] = new System.Text.Json.Nodes.JsonArray(System.Text.Json.Nodes.JsonValue.Create("owner"))
++                });
++
++            dbContext.CompanyKnowledgeDocuments.AddRange(accessibleDocument, restrictedDocument);
++            dbContext.CompanyKnowledgeChunks.AddRange(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    accessibleDocument.Id,
++                    1,
++                    0,
++                    "remote staff payroll handbook",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),
++                    "accessible#chunk-1"),
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    restrictedDocument.Id,
++                    1,
++                    0,
++                    "payroll policy for remote employees",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),
++                    "restricted#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
++        var results = await searchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 5),
++            CancellationToken.None);
++
++        var result = Assert.Single(results);
++        Assert.Equal("Accessible Payroll Handbook", result.DocumentTitle);
++        Assert.DoesNotContain(results, item => item.DocumentTitle == "Restricted Payroll Handbook");
++    }
++
++    [Fact]
++    public async Task Semantic_search_honors_caller_scope_context_for_scoped_documents()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
++        var embeddings = await embeddingGenerator.GenerateAsync(["finance controls for payroll approvals"], CancellationToken.None);
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "scope@example.com", "Scope", "dev-header", "scope"));
++            dbContext.Companies.Add(new Company(companyId, "Scope Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var scopedDocument = CreateIndexedDocument(
++                companyId,
++                "Finance Approvals",
++                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["restricted"] = System.Text.Json.Nodes.JsonValue.Create(true),
++                    ["scopes"] = new System.Text.Json.Nodes.JsonArray(System.Text.Json.Nodes.JsonValue.Create("finance"))
++                });
++
++            dbContext.CompanyKnowledgeDocuments.Add(scopedDocument);
++            dbContext.CompanyKnowledgeChunks.Add(
++                new CompanyKnowledgeChunk(
++                    Guid.NewGuid(),
++                    companyId,
++                    scopedDocument.Id,
++                    1,
++                    0,
++                    "finance controls for payroll approvals",
++                    KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
++                    embeddings.Model,
++                    embeddings.ModelVersion,
++                    embeddings.Dimensions,
++                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),
++                    "finance#chunk-1"));
++
++            await Task.CompletedTask;
++        });
++
++        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
++        var results = await searchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(
++                companyId,
++                "finance controls for payroll approvals",
++                TopN: 5,
++                AccessContext: new CompanyKnowledgeAccessContext(companyId, DataScopes: ["finance"])),
++            CancellationToken.None);
++
++        var result = Assert.Single(results);
++        Assert.Equal("Finance Approvals", result.DocumentTitle);
++        Assert.Equal("finance#chunk-1", result.SourceReference);
++    }
+@@ -220,7 +296,8 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         Assert.NotNull(document.FailureAction);
+     }
+ 
+-    private static CompanyKnowledgeDocument CreateIndexedDocument(Guid companyId, string title)
++    private static CompanyKnowledgeDocument CreateIndexedDocument(
++        Guid companyId, string title, Dictionary<string, System.Text.Json.Nodes.JsonNode?>? accessScopeProperties = null)
+     {
+         var document = new CompanyKnowledgeDocument(
+             Guid.NewGuid(),
+@@ -232,7 +309,11 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+             "policy.txt",
+             "text/plain",
+             ".txt",
+             64,
+-            accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++            accessScope: new CompanyKnowledgeDocumentAccessScope(
++                companyId,
++                CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
++                accessScopeProperties));
+ 
+         document.MarkScanClean();
+         document.MarkProcessing();
+END_OF_PATCH

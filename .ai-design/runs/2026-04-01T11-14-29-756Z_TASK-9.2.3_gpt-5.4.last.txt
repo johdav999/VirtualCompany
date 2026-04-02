@@ -1,0 +1,315 @@
+diff --git a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+index 1f4d6c2..5ce2c86 100644
+--- a/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
++++ b/src/VirtualCompany.Application/Documents/KnowledgeContracts.cs
+@@ -37,6 +37,16 @@ public sealed record CompanyKnowledgeSemanticSearchQuery(
+ public sealed record CompanyKnowledgeSourceDocumentDto(
+     Guid DocumentId,
+     string Title,
++    string DocumentType,
++    string SourceType,
++    string? SourceRef);
++
++public sealed record CompanyKnowledgeSourceReferenceDto(
++    Guid DocumentId,
++    string DocumentTitle,
++    string DocumentType,
++    string SourceType,
++    string? SourceRef,
++    Guid ChunkId,
++    int ChunkIndex,
++    string ChunkSourceReference);
++
++public sealed record CompanyKnowledgeSearchResultDto(
++    Guid ChunkId,
++    string Content,
++    double Score,
++    Guid DocumentId,
++    string DocumentTitle,
++    int ChunkIndex,
++    string SourceReference,
++    IReadOnlyDictionary<string, JsonNode?> SourceMetadata,
++    CompanyKnowledgeSourceReferenceDto SourceReferenceInfo,
++    CompanyKnowledgeSourceDocumentDto SourceDocument);
+-    string DocumentType,
+-    string SourceType,
+-    string? SourceRef);
+-
+-public sealed record CompanyKnowledgeSearchResultDto(
+-    Guid ChunkId,
+-    string Content,
+-    double Score,
+-    Guid DocumentId,
+-    string DocumentTitle,
+-    int ChunkIndex,
+-    string SourceReference,
+-    IReadOnlyDictionary<string, JsonNode?> SourceMetadata,
+-    CompanyKnowledgeSourceDocumentDto SourceDocument);
+ 
+ public interface ICompanyDocumentTextExtractor
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+index 7e1cdb4..98fbcf3 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -804,10 +804,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+             .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
+             .ToDictionary(
+                 document => document.Id,
+-                document => new AllowedKnowledgeDocumentDescriptor(
+-                    document.Id,
+-                    document.Title,
+-                    document.DocumentType.ToStorageValue(),
+-                    document.SourceType.ToStorageValue(),
+-                    document.SourceRef));
++                document => new AllowedKnowledgeDocumentDescriptor(document.Id));
+     }
+ 
+     private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchPostgreSqlAsync(
+@@ -839,7 +836,11 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+                 kc."DocumentId",
+                 kc."ChunkIndex",
+                 kc."SourceReference",
+                 kc.metadata_json,
+-                1 - (kc."Embedding" <=> CAST(@queryEmbedding AS vector)) AS score
++                d."Title",
++                d."DocumentType",
++                d."SourceType",
++                d."SourceRef",
++                1 - (kc."Embedding" <=> CAST(@queryEmbedding AS vector)) AS score
+             FROM knowledge_chunks kc
+             INNER JOIN knowledge_documents d ON d."Id" = kc."DocumentId"
+             WHERE
+@@ -877,23 +878,35 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+         while (await reader.ReadAsync(cancellationToken))
+         {
+             var documentId = reader.GetGuid(2);
+-            if (!allowedDocuments.TryGetValue(documentId, out var sourceDocument))
++            if (!allowedDocuments.ContainsKey(documentId))
+             {
+                 continue;
+             }
+ 
++            var chunkId = reader.GetGuid(0);
++            var chunkIndex = reader.GetInt32(3);
++            var chunkSourceReference = reader.GetString(4);
++            var documentTitle = reader.GetString(6);
++            var documentType = reader.GetString(7);
++            var sourceType = reader.GetString(8);
++            var sourceRef = reader.IsDBNull(9) ? null : reader.GetString(9);
++
+             results.Add(
+                 new CompanyKnowledgeSearchResultDto(
+-                    reader.GetGuid(0),
++                    chunkId,
+                     reader.GetString(1),
+-                    reader.GetDouble(6),
++                    reader.GetDouble(10),
+                     documentId,
+-                    sourceDocument.Title,
+-                    reader.GetInt32(3),
+-                    reader.GetString(4),
++                    documentTitle,
++                    chunkIndex,
++                    chunkSourceReference,
+                     DeserializeDictionary(reader.IsDBNull(5) ? "{}" : reader.GetString(5)),
++                    new CompanyKnowledgeSourceReferenceDto(
++                        documentId,
++                        documentTitle,
++                        documentType,
++                        sourceType,
++                        sourceRef,
++                        chunkId,
++                        chunkIndex,
++                        chunkSourceReference),
+                     new CompanyKnowledgeSourceDocumentDto(
+-                        sourceDocument.DocumentId,
+-                        sourceDocument.Title,
+-                        sourceDocument.DocumentType,
+-                        sourceDocument.SourceType,
+-                        sourceDocument.SourceRef)));
++                        documentId,
++                        documentTitle,
++                        documentType,
++                        sourceType,
++                        sourceRef)));
+         }
+ 
+         return results;
+@@ -943,29 +956,48 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+             return Array.Empty<CompanyKnowledgeSearchResultDto>();
+         }
+ 
+         var candidates = await _dbContext.CompanyKnowledgeChunks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(chunk =>
+                 chunk.CompanyId == companyId &&
+                 chunk.IsActive &&
+                 allowedDocumentIds.Contains(chunk.DocumentId))
++            .Select(chunk => new
++            {
++                chunk.Id,
++                chunk.Content,
++                chunk.DocumentId,
++                chunk.ChunkIndex,
++                chunk.SourceReference,
++                chunk.Metadata,
++                chunk.Embedding,
++                DocumentTitle = chunk.Document.Title,
++                DocumentType = chunk.Document.DocumentType,
++                SourceType = chunk.Document.SourceType,
++                chunk.Document.SourceRef
++            })
+             .ToListAsync(cancellationToken);
+ 
+         return candidates
+             .Select(chunk =>
+             {
+-                var sourceDocument = allowedDocuments[chunk.DocumentId];
++                var documentType = chunk.DocumentType.ToStorageValue();
++                var sourceType = chunk.SourceType.ToStorageValue();
+                 return new CompanyKnowledgeSearchResultDto(
+                     chunk.Id,
+                     chunk.Content,
+                     CosineSimilarity(queryEmbedding, KnowledgeEmbeddingSerializer.Deserialize(chunk.Embedding)),
+                     chunk.DocumentId,
+-                    sourceDocument.Title,
++                    chunk.DocumentTitle,
+                     chunk.ChunkIndex,
+                     chunk.SourceReference,
+                     chunk.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                    new CompanyKnowledgeSourceReferenceDto(
++                        chunk.DocumentId,
++                        chunk.DocumentTitle,
++                        documentType,
++                        sourceType,
++                        chunk.SourceRef,
++                        chunk.Id,
++                        chunk.ChunkIndex,
++                        chunk.SourceReference),
+                     new CompanyKnowledgeSourceDocumentDto(
+-                        sourceDocument.DocumentId,
+-                        sourceDocument.Title,
+-                        sourceDocument.DocumentType,
+-                        sourceDocument.SourceType,
+-                        sourceDocument.SourceRef));
++                        chunk.DocumentId,
++                        chunk.DocumentTitle,
++                        documentType,
++                        sourceType,
++                        chunk.SourceRef));
+             })
+             .OrderByDescending(result => result.Score)
+             .ThenBy(result => result.ChunkIndex)
+@@ -1032,10 +1064,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+         command.Parameters.Add(parameter);
+     }
+ 
+-    private sealed record AllowedKnowledgeDocumentDescriptor(
+-        Guid DocumentId,
+-        string Title,
+-        string DocumentType,
+-        string SourceType,
+-        string? SourceRef);
++    private sealed record AllowedKnowledgeDocumentDescriptor(Guid DocumentId);
+ }
+ 
+ public static class KnowledgeEmbeddingSerializer
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+index 17a06b8..a1f4f86 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -548,6 +548,13 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         var result = Assert.Single(response!);
+         Assert.Equal(documentId, result.DocumentId);
+         Assert.Equal("Payroll Guide", result.DocumentTitle);
++        Assert.NotNull(result.SourceReferenceInfo);
++        Assert.Equal(documentId, result.SourceReferenceInfo!.DocumentId);
++        Assert.Equal("Payroll Guide", result.SourceReferenceInfo.DocumentTitle);
++        Assert.Equal("policy", result.SourceReferenceInfo.DocumentType);
++        Assert.Equal("upload", result.SourceReferenceInfo.SourceType);
++        Assert.Equal(result.ChunkIndex, result.SourceReferenceInfo.ChunkIndex);
++        Assert.Equal(result.SourceReference, result.SourceReferenceInfo.ChunkSourceReference);
+         Assert.Equal("payroll-guide#chunk-1", result.SourceReference);
+         Assert.Equal("secure remote payroll submission policy", result.Content);
+     }
+@@ -684,6 +691,17 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         public string Content { get; set; } = string.Empty;
+         public string SourceReference { get; set; } = string.Empty;
+         public int ChunkIndex { get; set; }
+         public double Score { get; set; }
++        public SourceReferenceInfoResponse? SourceReferenceInfo { get; set; }
++    }
++
++    private sealed class SourceReferenceInfoResponse
++    {
++        public Guid DocumentId { get; set; }
++        public string DocumentTitle { get; set; } = string.Empty;
++        public string DocumentType { get; set; } = string.Empty;
++        public string SourceType { get; set; } = string.Empty;
++        public string? SourceRef { get; set; }
++        public Guid ChunkId { get; set; }
++        public int ChunkIndex { get; set; }
++        public string ChunkSourceReference { get; set; } = string.Empty;
+     }
+ 
+     private sealed class AccessScopeResponse
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+index 812b547..f743ad6 100644
+--- a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -73,7 +73,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+                 new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+ 
+-            var documentA = CreateIndexedDocument(companyAId, "A Payroll Policy");
++            var documentA = CreateIndexedDocument(companyAId, "A Payroll Policy", sourceRef: "kb://company-a/payroll-policy");
+             var documentB = CreateIndexedDocument(companyBId, "B Payroll Policy");
+ 
+             dbContext.CompanyKnowledgeDocuments.AddRange(documentA, documentB);
+@@ -121,6 +121,15 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         var result = Assert.Single(results);
+         Assert.Equal(companyAId, await GetCompanyIdForDocumentAsync(result.DocumentId));
+         Assert.Equal("A Payroll Policy", result.DocumentTitle);
++        Assert.Equal(result.DocumentId, result.SourceReferenceInfo.DocumentId);
++        Assert.Equal("A Payroll Policy", result.SourceReferenceInfo.DocumentTitle);
++        Assert.Equal("policy", result.SourceReferenceInfo.DocumentType);
++        Assert.Equal("upload", result.SourceReferenceInfo.SourceType);
++        Assert.Equal("kb://company-a/payroll-policy", result.SourceReferenceInfo.SourceRef);
++        Assert.Equal(result.ChunkId, result.SourceReferenceInfo.ChunkId);
++        Assert.Equal(result.ChunkIndex, result.SourceReferenceInfo.ChunkIndex);
++        Assert.Equal(result.SourceReference, result.SourceReferenceInfo.ChunkSourceReference);
+         Assert.Equal("a-policy#chunk-1", result.SourceReference);
+         Assert.Equal(result.DocumentId, result.SourceDocument.DocumentId);
+         Assert.Equal("A Payroll Policy", result.SourceDocument.Title);
+@@ -128,7 +137,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal("upload", result.SourceDocument.SourceType);
+-        Assert.Null(result.SourceDocument.SourceRef);
++        Assert.Equal("kb://company-a/payroll-policy", result.SourceDocument.SourceRef);
+         Assert.Equal("remote-payroll", result.SourceMetadata["section"]!.GetValue<string>());
+     }
+@@ -381,7 +390,10 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+     }
+ 
+     private static CompanyKnowledgeDocument CreateIndexedDocument(
+-        Guid companyId, string title, Dictionary<string, System.Text.Json.Nodes.JsonNode?>? accessScopeProperties = null)
++        Guid companyId,
++        string title,
++        Dictionary<string, System.Text.Json.Nodes.JsonNode?>? accessScopeProperties = null,
++        string? sourceRef = null)
+     {
+         var document = new CompanyKnowledgeDocument(
+             Guid.NewGuid(),
+@@ -394,7 +406,8 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+             64,
+             accessScope: new CompanyKnowledgeDocumentAccessScope(
+                 companyId,
+                 CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
+-                accessScopeProperties));
++                accessScopeProperties),
++            sourceRef: sourceRef);
+ 
+         document.MarkScanClean();
+         document.MarkProcessing();
+END_OF_PATCH

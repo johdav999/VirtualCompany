@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.3.3",
+  "promptPath": ".ai-design/prompts/TASK-9.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T13:33:23.432Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T13-33-23-432Z_TASK-9.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T13-33-23-432Z_TASK-9.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T13:43:54.003Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " restocked on Thursdays.\",\n-            salience = 0.30m\n+            summary = \"Office snacks are restocked on Thursdays and the break room budget is tracked weekly.\",\n+            salience = 1.00m\n         });\n \n         await otherClient.PostAsJsonAsync($\"/api/companies/{otherCompany.CompanyId}/memory\", new\n@@ -381,6 +489,33 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac\n         Assert.All(payload.Items, item => Assert.Equal(seed.CompanyId, item.CompanyId));\n     }\n \n+    [Fact]\n+    public async Task Search_memory_prefers_semantic_relevance_over_higher_salience_noise()\n+    {\n+        var seed = await SeedMembershipWithAgentAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory\", new\n+        {\n+            memoryType = \"company_memory\",\n+            summary = \"Expense reimbursements above ten thousand dollars require controller review.\",\n+            salience = 0.45m\n+        });\n+\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory\", new\n+        {\n+            memoryType = \"company_memory\",\n+            summary = \"The office coffee machine uses a higher quality filter and should be cleaned daily.\",\n+            salience = 1.00m\n+        });\n+\n+        var result = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory/search\", new\n+        {\n+            queryText = \"Expense reimbursements above ten thousand dollars require controller review.\",\n+            limit = 5\n+        });\n+\n+        var payload = await result.Content.ReadFromJsonAsync<MemorySearchResponse>();\n+        Assert.NotNull(payload);\n+        Assert.Equal(\"Expense reimbursements above ten thousand dollars require controller review.\", payload!.Items[0].Summary);\n+    }\n+\n     [Fact]\n     public async Task Expire_and_delete_memory_items_enforce_tenant_boundaries()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "ays.\",\n-            salience = 0.30m\n+            summary = \"Office snacks are restocked on Thursdays and the break room budget is tracked weekly.\",\n+            salience = 1.00m\n         });\n \n         await otherClient.PostAsJsonAsync($\"/api/companies/{otherCompany.CompanyId}/memory\", new\n@@ -381,6 +489,33 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac\n         Assert.All(payload.Items, item => Assert.Equal(seed.CompanyId, item.CompanyId));\n     }\n \n+    [Fact]\n+    public async Task Search_memory_prefers_semantic_relevance_over_higher_salience_noise()\n+    {\n+        var seed = await SeedMembershipWithAgentAsync();\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory\", new\n+        {\n+            memoryType = \"company_memory\",\n+            summary = \"Expense reimbursements above ten thousand dollars require controller review.\",\n+            salience = 0.45m\n+        });\n+\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory\", new\n+        {\n+            memoryType = \"company_memory\",\n+            summary = \"The office coffee machine uses a higher quality filter and should be cleaned daily.\",\n+            salience = 1.00m\n+        });\n+\n+        var result = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/memory/search\", new\n+        {\n+            queryText = \"Expense reimbursements above ten thousand dollars require controller review.\",\n+            limit = 5\n+        });\n+\n+        var payload = await result.Content.ReadFromJsonAsync<MemorySearchResponse>();\n+        Assert.NotNull(payload);\n+        Assert.Equal(\"Expense reimbursements above ten thousand dollars require controller review.\", payload!.Items[0].Summary);\n+    }\n+\n     [Fact]\n     public async Task Expire_and_delete_memory_items_enforce_tenant_boundaries()\n     {\nEND_OF_PATCH\ntokens used\n273,042\n",
+  "verbosityMode": "verbose"
+}

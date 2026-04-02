@@ -1,0 +1,317 @@
+diff --git a/src/VirtualCompany.Application/Memory/MemoryContracts.cs b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+--- a/src/VirtualCompany.Application/Memory/MemoryContracts.cs
++++ b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+@@ -49,8 +49,31 @@ public sealed record MemoryRetrievalRequest(
+     bool IncludeCompanyWide = true,
+     string? Scope = null);
+ 
+-public sealed record ExpireMemoryItemCommand(DateTime? ValidToUtc, string? Reason = null);
+-public sealed record DeleteMemoryItemCommand(string? Reason = null);
++public static class MemoryDeletionModes
++{
++    public const string SoftDelete = "soft_delete";
++    public const string HardDelete = "hard_delete";
++}
++
++// Lifecycle commands carry the tenant/resource identity so mutation paths can stay
++// company-scoped while leaving room for future privacy policy inputs.
++public sealed record ExpireMemoryItemCommand
++{
++    public Guid CompanyId { get; init; }
++    public Guid MemoryItemId { get; init; }
++    public DateTime? ValidToUtc { get; init; }
++    public string? Reason { get; init; }
++    public string? PolicyContext { get; init; }
++}
++
++public sealed record DeleteMemoryItemCommand
++{
++    public Guid CompanyId { get; init; }
++    public Guid MemoryItemId { get; init; }
++    public string? Reason { get; init; }
++    public string DeletionMode { get; init; } = MemoryDeletionModes.SoftDelete;
++    public string? PolicyContext { get; init; }
++}
+ 
+ public sealed record MemoryItemDto(
+     Guid Id,
+@@ -84,8 +107,8 @@ public interface ICompanyMemoryService
+ {
+     Task<MemoryItemDto?> GetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken);
+     Task<MemoryItemDto> CreateAsync(Guid companyId, CreateMemoryItemCommand command, CancellationToken cancellationToken);
+     Task<MemorySearchResultDto> SearchAsync(Guid companyId, MemorySearchFilters filters, CancellationToken cancellationToken);
+-    Task<MemoryItemDto> ExpireAsync(Guid companyId, Guid memoryId, ExpireMemoryItemCommand command, CancellationToken cancellationToken);
+-    Task DeleteAsync(Guid companyId, Guid memoryId, DeleteMemoryItemCommand command, CancellationToken cancellationToken);
++    Task<MemoryItemDto> ExpireAsync(ExpireMemoryItemCommand command, CancellationToken cancellationToken);
++    Task DeleteAsync(DeleteMemoryItemCommand command, CancellationToken cancellationToken);
+ }
+ 
+ public interface IMemoryRetrievalService
+diff --git a/src/VirtualCompany.Api/Controllers/MemoryController.cs b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+--- a/src/VirtualCompany.Api/Controllers/MemoryController.cs
++++ b/src/VirtualCompany.Api/Controllers/MemoryController.cs
+@@ -142,10 +142,15 @@ public sealed class MemoryController : ControllerBase
+     public async Task<ActionResult<MemoryItemDto>> ExpireAsync(Guid companyId, Guid memoryId, [FromBody] ExpireMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _memoryService.ExpireAsync(companyId, memoryId, command, cancellationToken));
++            var tenantScopedCommand = command with
++            {
++                CompanyId = companyId,
++                MemoryItemId = memoryId
++            };
++
++            return Ok(await _memoryService.ExpireAsync(tenantScopedCommand, cancellationToken));
+         }
+         catch (MemoryValidationException ex)
+         {
+             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+@@ -173,7 +178,13 @@ public sealed class MemoryController : ControllerBase
+     {
+         try
+         {
+-            await _memoryService.DeleteAsync(companyId, memoryId, command ?? new DeleteMemoryItemCommand(), cancellationToken);
++            var tenantScopedCommand = (command ?? new DeleteMemoryItemCommand()) with
++            {
++                CompanyId = companyId,
++                MemoryItemId = memoryId
++            };
++
++            await _memoryService.DeleteAsync(tenantScopedCommand, cancellationToken);
+             return NoContent();
+         }
+         catch (MemoryValidationException ex)
+diff --git a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+--- a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
++++ b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+@@ -104,25 +104,24 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         EnsureCompanyId(companyId);
+         var criteria = await ValidateAndNormalizeFiltersAsync(companyId, filters, cancellationToken);
+         return await ExecuteSearchAsync(criteria, includeTotalCount: true, cancellationToken);
+     }
+ 
+-    public async Task<MemoryItemDto> ExpireAsync(Guid companyId, Guid memoryId, ExpireMemoryItemCommand command, CancellationToken cancellationToken)
++    public async Task<MemoryItemDto> ExpireAsync(ExpireMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(companyId);
+-        var item = await _dbContext.MemoryItems
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+-
+-        if (item is null)
+-        {
+-            throw new KeyNotFoundException("Memory item not found.");
+-        }
++        EnsureCompanyId(command.CompanyId);
++        EnsureMemoryItemId(command.MemoryItemId);
++        ValidateLifecycleMetadataValue(nameof(command.Reason), command.Reason);
++        ValidateLifecycleMetadataValue(nameof(command.PolicyContext), command.PolicyContext);
+ 
+-        ValidateLifecycleReason(nameof(command.Reason), command.Reason);
++        var item = await RequireLifecycleTargetAsync(command.CompanyId, command.MemoryItemId, cancellationToken);
+ 
+         var membership = await EnsureLifecycleAccessAsync(
+-            companyId,
++            command.CompanyId,
+             MemoryLifecycleAction.Expire,
+             item,
+             command.Reason,
+             cancellationToken);
+ 
+         var previousValidToUtc = item.ValidToUtc;
+@@ -145,32 +144,28 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         }
+ 
+         await WriteLifecycleAuditEventAsync(
+-            companyId,
++            command.CompanyId,
+             membership,
+             item,
+             MemoryLifecycleAction.Expire,
+             AuditEventOutcomes.Succeeded,
+             command.Reason,
+             previousValidToUtc,
++            command.PolicyContext,
+             cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(item);
+     }
+ 
+-    public async Task DeleteAsync(Guid companyId, Guid memoryId, DeleteMemoryItemCommand command, CancellationToken cancellationToken)
++    public async Task DeleteAsync(DeleteMemoryItemCommand command, CancellationToken cancellationToken)
+     {
+-        EnsureCompanyId(companyId);
+-        var item = await _dbContext.MemoryItems
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == memoryId, cancellationToken);
+-
+-        if (item is null)
+-        {
+-            throw new KeyNotFoundException("Memory item not found.");
+-        }
+-
+-        ValidateLifecycleReason(nameof(command.Reason), command.Reason);
++        EnsureCompanyId(command.CompanyId);
++        EnsureMemoryItemId(command.MemoryItemId);
++        ValidateLifecycleMetadataValue(nameof(command.Reason), command.Reason);
++        ValidateLifecycleMetadataValue(nameof(command.PolicyContext), command.PolicyContext);
++        ValidateDeletionMode(nameof(command.DeletionMode), command.DeletionMode);
+ 
++        var item = await RequireLifecycleTargetAsync(command.CompanyId, command.MemoryItemId, cancellationToken);
+         var membership = await EnsureLifecycleAccessAsync(
+-            companyId,
++            command.CompanyId,
+             MemoryLifecycleAction.Delete,
+             item,
+             command.Reason,
+@@ -179,12 +174,13 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         item.Delete(AuditActorTypes.User, membership.UserId, command.Reason);
+ 
+         await WriteLifecycleAuditEventAsync(
+-            companyId,
++            command.CompanyId,
+             membership,
+             item,
+             MemoryLifecycleAction.Delete,
+             AuditEventOutcomes.Succeeded,
+             command.Reason,
++            policyContext: command.PolicyContext,
+             cancellationToken: cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -806,6 +802,21 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         }
+     }
+ 
++    // Keep tenant-scoped lifecycle resolution in one place so future retention, legal hold,
++    // and policy-based deletion checks can plug into the mutation path without redesign.
++    private async Task<MemoryItem> RequireLifecycleTargetAsync(Guid companyId, Guid memoryId, CancellationToken cancellationToken)
++    {
++        var item = await _dbContext.MemoryItems
++            .Where(x => x.CompanyId == companyId)
++            .SingleOrDefaultAsync(x => x.Id == memoryId, cancellationToken);
++
++        if (item is null)
++        {
++            throw new KeyNotFoundException("Memory item not found.");
++        }
++
++        return item;
++    }
++
+     private async Task<ResolvedCompanyMembershipContext> EnsureManagerAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+@@ -860,6 +871,7 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         MemoryLifecycleAction action,
+         string outcome,
+         string? rationale,
++        string? policyContext = null,
+         DateTime? previousValidToUtc = null,
+         CancellationToken cancellationToken = default)
+     {
+@@ -870,7 +882,8 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+             ["agentId"] = item.AgentId?.ToString("D"),
+             ["previousValidToUtc"] = previousValidToUtc?.ToString("O"),
+             ["validToUtc"] = item.ValidToUtc?.ToString("O"),
+             ["deletedUtc"] = item.DeletedUtc?.ToString("O"),
++            ["policyContext"] = PrepareMetadataValue(policyContext),
+             ["policyRole"] = membership.MembershipRole.ToStorageValue()
+         };
+ 
+@@ -889,10 +902,22 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+             cancellationToken);
+     }
+ 
+-    private static void ValidateLifecycleReason(string key, string? reason)
++    private static void ValidateLifecycleMetadataValue(string key, string? value)
+     {
+-        if (!string.IsNullOrWhiteSpace(reason) && reason.Trim().Length > AuditMetadataValueMaxLength)
++        if (!string.IsNullOrWhiteSpace(value) && value.Trim().Length > AuditMetadataValueMaxLength)
+         {
+             throw CreateValidationException(key, $"{key} must be {AuditMetadataValueMaxLength} characters or fewer.");
+         }
+     }
++
++    private static void ValidateDeletionMode(string key, string? deletionMode)
++    {
++        var normalizedMode = string.IsNullOrWhiteSpace(deletionMode)
++            ? MemoryDeletionModes.SoftDelete
++            : deletionMode.Trim();
++
++        if (!string.Equals(normalizedMode, MemoryDeletionModes.SoftDelete, StringComparison.OrdinalIgnoreCase))
++        {
++            throw CreateValidationException(key, $"Only '{MemoryDeletionModes.SoftDelete}' is currently supported.");
++        }
++    }
+@@ -1062,6 +1087,14 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+     }
++
++    private static void EnsureMemoryItemId(Guid memoryId)
++    {
++        if (memoryId == Guid.Empty)
++        {
++            throw new ArgumentException("MemoryItemId is required.", nameof(memoryId));
++        }
++    }
+ 
+     private static void AddParameter(DbCommand command, string name, object? value)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -699,6 +699,46 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Equal(HttpStatusCode.Forbidden, deniedDelete.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Delete_memory_items_within_tenant_supports_company_wide_and_agent_specific_scope()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        var companyWideMemoryId = Guid.NewGuid();
++        var agentScopedMemoryId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(companyWideMemoryId, seed.CompanyId, null, MemoryType.CompanyMemory, "Company-wide memory item", null, null, 0.80m, DateTime.UtcNow.AddDays(-1), null),
++                new MemoryItem(agentScopedMemoryId, seed.CompanyId, seed.AgentId, MemoryType.Preference, "Agent-specific memory item", null, null, 0.75m, DateTime.UtcNow.AddDays(-1), null));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var companyWideDelete = await client.SendAsync(CreateDeleteMemoryRequest(
++            seed.CompanyId,
++            companyWideMemoryId,
++            "Company-wide memory must stay tenant-scoped."));
++        var agentScopedDelete = await client.SendAsync(CreateDeleteMemoryRequest(
++            seed.CompanyId,
++            agentScopedMemoryId,
++            "Agent-specific memory must stay tenant-scoped."));
++
++        Assert.Equal(HttpStatusCode.NoContent, companyWideDelete.StatusCode);
++        Assert.Equal(HttpStatusCode.NoContent, agentScopedDelete.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var storedItems = await dbContext.MemoryItems
++            .AsNoTracking()
++            .Where(x => x.CompanyId == seed.CompanyId && (x.Id == companyWideMemoryId || x.Id == agentScopedMemoryId))
++            .ToListAsync();
++
++        Assert.Equal(2, storedItems.Count);
++        Assert.Contains(storedItems, item => item.Id == companyWideMemoryId && item.AgentId is null && item.DeletedUtc.HasValue && item.DeletionReason == "Company-wide memory must stay tenant-scoped.");
++        Assert.Contains(storedItems, item => item.Id == agentScopedMemoryId && item.AgentId == seed.AgentId && item.DeletedUtc.HasValue && item.DeletionReason == "Agent-specific memory must stay tenant-scoped.");
++    }
++
+     [Fact]
+     public async Task Expire_and_delete_memory_items_enforce_tenant_boundaries()
+     {
+END_OF_PATCH

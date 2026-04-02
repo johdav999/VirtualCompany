@@ -13,6 +13,7 @@ using VirtualCompany.Application.Auditing;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
+using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Persistence;
 using Xunit;
 
@@ -58,7 +59,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.Equal(seed.CompanyId, payload.AccessScope.CompanyId);
         Assert.Equal("scan_clean", payload.IngestionStatus);
         Assert.Null(payload.FailureCode);
-        Assert.True(payload.StorageKey.StartsWith($"companies/{seed.CompanyId:N}/knowledge/", StringComparison.OrdinalIgnoreCase));
+        Assert.StartsWith($"companies/{seed.CompanyId:N}/knowledge/", payload.StorageKey, StringComparison.OrdinalIgnoreCase);
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
@@ -484,6 +485,83 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.Equal("blocked", document.Metadata["virus_scan"]!["outcome"]!.GetValue<string>());
     }
 
+    [Fact]
+    public async Task Semantic_search_endpoint_returns_chunk_content_and_source_reference_for_company_scope()
+    {
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var otherDocumentId = Guid.NewGuid();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var embeddingGenerator = scope.ServiceProvider.GetRequiredService<IEmbeddingGenerator>();
+            var embeddings = await embeddingGenerator.GenerateAsync(
+                ["secure remote payroll submission policy", "expense reimbursement handbook"],
+                CancellationToken.None);
+
+            await _factory.SeedAsync(dbContext =>
+            {
+                dbContext.Users.Add(new User(userId, "searcher@example.com", "Searcher", "dev-header", "semantic-searcher"));
+                dbContext.Companies.AddRange(new Company(companyId, "Search Company"), new Company(otherCompanyId, "Other Company"));
+                dbContext.CompanyMemberships.Add(
+                    new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+
+                var document = CreateIndexedDocument(companyId, documentId, "Payroll Guide");
+                var otherDocument = CreateIndexedDocument(otherCompanyId, otherDocumentId, "Expense Guide");
+
+                dbContext.CompanyKnowledgeDocuments.AddRange(document, otherDocument);
+                dbContext.CompanyKnowledgeChunks.AddRange(
+                    new CompanyKnowledgeChunk(
+                        Guid.NewGuid(),
+                        companyId,
+                        documentId,
+                        1,
+                        0,
+                        "secure remote payroll submission policy",
+                        KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[0].Values),
+                        embeddings.Provider,
+                        embeddings.Model,
+                        embeddings.ModelVersion,
+                        embeddings.Dimensions,
+                        new Dictionary<string, JsonNode?> { ["section"] = JsonValue.Create("payroll") },
+                        "payroll-guide#chunk-1"),
+                    new CompanyKnowledgeChunk(
+                        Guid.NewGuid(),
+                        otherCompanyId,
+                        otherDocumentId,
+                        1,
+                        0,
+                        "expense reimbursement handbook",
+                        KnowledgeEmbeddingSerializer.Serialize(embeddings.Embeddings[1].Values),
+                        embeddings.Provider,
+                        embeddings.Model,
+                        embeddings.ModelVersion,
+                        embeddings.Dimensions,
+                        new Dictionary<string, JsonNode?> { ["section"] = JsonValue.Create("expenses") },
+                        "expense-guide#chunk-1"));
+
+                return Task.CompletedTask;
+            });
+        }
+
+        using var client = CreateAuthenticatedClient("semantic-searcher", "searcher@example.com", "Searcher");
+        var response = await client.GetFromJsonAsync<List<SemanticSearchResponse>>($"/api/companies/{companyId}/documents/semantic-search?q=secure%20remote%20payroll%20submission%20policy&top=3");
+        var result = Assert.Single(response!);
+        Assert.Equal(documentId, result.DocumentId);
+        Assert.Equal("Payroll Guide", result.DocumentTitle);
+        Assert.NotNull(result.SourceReferenceInfo);
+        Assert.Equal(documentId, result.SourceReferenceInfo!.DocumentId);
+        Assert.Equal("Payroll Guide", result.SourceReferenceInfo.DocumentTitle);
+        Assert.Equal("policy", result.SourceReferenceInfo.DocumentType);
+        Assert.Equal("upload", result.SourceReferenceInfo.SourceType);
+        Assert.Equal(result.ChunkIndex, result.SourceReferenceInfo.ChunkIndex);
+        Assert.Equal(result.SourceReference, result.SourceReferenceInfo.ChunkSourceReference);
+        Assert.Equal("payroll-guide#chunk-1", result.SourceReference);
+        Assert.Equal("secure remote payroll submission policy", result.Content);
+    }
+
     private MultipartFormDataContent CreateUploadContent(
         string title,
         string documentType,
@@ -539,6 +617,28 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
     private sealed record SeededMembership(Guid UserId, Guid CompanyId);
     private sealed record SeededDocument(Guid CompanyId, Guid DocumentId);
 
+    private static CompanyKnowledgeDocument CreateIndexedDocument(Guid companyId, Guid documentId, string title)
+    {
+        var document = new CompanyKnowledgeDocument(
+            documentId,
+            companyId,
+            title,
+            CompanyKnowledgeDocumentType.Policy,
+            $"companies/{companyId:N}/knowledge/{documentId:N}/policy.txt",
+            null,
+            "policy.txt",
+            "text/plain",
+            ".txt",
+            64,
+            accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
+
+        document.MarkScanClean();
+        document.MarkProcessing();
+        document.MarkProcessed();
+        document.MarkIndexed(title, 1, 1, "test-provider", "test", "v1", 256, "seed-fingerprint-v1");
+        return document;
+    }
+
     private async Task<SeededDocument> SeedUploadedDocumentAsync()
     {
         var userId = Guid.NewGuid();
@@ -585,6 +685,29 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         public string? FailureMessage { get; set; }
         public string? FailureAction { get; set; }
         public bool CanRetry { get; set; }
+    }
+
+    private sealed class SemanticSearchResponse
+    {
+        public Guid DocumentId { get; set; }
+        public string DocumentTitle { get; set; } = string.Empty;
+        public string Content { get; set; } = string.Empty;
+        public string SourceReference { get; set; } = string.Empty;
+        public int ChunkIndex { get; set; }
+        public double Score { get; set; }
+        public SourceReferenceInfoResponse? SourceReferenceInfo { get; set; }
+    }
+
+    private sealed class SourceReferenceInfoResponse
+    {
+        public Guid DocumentId { get; set; }
+        public string DocumentTitle { get; set; } = string.Empty;
+        public string DocumentType { get; set; } = string.Empty;
+        public string SourceType { get; set; } = string.Empty;
+        public string? SourceRef { get; set; }
+        public Guid ChunkId { get; set; }
+        public int ChunkIndex { get; set; }
+        public string ChunkSourceReference { get; set; } = string.Empty;
     }
 
     private sealed class AccessScopeResponse

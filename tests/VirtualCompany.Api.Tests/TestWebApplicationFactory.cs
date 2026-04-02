@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
@@ -11,6 +12,7 @@ using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -29,7 +31,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+                [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
+                [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
+                [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
                 [$"{ObservabilityOptions.SectionName}:ObjectStorage:Enabled"] = "false"
             });
         });
@@ -199,6 +204,21 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
         public void FailNext(int count = 1) =>
             Interlocked.Exchange(ref _remainingFailures, Math.Max(0, count));
+
+        public void Seed(string storageKey, string content) =>
+            _storedObjects[storageKey] = Encoding.UTF8.GetBytes(content);
+
+        public Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_storedObjects.TryGetValue(storageKey, out var bytes))
+            {
+                throw new FileNotFoundException("Configured document object was not found.", storageKey);
+            }
+
+            Stream stream = new MemoryStream(bytes, writable: false);
+            return Task.FromResult(stream);
+        }
 
         public async Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken)
         {

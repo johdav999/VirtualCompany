@@ -234,6 +234,7 @@ public sealed class CompanyDocumentIngestionStatusService : ICompanyDocumentInge
             ["failureAction"] = document.FailureAction,
             ["canRetry"] = document.CanRetry ? "true" : "false",
             ["failureCode"] = document.FailureCode,
+            ["indexingStatus"] = document.IndexingStatus.ToStorageValue(),
             ["storageKey"] = document.StorageKey
         };
 

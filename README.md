@@ -29,9 +29,9 @@ VirtualCompany/
     VirtualCompany.Api.Tests/
 ```
 
-## Local Database Setup (Docker SQL Server)
+## Local Database Setup (Docker PostgreSQL + pgvector)
 
-This solution includes a Docker Compose setup for a local SQL Server 2022 instance for application development.
+This solution includes a Docker Compose setup for a local PostgreSQL instance for application development. Semantic retrieval stores document chunk embeddings in PostgreSQL `knowledge_chunks` using the `pgvector` extension.
 
 ### Prerequisite: Docker Desktop on Windows
 
@@ -68,21 +68,21 @@ docker compose down
 If startup fails:
 
 ```powershell
-docker logs virtualcompany-sqlserver
+docker logs virtualcompany-postgres
 ```
 
 ### Connect to the database
 
 - Host: `localhost`
-- Port: `1433`
+- Port: `5432`
 - Database: `virtualcompany`
-- User: `sa`
-- Password: `YourStrong!Passw0rd`
+- User: `postgres`
+- Password: `postgres`
 
 ### Sample connection string
 
 ```text
-Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True
+Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true
 ```
 
 ### Start the API against local Docker SQL Server
@@ -93,7 +93,7 @@ Once the container is running, start the API from the solution root:
 dotnet run --project src/VirtualCompany.Api
 ```
 
-The API applies EF Core migrations automatically on startup for relational providers.
+The API enables the `vector` extension on PostgreSQL startup and ensures the current schema exists for local development.
 Baseline `agent_templates` catalog records are seeded through EF Core model seeding and migrations, not API startup writes.
 
 ## Local Development Authentication
@@ -178,6 +178,24 @@ Supported upload formats for the initial rollout are `.txt`, `.md`, `.pdf`, `.do
 Local document storage defaults to `App_Data/object-storage` under the API content root. Configure `CompanyDocuments:MaxUploadBytes`, `CompanyDocuments:Storage:RootPath`, and optionally `CompanyDocuments:Storage:BaseUri` in API settings as needed.
 Successful uploads persist the blob to object storage, save tenant-scoped metadata in PostgreSQL, and pass through an explicit virus-scan gate before downstream processing. The current infrastructure registers a placeholder scanner implementation so new documents move through `uploaded`, `pending_scan`, and usually `scan_clean` without requiring a real antivirus product yet. Future processing workers must only continue from `scan_clean`. The API exposes `ingestion_status`, `failure_code`, `failure_message`, `failure_action`, `can_retry`, and `failed_utc` for tenant-scoped troubleshooting, and scan metadata is stored in the document metadata payload to keep the pipeline extension point explicit.
 
+## Knowledge Chunking And Semantic Retrieval
+
+When a knowledge document reaches `scan_clean` or `processed`, the background indexing worker can:
+
+- load extracted text from persisted document metadata or the original plain-text object
+- split the document into deterministic overlapping chunks
+- generate embeddings for each chunk
+- persist active chunk rows into `knowledge_chunks` scoped by `company_id`
+- deactivate the prior chunk set on re-index so retries and re-ingestion do not duplicate active chunks
+
+Configuration lives in API settings:
+
+- `KnowledgeChunking:*` controls chunk size, overlap, max chunk count, and strategy version metadata
+- `KnowledgeEmbeddings:*` controls the embedding provider, base URL, API key, model, optional model version, and vector dimensions
+- `KnowledgeIndexing:*` controls the background indexing worker
+
+Semantic search is available at `GET /api/companies/{companyId}/documents/semantic-search?q=...&top=5` and returns chunk content, similarity score, chunk index, source reference, and the source document title/id for the resolved tenant only.
+
 ## Authorization Behavior
 
 - Active membership is required for company-scoped access.
@@ -187,10 +205,9 @@ Successful uploads persist the blob to object storage, save tenant-scoped metada
 
 ## Notes
 
-- The local database container uses the `mcr.microsoft.com/mssql/server:2022-latest` image.
-- Data is persisted in the named Docker volume `sqlserver-data`.
-- SQL Server startup can take a short time on first boot; if API startup fails immediately after `docker compose up -d`, check the container logs and retry once the server is ready.
-- Local development is standardized on SQL Server in Docker. The intended production target is Azure SQL.
+- The local database container uses PostgreSQL and the API expects the `pgvector` extension to be available.
+- Data is persisted in the named Docker volume configured in `docker-compose.yml`.
+- PostgreSQL startup can take a short time on first boot; if API startup fails immediately after `docker compose up -d`, check the container logs and retry once the server is ready.
 - The API applies EF Core migrations at startup when using a relational provider.
 - Baseline hiring templates in `agent_templates` are versioned in source and delivered through EF Core migrations.
 - The web offline hiring/catalog fallback reads bundled template JSON from `src/VirtualCompany.Web/wwwroot/offline/agent-templates.json` instead of hardcoded role defaults in code.

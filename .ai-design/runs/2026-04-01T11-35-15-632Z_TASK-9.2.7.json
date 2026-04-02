@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-9.2.7",
+  "promptPath": ".ai-design/prompts/TASK-9.2.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-01T11:35:15.632Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-01T11-35-15-632Z_TASK-9.2.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-01T11-35-15-632Z_TASK-9.2.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-01T11:47:02.311Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "              embeddings.Provider,\n+                    embeddings.Model,\n+                    embeddings.ModelVersion,\n+                    embeddings.Dimensions,\n+                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),\n+                    \"restricted#chunk-1\"));\n+\n+            await Task.CompletedTask;\n+        });\n+\n+        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();\n+        var results = await searchService.SearchAsync(\n+            new CompanyKnowledgeSemanticSearchQuery(companyId, \"payroll policy for remote employees\", 1),\n+            CancellationToken.None);\n+\n+        var result = Assert.Single(results);\n+        Assert.Equal(\"Accessible Expense Guide\", result.DocumentTitle);\n+        Assert.DoesNotContain(results, item => item.DocumentTitle == \"Restricted Payroll Handbook\");\n+    }\n+\n     [Fact]\n     public async Task Semantic_search_honors_caller_scope_context_for_scoped_documents()\n     {\n         var companyId = Guid.NewGuid();\n@@ -273,6 +421,19 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp\n         Assert.Equal(\"finance#chunk-1\", result.SourceReference);\n     }\n \n+    [Fact]\n+    public async Task Semantic_search_rejects_invalid_top_n_before_retrieval()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();\n+\n+        var exception = await Assert.ThrowsAsync<CompanyKnowledgeSearchValidationException>(() =>\n+            searchService.SearchAsync(\n+                new CompanyKnowledgeSemanticSearchQuery(Guid.NewGuid(), \"payroll policy\", 0),\n+                CancellationToken.None));\n+\n+        Assert.Equal(\"TopN must be between 1 and 20.\", exception.Message);\n+    }\n+\n     [Fact]\n     public async Task Process_pending_async_claims_and_indexes_a_queued_document()\n     {\n         _factory.DocumentStorage.Reset();\nEND_OF_PATCH\n",
+  "stderrTail": "ings.Provider,\n+                    embeddings.Model,\n+                    embeddings.ModelVersion,\n+                    embeddings.Dimensions,\n+                    new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),\n+                    \"restricted#chunk-1\"));\n+\n+            await Task.CompletedTask;\n+        });\n+\n+        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();\n+        var results = await searchService.SearchAsync(\n+            new CompanyKnowledgeSemanticSearchQuery(companyId, \"payroll policy for remote employees\", 1),\n+            CancellationToken.None);\n+\n+        var result = Assert.Single(results);\n+        Assert.Equal(\"Accessible Expense Guide\", result.DocumentTitle);\n+        Assert.DoesNotContain(results, item => item.DocumentTitle == \"Restricted Payroll Handbook\");\n+    }\n+\n     [Fact]\n     public async Task Semantic_search_honors_caller_scope_context_for_scoped_documents()\n     {\n         var companyId = Guid.NewGuid();\n@@ -273,6 +421,19 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp\n         Assert.Equal(\"finance#chunk-1\", result.SourceReference);\n     }\n \n+    [Fact]\n+    public async Task Semantic_search_rejects_invalid_top_n_before_retrieval()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();\n+\n+        var exception = await Assert.ThrowsAsync<CompanyKnowledgeSearchValidationException>(() =>\n+            searchService.SearchAsync(\n+                new CompanyKnowledgeSemanticSearchQuery(Guid.NewGuid(), \"payroll policy\", 0),\n+                CancellationToken.None));\n+\n+        Assert.Equal(\"TopN must be between 1 and 20.\", exception.Message);\n+    }\n+\n     [Fact]\n     public async Task Process_pending_async_claims_and_indexes_a_queued_document()\n     {\n         _factory.DocumentStorage.Reset();\nEND_OF_PATCH\ntokens used\n138,265\n",
+  "verbosityMode": "verbose"
+}

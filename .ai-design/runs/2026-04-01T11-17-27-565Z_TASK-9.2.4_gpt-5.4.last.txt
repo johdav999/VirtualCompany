@@ -1,0 +1,590 @@
+diff --git a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/KnowledgeDocumentEntities.cs
+@@ -48,6 +48,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.NotIndexed;
+         CurrentChunkSetVersion = 0;
+         ActiveChunkCount = 0;
++        CurrentChunkSetFingerprint = null;
+         UpdatedUtc = CreatedUtc;
+         UploadedUtc = CreatedUtc;
+     }
+@@ -87,6 +88,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+     public int? EmbeddingDimensions { get; private set; }
+     public int CurrentChunkSetVersion { get; private set; }
+     public int ActiveChunkCount { get; private set; }
++    public string? CurrentChunkSetFingerprint { get; private set; }
+     public bool CanRetry { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -264,7 +266,8 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         int activeChunkCount,
+         string embeddingModel,
+         string? embeddingModelVersion,
+-        int embeddingDimensions)
++        int embeddingDimensions,
++        string chunkSetFingerprint)
+     {
+         if (chunkSetVersion <= 0)
+         {
+@@ -281,6 +284,7 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         EmbeddingModel = NormalizeRequired(embeddingModel, nameof(embeddingModel), 200);
+         EmbeddingModelVersion = NormalizeOptional(embeddingModelVersion, nameof(embeddingModelVersion), 100);
+         EmbeddingDimensions = embeddingDimensions > 0 ? embeddingDimensions : throw new ArgumentOutOfRangeException(nameof(embeddingDimensions));
++        CurrentChunkSetFingerprint = NormalizeRequired(chunkSetFingerprint, nameof(chunkSetFingerprint), 128);
+         IndexedUtc = DateTime.UtcNow;
+         ClearIndexingFailure();
+         UpdatedUtc = IndexedUtc.Value;
+@@ -309,6 +313,22 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
+         return true;
+     }
+ 
++    public bool HasIndexedChunkSet() =>
++        CurrentChunkSetVersion > 0 &&
++        ActiveChunkCount > 0 &&
++        !string.IsNullOrWhiteSpace(EmbeddingModel) &&
++        EmbeddingDimensions is > 0;
++
++    public void RestoreIndexedChunkSet()
++    {
++        if (!HasIndexedChunkSet())
++        {
++            throw new InvalidOperationException("An indexed chunk set is required before the document can be restored to indexed state.");
++        }
++
++        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.Indexed;
++        ClearIndexingFailure();
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void SetExtractedText(string extractedText) =>
+         ExtractedText = NormalizeExtractedText(extractedText);
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -1,4 +1,5 @@
+ using System.Data.Common;
++using System.Data;
+ using System.Net.Http.Json;
+ using System.Security.Cryptography;
+ using System.Text;
+@@ -449,32 +450,57 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                 throw new InvalidOperationException("Embedding generation did not return a vector for every chunk.");
+             }
+ 
+-            var nextVersion = document.CurrentChunkSetVersion + 1;
+-
+-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+-
+-            var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
+-                .IgnoreQueryFilters()
+-                .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
+-                .ToListAsync(cancellationToken);
+-
+-            foreach (var currentActiveChunk in currentActiveChunks)
+-            {
+-                currentActiveChunk.Deactivate();
+-            }
+-
+-            if (IsPostgreSql())
+-            {
+-                await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
+-            }
+-            else
++            var chunkSetFingerprint = ComputeChunkSetFingerprint(chunkDrafts, embeddingBatch);
++
++            try
+             {
+-                _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
+-            }
++                await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
++                await LockDocumentForActivationAsync(companyId, documentId, cancellationToken);
++                await _dbContext.Entry(document).ReloadAsync(cancellationToken);
++
++                var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
++                    .IgnoreQueryFilters()
++                    .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
++                    .ToListAsync(cancellationToken);
++
++                if (CanReuseCurrentChunkSet(document, currentActiveChunks, chunkDrafts.Count, chunkSetFingerprint))
++                {
++                    document.SetExtractedText(extractedText);
++                    document.Metadata.Remove("last_indexing_failure");
++                    if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++                    {
++                        document.MarkProcessed();
++                    }
++
++                    document.MarkIndexed(
++                        extractedText,
++                        document.CurrentChunkSetVersion,
++                        currentActiveChunks.Count,
++                        embeddingBatch.Model,
++                        embeddingBatch.ModelVersion,
++                        embeddingBatch.Dimensions,
++                        chunkSetFingerprint);
++
++                    await _dbContext.SaveChangesAsync(cancellationToken);
++                    await transaction.CommitAsync(cancellationToken);
++                    return;
++                }
++
++                var nextVersion = document.CurrentChunkSetVersion + 1;
++
++                foreach (var currentActiveChunk in currentActiveChunks)
++                {
++                    currentActiveChunk.Deactivate();
++                }
++
++                if (IsPostgreSql())
++                {
++                    await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
++                }
++                else
++                {
++                    _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
++                }
+ 
+-            document.SetExtractedText(extractedText);
+-            if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+-            {
+-                document.MarkProcessed();
+-            }
++                document.SetExtractedText(extractedText);
++                document.Metadata.Remove("last_indexing_failure");
++                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
++                {
++                    document.MarkProcessed();
++                }
+ 
+-            document.MarkIndexed(
+-                extractedText,
+-                nextVersion,
+-                chunkDrafts.Count,
+-                embeddingBatch.Model,
+-                embeddingBatch.ModelVersion,
+-                embeddingBatch.Dimensions);
++                document.MarkIndexed(
++                    extractedText,
++                    nextVersion,
++                    chunkDrafts.Count,
++                    embeddingBatch.Model,
++                    embeddingBatch.ModelVersion,
++                    embeddingBatch.Dimensions,
++                    chunkSetFingerprint);
+ 
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-            await transaction.CommitAsync(cancellationToken);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                await transaction.CommitAsync(cancellationToken);
++            }
++            catch (Exception)
++            {
++                if (await TryTreatActivationConflictAsSuccessfulRetryAsync(
++                    companyId,
++                    documentId,
++                    chunkSetFingerprint,
++                    chunkDrafts.Count,
++                    cancellationToken))
++                {
++                    _logger.LogInformation(
++                        "Knowledge document indexing converged on an existing active chunk set. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
++                        companyId,
++                        documentId);
++                    return;
++                }
++
++                throw;
++            }
+ 
+             _logger.LogInformation(
+                 "Knowledge document indexed. CompanyId: {CompanyId}, DocumentId: {DocumentId}, ChunkSetVersion: {ChunkSetVersion}, ChunkCount: {ChunkCount}.",
+@@ -561,7 +587,16 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+                 retryable);
+         }
+ 
+-        document.MarkIndexingFailed("knowledge_indexing_failed", failureMessage);
++        if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed && document.HasIndexedChunkSet())
++        {
++            document.RestoreIndexedChunkSet();
++            document.SetMetadataValue("last_indexing_failure", BuildIndexingFailureMetadata(failureMessage, retryable, exception.Message));
++        }
++        else
++        {
++            document.MarkIndexingFailed("knowledge_indexing_failed", failureMessage);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         _logger.LogWarning(
+@@ -573,6 +608,87 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+             retryable);
+     }
+ 
++    private static JsonObject BuildIndexingFailureMetadata(string failureMessage, bool retryable, string technicalDetail)
++    {
++        return new JsonObject
++        {
++            ["code"] = "knowledge_indexing_failed",
++            ["message"] = failureMessage,
++            ["retryable"] = retryable,
++            ["technical_detail"] = technicalDetail,
++            ["occurred_utc"] = DateTime.UtcNow
++        };
++    }
++
++    private static bool CanReuseCurrentChunkSet(
++        CompanyKnowledgeDocument document,
++        IReadOnlyCollection<CompanyKnowledgeChunk> currentActiveChunks,
++        int expectedChunkCount,
++        string chunkSetFingerprint)
++    {
++        return document.HasIndexedChunkSet() &&
++               document.CurrentChunkSetVersion > 0 &&
++               document.ActiveChunkCount == expectedChunkCount &&
++               currentActiveChunks.Count == expectedChunkCount &&
++               currentActiveChunks.All(chunk => chunk.ChunkSetVersion == document.CurrentChunkSetVersion) &&
++               string.Equals(document.CurrentChunkSetFingerprint, chunkSetFingerprint, StringComparison.Ordinal);
++    }
++
++    private async Task<bool> TryTreatActivationConflictAsSuccessfulRetryAsync(
++        Guid companyId,
++        Guid documentId,
++        string chunkSetFingerprint,
++        int expectedChunkCount,
++        CancellationToken cancellationToken)
++    {
++        _dbContext.ChangeTracker.Clear();
++
++        var document = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
++
++        if (document is null ||
++            document.IndexingStatus != CompanyKnowledgeDocumentIndexingStatus.Indexed ||
++            !document.HasIndexedChunkSet() ||
++            document.ActiveChunkCount != expectedChunkCount ||
++            !string.Equals(document.CurrentChunkSetFingerprint, chunkSetFingerprint, StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        var activeChunkCount = await _dbContext.CompanyKnowledgeChunks
++            .IgnoreQueryFilters()
++            .Where(chunk =>
++                chunk.CompanyId == companyId &&
++                chunk.DocumentId == documentId &&
++                chunk.IsActive &&
++                chunk.ChunkSetVersion == document.CurrentChunkSetVersion)
++            .CountAsync(cancellationToken);
++
++        return activeChunkCount == expectedChunkCount;
++    }
++
++    private async Task LockDocumentForActivationAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
++    {
++        if (!IsPostgreSql())
++        {
++            return;
++        }
++
++        var connection = _dbContext.Database.GetDbConnection();
++        if (connection.State != System.Data.ConnectionState.Open)
++        {
++            await connection.OpenAsync(cancellationToken);
++        }
++
++        await using var command = connection.CreateCommand();
++        command.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
++        command.CommandText =
++            """
++            SELECT 1
++            FROM knowledge_documents
++            WHERE "CompanyId" = @companyId AND "Id" = @documentId
++            FOR UPDATE;
++            """;
++        AddParameter(command, "@companyId", companyId);
++        AddParameter(command, "@documentId", documentId);
++        await command.ExecuteScalarAsync(cancellationToken);
++    }
++
+     private IReadOnlyList<CompanyKnowledgeChunk> BuildChunkEntities(
+         CompanyKnowledgeDocument document,
+         int chunkSetVersion,
+@@ -660,6 +776,27 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
+         return Convert.ToHexString(bytes).ToLowerInvariant();
+     }
+ 
++    private static string ComputeChunkSetFingerprint(
++        IReadOnlyList<KnowledgeChunkDraft> chunkDrafts,
++        EmbeddingBatchResult embeddingBatch)
++    {
++        var builder = new StringBuilder();
++        builder.Append(embeddingBatch.Model)
++            .Append('|')
++            .Append(embeddingBatch.ModelVersion)
++            .Append('|')
++            .Append(embeddingBatch.Dimensions);
++
++        foreach (var chunk in chunkDrafts.OrderBy(chunk => chunk.ChunkIndex))
++        {
++            chunk.Metadata.TryGetValue("strategy", out var strategy);
++            builder.AppendLine()
++                .Append(chunk.ChunkIndex).Append('|')
++                .Append(strategy?.ToJsonString() ?? string.Empty).Append('|')
++                .Append(chunk.SourceReference).Append('|')
++                .Append(ComputeContentHash(chunk.Content));
++        }
++
++        return ComputeContentHash(builder.ToString());
++    }
++
+     private static void AddParameter(DbCommand command, string name, object? value)
+     {
+         var parameter = command.CreateParameter();
+@@ -850,6 +987,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+             WHERE
+                 kc."CompanyId" = @companyId
+                 AND d."CompanyId" = @companyId
++                AND kc."ChunkSetVersion" = d."CurrentChunkSetVersion"
+                 AND kc."IsActive" = TRUE
+                 AND d."IngestionStatus" = 'processed'
+                 AND d."IndexingStatus" = 'indexed'
+@@ -971,6 +1109,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
+             .Where(chunk =>
+                 chunk.CompanyId == companyId &&
+                 chunk.IsActive &&
++                chunk.ChunkSetVersion == chunk.Document.CurrentChunkSetVersion &&
+                 allowedDocumentIds.Contains(chunk.DocumentId))
+             .Select(chunk => new
+             {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -542,6 +542,7 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
+         builder.Property(x => x.IndexingFailureMessage).HasMaxLength(2000);
+         builder.Property(x => x.EmbeddingModel).HasMaxLength(200);
+         builder.Property(x => x.EmbeddingModelVersion).HasMaxLength(100);
++        builder.Property(x => x.CurrentChunkSetFingerprint).HasMaxLength(128);
+         builder.Property(x => x.CurrentChunkSetVersion).HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.ActiveChunkCount).HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.CanRetry).HasDefaultValue(false).IsRequired();
+@@ -579,6 +580,7 @@ internal sealed class CompanyKnowledgeChunkConfiguration : IEntityTypeConfigurat
+         builder.Property(x => x.EmbeddingDimensions).IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.IsActive, x.DocumentId });
++        builder.HasIndex(x => new { x.CompanyId, x.DocumentId, x.ChunkSetVersion, x.IsActive });
+         builder.HasIndex(x => new { x.DocumentId, x.ChunkSetVersion, x.ChunkIndex }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasOne(x => x.Company)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402120000_AddKnowledgeDocumentChunkSetFingerprint.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402120000_AddKnowledgeDocumentChunkSetFingerprint.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260402120000_AddKnowledgeDocumentChunkSetFingerprint.cs
+@@ -0,0 +1,41 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddKnowledgeDocumentChunkSetFingerprint : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "CurrentChunkSetFingerprint",
++                table: "knowledge_documents",
++                maxLength: 128,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_knowledge_chunks_CompanyId_DocumentId_ChunkSetVersion_IsActive",
++                table: "knowledge_chunks",
++                columns: new[] { "CompanyId", "DocumentId", "ChunkSetVersion", "IsActive" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_knowledge_chunks_CompanyId_DocumentId_ChunkSetVersion_IsActive",
++                table: "knowledge_chunks");
++
++            migrationBuilder.DropColumn(
++                name: "CurrentChunkSetFingerprint",
++                table: "knowledge_documents");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyDocumentIngestionIntegrationTests.cs
+@@ -632,7 +632,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
+         document.MarkScanClean();
+         document.MarkProcessing();
+         document.MarkProcessed();
+-        document.MarkIndexed(title, 1, 1, "test", "v1", 256);
++        document.MarkIndexed(title, 1, 1, "test", "v1", 256, "seed-fingerprint-v1");
+         return document;
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/KnowledgeRetrievalIntegrationTests.cs
+@@ -338,6 +338,108 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         Assert.Contains(results, result => result.Content.Contains("secure portal upload", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    [Fact]
++    public async Task Reindexing_failure_keeps_previous_chunk_set_retrievable()
++    {
++        _factory.DocumentStorage.Reset();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var storageKey = $"companies/{companyId:N}/knowledge/{documentId:N}/manual.txt";
++
++        _factory.DocumentStorage.Seed(storageKey, "The current handbook requires badge checks at every entry point.");
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "resilience@example.com", "Resilience", "dev-header", "resilience"));
++            dbContext.Companies.Add(new Company(companyId, "Resilience Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var document = new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Security Handbook",
++                CompanyKnowledgeDocumentType.Reference,
++                storageKey,
++                null,
++                "manual.txt",
++                "text/plain",
++                ".txt",
++                128,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++            document.MarkScanClean();
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            await Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++        var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        _factory.DocumentStorage.Reset();
++
++        using (var requeueScope = _factory.Services.CreateScope())
++        {
++            var dbContext = requeueScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++            document.QueueIndexing();
++            await dbContext.SaveChangesAsync();
++        }
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        using (var verificationScope = _factory.Services.CreateScope())
++        {
++            var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++            var chunks = await dbContext.CompanyKnowledgeChunks.IgnoreQueryFilters()
++                .Where(chunk => chunk.DocumentId == documentId)
++                .OrderBy(chunk => chunk.ChunkSetVersion)
++                .ToListAsync();
++
++            Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.Processed, document.IngestionStatus);
++            Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Indexed, document.IndexingStatus);
++            Assert.Equal(1, document.CurrentChunkSetVersion);
++            Assert.All(chunks, chunk => Assert.True(chunk.IsActive));
++            Assert.All(chunks, chunk => Assert.Equal(1, chunk.ChunkSetVersion));
++        }
++
++        var results = await searchService.SearchAsync(
++            new CompanyKnowledgeSemanticSearchQuery(companyId, "badge checks at every entry point", 5),
++            CancellationToken.None);
++
++        Assert.NotEmpty(results);
++        Assert.Contains(results, result => result.Content.Contains("badge checks", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task Reindexing_same_content_is_idempotent_and_reuses_current_chunk_set()
++    {
++        _factory.DocumentStorage.Reset();
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var storageKey = $"companies/{companyId:N}/knowledge/{documentId:N}/manual.txt";
++
++        _factory.DocumentStorage.Seed(storageKey, "The travel policy requires manager approval for international trips.");
++
++        await _factory.SeedAsync(async dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "dedupe@example.com", "Dedupe", "dev-header", "dedupe"));
++            dbContext.Companies.Add(new Company(companyId, "Dedupe Company"));
++            dbContext.CompanyMemberships.Add(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
++
++            var document = new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Travel Policy",
++                CompanyKnowledgeDocumentType.Policy,
++                storageKey,
++                null,
++                "manual.txt",
++                "text/plain",
++                ".txt",
++                128,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
++            document.MarkScanClean();
++            dbContext.CompanyKnowledgeDocuments.Add(document);
++            await Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        using (var requeueScope = _factory.Services.CreateScope())
++        {
++            var dbContext = requeueScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var document = await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++            document.QueueIndexing();
++            await dbContext.SaveChangesAsync();
++        }
++
++        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
++
++        using var verificationScope = _factory.Services.CreateScope();
++        var verificationDbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var reindexedDocument = await verificationDbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().SingleAsync(x => x.Id == documentId);
++        var chunks = await verificationDbContext.CompanyKnowledgeChunks.IgnoreQueryFilters()
++            .Where(chunk => chunk.DocumentId == documentId)
++            .OrderBy(chunk => chunk.ChunkSetVersion)
++            .ToListAsync();
++
++        Assert.Equal(1, reindexedDocument.CurrentChunkSetVersion);
++        Assert.All(chunks, chunk => Assert.Equal(1, chunk.ChunkSetVersion));
++        Assert.All(chunks, chunk => Assert.True(chunk.IsActive));
++    }
++
+     [Fact]
+     public async Task Indexing_failure_marks_document_failed_when_no_text_is_available()
+     {
+@@ -412,7 +514,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
+         document.MarkScanClean();
+         document.MarkProcessing();
+         document.MarkProcessed();
+-        document.MarkIndexed("payroll policy for remote employees", 1, 1, "test", "v1", 256);
++        document.MarkIndexed("payroll policy for remote employees", 1, 1, "test", "v1", 256, "seed-fingerprint-v1");
+         return document;
+     }
+ 
+END_OF_PATCH

@@ -119,6 +119,53 @@ public sealed class CompanyKnowledgeDocumentTests
     }
 
     [Fact]
+    public void Queued_document_can_acquire_and_refresh_an_indexing_lease()
+    {
+        var document = CreateDocument();
+        document.MarkPendingScan();
+        document.MarkScanClean();
+
+        var acquired = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
+        Assert.True(acquired);
+        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Indexing, document.IndexingStatus);
+        Assert.NotNull(document.IndexingStartedUtc);
+
+        var immediateReclaim = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
+        Assert.False(immediateReclaim);
+
+        var property = typeof(CompanyKnowledgeDocument).GetProperty(nameof(CompanyKnowledgeDocument.IndexingStartedUtc));
+        property!.SetValue(document, DateTime.UtcNow.AddMinutes(-10));
+
+        var reclaimed = document.TryAcquireIndexingLease(DateTime.UtcNow, TimeSpan.FromMinutes(5));
+        Assert.True(reclaimed);
+    }
+
+    [Fact]
+    public void Queue_indexing_recovers_a_document_from_initial_indexing_failure()
+    {
+        var document = CreateDocument();
+        document.MarkPendingScan();
+        document.MarkScanClean();
+        document.MarkProcessing();
+        document.MarkFailed(
+            "knowledge_indexing_failed",
+            "Knowledge indexing failed.",
+            "Retry indexing after the embedding dependency is available.",
+            canRetry: true);
+        document.MarkIndexingFailed("knowledge_indexing_failed", "Knowledge indexing failed.");
+
+        var changed = document.QueueIndexing();
+
+        Assert.True(changed);
+        Assert.Equal(CompanyKnowledgeDocumentIngestionStatus.ScanClean, document.IngestionStatus);
+        Assert.Equal(CompanyKnowledgeDocumentIndexingStatus.Queued, document.IndexingStatus);
+        Assert.Null(document.FailureCode);
+        Assert.Null(document.FailureMessage);
+        Assert.Null(document.FailureAction);
+        Assert.False(document.CanRetry);
+    }
+
+    [Fact]
     public void New_document_normalizes_access_scope_to_document_company()
     {
         var document = CreateDocument();

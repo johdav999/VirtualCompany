@@ -1,0 +1,485 @@
+diff --git a/src/VirtualCompany.Application/Memory/MemoryContracts.cs b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+--- a/src/VirtualCompany.Application/Memory/MemoryContracts.cs
++++ b/src/VirtualCompany.Application/Memory/MemoryContracts.cs
+@@ -1,15 +1,28 @@
+ using System.Collections.ObjectModel;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ 
+ namespace VirtualCompany.Application.Memory;
+ 
+-public sealed record CreateMemoryItemCommand(
+-    Guid? AgentId,
+-    string MemoryType,
+-    string Summary,
+-    string? SourceEntityType,
+-    Guid? SourceEntityId,
+-    decimal Salience,
+-    Dictionary<string, JsonNode?>? Metadata,
+-    DateTime? ValidFromUtc,
+-    DateTime? ValidToUtc);
++public sealed record CreateMemoryItemCommand
++{
++    public Guid? AgentId { get; init; }
++    public string MemoryType { get; init; } = string.Empty;
++    public string Summary { get; init; } = string.Empty;
++    public string? SourceEntityType { get; init; }
++    public Guid? SourceEntityId { get; init; }
++    public decimal Salience { get; init; }
++    public Dictionary<string, JsonNode?>? Metadata { get; init; }
++    public DateTime? ValidFromUtc { get; init; }
++    public DateTime? ValidToUtc { get; init; }
++
++    // Capture unsupported request fields so memory writes can reject hidden-reasoning payloads explicitly.
++    [JsonExtensionData]
++    public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
++}
+ 
+ public sealed record MemorySearchFilters(
+     Guid? AgentId,
+diff --git a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/MemoryEntities.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Policies;
+ 
+ namespace VirtualCompany.Domain.Entities;
+ 
+@@ -42,7 +43,13 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+         CompanyId = companyId;
+         AgentId = agentId;
+         MemoryType = memoryType;
+-        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++
++        var normalizedSummary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        if (!MemoryContentSafetyPolicy.TryValidateSummary(normalizedSummary, out var summaryError))
++        {
++            throw new ArgumentException(summaryError, nameof(summary));
++        }
++
++        Summary = normalizedSummary;
+         SourceEntityType = NormalizeOptional(sourceEntityType, nameof(sourceEntityType), SourceEntityTypeMaxLength);
+         SourceEntityId = sourceEntityId;
+         Salience = NormalizeSalience(salience, nameof(salience));
+@@ -54,7 +61,7 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+             throw new ArgumentOutOfRangeException(nameof(validToUtc), "ValidToUtc must be greater than or equal to ValidFromUtc.");
+         }
+ 
+-        Metadata = CloneNodes(metadata);
++        Metadata = NormalizeMetadata(metadata);
+         CreatedUtc = DateTime.UtcNow;
+     }
+@@ -191,6 +198,17 @@ public sealed class MemoryItem : ICompanyOwnedEntity
+     private static DateTime EnsureUtc(DateTime value) =>
+         value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+ 
++    private static Dictionary<string, JsonNode?> NormalizeMetadata(IDictionary<string, JsonNode?>? nodes)
++    {
++        var cloned = CloneNodes(nodes);
++        if (!MemoryContentSafetyPolicy.TryValidateMetadata(cloned, out var metadataError))
++        {
++            throw new ArgumentException(metadataError, nameof(nodes));
++        }
++
++        return cloned;
++    }
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes)
+     {
+         if (nodes is null || nodes.Count == 0)
+diff --git a/src/VirtualCompany.Domain/Policies/MemoryContentSafetyPolicy.cs b/src/VirtualCompany.Domain/Policies/MemoryContentSafetyPolicy.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Policies/MemoryContentSafetyPolicy.cs
+@@ -0,0 +1,185 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Policies;
++
++public static class MemoryContentSafetyPolicy
++{
++    private static readonly string[] UnsafeFieldNames =
++    [
++        "analysis",
++        "chainofthought",
++        "cot",
++        "deliberation",
++        "hiddenreasoning",
++        "internalnotes",
++        "internalreasoning",
++        "privatenotes",
++        "privatereasoning",
++        "rawreasoning",
++        "reasoning",
++        "scratchpad",
++        "thoughtprocess",
++        "thinking",
++        "workingnotes"
++    ];
++
++    private static readonly string[] UnsafeContentMarkers =
++    [
++        "chain of thought",
++        "chain-of-thought",
++        "hidden reasoning",
++        "internal reasoning",
++        "private reasoning",
++        "private notes",
++        "raw reasoning",
++        "scratchpad",
++        "thought process",
++        "working notes",
++        "<thinking>",
++        "</thinking>"
++    ];
++
++    public static bool TryValidateSummary(string? summary, out string error)
++    {
++        if (string.IsNullOrWhiteSpace(summary))
++        {
++            error = "Summary is required.";
++            return false;
++        }
++
++        if (ContainsUnsafeContent(summary))
++        {
++            error = "Summary must be a sanitized memory summary and must not contain raw chain-of-thought, hidden reasoning, or scratchpad content.";
++            return false;
++        }
++
++        error = string.Empty;
++        return true;
++    }
++
++    public static bool TryValidateMetadata(IReadOnlyDictionary<string, JsonNode?>? metadata, out string error)
++    {
++        if (metadata is null || metadata.Count == 0)
++        {
++            error = string.Empty;
++            return true;
++        }
++
++        foreach (var pair in metadata)
++        {
++            var normalizedKey = pair.Key?.Trim();
++            if (string.IsNullOrWhiteSpace(normalizedKey))
++            {
++                continue;
++            }
++
++            if (IsUnsafeFieldName(normalizedKey))
++            {
++                error = $"Metadata field '{normalizedKey}' is not allowed because memory persistence must not store raw reasoning or scratchpad content.";
++                return false;
++            }
++
++            if (TryFindUnsafeNode(pair.Value, normalizedKey, out var unsafePath))
++            {
++                error = $"Metadata field '{unsafePath}' contains content that looks like raw reasoning or scratchpad text and cannot be persisted.";
++                return false;
++            }
++        }
++
++        error = string.Empty;
++        return true;
++    }
++
++    public static IReadOnlyList<string> FindUnsafeAdditionalProperties(IReadOnlyDictionary<string, JsonElement>? additionalProperties)
++    {
++        if (additionalProperties is null || additionalProperties.Count == 0)
++        {
++            return Array.Empty<string>();
++        }
++
++        return additionalProperties.Keys
++            .Where(static key => !string.IsNullOrWhiteSpace(key))
++            .Select(static key => key.Trim())
++            .Where(IsUnsafeFieldName)
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++    }
++
++    private static bool TryFindUnsafeNode(JsonNode? node, string path, out string unsafePath)
++    {
++        switch (node)
++        {
++            case null:
++                unsafePath = string.Empty;
++                return false;
++
++            case JsonObject jsonObject:
++                foreach (var pair in jsonObject)
++                {
++                    var childKey = pair.Key?.Trim();
++                    if (string.IsNullOrWhiteSpace(childKey))
++                    {
++                        continue;
++                    }
++
++                    var childPath = AppendPath(path, childKey);
++                    if (IsUnsafeFieldName(childKey))
++                    {
++                        unsafePath = childPath;
++                        return true;
++                    }
++
++                    if (TryFindUnsafeNode(pair.Value, childPath, out unsafePath))
++                    {
++                        return true;
++                    }
++                }
++
++                break;
++
++            case JsonArray jsonArray:
++                for (var index = 0; index < jsonArray.Count; index++)
++                {
++                    if (TryFindUnsafeNode(jsonArray[index], $"{path}[{index}]", out unsafePath))
++                    {
++                        return true;
++                    }
++                }
++
++                break;
++
++            case JsonValue jsonValue:
++                if (TryGetString(jsonValue, out var stringValue) && ContainsUnsafeContent(stringValue))
++                {
++                    unsafePath = path;
++                    return true;
++                }
++
++                break;
++        }
++
++        unsafePath = string.Empty;
++        return false;
++    }
++
++    private static bool TryGetString(JsonValue value, out string result)
++    {
++        try
++        {
++            result = value.GetValue<string>();
++            return true;
++        }
++        catch (InvalidOperationException)
++        {
++            result = string.Empty;
++            return false;
++        }
++    }
++
++    private static bool ContainsUnsafeContent(string value) =>
++        UnsafeContentMarkers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
++
++    private static bool IsUnsafeFieldName(string key)
++    {
++        var normalized = NormalizeKey(key);
++        return UnsafeFieldNames.Contains(normalized, StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static string NormalizeKey(string key) =>
++        string.Concat(key.Where(char.IsLetterOrDigit)).ToLowerInvariant();
++
++    private static string AppendPath(string path, string key) =>
++        string.IsNullOrWhiteSpace(path)
++            ? key
++            : $"{path}.{key}";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+--- a/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
++++ b/src/VirtualCompany.Infrastructure/Memory/CompanyMemoryService.cs
+@@ -7,6 +7,7 @@ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Documents;
++using VirtualCompany.Domain.Policies;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -246,10 +247,31 @@ public sealed class CompanyMemoryService : ICompanyMemoryService, IMemoryRetriev
+         {
+             errors[nameof(command.Summary)] = ["Summary is required."];
+         }
+-        else if (command.Summary.Trim().Length > 4000)
++        else if (command.Summary.Trim().Length > 4000)
+         {
+             errors[nameof(command.Summary)] = ["Summary must be 4000 characters or fewer."];
+         }
++        else if (!MemoryContentSafetyPolicy.TryValidateSummary(command.Summary, out var summarySafetyError))
++        {
++            errors[nameof(command.Summary)] = [summarySafetyError];
++        }
++
++        if (!MemoryContentSafetyPolicy.TryValidateMetadata(command.Metadata, out var metadataSafetyError))
++        {
++            errors[nameof(command.Metadata)] = [metadataSafetyError];
++        }
++
++        foreach (var propertyName in MemoryContentSafetyPolicy.FindUnsafeAdditionalProperties(command.AdditionalProperties))
++        {
++            errors[propertyName] =
++            [
++                "This field is not allowed on memory writes. Persist only sanitized summary content."
++            ];
++        }
++
++        if (command.SourceEntityId.HasValue && command.SourceEntityId.Value == Guid.Empty)
++        {
++            errors[nameof(command.SourceEntityId)] = ["SourceEntityId cannot be empty."];
++        }
+ 
+         if (command.Salience < 0m || command.Salience > 1m)
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryContentSafetyPolicyTests.cs b/tests/VirtualCompany.Api.Tests/MemoryContentSafetyPolicyTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MemoryContentSafetyPolicyTests.cs
+@@ -0,0 +1,81 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Policies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MemoryContentSafetyPolicyTests
++{
++    [Fact]
++    public void Memory_item_accepts_sanitized_summary_and_safe_metadata()
++    {
++        var item = new MemoryItem(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            null,
++            MemoryType.CompanyMemory,
++            "Controller approval is required for refunds above ten thousand dollars.",
++            null,
++            null,
++            0.75m,
++            DateTime.UtcNow,
++            null,
++            new Dictionary<string, JsonNode?>
++            {
++                ["category"] = JsonValue.Create("finance"),
++                ["source"] = JsonValue.Create("policy")
++            });
++
++        Assert.Equal("Controller approval is required for refunds above ten thousand dollars.", item.Summary);
++        Assert.Equal("finance", item.Metadata["category"]!.GetValue<string>());
++    }
++
++    [Fact]
++    public void Memory_item_rejects_summary_that_contains_hidden_reasoning_markers()
++    {
++        var exception = Assert.Throws<ArgumentException>(() => new MemoryItem(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            null,
++            MemoryType.Summary,
++            "Chain-of-thought: inspect the ledger, compare the invoices, then privately reason about the discrepancy.",
++            null,
++            null,
++            0.60m,
++            DateTime.UtcNow,
++            null));
++
++        Assert.Contains("sanitized memory summary", exception.Message);
++    }
++
++    [Fact]
++    public void Memory_item_rejects_metadata_that_uses_reasoning_fields()
++    {
++        var exception = Assert.Throws<ArgumentException>(() => new MemoryItem(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            null,
++            MemoryType.Summary,
++            "Vendor escalation preference is captured in a safe summary.",
++            null,
++            null,
++            0.60m,
++            DateTime.UtcNow,
++            null,
++            new Dictionary<string, JsonNode?>
++            {
++                ["reasoning"] = JsonValue.Create("private internal notes")
++            }));
++
++        Assert.Contains("Metadata field 'reasoning' is not allowed", exception.Message);
++    }
++
++    [Fact]
++    public void Policy_flags_unsafe_extension_fields()
++    {
++        var properties = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["chainOfThought"] = JsonSerializer.SerializeToElement("private scratchpad"),
++            ["category"] = JsonSerializer.SerializeToElement("finance")
++        };
++
++        Assert.Equal(new[] { "chainOfThought" }, MemoryContentSafetyPolicy.FindUnsafeAdditionalProperties(properties));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MemoryIntegrationTests.cs
+@@ -154,6 +154,40 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+         Assert.Contains(nameof(CreateMemoryRequest.ValidToUtc), problem.Errors.Keys);
+     }
+ 
++    [Fact]
++    public async Task Create_memory_rejects_raw_reasoning_in_summary_metadata_and_extension_fields()
++    {
++        var seed = await SeedMembershipWithAgentAsync();
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/memory", new
++        {
++            agentId = seed.AgentId,
++            memoryType = "summary",
++            summary = "Hidden reasoning: inspect the invoice trail, compare private notes, then decide what to store.",
++            salience = 0.5m,
++            reasoning = "This internal reasoning must never be persisted.",
++            metadata = new Dictionary<string, JsonNode?>
++            {
++                ["category"] = JsonValue.Create("finance"),
++                ["scratchpad"] = JsonValue.Create("private working notes")
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains(nameof(CreateMemoryRequest.Summary), problem!.Errors.Keys);
++        Assert.Contains(nameof(CreateMemoryRequest.Metadata), problem.Errors.Keys);
++        Assert.Contains("reasoning", problem.Errors.Keys);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.False(await dbContext.MemoryItems.AsNoTracking().AnyAsync(x => x.CompanyId == seed.CompanyId));
++    }
++
+     [Fact]
+     public async Task Create_memory_rejects_agent_from_another_company()
+     {
+@@ -662,6 +696,8 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
+     private sealed class CreateMemoryRequest
+     {
+         public string? MemoryType { get; set; }
++        public string? Summary { get; set; }
++        public Dictionary<string, JsonNode?>? Metadata { get; set; }
+         public DateTime? ValidToUtc { get; set; }
+     }
+ 
+END_OF_PATCH

@@ -40,8 +40,14 @@ public sealed record CompanyKnowledgeDocumentDto(
     string? FailureMessage,
     string? FailureAction,
     bool CanRetry,
+    string IndexingStatus,
+    string? IndexingFailureCode,
+    string? IndexingFailureMessage,
+    int CurrentChunkSetVersion,
+    int ActiveChunkCount,
     DateTime CreatedUtc,
     DateTime UpdatedUtc,
+    DateTime? IndexedUtc,
     DateTime? UploadedUtc,
     DateTime? ProcessingStartedUtc,
     DateTime? ProcessedUtc,
@@ -76,6 +82,7 @@ public sealed record DocumentStorageWriteResult(string StorageKey, string? Stora
 
 public interface ICompanyDocumentStorage
 {
+    Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken);
     Task<DocumentStorageWriteResult> WriteAsync(DocumentStorageWriteRequest request, CancellationToken cancellationToken);
     Task DeleteAsync(string storageKey, CancellationToken cancellationToken);
 }
