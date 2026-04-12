@@ -76,7 +76,9 @@ app.UseAuthorization();
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseInitialization");
     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
+    var workflowDefinitionSeeder = scope.ServiceProvider.GetRequiredService<CompanyWorkflowDefinitionSeeder>();
     if (dbContext.Database.IsRelational())
     {
         if (applyMigrationsOnStartup)
@@ -85,6 +87,19 @@ using (var scope = app.Services.CreateScope())
             await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
             await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
         }
+        else
+        {
+            var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
+            if (pendingMigrations.Any())
+            {
+                var pendingList = string.Join(", ", pendingMigrations);
+                logger.LogCritical(
+                    "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
+                    pendingList);
+                throw new InvalidOperationException(
+                    $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
+            }
+        }
     }
     else if (app.Environment.IsDevelopment())
     {
@@ -92,6 +107,7 @@ using (var scope = app.Services.CreateScope())
     }
 
     await templateSeeder.SeedAsync();
+    await workflowDefinitionSeeder.SeedAsync();
 }
 
 app.MapVirtualCompanyHealthEndpoints();

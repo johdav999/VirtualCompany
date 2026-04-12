@@ -1,0 +1,1084 @@
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+index 7f7c0b1..e1f5bb9 100644
+--- a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -172,7 +172,11 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+         Guid companyId,
+         Guid definitionId,
+         Guid? triggerId,
+-        IDictionary<string, JsonNode?>? inputPayload = null)
++        IDictionary<string, JsonNode?>? inputPayload = null,
++        WorkflowTriggerType triggerSource = WorkflowTriggerType.Manual,
++        string? triggerRef = null,
++        string? currentStep = null,
++        IDictionary<string, JsonNode?>? contextJson = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -193,6 +197,9 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+         CompanyId = companyId;
+         DefinitionId = definitionId;
+         TriggerId = triggerId;
++        TriggerSource = triggerSource;
++        TriggerRef = NormalizeOptional(triggerRef, nameof(triggerRef), 200);
++        CurrentStep = NormalizeOptional(currentStep, nameof(currentStep), 200);
+         Status = WorkflowInstanceStatusValues.DefaultStatus;
+         InputPayload = CloneNodes(inputPayload);
++        ContextJson = CloneNodes(contextJson);
+         StartedUtc = DateTime.UtcNow;
+         UpdatedUtc = StartedUtc;
+     }
+@@ -202,8 +209,11 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+     public Guid DefinitionId { get; private set; }
+     public Guid? TriggerId { get; private set; }
++    public WorkflowTriggerType TriggerSource { get; private set; }
++    public string? TriggerRef { get; private set; }
+     public WorkflowInstanceStatus Status { get; private set; }
++    public string? CurrentStep { get; private set; }
+     public Dictionary<string, JsonNode?> InputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ContextJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> OutputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime StartedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -214,6 +224,22 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+     public WorkflowTrigger? Trigger { get; private set; }
+     public ICollection<WorkTask> Tasks { get; } = new List<WorkTask>();
+ 
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 3f6c2c3..d688e4f 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -35,6 +35,7 @@ public static class AuditTargetTypes
+     public const string ApprovalRequest = "approval_request";
+     public const string MemoryItem = "memory_item";
++    public const string WorkflowInstance = "workflow_instance";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -62,4 +63,5 @@ public static class AuditEventActions
+     public const string MemoryItemDeleted = "memory.item.deleted";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
++    public const string WorkflowInstanceStarted = "workflow.instance.started";
+ }
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 8f0bf0d..fdd5489 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -21,7 +21,28 @@ public sealed record CreateWorkflowTriggerCommand(
+ 
+ public sealed record StartWorkflowInstanceCommand(
+     Guid DefinitionId,
+     Guid? TriggerId,
+-    Dictionary<string, JsonNode?>? InputPayload);
++    Dictionary<string, JsonNode?>? InputPayload,
++    string TriggerSource = "manual",
++    string? TriggerRef = null);
++
++public sealed record StartManualWorkflowInstanceCommand(
++    Guid DefinitionId,
++    string? TriggerRef,
++    Dictionary<string, JsonNode?>? InputPayload);
++
++public sealed record TriggerScheduledWorkflowsCommand(
++    DateTime ScheduledAtUtc,
++    string? ScheduleKey = null,
++    Dictionary<string, JsonNode?>? ContextJson = null);
++
++public sealed record InternalWorkflowEvent(
++    Guid CompanyId,
++    string EventName,
++    string? EventRef,
++    Dictionary<string, JsonNode?>? Payload);
++
++public sealed record InternalWorkflowEventTriggerResult(
++    string EventName,
++    IReadOnlyList<WorkflowInstanceDto> StartedInstances);
+ 
+ public sealed record WorkflowTriggerDto(
+     Guid Id,
+@@ -58,9 +79,13 @@ public sealed record WorkflowInstanceDto(
+     Guid CompanyId,
+     Guid DefinitionId,
+     Guid? TriggerId,
++    string TriggerSource,
++    string? TriggerRef,
+     string Status,
++    string? CurrentStep,
+     Dictionary<string, JsonNode?> InputPayload,
++    Dictionary<string, JsonNode?> ContextJson,
+     Dictionary<string, JsonNode?> OutputPayload,
+     DateTime StartedAt,
+     DateTime UpdatedAt,
+@@ -95,6 +120,18 @@ public interface ICompanyWorkflowService
+     Task<WorkflowInstanceDto> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken);
+ }
+ 
++public interface IWorkflowScheduleTriggerService
++{
++    Task<IReadOnlyList<WorkflowInstanceDto>> StartDueScheduledWorkflowsAsync(
++        Guid companyId,
++        TriggerScheduledWorkflowsCommand command,
++        CancellationToken cancellationToken);
++}
++
++public interface IInternalWorkflowEventTriggerService
++{
++    Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken);
++}
++
+ public sealed class WorkflowValidationException : Exception
+ {
+     public WorkflowValidationException(IDictionary<string, string[]> errors)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 7d7f84b..eb8988c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -1,22 +1,29 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+-public sealed class CompanyWorkflowService : ICompanyWorkflowService
++public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowScheduleTriggerService, IInternalWorkflowEventTriggerService
+ {
+     private const int CodeMaxLength = 100;
+     private const int NameMaxLength = 200;
+     private const int DepartmentMaxLength = 100;
+     private const int EventNameMaxLength = 200;
++    private const int TriggerRefMaxLength = 200;
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ILogger<CompanyWorkflowService> _logger;
+ 
+     public CompanyWorkflowService(
+         VirtualCompanyDbContext dbContext,
+-        ICompanyMembershipContextResolver companyMembershipContextResolver)
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        IAuditEventWriter auditEventWriter,
++        ILogger<CompanyWorkflowService> logger)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
++        _auditEventWriter = auditEventWriter;
++        _logger = logger;
+     }
+@@ -202,51 +209,139 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         return ToTriggerDto(trigger);
+     }
+ 
++    public Task<WorkflowInstanceDto> StartManualInstanceAsync(
++        Guid companyId,
++        StartManualWorkflowInstanceCommand command,
++        CancellationToken cancellationToken) =>
++        StartInstanceAsync(
++            companyId,
++            new StartWorkflowInstanceCommand(command.DefinitionId, null, command.InputPayload, WorkflowTriggerType.Manual.ToStorageValue(), command.TriggerRef),
++            cancellationToken);
++
+     public async Task<WorkflowInstanceDto> StartInstanceAsync(
+         Guid companyId,
+         StartWorkflowInstanceCommand command,
+         CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+         Validate(command);
++        return await StartInstanceCoreAsync(companyId, command, requireMembership: false, cancellationToken);
++    }
+ 
+-        var definition = await _dbContext.WorkflowDefinitions
+-            .AsNoTracking()
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == command.DefinitionId, cancellationToken);
++    public async Task<IReadOnlyList<WorkflowInstanceDto>> StartDueScheduledWorkflowsAsync(
++        Guid companyId,
++        TriggerScheduledWorkflowsCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(companyId)] = ["CompanyId is required."]
++            });
++        }
+ 
+-        if (definition is null)
++        var scheduleRef = string.IsNullOrWhiteSpace(command.ScheduleKey)
++            ? $"schedule:{command.ScheduledAtUtc:O}"
++            : command.ScheduleKey.Trim();
++
++        var definitions = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.Active &&
++                x.TriggerType == WorkflowTriggerType.Schedule)
++            .OrderBy(x => x.Code)
++            .ThenByDescending(x => x.Version)
++            .ToListAsync(cancellationToken);
++
++        var started = new List<WorkflowInstanceDto>();
++        foreach (var definition in definitions.Where(x => MatchesSchedule(x, command.ScheduleKey)))
+         {
+-            throw new KeyNotFoundException("Workflow definition not found.");
++            if (await HasExistingInstanceAsync(companyId, definition.Id, WorkflowTriggerType.Schedule, scheduleRef, cancellationToken))
++            {
++                _logger.LogInformation(
++                    "Skipped duplicate scheduled workflow start for definition {DefinitionId} and schedule ref {ScheduleRef}.",
++                    definition.Id,
++                    scheduleRef);
++                continue;
++            }
++
++            var input = CloneNodes(command.ContextJson);
++            input["scheduledAtUtc"] = JsonValue.Create(command.ScheduledAtUtc);
++            input["scheduleKey"] = JsonValue.Create(scheduleRef);
++
++            started.Add(await StartInstanceCoreAsync(
++                companyId,
++                new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Schedule.ToStorageValue(), scheduleRef),
++                requireMembership: false,
++                cancellationToken));
+         }
+ 
+-        if (command.TriggerId.HasValue)
++        return started;
++    }
++
++    public async Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken)
++    {
++        if (workflowEvent.CompanyId == Guid.Empty)
+         {
+-            var triggerExists = await _dbContext.WorkflowTriggers
+-                .AsNoTracking()
+-                .AnyAsync(x =>
+-                    x.CompanyId == companyId &&
+-                    x.DefinitionId == command.DefinitionId &&
+-                    x.Id == command.TriggerId.Value &&
+-                    x.IsEnabled,
+-                    cancellationToken);
+-
+-            if (!triggerExists)
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+             {
+-                throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                [nameof(workflowEvent.CompanyId)] = ["CompanyId is required."]
++            });
++        }
++
++        if (string.IsNullOrWhiteSpace(workflowEvent.EventName))
++        {
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(workflowEvent.EventName)] = ["EventName is required."]
++            });
++        }
++
++        var eventName = workflowEvent.EventName.Trim();
++        var eventRef = string.IsNullOrWhiteSpace(workflowEvent.EventRef)
++            ? $"{eventName}:{DateTime.UtcNow:O}"
++            : workflowEvent.EventRef.Trim();
++
++        var triggeredDefinitions = await _dbContext.WorkflowTriggers
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Definition)
++            .Where(x =>
++                x.CompanyId == workflowEvent.CompanyId &&
++                x.IsEnabled &&
++                x.EventName == eventName &&
++                x.Definition.CompanyId == workflowEvent.CompanyId &&
++                x.Definition.Active &&
++                x.Definition.TriggerType == WorkflowTriggerType.Event)
++            .OrderBy(x => x.Definition.Code)
++            .ThenByDescending(x => x.Definition.Version)
++            .ToListAsync(cancellationToken);
++
++        var started = new List<WorkflowInstanceDto>();
++        foreach (var trigger in triggeredDefinitions)
++        {
++            if (await HasExistingInstanceAsync(workflowEvent.CompanyId, trigger.DefinitionId, WorkflowTriggerType.Event, eventRef, cancellationToken))
++            {
++                _logger.LogInformation(
++                    "Skipped duplicate event workflow start for definition {DefinitionId}, event {EventName}, and ref {EventRef}.",
++                    trigger.DefinitionId,
++                    eventName,
++                    eventRef);
++                continue;
++            }
++
++            var input = CloneNodes(workflowEvent.Payload);
++            input["eventName"] = JsonValue.Create(eventName);
++            input["eventRef"] = JsonValue.Create(eventRef);
++
++            started.Add(await StartInstanceCoreAsync(
++                workflowEvent.CompanyId,
++                new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
++                requireMembership: false,
++                cancellationToken));
++        }
++
++        var jsonMatchedDefinitions = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == workflowEvent.CompanyId &&
++                x.Active &&
++                x.TriggerType == WorkflowTriggerType.Event)
++            .ToListAsync(cancellationToken);
++
++        foreach (var definition in jsonMatchedDefinitions.Where(x => MatchesEvent(x, eventName)))
++        {
++            if (started.Any(x => x.DefinitionId == definition.Id) ||
++                await HasExistingInstanceAsync(workflowEvent.CompanyId, definition.Id, WorkflowTriggerType.Event, eventRef, cancellationToken))
++            {
++                continue;
++            }
++
++            var input = CloneNodes(workflowEvent.Payload);
++            input["eventName"] = JsonValue.Create(eventName);
++            input["eventRef"] = JsonValue.Create(eventRef);
++
++            started.Add(await StartInstanceCoreAsync(
++                workflowEvent.CompanyId,
++                new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
++                requireMembership: false,
++                cancellationToken));
++        }
++
++        return new InternalWorkflowEventTriggerResult(eventName, started);
++    }
++
++    private async Task<WorkflowInstanceDto> StartInstanceCoreAsync(
++        Guid companyId,
++        StartWorkflowInstanceCommand command,
++        bool requireMembership,
++        CancellationToken cancellationToken)
++    {
++        if (requireMembership)
++        {
++            await RequireMembershipAsync(companyId, cancellationToken);
++        }
++
++        var triggerSource = WorkflowTriggerTypeValues.Parse(command.TriggerSource);
++        var definition = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == command.DefinitionId && (x.CompanyId == companyId || x.CompanyId == null), cancellationToken);
++
++        if (definition is null)
++        {
++            throw new KeyNotFoundException("Workflow definition not found.");
++        }
++
++        if (!definition.Active)
++        {
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(command.DefinitionId)] = ["Workflow definition must be active before an instance can be started."]
++            });
++        }
++
++        if (definition.TriggerType != triggerSource)
++        {
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(command.TriggerSource)] = [$"Workflow definition only supports '{definition.TriggerType.ToStorageValue()}' triggers."]
++            });
++        }
++
++        if (command.TriggerId.HasValue)
++        {
++            var triggerExists = await _dbContext.WorkflowTriggers
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(x =>
++                    x.CompanyId == companyId &&
++                    x.DefinitionId == command.DefinitionId &&
++                    x.Id == command.TriggerId.Value &&
++                    x.IsEnabled,
++                    cancellationToken);
++
++            if (!triggerExists)
++            {
++                throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     [nameof(command.TriggerId)] = ["TriggerId must reference an enabled trigger on the workflow definition."]
+                 });
+             }
+@@ -258,14 +353,39 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+             companyId,
+             command.DefinitionId,
+             command.TriggerId,
+-            command.InputPayload);
++            command.InputPayload,
++            triggerSource,
++            command.TriggerRef,
++            ResolveInitialStep(definition),
++            command.InputPayload);
+ 
+         _dbContext.WorkflowInstances.Add(instance);
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                triggerSource == WorkflowTriggerType.Manual ? AuditActorTypes.User : AuditActorTypes.System,
++                null,
++                AuditEventActions.WorkflowInstanceStarted,
++                AuditTargetTypes.WorkflowInstance,
++                instance.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                $"Started workflow '{definition.Code}' from {triggerSource.ToStorageValue()} trigger.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["workflowDefinitionId"] = definition.Id.ToString("N"),
++                    ["workflowDefinitionCode"] = definition.Code,
++                    ["workflowDefinitionVersion"] = definition.Version.ToString(),
++                    ["triggerSource"] = triggerSource.ToStorageValue(),
++                    ["triggerRef"] = command.TriggerRef
++                },
++                CorrelationId: command.TriggerRef),
++            cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return await GetInstanceAsync(companyId, instance.Id, cancellationToken);
+     }
+ 
++    private Task<bool> HasExistingInstanceAsync(
++        Guid companyId,
++        Guid definitionId,
++        WorkflowTriggerType triggerSource,
++        string? triggerRef,
++        CancellationToken cancellationToken) =>
++        string.IsNullOrWhiteSpace(triggerRef)
++            ? Task.FromResult(false)
++            : _dbContext.WorkflowInstances
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(x =>
++                    x.CompanyId == companyId &&
++                    x.DefinitionId == definitionId &&
++                    x.TriggerSource == triggerSource &&
++                    x.TriggerRef == triggerRef,
++                    cancellationToken);
++
+     public async Task<IReadOnlyList<WorkflowInstanceDto>> ListInstancesAsync(
+         Guid companyId,
+         Guid? definitionId,
+@@ -333,9 +453,13 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+             instance.CompanyId,
+             instance.DefinitionId,
+             instance.TriggerId,
++            instance.TriggerSource.ToStorageValue(),
++            instance.TriggerRef,
+             instance.Status.ToStorageValue(),
++            instance.CurrentStep,
+             CloneNodes(instance.InputPayload),
++            CloneNodes(instance.ContextJson),
+             CloneNodes(instance.OutputPayload),
+             instance.StartedUtc,
+             instance.UpdatedUtc,
+@@ -398,6 +522,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+ 
+         if (command.TriggerId == Guid.Empty)
+         {
+             AddError(errors, nameof(command.TriggerId), "TriggerId cannot be empty.");
+         }
++
++        AddSupportedTriggerSource(errors, nameof(command.TriggerSource), command.TriggerSource);
++        AddOptional(errors, nameof(command.TriggerRef), command.TriggerRef, TriggerRefMaxLength);
+ 
+         ThrowIfInvalid(errors);
+     }
+@@ -427,6 +553,20 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         }
+     }
+ 
++    private static void AddSupportedTriggerSource(IDictionary<string, List<string>> errors, string key, string? value)
++    {
++        if (!WorkflowTriggerTypeValues.TryParse(value, out var triggerType))
++        {
++            AddError(errors, key, WorkflowTriggerTypeValues.BuildValidationMessage(value));
++            return;
++        }
++
++        if (triggerType is not (WorkflowTriggerType.Manual or WorkflowTriggerType.Schedule or WorkflowTriggerType.Event))
++        {
++            AddError(errors, key, "Workflow instances can only be started from manual, schedule, or event triggers.");
++        }
++    }
++
+     private static void AddDefinitionJson(
+         IDictionary<string, List<string>> errors,
+         string key,
+@@ -462,4 +602,71 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+             throw new WorkflowValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
+         }
+     }
++
++    private static string? ResolveInitialStep(WorkflowDefinition definition)
++    {
++        if (!definition.DefinitionJson.TryGetValue("steps", out var stepsNode) || stepsNode is not JsonArray steps)
++        {
++            return null;
++        }
++
++        var firstStep = steps.OfType<JsonObject>().FirstOrDefault();
++        return TryGetString(firstStep, "id") ?? TryGetString(firstStep, "code") ?? TryGetString(firstStep, "name");
++    }
++
++    private static bool MatchesSchedule(WorkflowDefinition definition, string? scheduleKey)
++    {
++        if (string.IsNullOrWhiteSpace(scheduleKey))
++        {
++            return true;
++        }
++
++        return MatchesConfiguredValue(definition.DefinitionJson, "schedule", scheduleKey);
++    }
++
++    private static bool MatchesEvent(WorkflowDefinition definition, string eventName) =>
++        MatchesConfiguredValue(definition.DefinitionJson, "event", eventName) ||
++        MatchesConfiguredValue(definition.DefinitionJson, "trigger", eventName);
++
++    private static bool MatchesConfiguredValue(Dictionary<string, JsonNode?> definitionJson, string sectionName, string value)
++    {
++        if (!definitionJson.TryGetValue(sectionName, out var node) || node is null)
++        {
++            return false;
++        }
++
++        if (node is JsonValue jsonValue &&
++            jsonValue.TryGetValue<string>(out var scalar) &&
++            string.Equals(scalar, value, StringComparison.OrdinalIgnoreCase))
++        {
++            return true;
++        }
++
++        if (node is JsonObject jsonObject)
++        {
++            return new[] { "key", "id", "name", "eventName", "scheduleKey" }
++                .Select(key => TryGetString(jsonObject, key))
++                .Any(configured => string.Equals(configured, value, StringComparison.OrdinalIgnoreCase));
++        }
++
++        if (node is JsonArray jsonArray)
++        {
++            return jsonArray.Any(item =>
++                item is JsonValue arrayValue &&
++                arrayValue.TryGetValue<string>(out var configured) &&
++                string.Equals(configured, value, StringComparison.OrdinalIgnoreCase));
++        }
++
++        return false;
++    }
++
++    private static string? TryGetString(JsonObject? jsonObject, string key)
++    {
++        if (jsonObject is null ||
++            !jsonObject.TryGetPropertyValue(key, out var node) ||
++            node is not JsonValue value ||
++            !value.TryGetValue<string>(out var text))
++        {
++            return null;
++        }
++
++        return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 45fb2a6..50f46d1 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -126,6 +126,8 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+-        services.AddScoped<ICompanyWorkflowService, CompanyWorkflowService>();
++        services.AddScoped<CompanyWorkflowService>();
++        services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 4f3f6df..6d3b455 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -919,6 +919,14 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.DefinitionId).HasColumnName("definition_id").IsRequired();
+         builder.Property(x => x.TriggerId).HasColumnName("trigger_id");
++        builder.Property(x => x.TriggerSource)
++            .HasColumnName("trigger_source")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowTriggerTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(WorkflowTriggerType.Manual)
++            .HasSentinel((WorkflowTriggerType)0)
++            .IsRequired();
++        builder.Property(x => x.TriggerRef).HasColumnName("trigger_ref").HasMaxLength(200);
+         builder.Property(x => x.Status)
+             .HasColumnName("status")
+             .HasConversion(value => value.ToStorageValue(), value => WorkflowInstanceStatusValues.Parse(value))
+@@ -927,6 +935,8 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+             .HasSentinel((WorkflowInstanceStatus)0)
+             .IsRequired();
++        builder.Property(x => x.CurrentStep).HasColumnName("current_step").HasMaxLength(200);
+         builder.Property(x => x.InputPayload)
+             .HasColumnName("input_payload")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+@@ -938,6 +948,11 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.ContextJson)
++            .HasColumnName("context_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
+         builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+@@ -945,6 +960,7 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Definition).WithMany(x => x.Instances).HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190000_AddWorkflowTriggerInstanceStartSupport.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190000_AddWorkflowTriggerInstanceStartSupport.cs
+new file mode 100644
+index 0000000..b1497cb
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190000_AddWorkflowTriggerInstanceStartSupport.cs
+@@ -0,0 +1,139 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddWorkflowTriggerInstanceStartSupport : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var boolType = isPostgres ? "boolean" : "bit";
++        var boolDefault = isPostgres ? "TRUE" : "CAST(1 AS bit)";
++
++        migrationBuilder.CreateTable(
++            name: "workflow_triggers",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                definition_id = table.Column<Guid>(type: guidType, nullable: false),
++                event_name = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                criteria_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                is_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValueSql: boolDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_workflow_triggers", x => x.id);
++                table.ForeignKey(
++                    name: "FK_workflow_triggers_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_workflow_triggers_workflow_definitions_definition_id",
++                    column: x => x.definition_id,
++                    principalTable: "workflow_definitions",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "workflow_instances",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                definition_id = table.Column<Guid>(type: guidType, nullable: false),
++                trigger_id = table.Column<Guid>(type: guidType, nullable: true),
++                trigger_source = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "manual"),
++                trigger_ref = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: true),
++                status = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "started"),
++                current_step = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: true),
++                input_payload = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                context_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                output_payload = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                started_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                completed_at = table.Column<DateTime>(type: dateTimeType, nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_workflow_instances", x => x.id);
++                table.ForeignKey(
++                    name: "FK_workflow_instances_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_workflow_instances_workflow_definitions_definition_id",
++                    column: x => x.definition_id,
++                    principalTable: "workflow_definitions",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_workflow_instances_workflow_triggers_trigger_id",
++                    column: x => x.trigger_id,
++                    principalTable: "workflow_triggers",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_triggers_company_id_definition_id_event_name",
++            table: "workflow_triggers",
++            columns: new[] { "company_id", "definition_id", "event_name" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_triggers_company_id_event_name_is_enabled",
++            table: "workflow_triggers",
++            columns: new[] { "company_id", "event_name", "is_enabled" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_triggers_definition_id",
++            table: "workflow_triggers",
++            column: "definition_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_definition_id_started_at",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "definition_id", "started_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_definition_id_trigger_source_trigger_ref",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "definition_id", "trigger_source", "trigger_ref" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_status",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_definition_id",
++            table: "workflow_instances",
++            column: "definition_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_trigger_id",
++            table: "workflow_instances",
++            column: "trigger_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "workflow_instances");
++        migrationBuilder.DropTable(name: "workflow_triggers");
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+index 072b37e..1db6a40 100644
+--- a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -102,6 +102,28 @@ public sealed class WorkflowsController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("definitions/{definitionId:guid}/start")]
++    public async Task<ActionResult<WorkflowInstanceDto>> StartManualInstanceAsync(
++        Guid companyId,
++        Guid definitionId,
++        [FromBody] StartManualWorkflowInstanceCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _workflows.StartManualInstanceAsync(
++                companyId,
++                command with { DefinitionId = definitionId },
++                cancellationToken);
++            return CreatedAtAction(nameof(GetInstanceAsync), new { companyId, instanceId = result.Id }, result);
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("instances")]
+     public async Task<ActionResult<WorkflowInstanceDto>> StartInstanceAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+index 1a60b22..97e5399 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+@@ -190,6 +191,151 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(HttpStatusCode.NotFound, versionResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Manual_start_creates_tenant_scoped_instance_with_trigger_metadata()
++    {
++        var seed = await SeedMembershipAsync("workflow-manual", "workflow-manual@example.com", "Workflow Manual");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "manual-start",
++            name = "Manual start",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("first-manual-step")
++        });
++
++        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        var startResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start", new
++        {
++            definitionId = Guid.Empty,
++            triggerRef = "manual-request-1",
++            inputPayload = new Dictionary<string, JsonNode?>
++            {
++                ["requestedBy"] = JsonValue.Create("founder")
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
++        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();
++        Assert.NotNull(instance);
++        Assert.Equal(seed.CompanyId, instance!.CompanyId);
++        Assert.Equal(definition.Id, instance.DefinitionId);
++        Assert.Equal("manual", instance.TriggerSource);
++        Assert.Equal("manual-request-1", instance.TriggerRef);
++        Assert.Equal("started", instance.Status);
++        Assert.Equal("first-manual-step", instance.CurrentStep);
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var persisted = await dbContext.WorkflowInstances.SingleAsync(x => x.Id == instance.Id);
++        Assert.Equal(seed.CompanyId, persisted.CompanyId);
++        Assert.Equal(WorkflowTriggerType.Manual, persisted.TriggerSource);
++        Assert.Equal("manual-request-1", persisted.TriggerRef);
++    }
++
++    [Fact]
++    public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()
++    {
++        var seed = await SeedMembershipAsync("workflow-schedule", "workflow-schedule@example.com", "Workflow Schedule");
++        var definitionId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                definitionId,
++                seed.CompanyId,
++                "daily-close",
++                "Daily close",
++                "Finance",
++                WorkflowTriggerType.Schedule,
++                1,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["schedule"] = new JsonObject { ["key"] = "daily-close" },
++                    ["steps"] = new JsonArray(new JsonObject { ["id"] = "close-books" })
++                }));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var scheduler = scope.ServiceProvider.GetRequiredService<IWorkflowScheduleTriggerService>();
++        var first = await scheduler.StartDueScheduledWorkflowsAsync(
++            seed.CompanyId,
++            new TriggerScheduledWorkflowsCommand(DateTime.Parse("2026-04-12T08:00:00Z").ToUniversalTime(), "daily-close"),
++            CancellationToken.None);
++
++        var second = await scheduler.StartDueScheduledWorkflowsAsync(
++            seed.CompanyId,
++            new TriggerScheduledWorkflowsCommand(DateTime.Parse("2026-04-12T08:00:00Z").ToUniversalTime(), "daily-close"),
++            CancellationToken.None);
++
++        var instance = Assert.Single(first);
++        Assert.Empty(second);
++        Assert.Equal(definitionId, instance.DefinitionId);
++        Assert.Equal("schedule", instance.TriggerSource);
++        Assert.Equal("daily-close", instance.TriggerRef);
++        Assert.Equal("close-books", instance.CurrentStep);
++    }
++
++    [Fact]
++    public async Task Internal_event_trigger_starts_matching_workflow_only_for_event_company()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++        var definitionId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                definitionId,
++                seed.CompanyId,
++                "document-review",
++                "Document review",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("review-document")));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                definitionId,
++                "company.document.processed"));
++
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                Guid.NewGuid(),
++                seed.OtherCompanyId,
++                "document-review",
++                "Document review other tenant",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("other-review-document")));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var eventTriggers = scope.ServiceProvider.GetRequiredService<IInternalWorkflowEventTriggerService>();
++        var result = await eventTriggers.HandleAsync(
++            new InternalWorkflowEvent(
++                seed.CompanyId,
++                "company.document.processed",
++                "doc-1",
++                new Dictionary<string, JsonNode?>
++                {
++                    ["documentId"] = JsonValue.Create("doc-1")
++                }),
++            CancellationToken.None);
++
++        var instance = Assert.Single(result.StartedInstances);
++        Assert.Equal("company.document.processed", result.EventName);
++        Assert.Equal(seed.CompanyId, instance.CompanyId);
++        Assert.Equal(definitionId, instance.DefinitionId);
++        Assert.Equal("event", instance.TriggerSource);
++        Assert.Equal("doc-1", instance.TriggerRef);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persistedCount = await dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.TriggerRef == "doc-1");
++        Assert.Equal(1, persistedCount);
++    }
++
++    [Fact]
++    public async Task Disallowed_trigger_source_and_inactive_definition_are_rejected()
++    {
++        var seed = await SeedMembershipAsync("workflow-negative", "workflow-negative@example.com", "Workflow Negative");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "event-only",
++            name = "Event only",
++            department = "Operations",
++            triggerType = "event",
++            active = true,
++            definitionJson = ValidDefinition("event-step")
++        });
++        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        var manualStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start", new
++        {
++            definitionId = Guid.Empty,
++            inputPayload = new Dictionary<string, JsonNode?>()
++        });
++        Assert.Equal(HttpStatusCode.BadRequest, manualStart.StatusCode);
++
++        var inactiveId = Guid.NewGuid();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                inactiveId,
++                seed.CompanyId,
++                "inactive-manual",
++                "Inactive manual",
++                "Operations",
++                WorkflowTriggerType.Manual,
++                1,
++                ValidDefinition("inactive-step"),
++                active: false));
++            return Task.CompletedTask;
++        });
++
++        var inactiveStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{inactiveId}/start", new
++        {
++            definitionId = Guid.Empty,
++            inputPayload = new Dictionary<string, JsonNode?>()
++        });
++        Assert.Equal(HttpStatusCode.BadRequest, inactiveStart.StatusCode);
++    }
++
+     private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+END_OF_PATCH

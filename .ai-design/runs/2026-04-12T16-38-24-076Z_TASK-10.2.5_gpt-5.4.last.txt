@@ -1,0 +1,1120 @@
+diff --git a/README.md b/README.md
+index 8a6c4a1..7b5d0a2 100644
+--- a/README.md
++++ b/README.md
+@@ -135,3 +135,7 @@ The API exposes health probes under `/health` and `/health/ready`.
+ - Technical logs and safe error responses include the same correlation ID for support workflows.
+ - Background job execution uses retry classification and structured failure metadata.
+ - Tenant-aware logging scopes include the current company context when available.
++
++## Workflow v1
++
++Workflow v1 intentionally supports only predefined, versioned workflow templates from the curated catalog. Admins can review the catalog and start manual workflows, while schedule and internal event starts use the same predefined definitions. Arbitrary workflow graph authoring, builder UX, and custom node/edge editing are intentionally deferred.
+diff --git a/src/VirtualCompany.Application/Workflows/PredefinedWorkflowCatalog.cs b/src/VirtualCompany.Application/Workflows/PredefinedWorkflowCatalog.cs
+new file mode 100644
+index 0000000..c5b7c54
+--- /dev/null
++++ b/src/VirtualCompany.Application/Workflows/PredefinedWorkflowCatalog.cs
+@@ -0,0 +1,205 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Workflows;
++
++public sealed record PredefinedWorkflowCatalogEntry(
++    string Code,
++    string Name,
++    string Description,
++    string? Department,
++    int Version,
++    string TriggerType,
++    IReadOnlyList<string> SupportedStepHandlers,
++    Dictionary<string, JsonNode?> DefinitionJson);
++
++public static class PredefinedWorkflowCatalog
++{
++    public const int CurrentSchemaVersion = 1;
++
++    private static readonly IReadOnlyList<PredefinedWorkflowCatalogEntry> Entries =
++    [
++        Create(
++            "DAILY-EXECUTIVE-BRIEFING",
++            "Daily executive briefing",
++            "Prepare a concise cross-functional briefing from active company signals.",
++            "Executive",
++            WorkflowTriggerType.Schedule,
++            ["collect_signals", "summarize_briefing", "publish_briefing"],
++            [
++                Step("collect-signals", "Collect company signals", "collect_signals"),
++                Step("summarize-briefing", "Summarize briefing", "summarize_briefing"),
++                Step("publish-briefing", "Publish briefing", "publish_briefing")
++            ],
++            json =>
++            {
++                json["schedule"] = new JsonObject
++                {
++                    ["scheduleKey"] = "daily-executive-briefing",
++                    ["timezone"] = "company-default"
++                };
++            }),
++        Create(
++            "INVOICE-APPROVAL-REVIEW",
++            "Invoice approval review",
++            "Route a new invoice signal into a review-ready approval workflow.",
++            "Finance",
++            WorkflowTriggerType.Event,
++            ["capture_invoice", "prepare_review", "request_approval"],
++            [
++                Step("capture-invoice", "Capture invoice context", "capture_invoice"),
++                Step("prepare-review", "Prepare review packet", "prepare_review"),
++                Step("request-approval", "Request approval", "request_approval")
++            ],
++            json =>
++            {
++                json["event"] = new JsonObject
++                {
++                    ["eventName"] = "invoice.received"
++                };
++            }),
++        Create(
++            "SUPPORT-ESCALATION-TRIAGE",
++            "Support escalation triage",
++            "Triage an escalated support case and prepare the next owner handoff.",
++            "Support",
++            WorkflowTriggerType.Event,
++            ["capture_case", "classify_escalation", "assign_owner"],
++            [
++                Step("capture-case", "Capture case context", "capture_case"),
++                Step("classify-escalation", "Classify escalation", "classify_escalation"),
++                Step("assign-owner", "Assign owner", "assign_owner")
++            ],
++            json =>
++            {
++                json["event"] = new JsonObject
++                {
++                    ["eventName"] = "support.case.escalated"
++                };
++            }),
++        Create(
++            "LEAD-FOLLOW-UP",
++            "Lead follow-up",
++            "Start a focused lead follow-up sequence for sales teams.",
++            "Sales",
++            WorkflowTriggerType.Manual,
++            ["qualify_lead", "draft_follow_up", "schedule_next_action"],
++            [
++                Step("qualify-lead", "Qualify lead", "qualify_lead"),
++                Step("draft-follow-up", "Draft follow-up", "draft_follow_up"),
++                Step("schedule-next-action", "Schedule next action", "schedule_next_action")
++            ])
++    ];
++
++    public static IReadOnlyList<PredefinedWorkflowCatalogEntry> All => Entries;
++
++    public static bool TryGet(string code, out PredefinedWorkflowCatalogEntry entry)
++    {
++        entry = Entries.FirstOrDefault(x => string.Equals(x.Code, NormalizeCode(code), StringComparison.OrdinalIgnoreCase))!;
++        return entry is not null;
++    }
++
++    public static Dictionary<string, JsonNode?> CloneDefinitionJson(string code) =>
++        TryGet(code, out var entry)
++            ? CloneNodes(entry.DefinitionJson)
++            : throw new ArgumentOutOfRangeException(nameof(code), code, "Workflow code is not in the predefined catalog.");
++
++    public static void ValidateDefinition(
++        IDictionary<string, List<string>> errors,
++        string codeKey,
++        string code,
++        string triggerTypeKey,
++        string? triggerType,
++        string definitionJsonKey,
++        Dictionary<string, JsonNode?>? definitionJson)
++    {
++        if (!TryGet(code, out var catalogEntry))
++        {
++            AddError(errors, codeKey, "Workflow definitions must use one of the predefined catalog codes.");
++            return;
++        }
++
++        if (!WorkflowTriggerTypeValues.TryParse(triggerType, out var parsedTriggerType))
++        {
++            return;
++        }
++
++        if (!string.Equals(catalogEntry.TriggerType, parsedTriggerType.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            AddError(errors, triggerTypeKey, $"Workflow '{catalogEntry.Code}' only supports '{catalogEntry.TriggerType}' triggers.");
++        }
++
++        if (definitionJson is null || definitionJson.Count == 0)
++        {
++            return;
++        }
++
++        if (!TryGetString(definitionJson, "templateCode", out var templateCode) ||
++            !string.Equals(templateCode, catalogEntry.Code, StringComparison.OrdinalIgnoreCase))
++        {
++            AddError(errors, definitionJsonKey, "DefinitionJson must include the matching predefined templateCode.");
++        }
++
++        if (!TryGetInt(definitionJson, "schemaVersion", out var schemaVersion) ||
++            schemaVersion != CurrentSchemaVersion)
++        {
++            AddError(errors, definitionJsonKey, $"DefinitionJson schemaVersion must be {CurrentSchemaVersion}.");
++        }
++
++        if (!definitionJson.TryGetValue("steps", out var stepsNode) || stepsNode is not JsonArray steps || steps.Count == 0)
++        {
++            AddError(errors, definitionJsonKey, "DefinitionJson must include at least one predefined step.");
++            return;
++        }
++
++        var allowedHandlers = catalogEntry.SupportedStepHandlers.ToHashSet(StringComparer.OrdinalIgnoreCase);
++        foreach (var step in steps.OfType<JsonObject>())
++        {
++            if (!TryGetString(step, "handler", out var handler) || !allowedHandlers.Contains(handler))
++            {
++                AddError(errors, definitionJsonKey, $"DefinitionJson includes a step handler that is not supported by '{catalogEntry.Code}'.");
++            }
++        }
++    }
++
++    private static PredefinedWorkflowCatalogEntry Create(
++        string code,
++        string name,
++        string description,
++        string? department,
++        WorkflowTriggerType triggerType,
++        IReadOnlyList<string> handlers,
++        IReadOnlyList<JsonObject> steps,
++        Action<JsonObject>? configure = null)
++    {
++        var definitionJson = new JsonObject
++        {
++            ["schema"] = "predefined-workflow-v1",
++            ["schemaVersion"] = CurrentSchemaVersion,
++            ["templateCode"] = code,
++            ["description"] = description,
++            ["steps"] = new JsonArray(steps.Select(step => step.DeepClone()).ToArray())
++        };
++        configure?.Invoke(definitionJson);
++
++        return new PredefinedWorkflowCatalogEntry(
++            code,
++            name,
++            description,
++            department,
++            CurrentSchemaVersion,
++            triggerType.ToStorageValue(),
++            handlers,
++            definitionJson.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase));
++    }
++
++    private static JsonObject Step(string id, string name, string handler) =>
++        new()
++        {
++            ["id"] = id,
++            ["name"] = name,
++            ["handler"] = handler
++        };
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
++        nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static string NormalizeCode(string value) => value.Trim().ToUpperInvariant();
++
++    private static bool TryGetString(IReadOnlyDictionary<string, JsonNode?> nodes, string key, out string value)
++    {
++        value = string.Empty;
++        return nodes.TryGetValue(key, out var node) && node is JsonValue jsonValue &&
++            jsonValue.TryGetValue<string>(out var parsed) &&
++            !string.IsNullOrWhiteSpace(parsed) &&
++            (value = parsed.Trim()).Length > 0;
++    }
++
++    private static bool TryGetString(JsonObject node, string key, out string value)
++    {
++        value = string.Empty;
++        return node.TryGetPropertyValue(key, out var child) && child is JsonValue jsonValue &&
++            jsonValue.TryGetValue<string>(out var parsed) &&
++            !string.IsNullOrWhiteSpace(parsed) &&
++            (value = parsed.Trim()).Length > 0;
++    }
++
++    private static bool TryGetInt(IReadOnlyDictionary<string, JsonNode?> nodes, string key, out int value)
++    {
++        value = default;
++        return nodes.TryGetValue(key, out var node) && node is JsonValue jsonValue && jsonValue.TryGetValue<int>(out value);
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++}
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 655bc35..3ebc0ec 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -38,6 +38,16 @@ public sealed record InternalWorkflowEventTriggerResult(
+     string EventName,
+     IReadOnlyList<WorkflowInstanceDto> StartedInstances);
+ 
++public sealed record WorkflowCatalogItemDto(
++    string Code,
++    string Name,
++    string Description,
++    string? Department,
++    int Version,
++    string TriggerType,
++    IReadOnlyList<string> SupportedStepHandlers,
++    Dictionary<string, JsonNode?> DefinitionJson);
++
+ public sealed record WorkflowTriggerDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -107,6 +117,8 @@ public interface ICompanyWorkflowService
+         Guid companyId,
+         CancellationToken cancellationToken);
+ 
++    Task<IReadOnlyList<WorkflowCatalogItemDto>> ListCatalogAsync(Guid companyId, CancellationToken cancellationToken);
++
+     Task<WorkflowDefinitionDto> CreateDefinitionAsync(
+         Guid companyId,
+         CreateWorkflowDefinitionCommand command,
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+index 1536a9a..5d20f9f 100644
+--- a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -17,6 +17,21 @@ public sealed class WorkflowsController : ControllerBase
+         _workflows = workflows;
+     }
+ 
++    [HttpGet("catalog")]
++    public async Task<ActionResult<IReadOnlyList<WorkflowCatalogItemDto>>> ListCatalogAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.ListCatalogAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    // v1 keeps this path constrained to known predefined catalog codes and schemas.
+     [HttpPost("definitions")]
+     public async Task<ActionResult<WorkflowDefinitionDto>> CreateDefinitionAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index e2b91d8..26da8a5 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -77,6 +77,7 @@ using (var scope = app.Services.CreateScope())
+ {
+     var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
++    var workflowDefinitionSeeder = scope.ServiceProvider.GetRequiredService<CompanyWorkflowDefinitionSeeder>();
+     if (dbContext.Database.IsRelational())
+     {
+         if (applyMigrationsOnStartup)
+@@ -92,6 +93,7 @@ using (var scope = app.Services.CreateScope())
+     }
+ 
+     await templateSeeder.SeedAsync();
++    await workflowDefinitionSeeder.SeedAsync();
+ }
+ 
+ app.MapVirtualCompanyHealthEndpoints();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowDefinitionSeeder.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowDefinitionSeeder.cs
+new file mode 100644
+index 0000000..abf356e
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowDefinitionSeeder.cs
+@@ -0,0 +1,63 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyWorkflowDefinitionSeeder
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public CompanyWorkflowDefinitionSeeder(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task SeedAsync(CancellationToken cancellationToken = default)
++    {
++        foreach (var catalogEntry in PredefinedWorkflowCatalog.All)
++        {
++            var exists = await _dbContext.WorkflowDefinitions
++                .IgnoreQueryFilters()
++                .AnyAsync(
++                    x => x.CompanyId == null &&
++                        x.Code == catalogEntry.Code &&
++                        x.Version == catalogEntry.Version,
++                    cancellationToken);
++
++            if (exists)
++            {
++                continue;
++            }
++
++            if (!WorkflowTriggerTypeValues.TryParse(catalogEntry.TriggerType, out var triggerType))
++            {
++                throw new InvalidOperationException($"Predefined workflow '{catalogEntry.Code}' has an invalid trigger type.");
++            }
++
++            _dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                StableId(catalogEntry.Code, catalogEntry.Version),
++                null,
++                catalogEntry.Code,
++                catalogEntry.Name,
++                catalogEntry.Department,
++                triggerType,
++                catalogEntry.Version,
++                PredefinedWorkflowCatalog.CloneDefinitionJson(catalogEntry.Code),
++                active: true));
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private static Guid StableId(string code, int version) =>
++        code switch
++        {
++            "DAILY-EXECUTIVE-BRIEFING" => Guid.Parse("f33d253c-3d80-46d5-a43c-68f2a5a72f01"),
++            "INVOICE-APPROVAL-REVIEW" => Guid.Parse("4810f5bb-2eaa-42d0-a650-754f9616cc02"),
++            "SUPPORT-ESCALATION-TRIAGE" => Guid.Parse("af11bff4-01dc-4a85-91cf-68a35bfa5ce3"),
++            "LEAD-FOLLOW-UP" => Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"),
++            _ => Guid.NewGuid()
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index c478a10..7e705ee 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -35,6 +35,25 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         _logger = logger;
+     }
+ 
++    public async Task<IReadOnlyList<WorkflowCatalogItemDto>> ListCatalogAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        return PredefinedWorkflowCatalog.All
++            .OrderBy(x => x.Name)
++            .Select(x => new WorkflowCatalogItemDto(
++                x.Code,
++                x.Name,
++                x.Description,
++                x.Department,
++                x.Version,
++                x.TriggerType,
++                x.SupportedStepHandlers,
++                PredefinedWorkflowCatalog.CloneDefinitionJson(x.Code)))
++            .ToList();
++    }
++
+     public async Task<WorkflowDefinitionDto> CreateDefinitionAsync(
+         Guid companyId,
+         CreateWorkflowDefinitionCommand command,
+@@ -117,7 +136,6 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+-        Validate(command);
+ 
+         var source = await _dbContext.WorkflowDefinitions
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == definitionId, cancellationToken);
+@@ -127,6 +145,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             throw new KeyNotFoundException("Workflow definition not found.");
+         }
+ 
++        Validate(command, source.Code);
++
+         var latestVersion = await _dbContext.WorkflowDefinitions
+             .Where(x => x.CompanyId == companyId && x.Code == source.Code)
+             .MaxAsync(x => (int?)x.Version, cancellationToken) ?? 0;
+@@ -241,7 +261,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             .Where(x =>
+                 x.CompanyId == companyId &&
+                 x.Active &&
+-                x.TriggerType == WorkflowTriggerType.Schedule)
++                x.TriggerType == WorkflowTriggerType.Schedule ||
++                x.CompanyId == null && x.Active && x.TriggerType == WorkflowTriggerType.Schedule)
+             .OrderBy(x => x.Code)
+             .ThenByDescending(x => x.Version)
+             .ToListAsync(cancellationToken);
+@@ -323,7 +343,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         var jsonMatchedDefinitions = await _dbContext.WorkflowDefinitions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x =>
+-                x.CompanyId == workflowEvent.CompanyId &&
++                (x.CompanyId == workflowEvent.CompanyId || x.CompanyId == null) &&
+                 x.Active &&
+                 x.TriggerType == WorkflowTriggerType.Event)
+             .ToListAsync(cancellationToken);
+@@ -632,7 +652,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
+         AddTriggerType(errors, nameof(command.TriggerType), command.TriggerType);
+         AddDefinitionJson(errors, nameof(command.DefinitionJson), command.DefinitionJson);
++        PredefinedWorkflowCatalog.ValidateDefinition(errors, nameof(command.Code), command.Code, nameof(command.TriggerType), command.TriggerType, nameof(command.DefinitionJson), command.DefinitionJson);
+         ThrowIfInvalid(errors);
+     }
+ 
+-    private static void Validate(CreateWorkflowDefinitionVersionCommand command)
++    private static void Validate(CreateWorkflowDefinitionVersionCommand command, string code)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+         AddOptional(errors, nameof(command.Name), command.Name, NameMaxLength);
+         AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
+         AddTriggerType(errors, nameof(command.TriggerType), command.TriggerType);
+         AddDefinitionJson(errors, nameof(command.DefinitionJson), command.DefinitionJson);
++        PredefinedWorkflowCatalog.ValidateDefinition(errors, nameof(CreateWorkflowDefinitionCommand.Code), code, nameof(command.TriggerType), command.TriggerType, nameof(command.DefinitionJson), command.DefinitionJson);
+         ThrowIfInvalid(errors);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 7aa48d1..f6d610f 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -128,6 +128,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412203000_SeedPredefinedWorkflowDefinitions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412203000_SeedPredefinedWorkflowDefinitions.cs
+new file mode 100644
+index 0000000..a319ee3
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412203000_SeedPredefinedWorkflowDefinitions.cs
+@@ -0,0 +1,95 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class SeedPredefinedWorkflowDefinitions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++
++        migrationBuilder.InsertData(
++            table: "workflow_definitions",
++            columns: new[]
++            {
++                "id", "company_id", "code", "name", "department", "version", "trigger_type",
++                "definition_json", "active", "created_at", "updated_at"
++            },
++            columnTypes: new[]
++            {
++                isPostgres ? "uuid" : "uniqueidentifier",
++                isPostgres ? "uuid" : "uniqueidentifier",
++                isPostgres ? "character varying(100)" : "nvarchar(100)",
++                isPostgres ? "character varying(200)" : "nvarchar(200)",
++                isPostgres ? "character varying(100)" : "nvarchar(100)",
++                "int",
++                isPostgres ? "character varying(32)" : "nvarchar(32)",
++                jsonType,
++                isPostgres ? "boolean" : "bit",
++                isPostgres ? "timestamp with time zone" : "datetime2",
++                isPostgres ? "timestamp with time zone" : "datetime2"
++            },
++            values: new object[,]
++            {
++                {
++                    Guid.Parse("f33d253c-3d80-46d5-a43c-68f2a5a72f01"),
++                    null,
++                    "DAILY-EXECUTIVE-BRIEFING",
++                    "Daily executive briefing",
++                    "Executive",
++                    1,
++                    "schedule",
++                    """{"schema":"predefined-workflow-v1","schemaVersion":1,"templateCode":"DAILY-EXECUTIVE-BRIEFING","description":"Prepare a concise cross-functional briefing from active company signals.","schedule":{"scheduleKey":"daily-executive-briefing","timezone":"company-default"},"steps":[{"id":"collect-signals","name":"Collect company signals","handler":"collect_signals"},{"id":"summarize-briefing","name":"Summarize briefing","handler":"summarize_briefing"},{"id":"publish-briefing","name":"Publish briefing","handler":"publish_briefing"}]}""",
++                    true,
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime(),
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime()
++                },
++                {
++                    Guid.Parse("4810f5bb-2eaa-42d0-a650-754f9616cc02"),
++                    null,
++                    "INVOICE-APPROVAL-REVIEW",
++                    "Invoice approval review",
++                    "Finance",
++                    1,
++                    "event",
++                    """{"schema":"predefined-workflow-v1","schemaVersion":1,"templateCode":"INVOICE-APPROVAL-REVIEW","description":"Route a new invoice signal into a review-ready approval workflow.","event":{"eventName":"invoice.received"},"steps":[{"id":"capture-invoice","name":"Capture invoice context","handler":"capture_invoice"},{"id":"prepare-review","name":"Prepare review packet","handler":"prepare_review"},{"id":"request-approval","name":"Request approval","handler":"request_approval"}]}""",
++                    true,
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime(),
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime()
++                },
++                {
++                    Guid.Parse("af11bff4-01dc-4a85-91cf-68a35bfa5ce3"),
++                    null,
++                    "SUPPORT-ESCALATION-TRIAGE",
++                    "Support escalation triage",
++                    "Support",
++                    1,
++                    "event",
++                    """{"schema":"predefined-workflow-v1","schemaVersion":1,"templateCode":"SUPPORT-ESCALATION-TRIAGE","description":"Triage an escalated support case and prepare the next owner handoff.","event":{"eventName":"support.case.escalated"},"steps":[{"id":"capture-case","name":"Capture case context","handler":"capture_case"},{"id":"classify-escalation","name":"Classify escalation","handler":"classify_escalation"},{"id":"assign-owner","name":"Assign owner","handler":"assign_owner"}]}""",
++                    true,
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime(),
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime()
++                },
++                {
++                    Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"),
++                    null,
++                    "LEAD-FOLLOW-UP",
++                    "Lead follow-up",
++                    "Sales",
++                    1,
++                    "manual",
++                    """{"schema":"predefined-workflow-v1","schemaVersion":1,"templateCode":"LEAD-FOLLOW-UP","description":"Start a focused lead follow-up sequence for sales teams.","steps":[{"id":"qualify-lead","name":"Qualify lead","handler":"qualify_lead"},{"id":"draft-follow-up","name":"Draft follow-up","handler":"draft_follow_up"},{"id":"schedule-next-action","name":"Schedule next action","handler":"schedule_next_action"}]}""",
++                    true,
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime(),
++                    DateTime.Parse("2026-04-12T20:30:00Z").ToUniversalTime()
++                }
++            });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DeleteData(table: "workflow_definitions", keyColumn: "id", keyValue: Guid.Parse("f33d253c-3d80-46d5-a43c-68f2a5a72f01"));
++        migrationBuilder.DeleteData(table: "workflow_definitions", keyColumn: "id", keyValue: Guid.Parse("4810f5bb-2eaa-42d0-a650-754f9616cc02"));
++        migrationBuilder.DeleteData(table: "workflow_definitions", keyColumn: "id", keyValue: Guid.Parse("af11bff4-01dc-4a85-91cf-68a35bfa5ce3"));
++        migrationBuilder.DeleteData(table: "workflow_definitions", keyColumn: "id", keyValue: Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"));
++    }
++}
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 6b24537..d09166d 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -27,6 +27,11 @@
+                 <span class="bi bi-people" aria-hidden="true"></span> Agents
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="workflows">
++                <span class="bi bi-diagram-3" aria-hidden="true"></span> Workflows
++            </NavLink>
++        </div>
+     </nav>
+ </div>
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Workflows.razor b/src/VirtualCompany.Web/Pages/Workflows.razor
+new file mode 100644
+index 0000000..fb9914b
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Workflows.razor
+@@ -0,0 +1,211 @@
++@page "/workflows"
++@rendermode InteractiveServer
++@using System.Text.Json.Nodes
++@inject OnboardingApiClient OnboardingApiClient
++@inject WorkflowApiClient WorkflowApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Workflows</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Workflow catalog</h1>
++        <p class="text-body-secondary mb-0">Loading predefined workflows...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary">Choose the company where you want to review predefined workflows.</p>
++
++            @if (activeMemberships.Count == 0)
++            {
++                <p class="mb-0">No active company memberships are available yet.</p>
++            }
++            else
++            {
++                <div class="template-grid">
++                    @foreach (var membership in activeMemberships)
++                    {
++                        <a class="template-card text-decoration-none text-reset" href="@($"/workflows?companyId={membership.CompanyId}")">
++                            <strong>@membership.CompanyName</strong>
++                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
++                        </a>
++                    }
++                </div>
++            }
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="agent-layout">
++            <div class="wizard-card">
++                <span class="dashboard-kicker">Predefined catalog</span>
++                <h1>Workflows for @(companyAccess?.CompanyName ?? "your company")</h1>
++                <p class="text-body-secondary">Choose from approved workflow templates. Freeform workflow builders and custom step graphs are not available in v1.</p>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger">@errorMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(successMessage))
++                {
++                    <div class="alert alert-success">@successMessage</div>
++                }
++
++                <div class="agent-template-grid mt-4">
++                    @foreach (var workflow in catalog)
++                    {
++                        var isSelected = string.Equals(selectedWorkflowCode, workflow.Code, StringComparison.OrdinalIgnoreCase);
++                        <button class="template-card agent-template-card @(isSelected ? "is-selected" : null)"
++                                type="button"
++                                @onclick="@(() => SelectWorkflow(workflow.Code))">
++                            <div class="agent-template-header">
++                                <strong>@workflow.Name</strong>
++                                <span class="badge text-bg-light">v@workflow.Version</span>
++                            </div>
++                            <div class="text-body-secondary">@workflow.Department</div>
++                            <p class="mb-0 mt-3">@workflow.Description</p>
++                            <div class="mt-3">
++                                <span class="badge text-bg-secondary">@workflow.TriggerType</span>
++                            </div>
++                        </button>
++                    }
++                </div>
++            </div>
++
++            <div class="wizard-card">
++                <h2 class="h4 mb-3">Launch</h2>
++
++                @if (selectedWorkflow is null)
++                {
++                    <p class="text-body-secondary mb-0">Select a workflow to view launch options.</p>
++                }
++                else
++                {
++                    <dl class="kv-list">
++                        <dt>Code</dt>
++                        <dd>@selectedWorkflow.Code</dd>
++                        <dt>Trigger</dt>
++                        <dd>@selectedWorkflow.TriggerType</dd>
++                        <dt>Steps</dt>
++                        <dd>@string.Join(", ", selectedWorkflow.SupportedStepHandlers)</dd>
++                    </dl>
++
++                    @if (string.Equals(selectedWorkflow.TriggerType, "manual", StringComparison.OrdinalIgnoreCase))
++                    {
++                        <button class="btn btn-primary" type="button" disabled="@isStarting" @onclick="StartSelectedWorkflowAsync">Start workflow</button>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mb-0">This workflow starts from its configured @selectedWorkflow.TriggerType trigger.</p>
++                    }
++                }
++            </div>
++        </div>
++
++        <div class="wizard-card mt-4">
++            <div class="agent-roster-header">
++                <div>
++                    <span class="dashboard-kicker">Instance review</span>
++                    <h2 class="h4 mb-0 mt-2">Recent workflow instances</h2>
++                </div>
++            </div>
++
++            @if (instances.Count == 0)
++            {
++                <p class="text-body-secondary mb-0 mt-3">No workflow instances have started yet.</p>
++            }
++            else
++            {
++                <div class="table-responsive mt-3">
++                    <table class="table align-middle">
++                        <thead>
++                            <tr>
++                                <th>Workflow</th>
++                                <th>State</th>
++                                <th>Current step</th>
++                                <th>Trigger</th>
++                                <th>Started</th>
++                            </tr>
++                        </thead>
++                        <tbody>
++                            @foreach (var instance in instances)
++                            {
++                                <tr>
++                                    <td>@instance.DefinitionName</td>
++                                    <td><span class="badge @GetStateBadge(instance.State)">@instance.State</span></td>
++                                    <td>@(instance.CurrentStep ?? "Not set")</td>
++                                    <td>@instance.TriggerSource</td>
++                                    <td>@instance.StartedAt.ToLocalTime().ToString("g")</td>
++                                </tr>
++                            }
++                        </tbody>
++                    </table>
++                </div>
++            }
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private bool isLoading = true;
++    private bool isStarting;
++    private string? errorMessage;
++    private string? successMessage;
++    private string? selectedWorkflowCode;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private List<WorkflowCatalogItemViewModel> catalog = [];
++    private List<WorkflowInstanceViewModel> instances = [];
++
++    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
++        currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
++        ?? [];
++
++    private WorkflowCatalogItemViewModel? selectedWorkflow =>
++        catalog.FirstOrDefault(x => string.Equals(x.Code, selectedWorkflowCode, StringComparison.OrdinalIgnoreCase));
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo($"/workflows?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++                catalog = (await WorkflowApiClient.GetCatalogAsync(companyId)).ToList();
++                instances = (await WorkflowApiClient.GetInstancesAsync(companyId)).ToList();
++                selectedWorkflowCode ??= catalog.FirstOrDefault()?.Code;
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private void SelectWorkflow(string code) => selectedWorkflowCode = code;
++
++    private async Task StartSelectedWorkflowAsync()
++    {
++        if (CompanyId is not Guid companyId || selectedWorkflow is null)
++        {
++            return;
++        }
++
++        isStarting = true;
++        errorMessage = null;
++        successMessage = null;
++        try
++        {
++            var definition = await WorkflowApiClient.GetLatestDefinitionByCodeAsync(companyId, selectedWorkflow.Code);
++            var instance = await WorkflowApiClient.StartManualWorkflowAsync(companyId, definition.Id, new StartManualWorkflowRequest
++            {
++                TriggerRef = $"manual:{DateTime.UtcNow:O}",
++                InputPayload = new Dictionary<string, JsonNode?>
++                {
++                    ["launchedFrom"] = JsonValue.Create("admin_workflow_catalog")
++                }
++            });
++            instances.Insert(0, instance);
++            successMessage = $"Started {definition.Name}.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isStarting = false;
++        }
++    }
++
++    private static string GetStateBadge(string state) =>
++        state.Equals("failed", StringComparison.OrdinalIgnoreCase) ? "text-bg-danger" :
++        state.Equals("blocked", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" :
++        state.Equals("completed", StringComparison.OrdinalIgnoreCase) ? "text-bg-success" :
++        "text-bg-secondary";
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 6930188..c11176e 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -37,6 +37,11 @@ builder.Services.AddScoped(sp => new AgentApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new WorkflowApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Services/WorkflowApiClient.cs b/src/VirtualCompany.Web/Services/WorkflowApiClient.cs
+new file mode 100644
+index 0000000..426d3d2
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/WorkflowApiClient.cs
+@@ -0,0 +1,170 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class WorkflowApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public WorkflowApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<IReadOnlyList<WorkflowCatalogItemViewModel>> GetCatalogAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<IReadOnlyList<WorkflowCatalogItemViewModel>>(OfflineCatalog)
++            : GetAsync<IReadOnlyList<WorkflowCatalogItemViewModel>>($"api/companies/{companyId}/workflows/catalog", cancellationToken);
++
++    public Task<IReadOnlyList<WorkflowInstanceViewModel>> GetInstancesAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<IReadOnlyList<WorkflowInstanceViewModel>>([])
++            : GetAsync<IReadOnlyList<WorkflowInstanceViewModel>>($"api/companies/{companyId}/workflows/instances", cancellationToken);
++
++    public async Task<WorkflowDefinitionViewModel> GetLatestDefinitionByCodeAsync(Guid companyId, string code, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var catalogItem = OfflineCatalog.First(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
++            return new WorkflowDefinitionViewModel
++            {
++                Id = Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"),
++                CompanyId = null,
++                Code = catalogItem.Code,
++                Name = catalogItem.Name,
++                Department = catalogItem.Department,
++                Version = catalogItem.Version,
++                TriggerType = catalogItem.TriggerType,
++                DefinitionJson = catalogItem.DefinitionJson,
++                Active = true
++            };
++        }
++
++        var definitions = await GetAsync<IReadOnlyList<WorkflowDefinitionViewModel>>(
++            $"api/companies/{companyId}/workflows/definitions?activeOnly=true&latestOnly=true&includeSystem=true",
++            cancellationToken);
++        return definitions.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase))
++            ?? throw new OnboardingApiException("The selected workflow definition is not active.");
++    }
++
++    public Task<WorkflowInstanceViewModel> StartManualWorkflowAsync(
++        Guid companyId,
++        Guid definitionId,
++        StartManualWorkflowRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(new WorkflowInstanceViewModel
++            {
++                Id = Guid.NewGuid(),
++                CompanyId = companyId,
++                DefinitionId = definitionId,
++                TriggerSource = "manual",
++                TriggerRef = request.TriggerRef,
++                Status = "started",
++                State = "started",
++                CurrentStep = "qualify-lead",
++                StartedAt = DateTime.UtcNow,
++                UpdatedAt = DateTime.UtcNow,
++                DefinitionCode = "LEAD-FOLLOW-UP",
++                DefinitionName = "Lead follow-up"
++            });
++        }
++
++        return SendAsync<WorkflowInstanceViewModel>(
++            HttpMethod.Post,
++            $"api/companies/{companyId}/workflows/definitions/{definitionId}/start",
++            request,
++            cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri)
++            {
++                Content = JsonContent.Create(payload)
++            };
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static readonly IReadOnlyList<WorkflowCatalogItemViewModel> OfflineCatalog =
++    [
++        new()
++        {
++            Code = "LEAD-FOLLOW-UP",
++            Name = "Lead follow-up",
++            Description = "Start a focused lead follow-up sequence for sales teams.",
++            Department = "Sales",
++            Version = 1,
++            TriggerType = "manual",
++            SupportedStepHandlers = ["qualify_lead", "draft_follow_up", "schedule_next_action"],
++            DefinitionJson = new Dictionary<string, JsonNode?> { ["templateCode"] = JsonValue.Create("LEAD-FOLLOW-UP") }
++        }
++    ];
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class WorkflowCatalogItemViewModel
++{
++    public string Code { get; set; } = string.Empty;
++    public string Name { get; set; } = string.Empty;
++    public string Description { get; set; } = string.Empty;
++    public string? Department { get; set; }
++    public int Version { get; set; }
++    public string TriggerType { get; set; } = string.Empty;
++    public List<string> SupportedStepHandlers { get; set; } = [];
++    public Dictionary<string, JsonNode?> DefinitionJson { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class WorkflowDefinitionViewModel : WorkflowCatalogItemViewModel
++{
++    public Guid Id { get; set; }
++    public Guid? CompanyId { get; set; }
++    public bool Active { get; set; }
++}
++
++public sealed class WorkflowInstanceViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public Guid DefinitionId { get; set; }
++    public Guid? TriggerId { get; set; }
++    public string TriggerSource { get; set; } = string.Empty;
++    public string? TriggerRef { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string State { get; set; } = string.Empty;
++    public string? CurrentStep { get; set; }
++    public Dictionary<string, JsonNode?> InputPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> ContextJson { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> OutputPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime StartedAt { get; set; }
++    public DateTime UpdatedAt { get; set; }
++    public DateTime? CompletedAt { get; set; }
++    public string DefinitionCode { get; set; } = string.Empty;
++    public string DefinitionName { get; set; } = string.Empty;
++}
++
++public sealed class StartManualWorkflowRequest
++{
++    public Guid DefinitionId { get; set; }
++    public string? TriggerRef { get; set; }
++    public Dictionary<string, JsonNode?>? InputPayload { get; set; }
++}
+END_OF_PATCH

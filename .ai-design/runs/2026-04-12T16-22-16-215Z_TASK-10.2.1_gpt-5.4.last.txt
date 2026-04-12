@@ -1,0 +1,949 @@
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -3,12 +3,13 @@ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Domain.Entities;
+ 
+-public sealed class WorkflowDefinition : ICompanyOwnedEntity
++public sealed class WorkflowDefinition
+ {
+-    private const int KeyMaxLength = 100;
++    private const int CodeMaxLength = 100;
+     private const int NameMaxLength = 200;
+-    private const int DescriptionMaxLength = 2000;
++    private const int DepartmentMaxLength = 100;
+ 
++    // Versioned definitions are immutable after creation; only activation metadata can change.
+     private WorkflowDefinition()
+     {
+     }
+@@ -16,33 +17,46 @@ public sealed class WorkflowDefinition : ICompanyOwnedEntity
+     public WorkflowDefinition(
+         Guid id,
+-        Guid companyId,
+-        string key,
++        Guid? companyId,
++        string code,
+         string name,
+-        string? description,
+-        IDictionary<string, JsonNode?>? definitionJson = null)
++        string? department,
++        WorkflowTriggerType triggerType,
++        int version,
++        IDictionary<string, JsonNode?> definitionJson,
++        bool active = true)
+     {
+-        if (companyId == Guid.Empty)
++        if (companyId == Guid.Empty)
+         {
+             throw new ArgumentException("CompanyId is required.", nameof(companyId));
+         }
+ 
++        if (version < 1)
++        {
++            throw new ArgumentOutOfRangeException(nameof(version), "Version must be greater than zero.");
++        }
++
++        if (definitionJson.Count == 0)
++        {
++            throw new ArgumentException("DefinitionJson is required.", nameof(definitionJson));
++        }
++
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+-        Key = NormalizeRequired(key, nameof(key), KeyMaxLength);
++        Code = NormalizeCode(code);
+         Name = NormalizeRequired(name, nameof(name), NameMaxLength);
+-        Description = NormalizeOptional(description, nameof(description), DescriptionMaxLength);
+-        Status = WorkflowDefinitionStatusValues.DefaultStatus;
++        Department = NormalizeOptional(department, nameof(department), DepartmentMaxLength);
++        TriggerType = triggerType;
++        Version = version;
+         DefinitionJson = CloneNodes(definitionJson);
++        Active = active;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+ 
+     public Guid Id { get; private set; }
+-    public Guid CompanyId { get; private set; }
+-    public string Key { get; private set; } = null!;
++    public Guid? CompanyId { get; private set; }
++    public string Code { get; private set; } = null!;
+     public string Name { get; private set; } = null!;
+-    public string? Description { get; private set; }
+-    public WorkflowDefinitionStatus Status { get; private set; }
++    public string? Department { get; private set; }
++    public int Version { get; private set; }
++    public WorkflowTriggerType TriggerType { get; private set; }
+     public Dictionary<string, JsonNode?> DefinitionJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public bool Active { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+-    public Company Company { get; private set; } = null!;
++    public Company? Company { get; private set; }
+     public ICollection<WorkflowTrigger> Triggers { get; } = new List<WorkflowTrigger>();
+     public ICollection<WorkflowInstance> Instances { get; } = new List<WorkflowInstance>();
+ 
++    public void SetActive(bool active)
++    {
++        if (Active == active)
++        {
++            return;
++        }
++
++        Active = active;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeCode(string value) =>
++        NormalizeRequired(value, nameof(Code), CodeMaxLength).ToUpperInvariant();
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+@@ -8,6 +8,14 @@ public enum WorkflowDefinitionStatus
+     Archived = 3
+ }
+ 
++public enum WorkflowTriggerType
++{
++    Manual = 1,
++    Event = 2,
++    Schedule = 3,
++    Webhook = 4
++}
++
+ public enum WorkflowInstanceStatus
+ {
+     Started = 1,
+@@ -51,6 +59,49 @@ public static class WorkflowDefinitionStatusValues
+             : $"Unsupported workflow definition status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
+ }
+ 
++public static class WorkflowTriggerTypeValues
++{
++    private static readonly IReadOnlyDictionary<WorkflowTriggerType, string> Values = new Dictionary<WorkflowTriggerType, string>
++    {
++        [WorkflowTriggerType.Manual] = "manual",
++        [WorkflowTriggerType.Event] = "event",
++        [WorkflowTriggerType.Schedule] = "schedule",
++        [WorkflowTriggerType.Webhook] = "webhook"
++    };
++
++    private static readonly IReadOnlyDictionary<string, WorkflowTriggerType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static WorkflowTriggerType DefaultType => WorkflowTriggerType.Manual;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this WorkflowTriggerType triggerType) =>
++        Values.TryGetValue(triggerType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(triggerType), triggerType, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out WorkflowTriggerType triggerType)
++    {
++        triggerType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out triggerType))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out triggerType) && Values.ContainsKey(triggerType);
++    }
++
++    public static WorkflowTriggerType Parse(string value) =>
++        TryParse(value, out var triggerType)
++            ? triggerType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Workflow trigger type is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported workflow trigger type value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
++
+ public static class WorkflowInstanceStatusValues
+ {
+     private static readonly IReadOnlyDictionary<WorkflowInstanceStatus, string> Values = new Dictionary<WorkflowInstanceStatus, string>
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -4,10 +4,19 @@ using System.Text.Json.Nodes;
+ namespace VirtualCompany.Application.Workflows;
+ 
+ public sealed record CreateWorkflowDefinitionCommand(
+-    string Key,
++    string Code,
+     string Name,
+-    string? Description,
+-    Dictionary<string, JsonNode?>? DefinitionJson);
++    string? Department,
++    string TriggerType,
++    Dictionary<string, JsonNode?>? DefinitionJson,
++    bool Active = true);
++
++public sealed record CreateWorkflowDefinitionVersionCommand(
++    string? Name,
++    string? Department,
++    string TriggerType,
++    Dictionary<string, JsonNode?>? DefinitionJson,
++    bool Active = true);
+ 
+ public sealed record CreateWorkflowTriggerCommand(
+     string EventName,
+@@ -31,15 +40,16 @@ public sealed record WorkflowTriggerDto(
+ public sealed record WorkflowDefinitionDto(
+     Guid Id,
+-    Guid CompanyId,
+-    string Key,
++    Guid? CompanyId,
++    string Code,
+     string Name,
+-    string? Description,
+-    string Status,
++    string? Department,
++    int Version,
++    string TriggerType,
+     Dictionary<string, JsonNode?> DefinitionJson,
++    bool Active,
+     DateTime CreatedAt,
+     DateTime UpdatedAt,
+     IReadOnlyList<WorkflowTriggerDto> Triggers);
+ 
+@@ -54,16 +64,24 @@ public sealed record WorkflowInstanceDto(
+     DateTime StartedAt,
+     DateTime UpdatedAt,
+     DateTime? CompletedAt,
+-    string DefinitionKey,
++    string DefinitionCode,
+     string DefinitionName);
+ 
+ public interface ICompanyWorkflowService
+ {
+     Task<WorkflowDefinitionDto> CreateDefinitionAsync(
+         Guid companyId,
+         CreateWorkflowDefinitionCommand command,
+         CancellationToken cancellationToken);
+ 
+-    Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<WorkflowDefinitionDto> CreateDefinitionVersionAsync(
++        Guid companyId,
++        Guid definitionId,
++        CreateWorkflowDefinitionVersionCommand command,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(
++        Guid companyId,
++        bool activeOnly,
++        bool latestOnly,
++        bool includeSystem,
++        CancellationToken cancellationToken);
+ 
+     Task<WorkflowDefinitionDto> GetDefinitionAsync(Guid companyId, Guid definitionId, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -8,7 +8,7 @@ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+ {
+-    private const int KeyMaxLength = 100;
++    private const int CodeMaxLength = 100;
+     private const int NameMaxLength = 200;
+-    private const int DescriptionMaxLength = 2000;
++    private const int DepartmentMaxLength = 100;
+     private const int EventNameMaxLength = 200;
+ 
+@@ -33,45 +33,106 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         await RequireMembershipAsync(companyId, cancellationToken);
+         Validate(command);
+ 
+-        var key = command.Key.Trim();
++        var code = NormalizeCode(command.Code);
+         var exists = await _dbContext.WorkflowDefinitions
+             .AsNoTracking()
+-            .AnyAsync(x => x.CompanyId == companyId && x.Key == key, cancellationToken);
++            .AnyAsync(x => x.CompanyId == companyId && x.Code == code, cancellationToken);
+ 
+         if (exists)
+         {
+             throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+             {
+-                [nameof(command.Key)] = ["Key must be unique within the company."]
++                [nameof(command.Code)] = ["Code already has a workflow definition in this company. Create a new version instead."]
+             });
+         }
+ 
+         var definition = new WorkflowDefinition(
+             Guid.NewGuid(),
+             companyId,
+-            key,
++            code,
+             command.Name,
+-            command.Description,
+-            command.DefinitionJson);
++            command.Department,
++            WorkflowTriggerTypeValues.Parse(command.TriggerType),
++            version: 1,
++            command.DefinitionJson!,
++            command.Active);
+ 
+         _dbContext.WorkflowDefinitions.Add(definition);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return await GetDefinitionAsync(companyId, definition.Id, cancellationToken);
+     }
+ 
+-    public async Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(Guid companyId, CancellationToken cancellationToken)
++    public async Task<WorkflowDefinitionDto> CreateDefinitionVersionAsync(
++        Guid companyId,
++        Guid definitionId,
++        CreateWorkflowDefinitionVersionCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var source = await _dbContext.WorkflowDefinitions
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == definitionId, cancellationToken);
++
++        if (source is null)
++        {
++            throw new KeyNotFoundException("Workflow definition not found.");
++        }
++
++        var latestVersion = await _dbContext.WorkflowDefinitions
++            .Where(x => x.CompanyId == companyId && x.Code == source.Code)
++            .MaxAsync(x => (int?)x.Version, cancellationToken) ?? 0;
++
++        if (command.Active)
++        {
++            var activeDefinitions = await _dbContext.WorkflowDefinitions
++                .Where(x => x.CompanyId == companyId && x.Code == source.Code && x.Active)
++                .ToListAsync(cancellationToken);
++
++            foreach (var activeDefinition in activeDefinitions)
++            {
++                activeDefinition.SetActive(false);
++            }
++        }
++
++        var definition = new WorkflowDefinition(
++            Guid.NewGuid(),
++            companyId,
++            source.Code,
++            string.IsNullOrWhiteSpace(command.Name) ? source.Name : command.Name,
++            string.IsNullOrWhiteSpace(command.Department) ? source.Department : command.Department,
++            WorkflowTriggerTypeValues.Parse(command.TriggerType),
++            latestVersion + 1,
++            command.DefinitionJson!,
++            command.Active);
++
++        _dbContext.WorkflowDefinitions.Add(definition);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return await GetDefinitionAsync(companyId, definition.Id, cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(
++        Guid companyId,
++        bool activeOnly,
++        bool latestOnly,
++        bool includeSystem,
++        CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+ 
+-        var definitions = await _dbContext.WorkflowDefinitions
++        var query = _dbContext.WorkflowDefinitions
+             .AsNoTracking()
+             .Include(x => x.Triggers)
+-            .Where(x => x.CompanyId == companyId)
++            .Where(x => x.CompanyId == companyId || (includeSystem && x.CompanyId == null));
++
++        if (activeOnly)
++        {
++            query = query.Where(x => x.Active);
++        }
++
++        var definitions = await query
+             .OrderBy(x => x.Name)
++            .ThenBy(x => x.Code)
++            .ThenByDescending(x => x.Version)
+             .ToListAsync(cancellationToken);
++
++        if (latestOnly)
++        {
++            definitions = definitions
++                .GroupBy(x => new { x.CompanyId, x.Code })
++                .Select(group => group.OrderByDescending(x => x.Version).First())
++                .OrderBy(x => x.Name)
++                .ThenBy(x => x.Code)
++                .ToList();
++        }
+ 
+         return definitions.Select(ToDefinitionDto).ToList();
+     }
+@@ -83,7 +144,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         var definition = await _dbContext.WorkflowDefinitions
+             .AsNoTracking()
+             .Include(x => x.Triggers)
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == definitionId, cancellationToken);
++            .SingleOrDefaultAsync(x => x.Id == definitionId && (x.CompanyId == companyId || x.CompanyId == null), cancellationToken);
+ 
+         return definition is null
+             ? throw new KeyNotFoundException("Workflow definition not found.")
+@@ -226,12 +287,13 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         new(
+             definition.Id,
+             definition.CompanyId,
+-            definition.Key,
++            definition.Code,
+             definition.Name,
+-            definition.Description,
+-            definition.Status.ToStorageValue(),
++            definition.Department,
++            definition.Version,
++            definition.TriggerType.ToStorageValue(),
+             CloneNodes(definition.DefinitionJson),
++            definition.Active,
+             definition.CreatedUtc,
+             definition.UpdatedUtc,
+             definition.Triggers.Select(ToTriggerDto).OrderBy(x => x.EventName).ToList());
+@@ -261,17 +323,18 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+             instance.UpdatedUtc,
+             instance.CompletedUtc,
+-            instance.Definition.Key,
++            instance.Definition.Code,
+             instance.Definition.Name);
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+@@ -272,9 +335,37 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+     private static void Validate(CreateWorkflowDefinitionCommand command)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+-        AddRequired(errors, nameof(command.Key), command.Key, KeyMaxLength);
++        AddRequired(errors, nameof(command.Code), command.Code, CodeMaxLength);
+         AddRequired(errors, nameof(command.Name), command.Name, NameMaxLength);
+-        AddOptional(errors, nameof(command.Description), command.Description, DescriptionMaxLength);
++        AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
++        AddTriggerType(errors, nameof(command.TriggerType), command.TriggerType);
++        AddDefinitionJson(errors, nameof(command.DefinitionJson), command.DefinitionJson);
++        ThrowIfInvalid(errors);
++    }
++
++    private static void Validate(CreateWorkflowDefinitionVersionCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddOptional(errors, nameof(command.Name), command.Name, NameMaxLength);
++        AddOptional(errors, nameof(command.Department), command.Department, DepartmentMaxLength);
++        AddTriggerType(errors, nameof(command.TriggerType), command.TriggerType);
++        AddDefinitionJson(errors, nameof(command.DefinitionJson), command.DefinitionJson);
+         ThrowIfInvalid(errors);
+     }
+ 
+@@ -324,6 +415,33 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService
+         }
+     }
+ 
++    private static void AddTriggerType(IDictionary<string, List<string>> errors, string key, string? value)
++    {
++        if (!WorkflowTriggerTypeValues.TryParse(value, out _))
++        {
++            AddError(errors, key, WorkflowTriggerTypeValues.BuildValidationMessage(value));
++        }
++    }
++
++    private static void AddDefinitionJson(
++        IDictionary<string, List<string>> errors,
++        string key,
++        Dictionary<string, JsonNode?>? definitionJson)
++    {
++        if (definitionJson is null || definitionJson.Count == 0)
++        {
++            AddError(errors, key, "DefinitionJson must be a non-empty JSON object.");
++            return;
++        }
++
++        if (!definitionJson.TryGetValue("steps", out var steps) || steps is not JsonArray)
++        {
++            AddError(errors, key, "DefinitionJson must include a steps array.");
++        }
++    }
++
++    private static string NormalizeCode(string code) =>
++        code.Trim().ToUpperInvariant();
++
+     private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
+     {
+         if (!errors.TryGetValue(key, out var messages))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -63,7 +63,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+-                CurrentCompanyId.HasValue && definition.CompanyId == CurrentCompanyId.Value);
++                CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+         modelBuilder.Entity<WorkflowTrigger>()
+             .HasQueryFilter(trigger =>
+                 CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -839,20 +839,21 @@ internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.Id).HasColumnName("id");
+-        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+-        builder.Property(x => x.Key).HasColumnName("key").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.CompanyId).HasColumnName("company_id");
++        builder.Property(x => x.Code).HasColumnName("code").HasMaxLength(100).IsRequired();
+         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+-        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
+-        builder.Property(x => x.Status)
+-            .HasColumnName("status")
+-            .HasConversion(value => value.ToStorageValue(), value => WorkflowDefinitionStatusValues.TryParse(value, out var status) ? status : WorkflowDefinitionStatusValues.DefaultStatus)
++        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(100);
++        builder.Property(x => x.Version).HasColumnName("version").IsRequired();
++        builder.Property(x => x.TriggerType)
++            .HasColumnName("trigger_type")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowTriggerTypeValues.TryParse(value, out var triggerType) ? triggerType : WorkflowTriggerTypeValues.DefaultType)
+             .HasMaxLength(32)
+-            .HasDefaultValue(WorkflowDefinitionStatusValues.DefaultStatus)
+-            .HasSentinel((WorkflowDefinitionStatus)0)
++            .HasDefaultValue(WorkflowTriggerTypeValues.DefaultType)
++            .HasSentinel((WorkflowTriggerType)0)
+             .IsRequired();
+         builder.Property(x => x.DefinitionJson)
+             .HasColumnName("definition_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.Active).HasColumnName("active").HasDefaultValue(true).IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.Key }).IsUnique();
+-        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Code, x.Version }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Code });
++        builder.HasIndex(x => new { x.CompanyId, x.Active });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -41,12 +41,35 @@ public sealed class WorkflowsController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("definitions/{definitionId:guid}/versions")]
++    public async Task<ActionResult<WorkflowDefinitionDto>> CreateDefinitionVersionAsync(
++        Guid companyId,
++        Guid definitionId,
++        [FromBody] CreateWorkflowDefinitionVersionCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _workflows.CreateDefinitionVersionAsync(companyId, definitionId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId = result.Id }, result);
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("definitions")]
+     public async Task<ActionResult<IReadOnlyList<WorkflowDefinitionDto>>> ListDefinitionsAsync(
+         Guid companyId,
++        [FromQuery] bool activeOnly = false,
++        [FromQuery] bool latestOnly = false,
++        [FromQuery] bool includeSystem = true,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _workflows.ListDefinitionsAsync(companyId, cancellationToken));
++            return Ok(await _workflows.ListDefinitionsAsync(companyId, activeOnly, latestOnly, includeSystem, cancellationToken));
+         }
+         catch (UnauthorizedAccessException)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412183000_AddWorkflowDefinitionVersioning.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412183000_AddWorkflowDefinitionVersioning.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412183000_AddWorkflowDefinitionVersioning.cs
+@@ -0,0 +1,122 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddWorkflowDefinitionVersioning : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var boolType = isPostgres ? "boolean" : "bit";
++        var boolDefault = isPostgres ? "TRUE" : "CAST(1 AS bit)";
++
++        migrationBuilder.CreateTable(
++            name: "workflow_definitions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: true),
++                code = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: false),
++                name = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                department = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: true),
++                version = table.Column<int>(type: "int", nullable: false),
++                trigger_type = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "manual"),
++                definition_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                active = table.Column<bool>(type: boolType, nullable: false, defaultValueSql: boolDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_workflow_definitions", x => x.id);
++                table.ForeignKey(
++                    name: "FK_workflow_definitions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_company_id_active",
++            table: "workflow_definitions",
++            columns: new[] { "company_id", "active" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_company_id_code",
++            table: "workflow_definitions",
++            columns: new[] { "company_id", "code" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_company_id_code_version",
++            table: "workflow_definitions",
++            columns: new[] { "company_id", "code", "version" },
++            unique: true,
++            filter: isPostgres ? "company_id IS NOT NULL" : "[company_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_system_code_version",
++            table: "workflow_definitions",
++            columns: new[] { "code", "version" },
++            unique: true,
++            filter: isPostgres ? "company_id IS NULL" : "[company_id] IS NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_active_company_code",
++            table: "workflow_definitions",
++            columns: new[] { "company_id", "code" },
++            unique: true,
++            filter: isPostgres ? "company_id IS NOT NULL AND active = TRUE" : "[company_id] IS NOT NULL AND [active] = CAST(1 AS bit)");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_active_system_code",
++            table: "workflow_definitions",
++            column: "code",
++            unique: true,
++            filter: isPostgres ? "company_id IS NULL AND active = TRUE" : "[company_id] IS NULL AND [active] = CAST(1 AS bit)");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "workflow_definitions");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -0,0 +1,225 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public WorkflowDefinitionIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Creating_initial_definition_stores_version_one()
++    {
++        var seed = await SeedMembershipAsync("workflow-owner", "workflow-owner@example.com", "Workflow Owner");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "invoice-approval",
++            name = "Invoice approval",
++            department = "Finance",
++            triggerType = "event",
++            active = true,
++            definitionJson = ValidDefinition("capture")
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal("INVOICE-APPROVAL", payload.Code);
++        Assert.Equal(1, payload.Version);
++        Assert.Equal("event", payload.TriggerType);
++        Assert.True(payload.Active);
++        Assert.True(payload.DefinitionJson.ContainsKey("steps"));
++    }
++
++    [Fact]
++    public async Task Creating_new_version_increments_version_and_preserves_prior_definition()
++    {
++        var seed = await SeedMembershipAsync("workflow-versioner", "workflow-versioner@example.com", "Workflow Versioner");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "employee-onboarding",
++            name = "Employee onboarding",
++            department = "People",
++            triggerType = "manual",
++            active = true,
++            definitionJson = ValidDefinition("collect-documents")
++        });
++
++        var initial = await initialResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(initial);
++
++        var versionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{initial!.Id}/versions", new
++        {
++            name = "Employee onboarding",
++            department = "People",
++            triggerType = "manual",
++            active = true,
++            definitionJson = ValidDefinition("create-accounts")
++        });
++
++        Assert.Equal(HttpStatusCode.Created, versionResponse.StatusCode);
++        var version = await versionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(version);
++        Assert.Equal(2, version!.Version);
++        Assert.Equal(initial.Code, version.Code);
++
++        var priorResponse = await client.GetFromJsonAsync<WorkflowDefinitionDto>($"/api/companies/{seed.CompanyId}/workflows/definitions/{initial.Id}");
++        Assert.NotNull(priorResponse);
++        Assert.Equal(1, priorResponse!.Version);
++        Assert.False(priorResponse.Active);
++        Assert.Contains("collect-documents", priorResponse.DefinitionJson["steps"]!.ToJsonString());
++        Assert.Contains("create-accounts", version.DefinitionJson["steps"]!.ToJsonString());
++    }
++
++    [Fact]
++    public async Task Latest_only_returns_newest_definition_per_code()
++    {
++        var seed = await SeedMembershipAsync("workflow-lister", "workflow-lister@example.com", "Workflow Lister");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "contract-review",
++            name = "Contract review",
++            department = "Legal",
++            triggerType = "manual",
++            active = true,
++            definitionJson = ValidDefinition("first-pass")
++        });
++        var initial = await initialResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(initial);
++
++        await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{initial!.Id}/versions", new
++        {
++            name = "Contract review",
++            department = "Legal",
++            triggerType = "manual",
++            active = true,
++            definitionJson = ValidDefinition("counsel-review")
++        });
++
++        var latest = await client.GetFromJsonAsync<List<WorkflowDefinitionDto>>($"/api/companies/{seed.CompanyId}/workflows/definitions?latestOnly=true");
++
++        Assert.NotNull(latest);
++        var contractReview = Assert.Single(latest!, x => x.Code == "CONTRACT-REVIEW");
++        Assert.Equal(2, contractReview.Version);
++    }
++
++    [Fact]
++    public async Task Invalid_definition_json_is_rejected()
++    {
++        var seed = await SeedMembershipAsync("workflow-validator", "workflow-validator@example.com", "Workflow Validator");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "invalid-workflow",
++            name = "Invalid workflow",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = new Dictionary<string, JsonNode?>()
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        var missingStepsResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "missing-steps",
++            name = "Missing steps",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = new Dictionary<string, JsonNode?>
++            {
++                ["name"] = JsonValue.Create("Missing steps")
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, missingStepsResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Tenant_cannot_read_or_version_another_tenant_definition()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var response = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "tenant-private",
++            name = "Tenant private",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("private-step")
++        });
++        var definition = await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);
++        var readResponse = await otherClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/workflows/definitions/{definition!.Id}");
++        Assert.Equal(HttpStatusCode.NotFound, readResponse.StatusCode);
++
++        var versionResponse = await otherClient.PostAsJsonAsync($"/api/companies/{seed.OtherCompanyId}/workflows/definitions/{definition.Id}/versions", new
++        {
++            name = "Tenant private",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("cross-tenant-step")
++        });
++        Assert.Equal(HttpStatusCode.NotFound, versionResponse.StatusCode);
++    }
++
++    private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["steps"] = new JsonArray(new JsonObject
++            {
++                ["id"] = stepId,
++                ["type"] = "task"
++            })
++        };
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<SeededWorkflowTenant> SeedMembershipAsync(string subject, string email, string displayName)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, "Workflow Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new SeededWorkflowTenant(companyId, subject, email, displayName);
++    }
++
++    private async Task<CrossTenantWorkflowSeed> SeedTwoMembershipsAsync()
++    {
++        var first = await SeedMembershipAsync("workflow-owner-a", "workflow-owner-a@example.com", "Workflow Owner A");
++        var second = await SeedMembershipAsync("workflow-owner-b", "workflow-owner-b@example.com", "Workflow Owner B");
++        return new CrossTenantWorkflowSeed(first.CompanyId, first.Subject, first.Email, first.DisplayName, second.CompanyId, second.Subject, second.Email, second.DisplayName);
++    }
++
++    private sealed record SeededWorkflowTenant(Guid CompanyId, string Subject, string Email, string DisplayName);
++
++    private sealed record CrossTenantWorkflowSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid OtherCompanyId,
++        string OtherSubject,
++        string OtherEmail,
++        string OtherDisplayName);
++}
+END_OF_PATCH

@@ -37,6 +37,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
+                [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",

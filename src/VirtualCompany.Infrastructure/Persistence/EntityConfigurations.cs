@@ -809,6 +809,7 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
         builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
         builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
+        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
 
         builder.HasOne(x => x.Company)
             .WithMany()
@@ -822,41 +823,124 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
             .WithMany(x => x.Subtasks)
             .HasForeignKey(x => x.ParentTaskId)
             .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.WorkflowInstance)
+            .WithMany(x => x.Tasks)
+            .HasForeignKey(x => x.WorkflowInstanceId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
-internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration<WorkflowDefinition>
 {
-    public void Configure(EntityTypeBuilder<WorkTask> builder)
+    private static readonly ValueConverter<WorkflowTriggerType, string> TriggerTypeConverter =
+        new(
+            value => value.ToStorageValue(),
+            value => ParseWorkflowTriggerType(value));
+
+    public void Configure(EntityTypeBuilder<WorkflowDefinition> builder)
     {
-        builder.ToTable("tasks");
+        builder.ToTable("workflow_definitions");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id");
+        builder.Property(x => x.Code).HasColumnName("code").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(100);
+        builder.Property(x => x.Version).HasColumnName("version").IsRequired();
+        builder.Property(x => x.TriggerType)
+            .HasColumnName("trigger_type")
+            .HasConversion(TriggerTypeConverter)
+            .HasMaxLength(32)
+            .HasDefaultValue(WorkflowTriggerTypeValues.DefaultType)
+            .HasSentinel((WorkflowTriggerType)0)
+            .IsRequired();
+        builder.Property(x => x.DefinitionJson)
+            .HasColumnName("definition_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Active).HasColumnName("active").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.Code, x.Version }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.Code });
+        builder.HasIndex(x => new { x.CompanyId, x.Active });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static WorkflowTriggerType ParseWorkflowTriggerType(string value) =>
+        WorkflowTriggerTypeValues.TryParse(value, out var triggerType)
+            ? triggerType
+            : WorkflowTriggerTypeValues.DefaultType;
+}
+
+internal sealed class WorkflowTriggerConfiguration : IEntityTypeConfiguration<WorkflowTrigger>
+{
+    public void Configure(EntityTypeBuilder<WorkflowTrigger> builder)
+    {
+        builder.ToTable("workflow_triggers");
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
-        builder.Property(x => x.AssignedAgentId).HasColumnName("assigned_agent_id");
-        builder.Property(x => x.ParentTaskId).HasColumnName("parent_task_id");
-        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
-        builder.Property(x => x.CreatedByActorType).HasColumnName("created_by_actor_type").HasMaxLength(64).IsRequired();
-        builder.Property(x => x.CreatedByActorId).HasColumnName("created_by_actor_id");
-        builder.Property(x => x.Type).HasColumnName("type").HasMaxLength(100).IsRequired();
-        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
-        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(4000);
-        builder.Property(x => x.Priority)
-            .HasColumnName("priority")
-            .HasConversion(value => value.ToStorageValue(), value => WorkTaskPriorityValues.Parse(value))
-            .HasMaxLength(32)
-            .HasDefaultValue(WorkTaskPriorityValues.DefaultPriority)
-            .HasSentinel((WorkTaskPriority)0)
+        builder.Property(x => x.DefinitionId).HasColumnName("definition_id").IsRequired();
+        builder.Property(x => x.EventName).HasColumnName("event_name").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.CriteriaJson)
+            .HasColumnName("criteria_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
-        builder.Property(x => x.Status)
-            .HasColumnName("status")
-            .HasConversion(value => value.ToStorageValue(), value => WorkTaskStatusValues.Parse(value))
+        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.EventName });
+        builder.HasIndex(x => new { x.CompanyId, x.EventName, x.IsEnabled });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Definition)
+            .WithMany(x => x.Triggers)
+            .HasForeignKey(x => x.DefinitionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<WorkflowInstance>
+{
+    public void Configure(EntityTypeBuilder<WorkflowInstance> builder)
+    {
+        builder.ToTable("workflow_instances");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.DefinitionId).HasColumnName("definition_id").IsRequired();
+        builder.Property(x => x.TriggerId).HasColumnName("trigger_id");
+        builder.Property(x => x.TriggerSource)
+            .HasColumnName("trigger_source")
+            .HasConversion(value => value.ToStorageValue(), value => WorkflowTriggerTypeValues.Parse(value))
             .HasMaxLength(32)
-            .HasDefaultValue(WorkTaskStatusValues.DefaultStatus)
-            .HasSentinel((WorkTaskStatus)0)
+            .HasDefaultValue(WorkflowTriggerType.Manual)
+            .HasSentinel((WorkflowTriggerType)0)
             .IsRequired();
-        builder.Property(x => x.DueUtc).HasColumnName("due_at");
+        builder.Property(x => x.TriggerRef).HasColumnName("trigger_ref").HasMaxLength(200);
+        builder.Property(x => x.State)
+            .HasColumnName("state")
+            .HasConversion(value => value.ToStorageValue(), value => WorkflowInstanceStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(WorkflowInstanceStatusValues.DefaultStatus)
+            .HasSentinel((WorkflowInstanceStatus)0)
+            .IsRequired();
+        builder.Property(x => x.CurrentStep).HasColumnName("current_step").HasMaxLength(200);
         builder.Property(x => x.InputPayload)
             .HasColumnName("input_payload")
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
@@ -867,28 +951,79 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
-        builder.Property(x => x.RationaleSummary).HasColumnName("rationale_summary").HasMaxLength(2000);
-        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("numeric(5,4)");
-        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.ContextJson)
+            .HasColumnName("context_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
 
-        builder.HasIndex(x => new { x.CompanyId, x.Status });
-        builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
-        builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
-        builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
+        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.State });
+        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef })
+            .HasFilter("trigger_ref IS NOT NULL")
+            .IsUnique();
 
-        builder.HasOne(x => x.Company)
-            .WithMany()
-            .HasForeignKey(x => x.CompanyId)
-            .OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.AssignedAgent)
-            .WithMany()
-            .HasForeignKey(x => x.AssignedAgentId)
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Definition).WithMany(x => x.Instances).HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.Trigger).WithMany().HasForeignKey(x => x.TriggerId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<WorkflowException>
+{
+    public void Configure(EntityTypeBuilder<WorkflowException> builder)
+    {
+        builder.ToTable("workflow_exceptions");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id").IsRequired();
+        builder.Property(x => x.WorkflowDefinitionId).HasColumnName("workflow_definition_id").IsRequired();
+        builder.Property(x => x.StepKey).HasColumnName("step_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.ExceptionType)
+            .HasColumnName("exception_type")
+            .HasConversion(value => value.ToStorageValue(), value => WorkflowExceptionTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion(value => value.ToStorageValue(), value => WorkflowExceptionStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(WorkflowExceptionStatusValues.DefaultStatus)
+            .HasSentinel((WorkflowExceptionStatus)0)
+            .IsRequired();
+        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Details).HasColumnName("details").HasMaxLength(4000).IsRequired();
+        builder.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(100);
+        builder.Property(x => x.TechnicalDetailsJson)
+            .HasColumnName("technical_details_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.ReviewedUtc).HasColumnName("reviewed_at");
+        builder.Property(x => x.ReviewedByUserId).HasColumnName("reviewed_by_user_id");
+        builder.Property(x => x.ResolutionNotes).HasColumnName("resolution_notes").HasMaxLength(2000);
+
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.OccurredUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId, x.OccurredUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId, x.StepKey, x.ExceptionType, x.Status })
+            .HasFilter("\"status\" = 'open'")
+            .IsUnique();
+
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.WorkflowInstance)
+            .WithMany(x => x.Exceptions)
+            .HasForeignKey(x => x.WorkflowInstanceId)
             .OnDelete(DeleteBehavior.Restrict);
-        builder.HasOne(x => x.ParentTask)
-            .WithMany(x => x.Subtasks)
-            .HasForeignKey(x => x.ParentTaskId)
+        builder.HasOne(x => x.Definition)
+            .WithMany(x => x.Exceptions)
+            .HasForeignKey(x => x.WorkflowDefinitionId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

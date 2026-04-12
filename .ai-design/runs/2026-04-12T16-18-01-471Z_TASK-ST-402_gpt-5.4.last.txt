@@ -1,0 +1,1191 @@
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+new file mode 100644
+index 0000000..3e2a5f2
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -0,0 +1,160 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/workflows")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class WorkflowsController : ControllerBase
++{
++    private readonly ICompanyWorkflowService _workflows;
++
++    public WorkflowsController(ICompanyWorkflowService workflows)
++    {
++        _workflows = workflows;
++    }
++
++    [HttpPost("definitions")]
++    public async Task<ActionResult<WorkflowDefinitionDto>> CreateDefinitionAsync(
++        Guid companyId,
++        [FromBody] CreateWorkflowDefinitionCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _workflows.CreateDefinitionAsync(companyId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId = result.Id }, result);
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("definitions")]
++    public async Task<ActionResult<IReadOnlyList<WorkflowDefinitionDto>>> ListDefinitionsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.ListDefinitionsAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("definitions/{definitionId:guid}")]
++    public async Task<ActionResult<WorkflowDefinitionDto>> GetDefinitionAsync(
++        Guid companyId,
++        Guid definitionId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.GetDefinitionAsync(companyId, definitionId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("definitions/{definitionId:guid}/triggers")]
++    public async Task<ActionResult<WorkflowTriggerDto>> CreateTriggerAsync(
++        Guid companyId,
++        Guid definitionId,
++        [FromBody] CreateWorkflowTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _workflows.CreateTriggerAsync(companyId, definitionId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId }, result);
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("instances")]
++    public async Task<ActionResult<WorkflowInstanceDto>> StartInstanceAsync(
++        Guid companyId,
++        [FromBody] StartWorkflowInstanceCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _workflows.StartInstanceAsync(companyId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetInstanceAsync), new { companyId, instanceId = result.Id }, result);
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("instances")]
++    public async Task<ActionResult<IReadOnlyList<WorkflowInstanceDto>>> ListInstancesAsync(
++        Guid companyId,
++        [FromQuery] Guid? definitionId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.ListInstancesAsync(companyId, definitionId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("instances/{instanceId:guid}")]
++    public async Task<ActionResult<WorkflowInstanceDto>> GetInstanceAsync(
++        Guid companyId,
++        Guid instanceId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.GetInstanceAsync(companyId, instanceId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private ActionResult WorkflowValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
++        ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
++        {
++            Title = "Validation failed",
++            Status = StatusCodes.Status400BadRequest
++        });
++}
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+new file mode 100644
+index 0000000..e2d8164
+--- /dev/null
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -0,0 +1,84 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Workflows;
++
++public sealed record CreateWorkflowDefinitionCommand(
++    string Key,
++    string Name,
++    string? Description,
++    Dictionary<string, JsonNode?>? DefinitionJson);
++
++public sealed record CreateWorkflowTriggerCommand(
++    string EventName,
++    Dictionary<string, JsonNode?>? CriteriaJson,
++    bool IsEnabled = true);
++
++public sealed record StartWorkflowInstanceCommand(
++    Guid DefinitionId,
++    Guid? TriggerId,
++    Dictionary<string, JsonNode?>? InputPayload);
++
++public sealed record WorkflowTriggerDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid DefinitionId,
++    string EventName,
++    Dictionary<string, JsonNode?> CriteriaJson,
++    bool IsEnabled,
++    DateTime CreatedAt,
++    DateTime UpdatedAt);
++
++public sealed record WorkflowDefinitionDto(
++    Guid Id,
++    Guid CompanyId,
++    string Key,
++    string Name,
++    string? Description,
++    string Status,
++    Dictionary<string, JsonNode?> DefinitionJson,
++    DateTime CreatedAt,
++    DateTime UpdatedAt,
++    IReadOnlyList<WorkflowTriggerDto> Triggers);
++
++public sealed record WorkflowInstanceDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid DefinitionId,
++    Guid? TriggerId,
++    string Status,
++    Dictionary<string, JsonNode?> InputPayload,
++    Dictionary<string, JsonNode?> OutputPayload,
++    DateTime StartedAt,
++    DateTime UpdatedAt,
++    DateTime? CompletedAt,
++    string DefinitionKey,
++    string DefinitionName);
++
++public interface ICompanyWorkflowService
++{
++    Task<WorkflowDefinitionDto> CreateDefinitionAsync(
++        Guid companyId,
++        CreateWorkflowDefinitionCommand command,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<WorkflowDefinitionDto> GetDefinitionAsync(Guid companyId, Guid definitionId, CancellationToken cancellationToken);
++
++    Task<WorkflowTriggerDto> CreateTriggerAsync(
++        Guid companyId,
++        Guid definitionId,
++        CreateWorkflowTriggerCommand command,
++        CancellationToken cancellationToken);
++
++    Task<WorkflowInstanceDto> StartInstanceAsync(
++        Guid companyId,
++        StartWorkflowInstanceCommand command,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<WorkflowInstanceDto>> ListInstancesAsync(Guid companyId, Guid? definitionId, CancellationToken cancellationToken);
++
++    Task<WorkflowInstanceDto> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken);
++}
++
++public sealed class WorkflowValidationException : Exception
++{
++    public WorkflowValidationException(IDictionary<string, string[]> errors)
++        : base("Workflow validation failed.") =>
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+index 8ca2c7e..e9b1e31 100644
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -97,6 +97,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     public Agent? AssignedAgent { get; private set; }
+     public WorkTask? ParentTask { get; private set; }
+     public ICollection<WorkTask> Subtasks { get; } = new List<WorkTask>();
++    public WorkflowInstance? WorkflowInstance { get; private set; }
+ 
+     public void SetDueDate(DateTime? dueUtc)
+     {
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+new file mode 100644
+index 0000000..ca5a60d
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -0,0 +1,194 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class WorkflowDefinition : ICompanyOwnedEntity
++{
++    private const int KeyMaxLength = 100;
++    private const int NameMaxLength = 200;
++    private const int DescriptionMaxLength = 2000;
++
++    private WorkflowDefinition()
++    {
++    }
++
++    public WorkflowDefinition(
++        Guid id,
++        Guid companyId,
++        string key,
++        string name,
++        string? description,
++        IDictionary<string, JsonNode?>? definitionJson = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Key = NormalizeRequired(key, nameof(key), KeyMaxLength);
++        Name = NormalizeRequired(name, nameof(name), NameMaxLength);
++        Description = NormalizeOptional(description, nameof(description), DescriptionMaxLength);
++        Status = WorkflowDefinitionStatusValues.DefaultStatus;
++        DefinitionJson = CloneNodes(definitionJson);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Key { get; private set; } = null!;
++    public string Name { get; private set; } = null!;
++    public string? Description { get; private set; }
++    public WorkflowDefinitionStatus Status { get; private set; }
++    public Dictionary<string, JsonNode?> DefinitionJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<WorkflowTrigger> Triggers { get; } = new List<WorkflowTrigger>();
++    public ICollection<WorkflowInstance> Instances { get; } = new List<WorkflowInstance>();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class WorkflowTrigger : ICompanyOwnedEntity
++{
++    private const int EventNameMaxLength = 200;
++
++    private WorkflowTrigger()
++    {
++    }
++
++    public WorkflowTrigger(
++        Guid id,
++        Guid companyId,
++        Guid definitionId,
++        string eventName,
++        IDictionary<string, JsonNode?>? criteriaJson = null,
++        bool isEnabled = true)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (definitionId == Guid.Empty)
++        {
++            throw new ArgumentException("DefinitionId is required.", nameof(definitionId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DefinitionId = definitionId;
++        EventName = NormalizeRequired(eventName, nameof(eventName), EventNameMaxLength);
++        CriteriaJson = CloneNodes(criteriaJson);
++        IsEnabled = isEnabled;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DefinitionId { get; private set; }
++    public string EventName { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> CriteriaJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public bool IsEnabled { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkflowDefinition Definition { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class WorkflowInstance : ICompanyOwnedEntity
++{
++    private WorkflowInstance()
++    {
++    }
++
++    public WorkflowInstance(
++        Guid id,
++        Guid companyId,
++        Guid definitionId,
++        Guid? triggerId,
++        IDictionary<string, JsonNode?>? inputPayload = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (definitionId == Guid.Empty)
++        {
++            throw new ArgumentException("DefinitionId is required.", nameof(definitionId));
++        }
++
++        if (triggerId == Guid.Empty)
++        {
++            throw new ArgumentException("TriggerId cannot be empty.", nameof(triggerId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DefinitionId = definitionId;
++        TriggerId = triggerId;
++        Status = WorkflowInstanceStatusValues.DefaultStatus;
++        InputPayload = CloneNodes(inputPayload);
++        StartedUtc = DateTime.UtcNow;
++        UpdatedUtc = StartedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DefinitionId { get; private set; }
++    public Guid? TriggerId { get; private set; }
++    public WorkflowInstanceStatus Status { get; private set; }
++    public Dictionary<string, JsonNode?> InputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> OutputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime StartedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkflowDefinition Definition { get; private set; } = null!;
++    public WorkflowTrigger? Trigger { get; private set; }
++    public ICollection<WorkTask> Tasks { get; } = new List<WorkTask>();
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+new file mode 100644
+index 0000000..2708066
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+@@ -0,0 +1,86 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum WorkflowDefinitionStatus
++{
++    Draft = 1,
++    Active = 2,
++    Archived = 3
++}
++
++public enum WorkflowInstanceStatus
++{
++    Started = 1,
++    Running = 2,
++    Completed = 3,
++    Failed = 4,
++    Cancelled = 5
++}
++
++public static class WorkflowDefinitionStatusValues
++{
++    private static readonly IReadOnlyDictionary<WorkflowDefinitionStatus, string> Values = new Dictionary<WorkflowDefinitionStatus, string>
++    {
++        [WorkflowDefinitionStatus.Draft] = "draft",
++        [WorkflowDefinitionStatus.Active] = "active",
++        [WorkflowDefinitionStatus.Archived] = "archived"
++    };
++
++    private static readonly IReadOnlyDictionary<string, WorkflowDefinitionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static WorkflowDefinitionStatus DefaultStatus => WorkflowDefinitionStatus.Active;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this WorkflowDefinitionStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out WorkflowDefinitionStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out status))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Workflow definition status is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported workflow definition status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
++
++public static class WorkflowInstanceStatusValues
++{
++    private static readonly IReadOnlyDictionary<WorkflowInstanceStatus, string> Values = new Dictionary<WorkflowInstanceStatus, string>
++    {
++        [WorkflowInstanceStatus.Started] = "started",
++        [WorkflowInstanceStatus.Running] = "running",
++        [WorkflowInstanceStatus.Completed] = "completed",
++        [WorkflowInstanceStatus.Failed] = "failed",
++        [WorkflowInstanceStatus.Cancelled] = "cancelled"
++    };
++
++    private static readonly IReadOnlyDictionary<string, WorkflowInstanceStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static WorkflowInstanceStatus DefaultStatus => WorkflowInstanceStatus.Started;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this WorkflowInstanceStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Workflow instance status is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported workflow instance status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++
++    public static WorkflowInstanceStatus Parse(string value) =>
++        ReverseValues.TryGetValue(value.Trim(), out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+new file mode 100644
+index 0000000..e7a4b45
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -0,0 +1,257 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyWorkflowService : ICompanyWorkflowService
++{
++    private const int KeyMaxLength = 100;
++    private const int NameMaxLength = 200;
++    private const int DescriptionMaxLength = 2000;
++    private const int EventNameMaxLength = 200;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++
++    public CompanyWorkflowService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++    }
++
++    public async Task<WorkflowDefinitionDto> CreateDefinitionAsync(
++        Guid companyId,
++        CreateWorkflowDefinitionCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var key = command.Key.Trim();
++        var exists = await _dbContext.WorkflowDefinitions
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId && x.Key == key, cancellationToken);
++
++        if (exists)
++        {
++            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(command.Key)] = ["Key must be unique within the company."]
++            });
++        }
++
++        var definition = new WorkflowDefinition(
++            Guid.NewGuid(),
++            companyId,
++            key,
++            command.Name,
++            command.Description,
++            command.DefinitionJson);
++
++        _dbContext.WorkflowDefinitions.Add(definition);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return await GetDefinitionAsync(companyId, definition.Id, cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<WorkflowDefinitionDto>> ListDefinitionsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var definitions = await _dbContext.WorkflowDefinitions
++            .AsNoTracking()
++            .Include(x => x.Triggers)
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Name)
++            .ToListAsync(cancellationToken);
++
++        return definitions.Select(ToDefinitionDto).ToList();
++    }
++
++    public async Task<WorkflowDefinitionDto> GetDefinitionAsync(Guid companyId, Guid definitionId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var definition = await _dbContext.WorkflowDefinitions
++            .AsNoTracking()
++            .Include(x => x.Triggers)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == definitionId, cancellationToken);
++
++        return definition is null
++            ? throw new KeyNotFoundException("Workflow definition not found.")
++            : ToDefinitionDto(definition);
++    }
++
++    public async Task<WorkflowTriggerDto> CreateTriggerAsync(
++        Guid companyId,
++        Guid definitionId,
++        CreateWorkflowTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var definitionExists = await _dbContext.WorkflowDefinitions
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId && x.Id == definitionId, cancellationToken);
++
++        if (!definitionExists)
++        {
++            throw new KeyNotFoundException("Workflow definition not found.");
++        }
++
++        var trigger = new WorkflowTrigger(
++            Guid.NewGuid(),
++            companyId,
++            definitionId,
++            command.EventName,
++            command.CriteriaJson,
++            command.IsEnabled);
++
++        _dbContext.WorkflowTriggers.Add(trigger);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return ToTriggerDto(trigger);
++    }
++
++    public async Task<WorkflowInstanceDto> StartInstanceAsync(
++        Guid companyId,
++        StartWorkflowInstanceCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var definition = await _dbContext.WorkflowDefinitions
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == command.DefinitionId, cancellationToken);
++
++        if (definition is null)
++        {
++            throw new KeyNotFoundException("Workflow definition not found.");
++        }
++
++        if (command.TriggerId.HasValue)
++        {
++            var triggerExists = await _dbContext.WorkflowTriggers
++                .AsNoTracking()
++                .AnyAsync(x =>
++                    x.CompanyId == companyId &&
++                    x.DefinitionId == command.DefinitionId &&
++                    x.Id == command.TriggerId.Value &&
++                    x.IsEnabled,
++                    cancellationToken);
++
++            if (!triggerExists)
++            {
++                throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [nameof(command.TriggerId)] = ["TriggerId must reference an enabled trigger on the workflow definition."]
++                });
++            }
++        }
++
++        var instance = new WorkflowInstance(
++            Guid.NewGuid(),
++            companyId,
++            command.DefinitionId,
++            command.TriggerId,
++            command.InputPayload);
++
++        _dbContext.WorkflowInstances.Add(instance);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return await GetInstanceAsync(companyId, instance.Id, cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<WorkflowInstanceDto>> ListInstancesAsync(
++        Guid companyId,
++        Guid? definitionId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var query = _dbContext.WorkflowInstances
++            .AsNoTracking()
++            .Include(x => x.Definition)
++            .Where(x => x.CompanyId == companyId);
++
++        if (definitionId.HasValue)
++        {
++            query = query.Where(x => x.DefinitionId == definitionId.Value);
++        }
++
++        var instances = await query
++            .OrderByDescending(x => x.StartedUtc)
++            .Take(200)
++            .ToListAsync(cancellationToken);
++
++        return instances.Select(ToInstanceDto).ToList();
++    }
++
++    public async Task<WorkflowInstanceDto> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var instance = await _dbContext.WorkflowInstances
++            .AsNoTracking()
++            .Include(x => x.Definition)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == instanceId, cancellationToken);
++
++        return instance is null
++            ? throw new KeyNotFoundException("Workflow instance not found.")
++            : ToInstanceDto(instance);
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static WorkflowDefinitionDto ToDefinitionDto(WorkflowDefinition definition) =>
++        new(
++            definition.Id,
++            definition.CompanyId,
++            definition.Key,
++            definition.Name,
++            definition.Description,
++            definition.Status.ToStorageValue(),
++            CloneNodes(definition.DefinitionJson),
++            definition.CreatedUtc,
++            definition.UpdatedUtc,
++            definition.Triggers.Select(ToTriggerDto).OrderBy(x => x.EventName).ToList());
++
++    private static WorkflowTriggerDto ToTriggerDto(WorkflowTrigger trigger) =>
++        new(
++            trigger.Id,
++            trigger.CompanyId,
++            trigger.DefinitionId,
++            trigger.EventName,
++            CloneNodes(trigger.CriteriaJson),
++            trigger.IsEnabled,
++            trigger.CreatedUtc,
++            trigger.UpdatedUtc);
++
++    private static WorkflowInstanceDto ToInstanceDto(WorkflowInstance instance) =>
++        new(
++            instance.Id,
++            instance.CompanyId,
++            instance.DefinitionId,
++            instance.TriggerId,
++            instance.Status.ToStorageValue(),
++            CloneNodes(instance.InputPayload),
++            CloneNodes(instance.OutputPayload),
++            instance.StartedUtc,
++            instance.UpdatedUtc,
++            instance.CompletedUtc,
++            instance.Definition.Key,
++            instance.Definition.Name);
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
++        nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static void Validate(CreateWorkflowDefinitionCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(command.Key), command.Key, KeyMaxLength);
++        AddRequired(errors, nameof(command.Name), command.Name, NameMaxLength);
++        AddOptional(errors, nameof(command.Description), command.Description, DescriptionMaxLength);
++        ThrowIfInvalid(errors);
++    }
++
++    private static void Validate(CreateWorkflowTriggerCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(command.EventName), command.EventName, EventNameMaxLength);
++        ThrowIfInvalid(errors);
++    }
++
++    private static void Validate(StartWorkflowInstanceCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        if (command.DefinitionId == Guid.Empty)
++        {
++            AddError(errors, nameof(command.DefinitionId), "DefinitionId is required.");
++        }
++
++        if (command.TriggerId == Guid.Empty)
++        {
++            AddError(errors, nameof(command.TriggerId), "TriggerId cannot be empty.");
++        }
++
++        ThrowIfInvalid(errors);
++    }
++
++    private static void AddRequired(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, $"{key} is required.");
++            return;
++        }
++
++        AddOptional(errors, key, value, maxLength);
++    }
++
++    private static void AddOptional(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (!string.IsNullOrWhiteSpace(value) && value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private static void ThrowIfInvalid(IDictionary<string, List<string>> errors)
++    {
++        if (errors.Count > 0)
++        {
++            throw new WorkflowValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 87824af..82d5ea0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -11,6 +11,7 @@ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Memory;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -128,6 +129,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        services.AddScoped<ICompanyWorkflowService, CompanyWorkflowService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1ec9a11..bb43f1a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -812,6 +812,7 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
+         builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -825,72 +826,122 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+             .WithMany(x => x.Subtasks)
+             .HasForeignKey(x => x.ParentTaskId)
+             .OnDelete(DeleteBehavior.Restrict);
+-    }
+-}
+-
+-internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+-{
+-    public void Configure(EntityTypeBuilder<WorkTask> builder)
+-    {
+-        builder.ToTable("tasks");
+-
+-        builder.HasKey(x => x.Id);
+-        builder.Property(x => x.Id).HasColumnName("id");
+-        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+-        builder.Property(x => x.AssignedAgentId).HasColumnName("assigned_agent_id");
+-        builder.Property(x => x.ParentTaskId).HasColumnName("parent_task_id");
+-        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
+-        builder.Property(x => x.CreatedByActorType).HasColumnName("created_by_actor_type").HasMaxLength(64).IsRequired();
+-        builder.Property(x => x.CreatedByActorId).HasColumnName("created_by_actor_id");
+-        builder.Property(x => x.Type).HasColumnName("type").HasMaxLength(100).IsRequired();
+-        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+-        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(4000);
+-        builder.Property(x => x.Priority)
+-            .HasColumnName("priority")
+-            .HasConversion(value => value.ToStorageValue(), value => WorkTaskPriorityValues.Parse(value))
+-            .HasMaxLength(32)
+-            .HasDefaultValue(WorkTaskPriorityValues.DefaultPriority)
+-            .HasSentinel((WorkTaskPriority)0)
+-            .IsRequired();
+-        builder.Property(x => x.Status)
+-            .HasColumnName("status")
+-            .HasConversion(value => value.ToStorageValue(), value => WorkTaskStatusValues.Parse(value))
+-            .HasMaxLength(32)
+-            .HasDefaultValue(WorkTaskStatusValues.DefaultStatus)
+-            .HasSentinel((WorkTaskStatus)0)
++        builder.HasOne(x => x.WorkflowInstance)
++            .WithMany(x => x.Tasks)
++            .HasForeignKey(x => x.WorkflowInstanceId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration<WorkflowDefinition>
++{
++    public void Configure(EntityTypeBuilder<WorkflowDefinition> builder)
++    {
++        builder.ToTable("workflow_definitions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Key).HasColumnName("key").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowDefinitionStatusValues.TryParse(value, out var status) ? status : WorkflowDefinitionStatusValues.DefaultStatus)
++            .HasMaxLength(32)
++            .HasDefaultValue(WorkflowDefinitionStatusValues.DefaultStatus)
++            .HasSentinel((WorkflowDefinitionStatus)0)
+             .IsRequired();
+-        builder.Property(x => x.DueUtc).HasColumnName("due_at");
+-        builder.Property(x => x.InputPayload)
+-            .HasColumnName("input_payload")
++        builder.Property(x => x.DefinitionJson)
++            .HasColumnName("definition_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+-        builder.Property(x => x.OutputPayload)
+-            .HasColumnName("output_payload")
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.Key }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class WorkflowTriggerConfiguration : IEntityTypeConfiguration<WorkflowTrigger>
++{
++    public void Configure(EntityTypeBuilder<WorkflowTrigger> builder)
++    {
++        builder.ToTable("workflow_triggers");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DefinitionId).HasColumnName("definition_id").IsRequired();
++        builder.Property(x => x.EventName).HasColumnName("event_name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CriteriaJson)
++            .HasColumnName("criteria_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+-        builder.Property(x => x.RationaleSummary).HasColumnName("rationale_summary").HasMaxLength(2000);
+-        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("numeric(5,4)");
++        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+-        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.Status });
+-        builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
+-        builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
+-        builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.EventName });
++        builder.HasIndex(x => new { x.CompanyId, x.EventName, x.IsEnabled });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+             .HasForeignKey(x => x.CompanyId)
+             .OnDelete(DeleteBehavior.Cascade);
+-        builder.HasOne(x => x.AssignedAgent)
+-            .WithMany()
+-            .HasForeignKey(x => x.AssignedAgentId)
+-            .OnDelete(DeleteBehavior.Restrict);
+-        builder.HasOne(x => x.ParentTask)
+-            .WithMany(x => x.Subtasks)
+-            .HasForeignKey(x => x.ParentTaskId)
++        builder.HasOne(x => x.Definition)
++            .WithMany(x => x.Triggers)
++            .HasForeignKey(x => x.DefinitionId)
+             .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+ 
++internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<WorkflowInstance>
++{
++    public void Configure(EntityTypeBuilder<WorkflowInstance> builder)
++    {
++        builder.ToTable("workflow_instances");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DefinitionId).HasColumnName("definition_id").IsRequired();
++        builder.Property(x => x.TriggerId).HasColumnName("trigger_id");
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowInstanceStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(WorkflowInstanceStatusValues.DefaultStatus)
++            .HasSentinel((WorkflowInstanceStatus)0)
++            .IsRequired();
++        builder.Property(x => x.InputPayload)
++            .HasColumnName("input_payload")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.OutputPayload)
++            .HasColumnName("output_payload")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++
++        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Definition).WithMany(x => x.Instances).HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Trigger).WithMany().HasForeignKey(x => x.TriggerId).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
+ {
+     public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 7e7c7d3..1229d97 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -34,6 +34,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
++    public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
++    public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
++    public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+@@ -63,6 +66,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ApprovalRequest>()
+             .HasQueryFilter(request =>
+                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<WorkflowDefinition>()
++            .HasQueryFilter(definition =>
++                CurrentCompanyId.HasValue && definition.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<WorkflowTrigger>()
++            .HasQueryFilter(trigger =>
++                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<WorkflowInstance>()
++            .HasQueryFilter(instance =>
++                CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyKnowledgeDocument>()
+             .HasQueryFilter(document =>
+                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
+END_OF_PATCH

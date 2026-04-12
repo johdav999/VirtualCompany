@@ -1,0 +1,963 @@
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -126,6 +126,12 @@ public sealed record WorkflowExceptionDto(
+     string InstanceState,
+     string? CurrentStep);
+ 
++public sealed record WorkflowSchedulerRunResult(
++    bool LockAcquired,
++    int CompaniesScanned,
++    int WorkflowsStarted,
++    int Failures);
++
+ public interface ICompanyWorkflowService
+ {
+     Task<IReadOnlyList<WorkflowCatalogItemDto>> ListCatalogAsync(Guid companyId, CancellationToken cancellationToken);
+@@ -205,6 +211,28 @@ public interface IWorkflowScheduleTriggerService
+         CancellationToken cancellationToken);
+ }
+ 
++public interface IWorkflowSchedulePollingService
++{
++    Task<WorkflowSchedulerRunResult> RunDueSchedulesAsync(
++        DateTime scheduledAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken);
++}
++
++public interface IWorkflowSchedulerCoordinator
++{
++    Task<WorkflowSchedulerRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken);
++}
++
++public interface IDistributedLockProvider
++{
++    Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken);
++}
++
++public interface IDistributedLockHandle : IAsyncDisposable
++{
++    string Key { get; }
++}
++
+ public interface IInternalWorkflowEventTriggerService
+ {
+     Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -282,13 +282,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             });
+         }
+ 
+-        var scheduleRef = string.IsNullOrWhiteSpace(command.ScheduleKey)
+-            ? $"schedule:{command.ScheduledAtUtc:O}"
+-            : command.ScheduleKey.Trim();
+-
+         var definitions = await _dbContext.WorkflowDefinitions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -304,6 +298,9 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             .ToListAsync(cancellationToken);
+ 
+         var started = new List<WorkflowInstanceDto>();
++        var scheduledAtUtc = command.ScheduledAtUtc.Kind == DateTimeKind.Utc
++            ? command.ScheduledAtUtc
++            : command.ScheduledAtUtc.ToUniversalTime();
+         foreach (var definition in definitions.Where(x => MatchesSchedule(x, command.ScheduleKey)))
+         {
++            var scheduleKey = string.IsNullOrWhiteSpace(command.ScheduleKey)
++                ? ResolveScheduleKey(definition) ?? definition.Code
++                : command.ScheduleKey.Trim();
++            var scheduleRef = $"{scheduleKey}:{scheduledAtUtc:yyyyMMddHHmm}";
++
+             if (await HasExistingInstanceAsync(companyId, definition.Id, WorkflowTriggerType.Schedule, scheduleRef, cancellationToken))
+             {
+                 _logger.LogInformation(
+@@ -316,15 +313,32 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             }
+ 
+             var input = CloneNodes(command.ContextJson);
+-            input["scheduledAtUtc"] = JsonValue.Create(command.ScheduledAtUtc);
+-            input["scheduleKey"] = JsonValue.Create(scheduleRef);
++            input["scheduledAtUtc"] = JsonValue.Create(scheduledAtUtc);
++            input["scheduleKey"] = JsonValue.Create(scheduleKey);
++            input["scheduledOccurrenceRef"] = JsonValue.Create(scheduleRef);
+ 
+-            started.Add(await StartInstanceCoreAsync(
+-                companyId,
+-                new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Schedule.ToStorageValue(), scheduleRef),
+-                requireMembership: false,
+-                cancellationToken));
++            try
++            {
++                started.Add(await StartInstanceCoreAsync(
++                    companyId,
++                    new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Schedule.ToStorageValue(), scheduleRef),
++                    requireMembership: false,
++                    cancellationToken));
++            }
++            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex))
++            {
++                _dbContext.ChangeTracker.Clear();
++                _logger.LogInformation(
++                    ex,
++                    "Skipped duplicate scheduled workflow occurrence for company {CompanyId}, definition {DefinitionId}, and schedule ref {ScheduleRef}.",
++                    companyId,
++                    definition.Id,
++                    scheduleRef);
++            }
+         }
+ 
+         return started;
+@@ -979,6 +993,29 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         return TryGetString(firstStep, "id") ?? TryGetString(firstStep, "code") ?? TryGetString(firstStep, "name");
+     }
+ 
++    private static string? ResolveScheduleKey(WorkflowDefinition definition)
++    {
++        if (!definition.DefinitionJson.TryGetValue("schedule", out var node) || node is null)
++        {
++            return null;
++        }
++
++        if (node is JsonValue value &&
++            value.TryGetValue<string>(out var scalar) &&
++            !string.IsNullOrWhiteSpace(scalar))
++        {
++            return scalar.Trim();
++        }
++
++        if (node is JsonObject jsonObject)
++        {
++            return TryGetString(jsonObject, "key") ??
++                TryGetString(jsonObject, "scheduleKey") ??
++                TryGetString(jsonObject, "id") ??
++                TryGetString(jsonObject, "name");
++        }
++
++        return null;
++    }
++
+     private static bool MatchesSchedule(WorkflowDefinition definition, string? scheduleKey)
+     {
+         if (string.IsNullOrWhiteSpace(scheduleKey))
+@@ -1036,6 +1073,18 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+     }
+ 
++    private static bool IsDuplicateWorkflowInstanceStart(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("workflow_instances", StringComparison.OrdinalIgnoreCase) &&
++                current.Message.Contains("trigger_ref", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
+     private static string ResolveExceptionDetails(
+         IReadOnlyDictionary<string, JsonNode?>? payload,
+         WorkflowInstanceStatus state) =>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+@@ -0,0 +1,344 @@
++using System.Collections.Concurrent;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using StackExchange.Redis;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class WorkflowSchedulerOptions
++{
++    public const string SectionName = "WorkflowScheduler";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalSeconds { get; set; } = 60;
++    public int LockTtlSeconds { get; set; } = 120;
++    public int BatchSize { get; set; } = 50;
++    public string LockKey { get; set; } = "workflow-scheduler";
++}
++
++public sealed class WorkflowSchedulerCoordinator : IWorkflowSchedulerCoordinator
++{
++    private readonly IDistributedLockProvider _lockProvider;
++    private readonly IWorkflowSchedulePollingService _pollingService;
++    private readonly IOptions<WorkflowSchedulerOptions> _options;
++    private readonly ILogger<WorkflowSchedulerCoordinator> _logger;
++
++    public WorkflowSchedulerCoordinator(
++        IDistributedLockProvider lockProvider,
++        IWorkflowSchedulePollingService pollingService,
++        IOptions<WorkflowSchedulerOptions> options,
++        ILogger<WorkflowSchedulerCoordinator> logger)
++    {
++        _lockProvider = lockProvider;
++        _pollingService = pollingService;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<WorkflowSchedulerRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken)
++    {
++        var options = _options.Value;
++        var lockKey = string.IsNullOrWhiteSpace(options.LockKey) ? "workflow-scheduler" : options.LockKey.Trim();
++        var lockTtl = TimeSpan.FromSeconds(Math.Max(5, options.LockTtlSeconds));
++        var batchSize = Math.Max(1, options.BatchSize);
++
++        await using var handle = await _lockProvider.TryAcquireAsync(lockKey, lockTtl, cancellationToken);
++        if (handle is null)
++        {
++            _logger.LogInformation(
++                "Workflow scheduler skipped polling because distributed lock {LockKey} was not acquired.",
++                lockKey);
++            return new WorkflowSchedulerRunResult(false, 0, 0, 0);
++        }
++
++        _logger.LogInformation(
++            "Workflow scheduler acquired distributed lock {LockKey} with TTL {LockTtlSeconds} seconds.",
++            lockKey,
++            lockTtl.TotalSeconds);
++
++        var result = await _pollingService.RunDueSchedulesAsync(now.UtcDateTime, batchSize, cancellationToken);
++        _logger.LogInformation(
++            "Workflow scheduler polling completed. Companies scanned: {CompaniesScanned}. Workflows started: {WorkflowsStarted}. Failures: {Failures}.",
++            result.CompaniesScanned,
++            result.WorkflowsStarted,
++            result.Failures);
++
++        return result;
++    }
++}
++
++public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IWorkflowScheduleTriggerService _scheduleTriggerService;
++    private readonly ILogger<WorkflowSchedulePollingService> _logger;
++
++    public WorkflowSchedulePollingService(
++        VirtualCompanyDbContext dbContext,
++        IWorkflowScheduleTriggerService scheduleTriggerService,
++        ILogger<WorkflowSchedulePollingService> logger)
++    {
++        _dbContext = dbContext;
++        _scheduleTriggerService = scheduleTriggerService;
++        _logger = logger;
++    }
++
++    public async Task<WorkflowSchedulerRunResult> RunDueSchedulesAsync(
++        DateTime scheduledAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken)
++    {
++        var effectiveBatchSize = Math.Max(1, batchSize);
++        var dueAtUtc = scheduledAtUtc.Kind == DateTimeKind.Utc
++            ? scheduledAtUtc
++            : scheduledAtUtc.ToUniversalTime();
++
++        var companyIds = await ResolveDueCompanyIdsAsync(effectiveBatchSize, cancellationToken);
++        if (companyIds.Count == 0)
++        {
++            _logger.LogDebug("Workflow scheduler found no companies with active scheduled workflow definitions.");
++            return new WorkflowSchedulerRunResult(true, 0, 0, 0);
++        }
++
++        _logger.LogInformation(
++            "Workflow scheduler polling {CompanyCount} company scope(s) for due scheduled workflows at {ScheduledAtUtc}.",
++            companyIds.Count,
++            dueAtUtc);
++
++        var startedCount = 0;
++        var failureCount = 0;
++        foreach (var companyId in companyIds)
++        {
++            try
++            {
++                var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
++                    companyId,
++                    new TriggerScheduledWorkflowsCommand(
++                        dueAtUtc,
++                        ScheduleKey: null,
++                        ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler")
++                        }),
++                    cancellationToken);
++
++                startedCount += started.Count;
++                if (started.Count > 0)
++                {
++                    _logger.LogInformation(
++                        "Workflow scheduler started {StartedCount} scheduled workflow instance(s) for company {CompanyId}.",
++                        started.Count,
++                        companyId);
++                }
++            }
++            catch (OperationCanceledException)
++            {
++                throw;
++            }
++            catch (Exception ex)
++            {
++                failureCount++;
++                _logger.LogError(
++                    ex,
++                    "Workflow scheduler failed while processing scheduled workflows for company {CompanyId}.",
++                    companyId);
++            }
++        }
++
++        return new WorkflowSchedulerRunResult(true, companyIds.Count, startedCount, failureCount);
++    }
++
++    private async Task<IReadOnlyList<Guid>> ResolveDueCompanyIdsAsync(int batchSize, CancellationToken cancellationToken)
++    {
++        var companyIds = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId.HasValue &&
++                x.Active &&
++                x.TriggerType == WorkflowTriggerType.Schedule)
++            .Select(x => x.CompanyId!.Value)
++            .Distinct()
++            .OrderBy(x => x)
++            .Take(batchSize)
++            .ToListAsync(cancellationToken);
++
++        var hasSystemScheduledDefinition = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x =>
++                x.CompanyId == null &&
++                x.Active &&
++                x.TriggerType == WorkflowTriggerType.Schedule,
++                cancellationToken);
++
++        if (hasSystemScheduledDefinition && companyIds.Count < batchSize)
++        {
++            var remaining = batchSize - companyIds.Count;
++            var existing = companyIds.ToHashSet();
++            var systemCompanyIds = await _dbContext.Companies
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => !existing.Contains(x.Id))
++                .OrderBy(x => x.Id)
++                .Select(x => x.Id)
++                .Take(remaining)
++                .ToListAsync(cancellationToken);
++
++            companyIds.AddRange(systemCompanyIds);
++        }
++
++        return companyIds;
++    }
++}
++
++public sealed class WorkflowSchedulerBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly TimeProvider _timeProvider;
++    private readonly IOptions<WorkflowSchedulerOptions> _options;
++    private readonly ILogger<WorkflowSchedulerBackgroundService> _logger;
++
++    public WorkflowSchedulerBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        TimeProvider timeProvider,
++        IOptions<WorkflowSchedulerOptions> options,
++        ILogger<WorkflowSchedulerBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _timeProvider = timeProvider;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Workflow scheduler background service is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollIntervalSeconds));
++        _logger.LogInformation(
++            "Workflow scheduler background service started with poll interval {PollIntervalSeconds} seconds, lock TTL {LockTtlSeconds} seconds, and batch size {BatchSize}.",
++            pollInterval.TotalSeconds,
++            Math.Max(5, _options.Value.LockTtlSeconds),
++            Math.Max(1, _options.Value.BatchSize));
++
++        using var timer = new PeriodicTimer(pollInterval);
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var coordinator = scope.ServiceProvider.GetRequiredService<IWorkflowSchedulerCoordinator>();
++                await coordinator.RunOnceAsync(_timeProvider.GetUtcNow(), stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Workflow scheduler polling loop failed unexpectedly.");
++            }
++
++            try
++            {
++                await timer.WaitForNextTickAsync(stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++        }
++
++        _logger.LogInformation("Workflow scheduler background service stopped.");
++    }
++}
++
++public sealed class RedisDistributedLockProvider : IDistributedLockProvider
++{
++    private const string ReleaseScript = """
++        if redis.call('get', KEYS[1]) == ARGV[1] then
++            return redis.call('del', KEYS[1])
++        end
++
++        return 0
++        """;
++
++    private readonly IConnectionMultiplexer _connectionMultiplexer;
++    private readonly ILogger<RedisDistributedLockProvider> _logger;
++
++    public RedisDistributedLockProvider(
++        IConnectionMultiplexer connectionMultiplexer,
++        ILogger<RedisDistributedLockProvider> logger)
++    {
++        _connectionMultiplexer = connectionMultiplexer;
++        _logger = logger;
++    }
++
++    public async Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++        var normalizedKey = NormalizeKey(key);
++        var token = Guid.NewGuid().ToString("N");
++        var acquired = await _connectionMultiplexer
++            .GetDatabase()
++            .StringSetAsync(normalizedKey, token, ttl, When.NotExists);
++
++        if (!acquired)
++        {
++            _logger.LogDebug("Redis distributed lock {LockKey} was already held.", normalizedKey);
++            return null;
++        }
++
++        return new RedisDistributedLockHandle(_connectionMultiplexer, normalizedKey, token, _logger);
++    }
++
++    private static string NormalizeKey(string key) =>
++        $"locks:{(string.IsNullOrWhiteSpace(key) ? "workflow-scheduler" : key.Trim())}";
++
++    private sealed class RedisDistributedLockHandle : IDistributedLockHandle
++    {
++        private readonly IConnectionMultiplexer _connectionMultiplexer;
++        private readonly string _token;
++        private readonly ILogger _logger;
++        private int _disposed;
++
++        public RedisDistributedLockHandle(
++            IConnectionMultiplexer connectionMultiplexer,
++            string key,
++            string token,
++            ILogger logger)
++        {
++            _connectionMultiplexer = connectionMultiplexer;
++            Key = key;
++            _token = token;
++            _logger = logger;
++        }
++
++        public string Key { get; }
++
++        public async ValueTask DisposeAsync()
++        {
++            if (Interlocked.Exchange(ref _disposed, 1) == 1)
++            {
++                return;
++            }
++
++            var result = await _connectionMultiplexer
++                .GetDatabase()
++                .ScriptEvaluateAsync(ReleaseScript, [Key], [_token]);
++
++            _logger.LogDebug(
++                "Redis distributed lock {LockKey} release completed with result {ReleaseResult}.",
++                Key,
++                result);
++        }
++    }
++}
++
++public sealed class InMemoryDistributedLockProvider : IDistributedLockProvider
++{
++    private readonly ConcurrentDictionary<string, InMemoryLease> _leases = new(StringComparer.Ordinal);
++
++    public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++        var normalizedKey = string.IsNullOrWhiteSpace(key) ? "workflow-scheduler" : key.Trim();
++        var token = Guid.NewGuid().ToString("N");
++        var expiresUtc = DateTimeOffset.UtcNow.Add(ttl);
++
++        while (true)
++        {
++            if (_leases.TryGetValue(normalizedKey, out var existing) && existing.ExpiresUtc > DateTimeOffset.UtcNow)
++            {
++                return Task.FromResult<IDistributedLockHandle?>(null);
++            }
++
++            var lease = new InMemoryLease(token, expiresUtc);
++            if (_leases.TryAdd(normalizedKey, lease) ||
++                _leases.TryUpdate(normalizedKey, lease, existing))
++            {
++                return Task.FromResult<IDistributedLockHandle?>(new InMemoryDistributedLockHandle(normalizedKey, token, _leases));
++            }
++        }
++    }
++
++    private sealed record InMemoryLease(string Token, DateTimeOffset ExpiresUtc);
++
++    private sealed class InMemoryDistributedLockHandle : IDistributedLockHandle
++    {
++        private readonly string _token;
++        private readonly ConcurrentDictionary<string, InMemoryLease> _leases;
++        private int _disposed;
++
++        public InMemoryDistributedLockHandle(
++            string key,
++            string token,
++            ConcurrentDictionary<string, InMemoryLease> leases)
++        {
++            Key = key;
++            _token = token;
++            _leases = leases;
++        }
++
++        public string Key { get; }
++
++        public ValueTask DisposeAsync()
++        {
++            if (Interlocked.Exchange(ref _disposed, 1) == 0 &&
++                _leases.TryGetValue(Key, out var lease) &&
++                lease.Token == _token)
++            {
++                _leases.TryRemove(Key, out _);
++            }
++
++            return ValueTask.CompletedTask;
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Context;
++using StackExchange.Redis;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+@@ -66,11 +67,22 @@ public static class DependencyInjection
+         var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
+         if (!string.IsNullOrWhiteSpace(redisConnectionString))
+         {
++            services.AddSingleton<IConnectionMultiplexer>(_ =>
++            {
++                var options = ConfigurationOptions.Parse(redisConnectionString);
++                options.AbortOnConnectFail = false;
++                return ConnectionMultiplexer.Connect(options);
++            });
++            services.AddSingleton<IDistributedLockProvider, RedisDistributedLockProvider>();
+             services.AddStackExchangeRedisCache(options =>
+             {
+                 options.Configuration = redisConnectionString;
+                 options.InstanceName = "virtual-company:";
+             });
+         }
+         else
+         {
++            // Local/test fallback keeps the worker path runnable when Redis is intentionally absent.
++            services.AddSingleton<IDistributedLockProvider, InMemoryDistributedLockProvider>();
+             services.AddDistributedMemoryCache();
+         }
+ 
+@@ -81,6 +93,10 @@ public static class DependencyInjection
+         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
++        services.AddOptions<WorkflowSchedulerOptions>()
++            .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
++        services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
++        services.AddHostedService<WorkflowSchedulerBackgroundService>();
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+@@ -133,6 +149,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -886,7 +886,9 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.State });
+-        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef });
++        builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef })
++            .HasFilter("trigger_ref IS NOT NULL")
++            .IsUnique();
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Definition).WithMany(x => x.Instances).HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412214500_AddWorkflowSchedulerOccurrenceDedupe.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412214500_AddWorkflowSchedulerOccurrenceDedupe.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412214500_AddWorkflowSchedulerOccurrenceDedupe.cs
+@@ -0,0 +1,40 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddWorkflowSchedulerOccurrenceDedupe : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_definition_id_trigger_source_trigger_ref",
++            table: "workflow_instances");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_definition_id_trigger_source_trigger_ref",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "definition_id", "trigger_source", "trigger_ref" },
++            unique: true,
++            filter: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL"
++                ? "trigger_ref IS NOT NULL"
++                : "[trigger_ref] IS NOT NULL");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_definition_id_trigger_source_trigger_ref",
++            table: "workflow_instances");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_definition_id_trigger_source_trigger_ref",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "definition_id", "trigger_source", "trigger_ref" });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -22,6 +22,7 @@
+     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
++    <PackageReference Include="StackExchange.Redis" Version="2.8.31" />
+   </ItemGroup>
+ 
+   <PropertyGroup>
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -39,6 +39,13 @@
+     "RetryDelaySeconds": 30,
+     "ClaimTimeoutSeconds": 60
+   },
++  "WorkflowScheduler": {
++    "Enabled": true,
++    "PollIntervalSeconds": 60,
++    "LockTtlSeconds": 120,
++    "BatchSize": 50,
++    "LockKey": "workflow-scheduler"
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -40,6 +40,13 @@
+     "RetryDelaySeconds": 30,
+     "ClaimTimeoutSeconds": 60
+   },
++  "WorkflowScheduler": {
++    "Enabled": true,
++    "PollIntervalSeconds": 60,
++    "LockTtlSeconds": 120,
++    "BatchSize": 50,
++    "LockKey": "workflow-scheduler"
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 1111111..2222222 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -14,6 +14,7 @@ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -34,6 +35,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+             {
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
++                [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 2222222..3333333 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -14,7 +14,6 @@ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Observability;
+-using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Api.Tests;
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+index 1111111..2222222 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -448,13 +448,56 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Empty(second);
+         Assert.Equal(definitionId, instance.DefinitionId);
+         Assert.Equal("schedule", instance.TriggerSource);
+-        Assert.Equal("daily-close", instance.TriggerRef);
++        Assert.Equal("daily-close:202604120800", instance.TriggerRef);
+         Assert.Equal("started", instance.State);
+         Assert.Equal("close-books", instance.CurrentStep);
+     }
+ 
+     [Fact]
++    public async Task Scheduled_polling_service_starts_due_workflows_once_per_occurrence()
++    {
++        var seed = await SeedMembershipAsync("workflow-scheduler-poll", "workflow-scheduler-poll@example.com", "Workflow Scheduler Poll");
++        var definitionId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                definitionId,
++                seed.CompanyId,
++                "daily-briefing",
++                "Daily briefing",
++                "Executive",
++                WorkflowTriggerType.Schedule,
++                1,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["schedule"] = new JsonObject { ["scheduleKey"] = "daily-briefing" },
++                    ["steps"] = new JsonArray(new JsonObject { ["id"] = "collect-signals" })
++                }));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var scheduler = scope.ServiceProvider.GetRequiredService<IWorkflowSchedulePollingService>();
++        var first = await scheduler.RunDueSchedulesAsync(
++            DateTime.Parse("2026-04-12T08:00:00Z").ToUniversalTime(),
++            10,
++            CancellationToken.None);
++        var second = await scheduler.RunDueSchedulesAsync(
++            DateTime.Parse("2026-04-12T08:00:00Z").ToUniversalTime(),
++            10,
++            CancellationToken.None);
++
++        Assert.True(first.LockAcquired);
++        Assert.Equal(1, first.WorkflowsStarted);
++        Assert.Equal(0, first.Failures);
++        Assert.True(second.LockAcquired);
++        Assert.Equal(0, second.WorkflowsStarted);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persistedCount = await dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == seed.CompanyId && x.DefinitionId == definitionId && x.TriggerRef == "daily-briefing:202604120800");
++        Assert.Equal(1, persistedCount);
++    }
++
++    [Fact]
+     public async Task Internal_event_trigger_starts_matching_workflow_only_for_event_company()
+     {
+         var seed = await SeedTwoMembershipsAsync();
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowSchedulerCoordinatorTests.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/WorkflowSchedulerCoordinatorTests.cs
+@@ -0,0 +1,118 @@
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class WorkflowSchedulerCoordinatorTests
++{
++    [Fact]
++    public async Task Run_once_skips_polling_when_lock_is_not_acquired()
++    {
++        var polling = new RecordingPollingService();
++        var coordinator = new WorkflowSchedulerCoordinator(
++            new DenyLockProvider(),
++            polling,
++            Options.Create(new WorkflowSchedulerOptions
++            {
++                LockKey = "test-workflow-scheduler",
++                LockTtlSeconds = 30,
++                BatchSize = 10
++            }),
++            NullLogger<WorkflowSchedulerCoordinator>.Instance);
++
++        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse("2026-04-12T08:00:00Z"), CancellationToken.None);
++
++        Assert.False(result.LockAcquired);
++        Assert.Equal(0, polling.CallCount);
++        Assert.Equal(0, result.WorkflowsStarted);
++    }
++
++    [Fact]
++    public async Task In_memory_lock_provider_allows_one_holder_per_key()
++    {
++        var provider = new InMemoryDistributedLockProvider();
++
++        await using var first = await provider.TryAcquireAsync("scheduler", TimeSpan.FromMinutes(1), CancellationToken.None);
++        var second = await provider.TryAcquireAsync("scheduler", TimeSpan.FromMinutes(1), CancellationToken.None);
++
++        Assert.NotNull(first);
++        Assert.Null(second);
++
++        await first!.DisposeAsync();
++        await using var third = await provider.TryAcquireAsync("scheduler", TimeSpan.FromMinutes(1), CancellationToken.None);
++        Assert.NotNull(third);
++    }
++
++    [Fact]
++    public async Task Run_once_invokes_polling_when_lock_is_acquired()
++    {
++        var polling = new RecordingPollingService(new WorkflowSchedulerRunResult(true, 2, 3, 0));
++        var coordinator = new WorkflowSchedulerCoordinator(
++            new AllowLockProvider(),
++            polling,
++            Options.Create(new WorkflowSchedulerOptions
++            {
++                LockKey = "test-workflow-scheduler",
++                LockTtlSeconds = 30,
++                BatchSize = 10
++            }),
++            NullLogger<WorkflowSchedulerCoordinator>.Instance);
++
++        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse("2026-04-12T08:00:00Z"), CancellationToken.None);
++
++        Assert.True(result.LockAcquired);
++        Assert.Equal(1, polling.CallCount);
++        Assert.Equal(10, polling.LastBatchSize);
++        Assert.Equal(3, result.WorkflowsStarted);
++    }
++
++    private sealed class RecordingPollingService : IWorkflowSchedulePollingService
++    {
++        private readonly WorkflowSchedulerRunResult _result;
++
++        public RecordingPollingService()
++            : this(new WorkflowSchedulerRunResult(true, 0, 0, 0))
++        {
++        }
++
++        public RecordingPollingService(WorkflowSchedulerRunResult result) => _result = result;
++
++        public int CallCount { get; private set; }
++        public int LastBatchSize { get; private set; }
++
++        public Task<WorkflowSchedulerRunResult> RunDueSchedulesAsync(
++            DateTime scheduledAtUtc,
++            int batchSize,
++            CancellationToken cancellationToken)
++        {
++            CallCount++;
++            LastBatchSize = batchSize;
++            return Task.FromResult(_result);
++        }
++    }
++
++    private sealed class DenyLockProvider : IDistributedLockProvider
++    {
++        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>
++            Task.FromResult<IDistributedLockHandle?>(null);
++    }
++
++    private sealed class AllowLockProvider : IDistributedLockProvider
++    {
++        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>
++            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));
++    }
++
++    private sealed class TestLockHandle : IDistributedLockHandle
++    {
++        public TestLockHandle(string key) => Key = key;
++
++        public string Key { get; }
++
++        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
++    }
++}
+END_OF_PATCH

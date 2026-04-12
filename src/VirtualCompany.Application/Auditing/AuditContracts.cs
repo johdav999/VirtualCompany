@@ -37,6 +37,8 @@ public static class AuditTargetTypes
     public const string CompanyDocument = "company_document";
     public const string ApprovalRequest = "approval_request";
     public const string MemoryItem = "memory_item";
+    public const string WorkflowInstance = "workflow_instance";
+    public const string WorkflowException = "workflow_exception";
 }
 
 public static class AuditEventOutcomes
@@ -66,4 +68,7 @@ public static class AuditEventActions
     public const string MemoryItemExpired = "memory.item.expired";
     public const string MemoryItemDeleted = "memory.item.deleted";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+    public const string WorkflowInstanceStarted = "workflow.instance.started";
+    public const string WorkflowExceptionCreated = "workflow.exception.created";
+    public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
 }

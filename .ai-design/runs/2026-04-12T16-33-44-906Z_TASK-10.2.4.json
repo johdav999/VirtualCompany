@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.2.4",
+  "promptPath": ".ai-design/prompts/TASK-10.2.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T16:33:44.906Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T16-33-44-906Z_TASK-10.2.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T16-33-44-906Z_TASK-10.2.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T16:38:23.631Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "iggerType = \"manual\",\n+            definitionJson = ValidDefinition(\"approval\")\n+        });\n+        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();\n+        Assert.NotNull(definition);\n+\n+        var startResponse = await ownerClient.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();\n+        Assert.NotNull(instance);\n+\n+        await ownerClient.PatchAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/instances/{instance!.Id}/state\", new\n+        {\n+            state = \"blocked\",\n+            currentStep = \"approval\",\n+            outputPayload = new Dictionary<string, JsonNode?>\n+            {\n+                [\"reason\"] = JsonValue.Create(\"Waiting for approval threshold owner\")\n+            }\n+        });\n+\n+        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($\"/api/companies/{seed.CompanyId}/workflows/exceptions\");\n+        var workflowException = Assert.Single(ownerExceptions!);\n+        Assert.Equal(\"blocked\", workflowException.ExceptionType);\n+\n+        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);\n+        var crossTenantList = await otherClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($\"/api/companies/{seed.OtherCompanyId}/workflows/exceptions\");\n+        Assert.Empty(crossTenantList!);\n+        var crossTenantRead = await otherClient.GetAsync($\"/api/companies/{seed.OtherCompanyId}/workflows/exceptions/{workflowException.Id}\");\n+        Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "\",\n+            definitionJson = ValidDefinition(\"approval\")\n+        });\n+        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();\n+        Assert.NotNull(definition);\n+\n+        var startResponse = await ownerClient.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();\n+        Assert.NotNull(instance);\n+\n+        await ownerClient.PatchAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/instances/{instance!.Id}/state\", new\n+        {\n+            state = \"blocked\",\n+            currentStep = \"approval\",\n+            outputPayload = new Dictionary<string, JsonNode?>\n+            {\n+                [\"reason\"] = JsonValue.Create(\"Waiting for approval threshold owner\")\n+            }\n+        });\n+\n+        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($\"/api/companies/{seed.CompanyId}/workflows/exceptions\");\n+        var workflowException = Assert.Single(ownerExceptions!);\n+        Assert.Equal(\"blocked\", workflowException.ExceptionType);\n+\n+        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);\n+        var crossTenantList = await otherClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($\"/api/companies/{seed.OtherCompanyId}/workflows/exceptions\");\n+        Assert.Empty(crossTenantList!);\n+        var crossTenantRead = await otherClient.GetAsync($\"/api/companies/{seed.OtherCompanyId}/workflows/exceptions/{workflowException.Id}\");\n+        Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()\n     {\nEND_OF_PATCH\ntokens used\n79,178\n",
+  "verbosityMode": "summary"
+}

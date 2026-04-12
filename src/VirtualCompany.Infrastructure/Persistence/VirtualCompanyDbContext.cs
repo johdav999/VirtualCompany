@@ -31,6 +31,10 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+    public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+    public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+    public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
+    public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
@@ -58,6 +62,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<WorkflowDefinition>()
+            .HasQueryFilter(definition =>
+                CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+        modelBuilder.Entity<WorkflowTrigger>()
+            .HasQueryFilter(trigger =>
+                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<WorkflowInstance>()
+            .HasQueryFilter(instance =>
+                CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<WorkflowException>()
+            .HasQueryFilter(workflowException =>
+                CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanyKnowledgeDocument>()
             .HasQueryFilter(document =>
                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);

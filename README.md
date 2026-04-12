@@ -132,6 +132,10 @@ Request correlation:
 - When absent, the API generates a correlation ID and returns it in the response header.
 - Technical logs and safe error responses include the same correlation ID for support workflows.
 
+
+## Workflow v1
+
+Workflow v1 intentionally supports only predefined, versioned workflow templates from the curated catalog. Admins can review the catalog and start manual workflows, while schedule and internal event starts use the same predefined definitions. Arbitrary workflow graph authoring, builder UX, and custom node/edge editing are intentionally deferred.
 Configuration:
 
 - `Observability:Redis:ConnectionString` enables the Redis readiness check.

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.2.6",
+  "promptPath": ".ai-design/prompts/TASK-10.2.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T16:43:22.356Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T16-43-22-356Z_TASK-10.2.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T16-43-22-356Z_TASK-10.2.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T16:48:28.599Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "tor>.Instance);\n+\n+        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse(\"2026-04-12T08:00:00Z\"), CancellationToken.None);\n+\n+        Assert.True(result.LockAcquired);\n+        Assert.Equal(1, polling.CallCount);\n+        Assert.Equal(10, polling.LastBatchSize);\n+        Assert.Equal(3, result.WorkflowsStarted);\n+    }\n+\n+    private sealed class RecordingPollingService : IWorkflowSchedulePollingService\n+    {\n+        private readonly WorkflowSchedulerRunResult _result;\n+\n+        public RecordingPollingService()\n+            : this(new WorkflowSchedulerRunResult(true, 0, 0, 0))\n+        {\n+        }\n+\n+        public RecordingPollingService(WorkflowSchedulerRunResult result) => _result = result;\n+\n+        public int CallCount { get; private set; }\n+        public int LastBatchSize { get; private set; }\n+\n+        public Task<WorkflowSchedulerRunResult> RunDueSchedulesAsync(\n+            DateTime scheduledAtUtc,\n+            int batchSize,\n+            CancellationToken cancellationToken)\n+        {\n+            CallCount++;\n+            LastBatchSize = batchSize;\n+            return Task.FromResult(_result);\n+        }\n+    }\n+\n+    private sealed class DenyLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(null);\n+    }\n+\n+    private sealed class AllowLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));\n+    }\n+\n+    private sealed class TestLockHandle : IDistributedLockHandle\n+    {\n+        public TestLockHandle(string key) => Key = key;\n+\n+        public string Key { get; }\n+\n+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse(\"2026-04-12T08:00:00Z\"), CancellationToken.None);\n+\n+        Assert.True(result.LockAcquired);\n+        Assert.Equal(1, polling.CallCount);\n+        Assert.Equal(10, polling.LastBatchSize);\n+        Assert.Equal(3, result.WorkflowsStarted);\n+    }\n+\n+    private sealed class RecordingPollingService : IWorkflowSchedulePollingService\n+    {\n+        private readonly WorkflowSchedulerRunResult _result;\n+\n+        public RecordingPollingService()\n+            : this(new WorkflowSchedulerRunResult(true, 0, 0, 0))\n+        {\n+        }\n+\n+        public RecordingPollingService(WorkflowSchedulerRunResult result) => _result = result;\n+\n+        public int CallCount { get; private set; }\n+        public int LastBatchSize { get; private set; }\n+\n+        public Task<WorkflowSchedulerRunResult> RunDueSchedulesAsync(\n+            DateTime scheduledAtUtc,\n+            int batchSize,\n+            CancellationToken cancellationToken)\n+        {\n+            CallCount++;\n+            LastBatchSize = batchSize;\n+            return Task.FromResult(_result);\n+        }\n+    }\n+\n+    private sealed class DenyLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(null);\n+    }\n+\n+    private sealed class AllowLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));\n+    }\n+\n+    private sealed class TestLockHandle : IDistributedLockHandle\n+    {\n+        public TestLockHandle(string key) => Key = key;\n+\n+        public string Key { get; }\n+\n+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n+    }\n+}\nEND_OF_PATCH\ntokens used\n83,768\n",
+  "verbosityMode": "summary"
+}

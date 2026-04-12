@@ -108,6 +108,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
     public Agent? AssignedAgent { get; private set; }
     public WorkTask? ParentTask { get; private set; }
     public ICollection<WorkTask> Subtasks { get; } = new List<WorkTask>();
+    public WorkflowInstance? WorkflowInstance { get; private set; }
 
     public void SetDueDate(DateTime? dueUtc)
     {

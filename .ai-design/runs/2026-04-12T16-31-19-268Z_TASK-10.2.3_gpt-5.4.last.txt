@@ -1,0 +1,441 @@
+diff --git a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+@@ -20,7 +20,8 @@ public enum WorkflowInstanceStatus
+     Running = 2,
+     Completed = 3,
+     Failed = 4,
+-    Cancelled = 5
++    Cancelled = 5,
++    Blocked = 6
+ }
+ 
+ public static class WorkflowDefinitionStatusValues
+@@ -124,7 +125,8 @@ public static class WorkflowInstanceStatusValues
+         [WorkflowInstanceStatus.Running] = "running",
+         [WorkflowInstanceStatus.Completed] = "completed",
+         [WorkflowInstanceStatus.Failed] = "failed",
+-        [WorkflowInstanceStatus.Cancelled] = "cancelled"
++        [WorkflowInstanceStatus.Cancelled] = "cancelled",
++        [WorkflowInstanceStatus.Blocked] = "blocked"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, WorkflowInstanceStatus> ReverseValues =
+@@ -138,12 +140,29 @@ public static class WorkflowInstanceStatusValues
+             ? value
+             : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
+ 
++    public static bool TryParse(string? value, out WorkflowInstanceStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out status))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
+     public static string BuildValidationMessage(string? attemptedValue = null) =>
+         string.IsNullOrWhiteSpace(attemptedValue)
+             ? $"Workflow instance status is required. Allowed values: {string.Join(", ", AllowedValues)}."
+             : $"Unsupported workflow instance status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
+ 
+     public static WorkflowInstanceStatus Parse(string value) =>
+-        ReverseValues.TryGetValue(value.Trim(), out var status)
++        TryParse(value, out var status)
+             ? status
+             : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -193,6 +193,8 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+ {
+     private WorkflowInstance()
+     {
++        InputPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        ContextJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+     }
+ 
+     public WorkflowInstance(
+@@ -228,7 +230,7 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+         TriggerSource = triggerSource;
+         TriggerRef = NormalizeOptional(triggerRef, nameof(triggerRef), 200);
+         CurrentStep = NormalizeOptional(currentStep, nameof(currentStep), 200);
+-        Status = WorkflowInstanceStatusValues.DefaultStatus;
++        State = WorkflowInstanceStatusValues.DefaultStatus;
+         InputPayload = CloneNodes(inputPayload);
+         ContextJson = CloneNodes(contextJson);
+         StartedUtc = DateTime.UtcNow;
+@@ -242,7 +244,8 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+     public Guid? TriggerId { get; private set; }
+     public WorkflowTriggerType TriggerSource { get; private set; }
+     public string? TriggerRef { get; private set; }
+-    public WorkflowInstanceStatus Status { get; private set; }
++    public WorkflowInstanceStatus State { get; private set; }
++    public WorkflowInstanceStatus Status => State;
+     public string? CurrentStep { get; private set; }
+     public Dictionary<string, JsonNode?> InputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> ContextJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+@@ -257,6 +260,24 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+     public WorkflowTrigger? Trigger { get; private set; }
+     public ICollection<WorkTask> Tasks { get; } = new List<WorkTask>();
+ 
++    public void UpdateState(
++        WorkflowInstanceStatus state,
++        string? currentStep,
++        IDictionary<string, JsonNode?>? outputPayload = null)
++    {
++        State = state;
++        CurrentStep = NormalizeOptional(currentStep, nameof(currentStep), 200);
++        if (outputPayload is not null)
++        {
++            OutputPayload = CloneNodes(outputPayload);
++        }
++
++        UpdatedUtc = DateTime.UtcNow;
++        CompletedUtc = state is WorkflowInstanceStatus.Completed or WorkflowInstanceStatus.Failed or WorkflowInstanceStatus.Cancelled
++            ? UpdatedUtc
++            : null;
++    }
++
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -30,6 +30,11 @@ public sealed record StartManualWorkflowInstanceCommand(
+     string? TriggerRef,
+     Dictionary<string, JsonNode?>? InputPayload);
+ 
++public sealed record UpdateWorkflowInstanceStateCommand(
++    string State,
++    string? CurrentStep,
++    Dictionary<string, JsonNode?>? OutputPayload = null);
++
+ public sealed record TriggerScheduledWorkflowsCommand(
+     DateTime ScheduledAtUtc,
+     string? ScheduleKey = null,
+@@ -84,6 +89,7 @@ public sealed record WorkflowInstanceDto(
+     string TriggerSource,
+     string? TriggerRef,
+     string Status,
++    string State,
+     string? CurrentStep,
+     Dictionary<string, JsonNode?> InputPayload,
+     Dictionary<string, JsonNode?> ContextJson,
+@@ -122,12 +128,22 @@ public interface ICompanyWorkflowService
+         CreateWorkflowTriggerCommand command,
+         CancellationToken cancellationToken);
+ 
++    Task<WorkflowInstanceDto> StartManualInstanceAsync(
++        Guid companyId,
++        StartManualWorkflowInstanceCommand command,
++        CancellationToken cancellationToken);
++
+     Task<WorkflowInstanceDto> StartInstanceAsync(
+         Guid companyId,
+         StartWorkflowInstanceCommand command,
+         CancellationToken cancellationToken);
+ 
+     Task<IReadOnlyList<WorkflowInstanceDto>> ListInstancesAsync(Guid companyId, Guid? definitionId, CancellationToken cancellationToken);
+ 
+     Task<WorkflowInstanceDto> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken);
++
++    Task<WorkflowInstanceDto> UpdateInstanceStateAsync(
++        Guid companyId,
++        Guid instanceId,
++        UpdateWorkflowInstanceStateCommand command,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IWorkflowScheduleTriggerService
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -923,8 +923,8 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+             .HasSentinel((WorkflowTriggerType)0)
+             .IsRequired();
+         builder.Property(x => x.TriggerRef).HasColumnName("trigger_ref").HasMaxLength(200);
+-        builder.Property(x => x.Status)
+-            .HasColumnName("status")
++        builder.Property(x => x.State)
++            .HasColumnName("state")
+             .HasConversion(value => value.ToStorageValue(), value => WorkflowInstanceStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .HasDefaultValue(WorkflowInstanceStatusValues.DefaultStatus)
+@@ -951,7 +951,7 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
+-        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.State });
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -15,6 +15,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+     private const int DepartmentMaxLength = 100;
+     private const int EventNameMaxLength = 200;
+     private const int TriggerRefMaxLength = 200;
++    private const int CurrentStepMaxLength = 200;
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+@@ -518,6 +519,34 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             : ToInstanceDto(instance);
+     }
+ 
++    public async Task<WorkflowInstanceDto> UpdateInstanceStateAsync(
++        Guid companyId,
++        Guid instanceId,
++        UpdateWorkflowInstanceStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var instance = await _dbContext.WorkflowInstances
++            .Include(x => x.Definition)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == instanceId, cancellationToken);
++
++        if (instance is null)
++        {
++            throw new KeyNotFoundException("Workflow instance not found.");
++        }
++
++        instance.UpdateState(
++            WorkflowInstanceStatusValues.Parse(command.State),
++            command.CurrentStep,
++            command.OutputPayload);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return ToInstanceDto(instance);
++    }
++
+     private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+@@ -568,7 +597,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             instance.TriggerId,
+             instance.TriggerSource.ToStorageValue(),
+             instance.TriggerRef,
+-            instance.Status.ToStorageValue(),
++            instance.State.ToStorageValue(),
++            instance.State.ToStorageValue(),
+             instance.CurrentStep,
+             CloneNodes(instance.InputPayload),
+             CloneNodes(instance.ContextJson),
+@@ -635,6 +665,16 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         ThrowIfInvalid(errors);
+     }
+ 
++    private static void Validate(UpdateWorkflowInstanceStateCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddWorkflowInstanceState(errors, nameof(command.State), command.State);
++        AddOptional(errors, nameof(command.CurrentStep), command.CurrentStep, CurrentStepMaxLength);
++
++        ThrowIfInvalid(errors);
++    }
++
+     private static void AddRequired(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -671,6 +711,14 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         }
+     }
+ 
++    private static void AddWorkflowInstanceState(IDictionary<string, List<string>> errors, string key, string? value)
++    {
++        if (!WorkflowInstanceStatusValues.TryParse(value, out _))
++        {
++            AddError(errors, key, WorkflowInstanceStatusValues.BuildValidationMessage(value));
++        }
++    }
++
+     private static void AddDefinitionJson(
+         IDictionary<string, List<string>> errors,
+         string key,
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -216,6 +216,30 @@ public sealed class WorkflowsController : ControllerBase
+         }
+     }
+ 
++    [HttpPatch("instances/{instanceId:guid}/state")]
++    public async Task<ActionResult<WorkflowInstanceDto>> UpdateInstanceStateAsync(
++        Guid companyId,
++        Guid instanceId,
++        [FromBody] UpdateWorkflowInstanceStateCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.UpdateInstanceStateAsync(companyId, instanceId, command, cancellationToken));
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     private ActionResult WorkflowValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190500_RenameWorkflowInstanceStatusToState.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190500_RenameWorkflowInstanceStatusToState.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412190500_RenameWorkflowInstanceStatusToState.cs
+@@ -0,0 +1,47 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class RenameWorkflowInstanceStatusToState : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_status",
++            table: "workflow_instances");
++
++        migrationBuilder.RenameColumn(
++            name: "status",
++            table: "workflow_instances",
++            newName: "state");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_state",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "state" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_state",
++            table: "workflow_instances");
++
++        migrationBuilder.RenameColumn(
++            name: "state",
++            table: "workflow_instances",
++            newName: "status");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_status",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "status" });
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -221,7 +221,8 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(definition.Id, instance.DefinitionId);
+         Assert.Equal("manual", instance.TriggerSource);
+         Assert.Equal("manual-request-1", instance.TriggerRef);
+-        Assert.Equal("started", instance.Status);
++        Assert.Equal("started", instance.State);
++        Assert.Equal(instance.State, instance.Status);
+         Assert.Equal("first-manual-step", instance.CurrentStep);
+ 
+         await using var scope = _factory.Services.CreateAsyncScope();
+@@ -233,6 +234,52 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(seed.CompanyId, persisted.CompanyId);
+         Assert.Equal(WorkflowTriggerType.Manual, persisted.TriggerSource);
+         Assert.Equal("manual-request-1", persisted.TriggerRef);
++        Assert.Equal(WorkflowInstanceStatus.Started, persisted.State);
++        Assert.Equal("first-manual-step", persisted.CurrentStep);
++    }
++
++    [Fact]
++    public async Task Instance_state_update_is_persisted_queryable_and_tenant_scoped()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var definitionResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "state-update",
++            name = "State update",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("intake")
++        });
++
++        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        var startResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start", new
++        {
++            definitionId = Guid.Empty,
++            inputPayload = new Dictionary<string, JsonNode?>()
++        });
++        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();
++        Assert.NotNull(instance);
++
++        var updateResponse = await ownerClient.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/instances/{instance!.Id}/state", new
++        {
++            state = "blocked",
++            currentStep = "manager-review",
++            outputPayload = new Dictionary<string, JsonNode?>
++            {
++                ["reason"] = JsonValue.Create("awaiting approval")
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
++        var updated = await updateResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();
++        Assert.NotNull(updated);
++        Assert.Equal("blocked", updated!.State);
++        Assert.Equal("manager-review", updated.CurrentStep);
++
++        var queried = await ownerClient.GetFromJsonAsync<WorkflowInstanceDto>($"/api/companies/{seed.CompanyId}/workflows/instances/{instance.Id}");
++        Assert.Equal("blocked", queried!.State);
++        Assert.Equal("manager-review", queried.CurrentStep);
++
++        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);
++        var crossTenantRead = await otherClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/workflows/instances/{instance.Id}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);
+     }
+ 
+     [Fact]
+@@ -278,6 +325,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(definitionId, instance.DefinitionId);
+         Assert.Equal("schedule", instance.TriggerSource);
+         Assert.Equal("daily-close", instance.TriggerRef);
++        Assert.Equal("started", instance.State);
+         Assert.Equal("close-books", instance.CurrentStep);
+     }
+END_OF_PATCH

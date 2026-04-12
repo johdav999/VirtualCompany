@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-402",
+  "promptPath": ".ai-design/prompts/TASK-ST-402.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T16:18:01.471Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T16-18-01-471Z_TASK-ST-402_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T16-18-01-471Z_TASK-ST-402.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T16:22:16.072Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nce/VirtualCompanyDbContext.cs\nindex 7e7c7d3..1229d97 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n@@ -34,6 +34,9 @@ public sealed class VirtualCompanyDbContext : DbContext\n     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();\n     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();\n     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();\n+    public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();\n+    public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();\n+    public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();\n     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();\n     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();\n     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();\n@@ -63,6 +66,15 @@ public sealed class VirtualCompanyDbContext : DbContext\n         modelBuilder.Entity<ApprovalRequest>()\n             .HasQueryFilter(request =>\n                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowDefinition>()\n+            .HasQueryFilter(definition =>\n+                CurrentCompanyId.HasValue && definition.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowTrigger>()\n+            .HasQueryFilter(trigger =>\n+                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowInstance>()\n+            .HasQueryFilter(instance =>\n+                CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);\n         modelBuilder.Entity<CompanyKnowledgeDocument>()\n             .HasQueryFilter(document =>\n                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);\nEND_OF_PATCH\n",
+  "stderrTail": "bContext.cs\nindex 7e7c7d3..1229d97 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs\n@@ -34,6 +34,9 @@ public sealed class VirtualCompanyDbContext : DbContext\n     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();\n     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();\n     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();\n+    public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();\n+    public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();\n+    public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();\n     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();\n     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();\n     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();\n@@ -63,6 +66,15 @@ public sealed class VirtualCompanyDbContext : DbContext\n         modelBuilder.Entity<ApprovalRequest>()\n             .HasQueryFilter(request =>\n                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowDefinition>()\n+            .HasQueryFilter(definition =>\n+                CurrentCompanyId.HasValue && definition.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowTrigger>()\n+            .HasQueryFilter(trigger =>\n+                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);\n+        modelBuilder.Entity<WorkflowInstance>()\n+            .HasQueryFilter(instance =>\n+                CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);\n         modelBuilder.Entity<CompanyKnowledgeDocument>()\n             .HasQueryFilter(document =>\n                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);\nEND_OF_PATCH\ntokens used\n64,794\n",
+  "verbosityMode": "summary"
+}

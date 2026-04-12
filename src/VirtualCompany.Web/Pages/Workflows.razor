@@ -1,0 +1,253 @@
+@page "/workflows"
+@rendermode InteractiveServer
+@using System.Text.Json.Nodes
+@inject OnboardingApiClient OnboardingApiClient
+@inject WorkflowApiClient WorkflowApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Workflows</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Workflow catalog</h1>
+        <p class="text-body-secondary mb-0">Loading predefined workflows...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Select a company</h1>
+            <p class="text-body-secondary">Choose the company where you want to review predefined workflows.</p>
+
+            @if (activeMemberships.Count == 0)
+            {
+                <p class="mb-0">No active company memberships are available yet.</p>
+            }
+            else
+            {
+                <div class="template-grid">
+                    @foreach (var membership in activeMemberships)
+                    {
+                        <a class="template-card text-decoration-none text-reset" href="@($"/workflows?companyId={membership.CompanyId}")">
+                            <strong>@membership.CompanyName</strong>
+                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="agent-layout">
+            <div class="wizard-card">
+                <span class="dashboard-kicker">Predefined catalog</span>
+                <h1>Workflows for @(companyAccess?.CompanyName ?? "your company")</h1>
+                <p class="text-body-secondary">Choose from approved workflow templates. Freeform workflow builders and custom step graphs are not available in v1.</p>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(successMessage))
+                {
+                    <div class="alert alert-success">@successMessage</div>
+                }
+
+                <div class="agent-template-grid mt-4">
+                    @foreach (var workflow in catalog)
+                    {
+                        var isSelected = string.Equals(selectedWorkflowCode, workflow.Code, StringComparison.OrdinalIgnoreCase);
+                        <button class="template-card agent-template-card @(isSelected ? "is-selected" : null)"
+                                type="button"
+                                @onclick="@(() => SelectWorkflow(workflow.Code))">
+                            <div class="agent-template-header">
+                                <strong>@workflow.Name</strong>
+                                <span class="badge text-bg-light">v@workflow.Version</span>
+                            </div>
+                            <div class="text-body-secondary">@workflow.Department</div>
+                            <p class="mb-0 mt-3">@workflow.Description</p>
+                            <div class="mt-3">
+                                <span class="badge text-bg-secondary">@workflow.TriggerType</span>
+                            </div>
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="wizard-card">
+                <h2 class="h4 mb-3">Launch</h2>
+
+                @if (selectedWorkflow is null)
+                {
+                    <p class="text-body-secondary mb-0">Select a workflow to view launch options.</p>
+                }
+                else
+                {
+                    <dl class="kv-list">
+                        <dt>Code</dt>
+                        <dd>@selectedWorkflow.Code</dd>
+                        <dt>Trigger</dt>
+                        <dd>@selectedWorkflow.TriggerType</dd>
+                        <dt>Steps</dt>
+                        <dd>@string.Join(", ", selectedWorkflow.SupportedStepHandlers)</dd>
+                    </dl>
+
+                    @if (string.Equals(selectedWorkflow.TriggerType, "manual", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <button class="btn btn-primary" type="button" disabled="@isStarting" @onclick="StartSelectedWorkflowAsync">Start workflow</button>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mb-0">This workflow starts from its configured @selectedWorkflow.TriggerType trigger.</p>
+                    }
+                }
+            </div>
+        </div>
+
+        <div class="wizard-card mt-4">
+            <div class="agent-roster-header">
+                <div>
+                    <span class="dashboard-kicker">Instance review</span>
+                    <h2 class="h4 mb-0 mt-2">Recent workflow instances</h2>
+                </div>
+            </div>
+
+            @if (instances.Count == 0)
+            {
+                <p class="text-body-secondary mb-0 mt-3">No workflow instances have started yet.</p>
+            }
+            else
+            {
+                <div class="table-responsive mt-3">
+                    <table class="table align-middle">
+                        <thead>
+                            <tr>
+                                <th>Workflow</th>
+                                <th>State</th>
+                                <th>Current step</th>
+                                <th>Trigger</th>
+                                <th>Started</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var instance in instances)
+                            {
+                                <tr>
+                                    <td>@instance.DefinitionName</td>
+                                    <td><span class="badge @GetStateBadge(instance.State)">@instance.State</span></td>
+                                    <td>@(instance.CurrentStep ?? "Not set")</td>
+                                    <td>@instance.TriggerSource</td>
+                                    <td>@instance.StartedAt.ToLocalTime().ToString("g")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    private bool isLoading = true;
+    private bool isStarting;
+    private string? errorMessage;
+    private string? successMessage;
+    private string? selectedWorkflowCode;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private List<WorkflowCatalogItemViewModel> catalog = [];
+    private List<WorkflowInstanceViewModel> instances = [];
+
+    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+        currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
+        ?? [];
+
+    private WorkflowCatalogItemViewModel? selectedWorkflow =>
+        catalog.FirstOrDefault(x => string.Equals(x.Code, selectedWorkflowCode, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo($"/workflows?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                catalog = (await WorkflowApiClient.GetCatalogAsync(companyId)).ToList();
+                instances = (await WorkflowApiClient.GetInstancesAsync(companyId)).ToList();
+                selectedWorkflowCode ??= catalog.FirstOrDefault()?.Code;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void SelectWorkflow(string code) => selectedWorkflowCode = code;
+
+    private async Task StartSelectedWorkflowAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedWorkflow is null)
+        {
+            return;
+        }
+
+        isStarting = true;
+        errorMessage = null;
+        successMessage = null;
+        try
+        {
+            var definition = await WorkflowApiClient.GetLatestDefinitionByCodeAsync(companyId, selectedWorkflow.Code);
+            var instance = await WorkflowApiClient.StartManualWorkflowAsync(companyId, definition.Id, new StartManualWorkflowRequest
+            {
+                TriggerRef = $"manual:{DateTime.UtcNow:O}",
+                InputPayload = new Dictionary<string, JsonNode?>
+                {
+                    ["launchedFrom"] = JsonValue.Create("admin_workflow_catalog")
+                }
+            });
+            instances.Insert(0, instance);
+            successMessage = $"Started {definition.Name}.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isStarting = false;
+        }
+    }
+
+    private static string GetStateBadge(string state) =>
+        state.Equals("failed", StringComparison.OrdinalIgnoreCase) ? "text-bg-danger" :
+        state.Equals("blocked", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" :
+        state.Equals("completed", StringComparison.OrdinalIgnoreCase) ? "text-bg-success" :
+        "text-bg-secondary";
+}

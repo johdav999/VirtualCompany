@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.2.2",
+  "promptPath": ".ai-design/prompts/TASK-10.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T16:26:57.645Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T16-26-57-645Z_TASK-10.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T16-26-57-645Z_TASK-10.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T16:31:18.920Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var definitionResponse = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions\", new\n+        {\n+            code = \"event-only\",\n+            name = \"Event only\",\n+            department = \"Operations\",\n+            triggerType = \"event\",\n+            active = true,\n+            definitionJson = ValidDefinition(\"event-step\")\n+        });\n+        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();\n+        Assert.NotNull(definition);\n+\n+        var manualStart = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        Assert.Equal(HttpStatusCode.BadRequest, manualStart.StatusCode);\n+\n+        var inactiveId = Guid.NewGuid();\n+        await _factory.SeedAsync(dbContext =>\n+        {\n+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(\n+                inactiveId,\n+                seed.CompanyId,\n+                \"inactive-manual\",\n+                \"Inactive manual\",\n+                \"Operations\",\n+                WorkflowTriggerType.Manual,\n+                1,\n+                ValidDefinition(\"inactive-step\"),\n+                active: false));\n+            return Task.CompletedTask;\n+        });\n+\n+        var inactiveStart = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{inactiveId}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        Assert.Equal(HttpStatusCode.BadRequest, inactiveStart.StatusCode);\n+    }\n+\n     private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>\n         new(StringComparer.OrdinalIgnoreCase)\n         {\nEND_OF_PATCH\n",
+  "stderrTail": "AuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var definitionResponse = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions\", new\n+        {\n+            code = \"event-only\",\n+            name = \"Event only\",\n+            department = \"Operations\",\n+            triggerType = \"event\",\n+            active = true,\n+            definitionJson = ValidDefinition(\"event-step\")\n+        });\n+        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();\n+        Assert.NotNull(definition);\n+\n+        var manualStart = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        Assert.Equal(HttpStatusCode.BadRequest, manualStart.StatusCode);\n+\n+        var inactiveId = Guid.NewGuid();\n+        await _factory.SeedAsync(dbContext =>\n+        {\n+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(\n+                inactiveId,\n+                seed.CompanyId,\n+                \"inactive-manual\",\n+                \"Inactive manual\",\n+                \"Operations\",\n+                WorkflowTriggerType.Manual,\n+                1,\n+                ValidDefinition(\"inactive-step\"),\n+                active: false));\n+            return Task.CompletedTask;\n+        });\n+\n+        var inactiveStart = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{inactiveId}/start\", new\n+        {\n+            definitionId = Guid.Empty,\n+            inputPayload = new Dictionary<string, JsonNode?>()\n+        });\n+        Assert.Equal(HttpStatusCode.BadRequest, inactiveStart.StatusCode);\n+    }\n+\n     private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>\n         new(StringComparer.OrdinalIgnoreCase)\n         {\nEND_OF_PATCH\ntokens used\n75,357\n",
+  "verbosityMode": "summary"
+}

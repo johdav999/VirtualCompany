@@ -1,0 +1,1025 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -38,6 +38,7 @@ public static class AuditTargetTypes
+     public const string ApprovalRequest = "approval_request";
+     public const string MemoryItem = "memory_item";
+     public const string WorkflowInstance = "workflow_instance";
++    public const string WorkflowException = "workflow_exception";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -69,4 +70,6 @@ public static class AuditEventActions
+     public const string MemoryItemDeleted = "memory.item.deleted";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+     public const string WorkflowInstanceStarted = "workflow.instance.started";
++    public const string WorkflowExceptionCreated = "workflow.exception.created";
++    public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
+ }
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -38,6 +38,9 @@ public sealed record UpdateWorkflowInstanceStateCommand(
+     string? CurrentStep,
+     Dictionary<string, JsonNode?>? OutputPayload = null);
+ 
++public sealed record ReviewWorkflowExceptionCommand(
++    string? ResolutionNotes = null);
++
+ public sealed record TriggerScheduledWorkflowsCommand(
+     DateTime ScheduledAtUtc,
+     string? ScheduleKey = null,
+@@ -98,6 +101,27 @@ public sealed record WorkflowInstanceDto(
+     string DefinitionCode,
+     string DefinitionName);
+ 
++public sealed record WorkflowExceptionDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid WorkflowInstanceId,
++    Guid WorkflowDefinitionId,
++    string WorkflowDefinitionCode,
++    string WorkflowDefinitionName,
++    string StepKey,
++    string ExceptionType,
++    string Status,
++    string Title,
++    string Details,
++    string? ErrorCode,
++    Dictionary<string, JsonNode?> TechnicalDetailsJson,
++    DateTime OccurredAt,
++    DateTime? ReviewedAt,
++    Guid? ReviewedByUserId,
++    string? ResolutionNotes,
++    string InstanceState,
++    string? CurrentStep);
++
+ public interface ICompanyWorkflowService
+ {
+     Task<WorkflowDefinitionDto> CreateDefinitionAsync(
+@@ -145,6 +169,20 @@ public interface ICompanyWorkflowService
+         Guid companyId,
+         Guid instanceId,
+         UpdateWorkflowInstanceStateCommand command,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<WorkflowExceptionDto>> ListExceptionsAsync(
++        Guid companyId,
++        string? status,
++        Guid? workflowInstanceId,
++        CancellationToken cancellationToken);
++
++    Task<WorkflowExceptionDto> GetExceptionAsync(Guid companyId, Guid exceptionId, CancellationToken cancellationToken);
++
++    Task<WorkflowExceptionDto> ReviewExceptionAsync(
++        Guid companyId,
++        Guid exceptionId,
++        ReviewWorkflowExceptionCommand command,
+         CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -68,6 +68,7 @@ public sealed class WorkflowDefinition
+     public Company? Company { get; private set; }
+     public ICollection<WorkflowTrigger> Triggers { get; } = new List<WorkflowTrigger>();
+     public ICollection<WorkflowInstance> Instances { get; } = new List<WorkflowInstance>();
++    public ICollection<WorkflowException> Exceptions { get; } = new List<WorkflowException>();
+ 
+     public void SetActive(bool active)
+     {
+@@ -258,6 +259,7 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+     public WorkflowDefinition Definition { get; private set; } = null!;
+     public WorkflowTrigger? Trigger { get; private set; }
+     public ICollection<WorkTask> Tasks { get; } = new List<WorkTask>();
++    public ICollection<WorkflowException> Exceptions { get; } = new List<WorkflowException>();
+ 
+     public void UpdateState(
+         WorkflowInstanceStatus state,
+@@ -292,3 +294,117 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ }
++
++public sealed class WorkflowException : ICompanyOwnedEntity
++{
++    private const int StepKeyMaxLength = 200;
++    private const int TitleMaxLength = 200;
++    private const int DetailsMaxLength = 4000;
++    private const int ErrorCodeMaxLength = 100;
++    private const int ResolutionNotesMaxLength = 2000;
++
++    private WorkflowException()
++    {
++        TechnicalDetailsJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    public WorkflowException(
++        Guid id,
++        Guid companyId,
++        Guid workflowInstanceId,
++        Guid workflowDefinitionId,
++        string? stepKey,
++        WorkflowExceptionType exceptionType,
++        string title,
++        string details,
++        string? errorCode = null,
++        IDictionary<string, JsonNode?>? technicalDetailsJson = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (workflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowInstanceId is required.", nameof(workflowInstanceId));
++        }
++
++        if (workflowDefinitionId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowDefinitionId is required.", nameof(workflowDefinitionId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        WorkflowInstanceId = workflowInstanceId;
++        WorkflowDefinitionId = workflowDefinitionId;
++        StepKey = NormalizeOptional(stepKey, nameof(stepKey), StepKeyMaxLength) ?? "instance";
++        ExceptionType = exceptionType;
++        Status = WorkflowExceptionStatus.Open;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Details = NormalizeRequired(details, nameof(details), DetailsMaxLength);
++        ErrorCode = NormalizeOptional(errorCode, nameof(errorCode), ErrorCodeMaxLength);
++        TechnicalDetailsJson = CloneNodes(technicalDetailsJson);
++        OccurredUtc = DateTime.UtcNow;
++        UpdatedUtc = OccurredUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid WorkflowInstanceId { get; private set; }
++    public Guid WorkflowDefinitionId { get; private set; }
++    public string StepKey { get; private set; } = null!;
++    public WorkflowExceptionType ExceptionType { get; private set; }
++    public WorkflowExceptionStatus Status { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Details { get; private set; } = null!;
++    public string? ErrorCode { get; private set; }
++    public Dictionary<string, JsonNode?> TechnicalDetailsJson { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime OccurredUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? ReviewedUtc { get; private set; }
++    public Guid? ReviewedByUserId { get; private set; }
++    public string? ResolutionNotes { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkflowInstance WorkflowInstance { get; private set; } = null!;
++    public WorkflowDefinition Definition { get; private set; } = null!;
++
++    public void MarkReviewed(Guid reviewedByUserId, string? resolutionNotes = null)
++    {
++        if (reviewedByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("ReviewedByUserId is required.", nameof(reviewedByUserId));
++        }
++
++        if (Status != WorkflowExceptionStatus.Open)
++        {
++            throw new InvalidOperationException("Only open workflow exceptions can be reviewed.");
++        }
++
++        Status = WorkflowExceptionStatus.Reviewed;
++        ReviewedByUserId = reviewedByUserId;
++        ResolutionNotes = NormalizeOptional(resolutionNotes, nameof(resolutionNotes), ResolutionNotesMaxLength);
++        ReviewedUtc = DateTime.UtcNow;
++        UpdatedUtc = ReviewedUtc.Value;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return NormalizeOptional(value, name, maxLength)!;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/WorkflowEnums.cs
+@@ -24,6 +24,19 @@ public enum WorkflowInstanceStatus
+     Blocked = 6
+ }
+ 
++public enum WorkflowExceptionType
++{
++    Failed = 1,
++    Blocked = 2
++}
++
++public enum WorkflowExceptionStatus
++{
++    Open = 1,
++    Reviewed = 2,
++    Resolved = 3
++}
++
+ public static class WorkflowDefinitionStatusValues
+ {
+     private static readonly IReadOnlyDictionary<WorkflowDefinitionStatus, string> Values = new Dictionary<WorkflowDefinitionStatus, string>
+@@ -169,3 +182,86 @@ public static class WorkflowInstanceStatusValues
+             : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
+ }
++
++public static class WorkflowExceptionTypeValues
++{
++    private static readonly IReadOnlyDictionary<WorkflowExceptionType, string> Values = new Dictionary<WorkflowExceptionType, string>
++    {
++        [WorkflowExceptionType.Failed] = "failed",
++        [WorkflowExceptionType.Blocked] = "blocked"
++    };
++
++    private static readonly IReadOnlyDictionary<string, WorkflowExceptionType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this WorkflowExceptionType exceptionType) =>
++        Values.TryGetValue(exceptionType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(exceptionType), exceptionType, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out WorkflowExceptionType exceptionType)
++    {
++        exceptionType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out exceptionType))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out exceptionType) && Values.ContainsKey(exceptionType);
++    }
++
++    public static WorkflowExceptionType Parse(string value) =>
++        TryParse(value, out var exceptionType)
++            ? exceptionType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Workflow exception type is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported workflow exception type value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
++
++public static class WorkflowExceptionStatusValues
++{
++    private static readonly IReadOnlyDictionary<WorkflowExceptionStatus, string> Values = new Dictionary<WorkflowExceptionStatus, string>
++    {
++        [WorkflowExceptionStatus.Open] = "open",
++        [WorkflowExceptionStatus.Reviewed] = "reviewed",
++        [WorkflowExceptionStatus.Resolved] = "resolved"
++    };
++
++    private static readonly IReadOnlyDictionary<string, WorkflowExceptionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static WorkflowExceptionStatus DefaultStatus => WorkflowExceptionStatus.Open;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this WorkflowExceptionStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out WorkflowExceptionStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out status))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static WorkflowExceptionStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Workflow exception status is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported workflow exception status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -16,6 +17,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+     private const int EventNameMaxLength = 200;
+     private const int TriggerRefMaxLength = 200;
+     private const int CurrentStepMaxLength = 200;
++    private const int ResolutionNotesMaxLength = 2000;
++    private const string InstanceStepKey = "instance";
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+@@ -549,18 +552,138 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             throw new KeyNotFoundException("Workflow instance not found.");
+         }
+ 
++        var state = WorkflowInstanceStatusValues.Parse(command.State);
+         instance.UpdateState(
+-            WorkflowInstanceStatusValues.Parse(command.State),
++            state,
+             command.CurrentStep,
+             command.OutputPayload);
+ 
++        if (state is WorkflowInstanceStatus.Failed or WorkflowInstanceStatus.Blocked)
++        {
++            await EnsureOpenWorkflowExceptionAsync(instance, state, command.OutputPayload, cancellationToken);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return ToInstanceDto(instance);
+     }
+ 
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    public async Task<IReadOnlyList<WorkflowExceptionDto>> ListExceptionsAsync(
++        Guid companyId,
++        string? status,
++        Guid? workflowInstanceId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var query = _dbContext.WorkflowExceptions
++            .AsNoTracking()
++            .Include(x => x.WorkflowInstance)
++            .Include(x => x.Definition)
++            .Where(x => x.CompanyId == companyId);
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            query = query.Where(x => x.Status == WorkflowExceptionStatusValues.Parse(status));
++        }
++
++        if (workflowInstanceId.HasValue)
++        {
++            query = query.Where(x => x.WorkflowInstanceId == workflowInstanceId.Value);
++        }
++
++        var exceptions = await query
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(200)
++            .ToListAsync(cancellationToken);
++
++        return exceptions.Select(ToExceptionDto).ToList();
++    }
++
++    public async Task<WorkflowExceptionDto> GetExceptionAsync(Guid companyId, Guid exceptionId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var workflowException = await _dbContext.WorkflowExceptions
++            .AsNoTracking()
++            .Include(x => x.WorkflowInstance)
++            .Include(x => x.Definition)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == exceptionId, cancellationToken);
++
++        return workflowException is null
++            ? throw new KeyNotFoundException("Workflow exception not found.")
++            : ToExceptionDto(workflowException);
++    }
++
++    public async Task<WorkflowExceptionDto> ReviewExceptionAsync(
++        Guid companyId,
++        Guid exceptionId,
++        ReviewWorkflowExceptionCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var workflowException = await _dbContext.WorkflowExceptions
++            .Include(x => x.WorkflowInstance)
++            .Include(x => x.Definition)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == exceptionId, cancellationToken);
++
++        if (workflowException is null)
++        {
++            throw new KeyNotFoundException("Workflow exception not found.");
++        }
++
++        workflowException.MarkReviewed(membership.UserId, command.ResolutionNotes);
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.WorkflowExceptionReviewed,
++                AuditTargetTypes.WorkflowException,
++                workflowException.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                $"Reviewed workflow exception for step '{workflowException.StepKey}'.",
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["workflowInstanceId"] = workflowException.WorkflowInstanceId.ToString("N"),
++                    ["workflowDefinitionId"] = workflowException.WorkflowDefinitionId.ToString("N"),
++                    ["stepKey"] = workflowException.StepKey,
++                    ["exceptionType"] = workflowException.ExceptionType.ToStorageValue()
++                }),
++            cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return ToExceptionDto(workflowException);
++    }
++
++    private async Task EnsureOpenWorkflowExceptionAsync(
++        WorkflowInstance instance,
++        WorkflowInstanceStatus state,
++        Dictionary<string, JsonNode?>? outputPayload,
++        CancellationToken cancellationToken)
++    {
++        var exceptionType = state == WorkflowInstanceStatus.Failed ? WorkflowExceptionType.Failed : WorkflowExceptionType.Blocked;
++        var stepKey = string.IsNullOrWhiteSpace(instance.CurrentStep) ? InstanceStepKey : instance.CurrentStep;
++
++        var exists = await _dbContext.WorkflowExceptions.AnyAsync(
++            x => x.CompanyId == instance.CompanyId &&
++                x.WorkflowInstanceId == instance.Id &&
++                x.StepKey == stepKey &&
++                x.ExceptionType == exceptionType &&
++                x.Status == WorkflowExceptionStatus.Open,
++            cancellationToken);
++
++        if (exists)
++        {
++            return;
++        }
++
++        var workflowException = new WorkflowException(
++            Guid.NewGuid(),
++            instance.CompanyId,
++            instance.Id,
++            instance.DefinitionId,
++            stepKey,
++            exceptionType,
++            state == WorkflowInstanceStatus.Failed ? "Workflow step failed" : "Workflow step blocked",
++            ResolveExceptionDetails(outputPayload, state),
++            TryGetString(outputPayload, "errorCode") ?? TryGetString(outputPayload, "code"),
++            outputPayload);
++
++        _dbContext.WorkflowExceptions.Add(workflowException);
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                instance.CompanyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.WorkflowExceptionCreated,
++                AuditTargetTypes.WorkflowException,
++                workflowException.Id.ToString("N"),
++                AuditEventOutcomes.Pending,
++                workflowException.Title,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["workflowInstanceId"] = instance.Id.ToString("N"),
++                    ["workflowDefinitionId"] = instance.DefinitionId.ToString("N"),
++                    ["stepKey"] = workflowException.StepKey,
++                    ["exceptionType"] = workflowException.ExceptionType.ToStorageValue()
++                }),
++            cancellationToken);
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+@@ -568,6 +691,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+         }
++
++        return membership;
+     }
+ 
+     private static WorkflowDefinitionDto ToDefinitionDto(WorkflowDefinition definition) =>
+@@ -618,6 +743,29 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             instance.Definition.Code,
+             instance.Definition.Name);
+ 
++    private static WorkflowExceptionDto ToExceptionDto(WorkflowException workflowException) =>
++        new(
++            workflowException.Id,
++            workflowException.CompanyId,
++            workflowException.WorkflowInstanceId,
++            workflowException.WorkflowDefinitionId,
++            workflowException.Definition.Code,
++            workflowException.Definition.Name,
++            workflowException.StepKey,
++            workflowException.ExceptionType.ToStorageValue(),
++            workflowException.Status.ToStorageValue(),
++            workflowException.Title,
++            workflowException.Details,
++            workflowException.ErrorCode,
++            CloneNodes(workflowException.TechnicalDetailsJson),
++            workflowException.OccurredUtc,
++            workflowException.ReviewedUtc,
++            workflowException.ReviewedByUserId,
++            workflowException.ResolutionNotes,
++            workflowException.WorkflowInstance.State.ToStorageValue(),
++            workflowException.WorkflowInstance.CurrentStep);
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+         nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+@@ -671,6 +819,13 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         ThrowIfInvalid(errors);
+     }
+ 
++    private static void Validate(ReviewWorkflowExceptionCommand command)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddOptional(errors, nameof(command.ResolutionNotes), command.ResolutionNotes, ResolutionNotesMaxLength);
++        ThrowIfInvalid(errors);
++    }
++
+     private static void AddRequired(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -798,4 +953,26 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+ 
+         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+     }
++
++    private static string ResolveExceptionDetails(
++        IReadOnlyDictionary<string, JsonNode?>? payload,
++        WorkflowInstanceStatus state) =>
++        TryGetString(payload, "reason") ??
++        TryGetString(payload, "details") ??
++        TryGetString(payload, "message") ??
++        TryGetString(payload, "error") ??
++        (state == WorkflowInstanceStatus.Failed
++            ? "Workflow step execution failed and needs review."
++            : "Workflow step execution is blocked and needs review.");
++
++    private static string? TryGetString(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
++    {
++        if (payload is null ||
++            !payload.TryGetValue(key, out var node) ||
++            node is not JsonValue value ||
++            !value.TryGetValue<string>(out var text))
++        {
++            return null;
++        }
++
++        return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -34,6 +34,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
++    public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+@@ -72,6 +73,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<WorkflowInstance>()
+             .HasQueryFilter(instance =>
+                 CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<WorkflowException>()
++            .HasQueryFilter(workflowException =>
++                CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyKnowledgeDocument>()
+             .HasQueryFilter(document =>
+                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -955,6 +955,65 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<W
+     }
+ }
+ 
++internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<WorkflowException>
++{
++    public void Configure(EntityTypeBuilder<WorkflowException> builder)
++    {
++        builder.ToTable("workflow_exceptions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id").IsRequired();
++        builder.Property(x => x.WorkflowDefinitionId).HasColumnName("workflow_definition_id").IsRequired();
++        builder.Property(x => x.StepKey).HasColumnName("step_key").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.ExceptionType)
++            .HasColumnName("exception_type")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowExceptionTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => WorkflowExceptionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(WorkflowExceptionStatusValues.DefaultStatus)
++            .HasSentinel((WorkflowExceptionStatus)0)
++            .IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Details).HasColumnName("details").HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.ErrorCode).HasColumnName("error_code").HasMaxLength(100);
++        builder.Property(x => x.TechnicalDetailsJson)
++            .HasColumnName("technical_details_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.ReviewedUtc).HasColumnName("reviewed_at");
++        builder.Property(x => x.ReviewedByUserId).HasColumnName("reviewed_by_user_id");
++        builder.Property(x => x.ResolutionNotes).HasColumnName("resolution_notes").HasMaxLength(2000);
++
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId, x.StepKey, x.ExceptionType, x.Status })
++            .HasFilter("\"status\" = 'open'")
++            .IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.WorkflowInstance)
++            .WithMany(x => x.Exceptions)
++            .HasForeignKey(x => x.WorkflowInstanceId)
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Definition)
++            .WithMany(x => x.Exceptions)
++            .HasForeignKey(x => x.WorkflowDefinitionId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
+ {
+     public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412191000_AddWorkflowExceptions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412191000_AddWorkflowExceptions.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412191000_AddWorkflowExceptions.cs
+@@ -0,0 +1,116 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddWorkflowExceptions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var openFilter = isPostgres ? "status = 'open'" : "[status] = N'open'";
++
++        migrationBuilder.CreateTable(
++            name: "workflow_exceptions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                workflow_instance_id = table.Column<Guid>(type: guidType, nullable: false),
++                workflow_definition_id = table.Column<Guid>(type: guidType, nullable: false),
++                step_key = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                exception_type = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false),
++                status = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "open"),
++                title = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                details = table.Column<string>(type: $"{stringType}(4000)", maxLength: 4000, nullable: false),
++                error_code = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: true),
++                technical_details_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                occurred_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                reviewed_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                reviewed_by_user_id = table.Column<Guid>(type: guidType, nullable: true),
++                resolution_notes = table.Column<string>(type: $"{stringType}(2000)", maxLength: 2000, nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_workflow_exceptions", x => x.id);
++                table.ForeignKey(
++                    name: "FK_workflow_exceptions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_workflow_exceptions_workflow_definitions_workflow_definition_id",
++                    column: x => x.workflow_definition_id,
++                    principalTable: "workflow_definitions",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_workflow_exceptions_workflow_instances_workflow_instance_id",
++                    column: x => x.workflow_instance_id,
++                    principalTable: "workflow_instances",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_exceptions_company_id_status_occurred_at",
++            table: "workflow_exceptions",
++            columns: new[] { "company_id", "status", "occurred_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_exceptions_company_id_workflow_instance_id_occurred_at",
++            table: "workflow_exceptions",
++            columns: new[] { "company_id", "workflow_instance_id", "occurred_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_exceptions_company_id_workflow_instance_id_step_key_exception_type_status",
++            table: "workflow_exceptions",
++            columns: new[] { "company_id", "workflow_instance_id", "step_key", "exception_type", "status" },
++            unique: true,
++            filter: openFilter);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_exceptions_workflow_definition_id",
++            table: "workflow_exceptions",
++            column: "workflow_definition_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_exceptions_workflow_instance_id",
++            table: "workflow_exceptions",
++            column: "workflow_instance_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "workflow_exceptions");
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WorkflowsController.cs
+@@ -242,6 +242,57 @@ public sealed class WorkflowsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("exceptions")]
++    public async Task<ActionResult<IReadOnlyList<WorkflowExceptionDto>>> ListExceptionsAsync(
++        Guid companyId,
++        [FromQuery] string? status,
++        [FromQuery] Guid? workflowInstanceId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.ListExceptionsAsync(companyId, status, workflowInstanceId, cancellationToken));
++        }
++        catch (ArgumentOutOfRangeException)
++        {
++            return BadRequest();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("exceptions/{exceptionId:guid}")]
++    public async Task<ActionResult<WorkflowExceptionDto>> GetExceptionAsync(
++        Guid companyId,
++        Guid exceptionId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.GetExceptionAsync(companyId, exceptionId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("exceptions/{exceptionId:guid}/review")]
++    public async Task<ActionResult<WorkflowExceptionDto>> ReviewExceptionAsync(
++        Guid companyId,
++        Guid exceptionId,
++        [FromBody] ReviewWorkflowExceptionCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _workflows.ReviewExceptionAsync(companyId, exceptionId, command, cancellationToken));
++        }
++        catch (WorkflowValidationException ex)
++        {
++            return WorkflowValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException)
++        {
++            return Conflict();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     private ActionResult WorkflowValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -269,6 +269,115 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Failed_or_blocked_instance_state_creates_open_review_exception_once()
++    {
++        var seed = await SeedMembershipAsync("workflow-exception-owner", "workflow-exception-owner@example.com", "Workflow Exception Owner");
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "exception-review",
++            name = "Exception review",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("triage")
++        });
++        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        var startResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start", new
++        {
++            definitionId = Guid.Empty,
++            inputPayload = new Dictionary<string, JsonNode?>()
++        });
++        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();
++        Assert.NotNull(instance);
++
++        var failedUpdate = await client.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/instances/{instance!.Id}/state", new
++        {
++            state = "failed",
++            currentStep = "triage",
++            outputPayload = new Dictionary<string, JsonNode?>
++            {
++                ["reason"] = JsonValue.Create("Vendor API rejected the request"),
++                ["errorCode"] = JsonValue.Create("VENDOR_REJECTED")
++            }
++        });
++        Assert.Equal(HttpStatusCode.OK, failedUpdate.StatusCode);
++
++        var duplicateFailedUpdate = await client.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/instances/{instance.Id}/state", new
++        {
++            state = "failed",
++            currentStep = "triage",
++            outputPayload = new Dictionary<string, JsonNode?>
++            {
++                ["reason"] = JsonValue.Create("Vendor API rejected the request"),
++                ["errorCode"] = JsonValue.Create("VENDOR_REJECTED")
++            }
++        });
++        Assert.Equal(HttpStatusCode.OK, duplicateFailedUpdate.StatusCode);
++
++        var exceptions = await client.GetFromJsonAsync<List<WorkflowExceptionDto>>($"/api/companies/{seed.CompanyId}/workflows/exceptions?workflowInstanceId={instance.Id}");
++        var workflowException = Assert.Single(exceptions!);
++        Assert.Equal(seed.CompanyId, workflowException.CompanyId);
++        Assert.Equal(instance.Id, workflowException.WorkflowInstanceId);
++        Assert.Equal(definition.Id, workflowException.WorkflowDefinitionId);
++        Assert.Equal("triage", workflowException.StepKey);
++        Assert.Equal("failed", workflowException.ExceptionType);
++        Assert.Equal("open", workflowException.Status);
++        Assert.Equal("Vendor API rejected the request", workflowException.Details);
++        Assert.Equal("VENDOR_REJECTED", workflowException.ErrorCode);
++
++        var detail = await client.GetFromJsonAsync<WorkflowExceptionDto>($"/api/companies/{seed.CompanyId}/workflows/exceptions/{workflowException.Id}");
++        Assert.NotNull(detail);
++        Assert.Equal(workflowException.Id, detail!.Id);
++
++        var reviewResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/exceptions/{workflowException.Id}/review", new
++        {
++            resolutionNotes = "Reviewed with operations."
++        });
++        Assert.Equal(HttpStatusCode.OK, reviewResponse.StatusCode);
++        var reviewed = await reviewResponse.Content.ReadFromJsonAsync<WorkflowExceptionDto>();
++        Assert.NotNull(reviewed);
++        Assert.Equal("reviewed", reviewed!.Status);
++        Assert.NotNull(reviewed.ReviewedAt);
++        Assert.NotNull(reviewed.ReviewedByUserId);
++        Assert.Equal("Reviewed with operations.", reviewed.ResolutionNotes);
++    }
++
++    [Fact]
++    public async Task Workflow_exception_queries_are_tenant_scoped()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var definitionResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
++        {
++            code = "tenant-exception",
++            name = "Tenant exception",
++            department = "Operations",
++            triggerType = "manual",
++            definitionJson = ValidDefinition("approval")
++        });
++        var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
++        Assert.NotNull(definition);
++
++        var startResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition!.Id}/start", new
++        {
++            definitionId = Guid.Empty,
++            inputPayload = new Dictionary<string, JsonNode?>()
++        });
++        var instance = await startResponse.Content.ReadFromJsonAsync<WorkflowInstanceDto>();
++        Assert.NotNull(instance);
++
++        await ownerClient.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/instances/{instance!.Id}/state", new
++        {
++            state = "blocked",
++            currentStep = "approval",
++            outputPayload = new Dictionary<string, JsonNode?>
++            {
++                ["reason"] = JsonValue.Create("Waiting for approval threshold owner")
++            }
++        });
++
++        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($"/api/companies/{seed.CompanyId}/workflows/exceptions");
++        var workflowException = Assert.Single(ownerExceptions!);
++        Assert.Equal("blocked", workflowException.ExceptionType);
++
++        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);
++        var crossTenantList = await otherClient.GetFromJsonAsync<List<WorkflowExceptionDto>>($"/api/companies/{seed.OtherCompanyId}/workflows/exceptions");
++        Assert.Empty(crossTenantList!);
++        var crossTenantRead = await otherClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/workflows/exceptions/{workflowException.Id}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);
++    }
++
+     [Fact]
+     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()
+     {
+END_OF_PATCH

@@ -8,11 +8,13 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Context;
+using StackExchange.Redis;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
@@ -68,6 +70,13 @@ public static class DependencyInjection
         var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
         if (!string.IsNullOrWhiteSpace(redisConnectionString))
         {
+            services.AddSingleton<IConnectionMultiplexer>(_ =>
+            {
+                var options = ConfigurationOptions.Parse(redisConnectionString);
+                options.AbortOnConnectFail = false;
+                return ConnectionMultiplexer.Connect(options);
+            });
+            services.AddSingleton<IDistributedLockProvider, RedisDistributedLockProvider>();
             services.AddStackExchangeRedisCache(options =>
             {
                 options.Configuration = redisConnectionString;
@@ -76,6 +85,8 @@ public static class DependencyInjection
         }
         else
         {
+            // Local/test fallback keeps the worker path runnable when Redis is intentionally absent.
+            services.AddSingleton<IDistributedLockProvider, InMemoryDistributedLockProvider>();
             services.AddDistributedMemoryCache();
         }
 
@@ -84,6 +95,10 @@ public static class DependencyInjection
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
+        services.AddOptions<WorkflowSchedulerOptions>()
+            .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
+        services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
+        services.AddHostedService<WorkflowSchedulerBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
@@ -127,6 +142,12 @@ public static class DependencyInjection
         services.AddScoped<CompanyTaskService>();
         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+        services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+        services.AddScoped<CompanyWorkflowService>();
+        services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
