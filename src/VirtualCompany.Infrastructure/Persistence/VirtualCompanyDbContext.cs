@@ -29,6 +29,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
     public DbSet<Agent> Agents => Set<Agent>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+    public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
@@ -51,6 +52,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ToolExecutionAttempt>()
             .HasQueryFilter(attempt =>
                 CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<WorkTask>()
+            .HasQueryFilter(task =>
+                CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);

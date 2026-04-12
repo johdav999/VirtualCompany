@@ -325,6 +325,7 @@ public sealed class Agent : ICompanyOwnedEntity
     private const int AvatarUrlMaxLength = 2048;
 
     public const string ArchivedAssignmentErrorMessage = "Archived agents cannot be assigned new tasks.";
+    public const string PausedAssignmentErrorMessage = "Paused agents cannot be assigned new tasks.";
 
     private Agent()
     {
@@ -411,7 +412,7 @@ public sealed class Agent : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 
-    public bool CanReceiveAssignments => Status != AgentStatus.Archived;
+    public bool CanReceiveAssignments => Status is not AgentStatus.Paused and not AgentStatus.Archived;
 
     public bool UpdateOperatingProfile(
         string? roleBrief,
@@ -473,9 +474,14 @@ public sealed class Agent : ICompanyOwnedEntity
     {
         if (!CanReceiveAssignments)
         {
-            throw new InvalidOperationException(ArchivedAssignmentErrorMessage);
+            throw new InvalidOperationException(GetAssignmentErrorMessage(Status));
         }
     }
+
+    public static string GetAssignmentErrorMessage(AgentStatus status) =>
+        status == AgentStatus.Paused
+            ? PausedAssignmentErrorMessage
+            : ArchivedAssignmentErrorMessage;
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

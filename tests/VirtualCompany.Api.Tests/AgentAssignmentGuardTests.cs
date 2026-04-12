@@ -59,6 +59,26 @@ public sealed class AgentAssignmentGuardTests : IClassFixture<TestWebApplication
     }
 
     [Fact]
+    public async Task Paused_agents_are_rejected_for_new_task_assignment_with_field_level_validation()
+    {
+        var seed = await SeedAgentAsync(AgentStatus.Paused);
+
+        using var scope = _factory.Services.CreateScope();
+        var guard = scope.ServiceProvider.GetRequiredService<IAgentAssignmentGuard>();
+
+        var exception = await Assert.ThrowsAsync<AgentAssignmentValidationException>(() =>
+            guard.EnsureAgentCanReceiveNewTasksAsync(
+                seed.CompanyId,
+                seed.AgentId,
+                "assignedAgentId",
+                CancellationToken.None));
+
+        var error = Assert.Single(exception.Errors);
+        Assert.Equal("assignedAgentId", error.Key);
+        Assert.Equal(Agent.PausedAssignmentErrorMessage, Assert.Single(error.Value));
+    }
+
+    [Fact]
     public async Task Agent_assignment_resolution_remains_company_scoped()
     {
         var seed = await SeedCrossTenantAgentsAsync();

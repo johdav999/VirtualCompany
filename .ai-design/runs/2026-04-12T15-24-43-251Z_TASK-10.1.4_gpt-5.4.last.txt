@@ -1,0 +1,162 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -34,7 +34,10 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         string createdByActorType,
+         Guid? createdByActorId,
+         IDictionary<string, JsonNode?>? inputPayload = null,
+-        Guid? workflowInstanceId = null)
++        Guid? workflowInstanceId = null,
++        IDictionary<string, JsonNode?>? outputPayload = null,
++        string? rationaleSummary = null,
++        decimal? confidenceScore = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -68,6 +71,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
+             throw new ArgumentException("WorkflowInstanceId cannot be empty.", nameof(workflowInstanceId));
+         }
+ 
++        if (confidenceScore is < 0 or > 1)
++        {
++            throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
++        }
++
+         _ = priority.ToStorageValue();
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+@@ -84,7 +92,9 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         CreatedByActorType = NormalizeRequired(createdByActorType, nameof(createdByActorType), ActorTypeMaxLength);
+         CreatedByActorId = createdByActorId;
+         InputPayload = CloneNodes(inputPayload);
+-        OutputPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        OutputPayload = CloneNodes(outputPayload);
++        RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
++        ConfidenceScore = confidenceScore;
+         WorkflowInstanceId = workflowInstanceId;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+diff --git a/src/VirtualCompany.Application/Tasks/TaskContracts.cs b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+--- a/src/VirtualCompany.Application/Tasks/TaskContracts.cs
++++ b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+@@ -12,7 +12,10 @@ public sealed record CreateTaskCommand(
+     Guid? AssignedAgentId,
+     Dictionary<string, JsonNode?>? InputPayload,
+     Guid? ParentTaskId = null,
+-    Guid? WorkflowInstanceId = null);
++    Guid? WorkflowInstanceId = null,
++    Dictionary<string, JsonNode?>? OutputPayload = null,
++    string? RationaleSummary = null,
++    decimal? ConfidenceScore = null);
+ 
+ public sealed record CreateSubtaskCommand(
+     string Type,
+@@ -22,7 +25,10 @@ public sealed record CreateSubtaskCommand(
+     DateTime? DueAt,
+     Guid? AssignedAgentId,
+     Dictionary<string, JsonNode?>? InputPayload,
+-    Guid? WorkflowInstanceId = null);
++    Guid? WorkflowInstanceId = null,
++    Dictionary<string, JsonNode?>? OutputPayload = null,
++    string? RationaleSummary = null,
++    decimal? ConfidenceScore = null);
+ 
+ public sealed record UpdateTaskStatusCommand(
+     string Status,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -73,7 +73,10 @@ public sealed class CompanyTaskService : ICompanyTaskService
+             "user",
+             membership.UserId,
+             command.InputPayload,
+-            command.WorkflowInstanceId);
++            command.WorkflowInstanceId,
++            command.OutputPayload,
++            command.RationaleSummary,
++            command.ConfidenceScore);
+         task.SetDueDate(command.DueAt);
+ 
+         _dbContext.WorkTasks.Add(task);
+@@ -103,7 +106,10 @@ public sealed class CompanyTaskService : ICompanyTaskService
+             command.AssignedAgentId,
+             command.InputPayload,
+             parentTaskId,
+-            command.WorkflowInstanceId);
++            command.WorkflowInstanceId,
++            command.OutputPayload,
++            command.RationaleSummary,
++            command.ConfidenceScore);
+ 
+         return await CreateTaskAsync(companyId, createCommand, cancellationToken);
+     }
+@@ -283,6 +289,13 @@ public sealed class CompanyTaskService : ICompanyTaskService
+         AddRequired(errors, nameof(command.Title), command.Title, TitleMaxLength);
+         AddOptional(errors, nameof(command.Description), command.Description, DescriptionMaxLength);
++        AddOptional(errors, nameof(command.RationaleSummary), command.RationaleSummary, RationaleSummaryMaxLength);
++
++        if (command.ConfidenceScore is < 0 or > 1)
++        {
++            AddError(errors, nameof(command.ConfidenceScore), "ConfidenceScore must be between 0 and 1.");
++        }
+ 
+         if (!string.IsNullOrWhiteSpace(command.Priority) && !WorkTaskPriorityValues.TryParse(command.Priority, out _))
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/TaskCreationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/TaskCreationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/TaskCreationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TaskCreationIntegrationTests.cs
+@@ -32,7 +32,13 @@ public sealed class TaskCreationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+             inputPayload = new Dictionary<string, object?>
+             {
+                 ["launchId"] = "spring"
+-            }
++            },
++            outputPayload = new Dictionary<string, object?>
++            {
++                ["source"] = "planner"
++            },
++            rationaleSummary = "Planner prepared initial inputs.",
++            confidenceScore = 0.81m
+         });
+ 
+         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+@@ -48,6 +54,9 @@ public sealed class TaskCreationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         Assert.Equal("human", task.CreatedByActorType);
+         Assert.Equal(seed.UserId, task.CreatedByActorId);
+         Assert.Equal("spring", task.InputPayload["launchId"].GetString());
++        Assert.Equal("planner", task.OutputPayload["source"].GetString());
++        Assert.Equal("Planner prepared initial inputs.", task.RationaleSummary);
++        Assert.Equal(0.81m, task.ConfidenceScore);
+     }
+ 
+     [Theory]
+@@ -169,6 +178,9 @@ public sealed class TaskCreationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         public string CreatedByActorType { get; set; } = string.Empty;
+         public Guid? CreatedByActorId { get; set; }
+         public Dictionary<string, JsonElement> InputPayload { get; set; } = [];
++        public Dictionary<string, JsonElement> OutputPayload { get; set; } = [];
++        public string? RationaleSummary { get; set; }
++        public decimal? ConfidenceScore { get; set; }
+     }
+ 
+     private sealed class ValidationProblemResponse
+diff --git a/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
+@@ -146,6 +146,7 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         Assert.Equal("completed", task!.Status);
+         Assert.NotNull(task.CompletedAt);
+         Assert.Equal("done", task.OutputPayload["result"].GetString());
++        Assert.Equal("Agent finished the checklist.", task.RationaleSummary);
+         Assert.Equal(0.92m, task.ConfidenceScore);
+     }
+ 
+@@ -238,6 +239,7 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplicationFactory>
+         public Guid? ParentTaskId { get; set; }
+         public Dictionary<string, JsonElement> InputPayload { get; set; } = [];
+         public Dictionary<string, JsonElement> OutputPayload { get; set; } = [];
++        public string? RationaleSummary { get; set; }
+         public decimal? ConfidenceScore { get; set; }
+         public DateTime? CompletedAt { get; set; }
+         public TaskParentResponse? ParentTask { get; set; }
+END_OF_PATCH

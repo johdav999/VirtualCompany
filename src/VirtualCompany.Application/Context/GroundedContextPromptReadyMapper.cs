@@ -271,7 +271,7 @@ public static class GroundedContextPromptReadyMapper
     private static IReadOnlyList<RetrievalSourceReferenceDto> NormalizeSourceReferences(
         IReadOnlyList<RetrievalSourceReferenceDto> sourceReferences)
     {
-        sourceReferences
+        return sourceReferences
             .OrderBy(reference => GetSectionPriority(NormalizeOptional(reference.SectionId) ?? GetMetadata(reference.Metadata, "retrievalSection")))
             .ThenBy(reference => GetSectionRank(reference))
             .ThenBy(reference => reference.Rank > 0 ? reference.Rank : int.MaxValue)

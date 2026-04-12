@@ -353,7 +353,9 @@ public sealed class AgentApiClient
                 existing.TriggerLogic = request.TriggerLogic is null ? existing.TriggerLogic : CloneNodes(request.TriggerLogic);
                 existing.WorkingHours = request.WorkingHours is null ? existing.WorkingHours : CloneNodes(request.WorkingHours);
                 existing.UpdatedUtc = DateTime.UtcNow;
-                existing.CanReceiveAssignments = !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
+                existing.CanReceiveAssignments =
+                    !string.Equals(existing.Status, "paused", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
 
                 if (_agentsByCompany.TryGetValue(companyId, out var roster))
                 {

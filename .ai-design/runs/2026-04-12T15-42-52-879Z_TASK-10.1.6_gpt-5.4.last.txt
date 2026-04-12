@@ -1,0 +1,297 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+index 0147fd0..2c1c097 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -325,6 +325,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     private const int AvatarUrlMaxLength = 2048;
+ 
+     public const string ArchivedAssignmentErrorMessage = "Archived agents cannot be assigned new tasks.";
++    public const string PausedAssignmentErrorMessage = "Paused agents cannot be assigned new tasks.";
+ 
+     private Agent()
+     {
+@@ -411,7 +412,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+-    public bool CanReceiveAssignments => Status != AgentStatus.Archived;
++    public bool CanReceiveAssignments => Status is not AgentStatus.Paused and not AgentStatus.Archived;
+ 
+     public bool UpdateOperatingProfile(
+         string? roleBrief,
+@@ -473,10 +474,15 @@ public sealed class Agent : ICompanyOwnedEntity
+     {
+         if (!CanReceiveAssignments)
+         {
+-            throw new InvalidOperationException(ArchivedAssignmentErrorMessage);
++            throw new InvalidOperationException(GetAssignmentErrorMessage(Status));
+         }
+     }
+ 
++    public static string GetAssignmentErrorMessage(AgentStatus status) =>
++        status == AgentStatus.Paused
++            ? PausedAssignmentErrorMessage
++            : ArchivedAssignmentErrorMessage;
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs
+index 52506a5..4d66d0d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentAssignmentGuard.cs
+@@ -44,7 +44,7 @@ public sealed class CompanyAgentAssignmentGuard : IAgentAssignmentGuard
+         throw new AgentAssignmentValidationException(
+             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+             {
+-                [fieldName] = [Agent.ArchivedAssignmentErrorMessage]
++                [fieldName] = [Agent.GetAssignmentErrorMessage(agent.Status)]
+             });
+     }
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 5f2fefa..0a6e171 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -187,7 +187,7 @@
+                                 <ValidationMessage For="@(() => profileModel.Status)" />
+                                 <div class="form-text">
+-                                    Archived agents are excluded from new task assignment.
++                                    Paused and archived agents are excluded from new task assignment.
+                                     @if (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent)
+                                     {
+                                         <span> Owner and admin memberships can manage all status states.</span>
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 4b21c8a..8e14d0d 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -353,7 +353,9 @@ public sealed class OfflineAgentApiClient : IAgentApiClient
+                 existing.TriggerLogic = request.TriggerLogic is null ? existing.TriggerLogic : CloneNodes(request.TriggerLogic);
+                 existing.WorkingHours = request.WorkingHours is null ? existing.WorkingHours : CloneNodes(request.WorkingHours);
+                 existing.UpdatedUtc = DateTime.UtcNow;
+-                existing.CanReceiveAssignments = !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
++                existing.CanReceiveAssignments =
++                    !string.Equals(existing.Status, "paused", StringComparison.OrdinalIgnoreCase) &&
++                    !string.Equals(existing.Status, "archived", StringComparison.OrdinalIgnoreCase);
+ 
+                 if (_agentsByCompany.TryGetValue(companyId, out var roster))
+                 {
+diff --git a/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs b/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs
+index 430d899..70192c3 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentAssignmentGuardTests.cs
+@@ -58,6 +58,26 @@ public sealed class AgentAssignmentGuardTests : IClassFixture<TestWebApplication
+         Assert.Equal(Agent.ArchivedAssignmentErrorMessage, Assert.Single(error.Value));
+     }
+ 
++    [Fact]
++    public async Task Paused_agents_are_rejected_for_new_task_assignment_with_field_level_validation()
++    {
++        var seed = await SeedAgentAsync(AgentStatus.Paused);
++
++        using var scope = _factory.Services.CreateScope();
++        var guard = scope.ServiceProvider.GetRequiredService<IAgentAssignmentGuard>();
++
++        var exception = await Assert.ThrowsAsync<AgentAssignmentValidationException>(() =>
++            guard.EnsureAgentCanReceiveNewTasksAsync(
++                seed.CompanyId,
++                seed.AgentId,
++                "assignedAgentId",
++                CancellationToken.None));
++
++        var error = Assert.Single(exception.Errors);
++        Assert.Equal("assignedAgentId", error.Key);
++        Assert.Equal(Agent.PausedAssignmentErrorMessage, Assert.Single(error.Value));
++    }
++
+     [Fact]
+     public async Task Agent_assignment_resolution_remains_company_scoped()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+index 0f3f4e2..d2e611a 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentManagementIntegrationTests.cs
+@@ -752,7 +752,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+         Assert.NotNull(payload);
+         Assert.Equal("paused", payload!.Status);
+         Assert.Equal("Paused while finance approvals are being reviewed.", payload.RoleBrief);
+-        Assert.True(payload.CanReceiveAssignments);
++        Assert.False(payload.CanReceiveAssignments);
+         Assert.True(payload.UpdatedUtc > seed.OriginalUpdatedUtc);
+ 
+         using var scope = _factory.Services.CreateScope();
+@@ -904,30 +904,33 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
+     }
+ 
+-    [Fact]
+-    public void Archived_agents_are_blocked_from_future_assignment_paths()
++    [Theory]
++    [InlineData(AgentStatus.Paused)]
++    [InlineData(AgentStatus.Archived)]
++    public void Paused_and_archived_agents_are_blocked_from_future_assignment_paths(AgentStatus status)
+     {
+         var agent = new Agent(
+             Guid.NewGuid(),
+             Guid.NewGuid(),
+             "operations",
+-            "Archived Ops",
++            status == AgentStatus.Paused ? "Paused Ops" : "Archived Ops",
+             "Operations Manager",
+             "Operations",
+             null,
+             AgentSeniority.Lead,
+-            AgentStatus.Archived,
++            status,
+             objectives: Payload(("primary", new JsonArray(JsonValue.Create("Keep workflow stable")))),
+             kpis: Payload(("targets", new JsonArray(JsonValue.Create("cycle_time")))),
+             tools: Payload(("allowed", new JsonArray(JsonValue.Create("project_management")))),
+             scopes: Payload(("read", new JsonArray(JsonValue.Create("projects")))),
+             thresholds: Payload(("delivery", new JsonObject { ["blockedDays"] = 2 })),
+             escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("missed_deadline")))),
+             roleBrief: "Do not assign new work.",
+             triggerLogic: Payload(("enabled", JsonValue.Create(false))),
+             workingHours: Payload(
+                 ("timezone", JsonValue.Create("Europe/Stockholm")),
+                 ("windows", new JsonArray(new JsonObject
+                 {
+                     ["day"] = "monday",
+                     ["start"] = "09:00",
+                     ["end"] = "17:00"
+                 }))));
+ 
+         var exception = Assert.Throws<InvalidOperationException>(() => agent.EnsureCanReceiveAssignments());
+-        Assert.Contains(Agent.ArchivedAssignmentErrorMessage, exception.Message);
++        var expectedMessage = status == AgentStatus.Paused
++            ? Agent.PausedAssignmentErrorMessage
++            : Agent.ArchivedAssignmentErrorMessage;
++        Assert.Contains(expectedMessage, exception.Message);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+diff --git a/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
+index 7d6b1af..c3a9ff2 100644
+--- a/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TaskLifecycleIntegrationTests.cs
+@@ -102,6 +102,34 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("Parent", child.ParentTask!.Title);
+     }
+ 
++    [Theory]
++    [InlineData(AgentStatus.Paused)]
++    [InlineData(AgentStatus.Archived)]
++    public async Task Create_subtask_rejects_unassignable_agents(AgentStatus status)
++    {
++        var seed = await SeedTaskCompanyAsync(status);
++
++        using var client = CreateAuthenticatedClient();
++        var parentResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks", new
++        {
++            type = "orchestration",
++            title = "Parent",
++            priority = "normal"
++        });
++
++        var parent = await parentResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
++        Assert.NotNull(parent);
++
++        var childResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{parent!.Id}/subtasks", new
++        {
++            type = "orchestration",
++            title = "Child",
++            priority = "low",
++            assignedAgentId = seed.AgentId
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, childResponse.StatusCode);
++        var problem = await childResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.True(problem!.Errors.ContainsKey("AssignedAgentId"));
++    }
++
+     [Fact]
+     public async Task Task_reads_and_lists_are_tenant_scoped_and_filterable()
+     {
+@@ -171,6 +199,47 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(seed.SecondAgentId, task!.AssignedAgentId);
+     }
+ 
++    [Theory]
++    [InlineData(AgentStatus.Paused)]
++    [InlineData(AgentStatus.Archived)]
++    public async Task Reassign_task_rejects_unassignable_agents(AgentStatus status)
++    {
++        var seed = await SeedTwoCompanyTasksAsync(status);
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{seed.TaskId}/assignment", new
++        {
++            assignedAgentId = seed.SecondAgentId
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++
++        Assert.NotNull(problem);
++        var errors = Assert.Contains("AssignedAgentId", problem!.Errors);
++        var expectedMessage = status == AgentStatus.Paused
++            ? Agent.PausedAssignmentErrorMessage
++            : Agent.ArchivedAssignmentErrorMessage;
++        Assert.Equal(expectedMessage, Assert.Single(errors));
++    }
++
++    [Fact]
++    public async Task Reassign_task_rejects_cross_tenant_agent_without_leaking_assignment_detail()
++    {
++        var seed = await SeedTwoCompanyTasksAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{seed.TaskId}/assignment", new
++        {
++            assignedAgentId = seed.OtherCompanyAgentId
++        });
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
++
++        Assert.Equal(seed.AgentId, task.AssignedAgentId);
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+@@ -204,7 +273,7 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
+         return new TaskSeed(companyId, agentId);
+     }
+ 
+-    private async Task<CrossTenantTaskSeed> SeedTwoCompanyTasksAsync()
++    private async Task<CrossTenantTaskSeed> SeedTwoCompanyTasksAsync(AgentStatus secondAgentStatus = AgentStatus.Active)
+     {
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+@@ -226,7 +295,7 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+             dbContext.Agents.AddRange(
+                 new Agent(agentId, companyId, "operations", "Ops Lead", "Operations Manager", "Operations", null, AgentSeniority.Lead, AgentStatus.Active),
+-                new Agent(secondAgentId, companyId, "support", "Support Lead", "Support Manager", "Support", null, AgentSeniority.Senior, AgentStatus.Active),
++                new Agent(secondAgentId, companyId, "support", "Support Lead", "Support Manager", "Support", null, AgentSeniority.Senior, secondAgentStatus),
+                 new Agent(otherCompanyAgentId, otherCompanyId, "finance", "Other Finance", "Finance Manager", "Finance", null, AgentSeniority.Senior, AgentStatus.Active));
+ 
+             var task = new WorkTask(taskId, companyId, "orchestration", "Company task", null, WorkTaskPriority.High, agentId, null, "user", userId);
+@@ -237,11 +306,11 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
+             return Task.CompletedTask;
+         });
+ 
+-        return new CrossTenantTaskSeed(companyId, agentId, secondAgentId, taskId, otherCompanyTaskId);
++        return new CrossTenantTaskSeed(companyId, agentId, secondAgentId, otherCompanyAgentId, taskId, otherCompanyTaskId);
+     }
+ 
+     private sealed record TaskSeed(Guid CompanyId, Guid AgentId);
+-    private sealed record CrossTenantTaskSeed(Guid CompanyId, Guid AgentId, Guid SecondAgentId, Guid TaskId, Guid OtherCompanyTaskId);
++    private sealed record CrossTenantTaskSeed(Guid CompanyId, Guid AgentId, Guid SecondAgentId, Guid OtherCompanyAgentId, Guid TaskId, Guid OtherCompanyTaskId);
+ 
+     private sealed class TaskDetailResponse
+     {
+END_OF_PATCH

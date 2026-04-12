@@ -8,9 +8,9 @@ public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory
     public VirtualCompanyDbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
-        optionsBuilder.UseNpgsql(
-            "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true",
-            npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
+        optionsBuilder.UseSqlServer(
+            "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True",
+            sqlServerOptions => sqlServerOptions.EnableRetryOnFailure());
 
         return new VirtualCompanyDbContext(optionsBuilder.Options);
     }

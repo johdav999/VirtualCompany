@@ -1,0 +1,276 @@
+diff --git a/src/VirtualCompany.Application/Tasks/TaskContracts.cs b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+--- a/src/VirtualCompany.Application/Tasks/TaskContracts.cs
++++ b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+@@ -22,6 +22,22 @@ public sealed record UpdateTaskStatusCommand(
+ 
+ public sealed record ReassignTaskCommand(Guid? AssignedAgentId);
+ 
++public sealed record TaskCommandResultDto(
++    Guid Id,
++    Guid CompanyId,
++    string Status,
++    DateTime UpdatedAt);
++
++public sealed record GetTaskByIdQuery(Guid TaskId);
++
++public sealed record ListTasksQuery(
++    string? Status,
++    Guid? AssignedAgentId,
++    Guid? ParentTaskId,
++    DateTime? DueBefore,
++    DateTime? DueAfter,
++    int? Skip,
++    int? Take);
++
+ public sealed record TaskListFilterDto(
+     string? Status,
+     Guid? AssignedAgentId,
+@@ -101,6 +117,19 @@ public sealed record TaskListResultDto(
+     int Skip,
+     int Take);
+ 
++public interface ICompanyTaskCommandService
++{
++    Task<TaskCommandResultDto> CreateTaskAsync(Guid companyId, CreateTaskCommand command, CancellationToken cancellationToken);
++    Task<TaskCommandResultDto> CreateSubtaskAsync(Guid companyId, Guid parentTaskId, CreateSubtaskCommand command, CancellationToken cancellationToken);
++    Task<TaskCommandResultDto> UpdateStatusAsync(Guid companyId, Guid taskId, UpdateTaskStatusCommand command, CancellationToken cancellationToken);
++    Task<TaskCommandResultDto> ReassignAsync(Guid companyId, Guid taskId, ReassignTaskCommand command, CancellationToken cancellationToken);
++}
++
++public interface ICompanyTaskQueryService
++{
++    Task<TaskDetailDto> GetByIdAsync(Guid companyId, GetTaskByIdQuery query, CancellationToken cancellationToken);
++    Task<TaskListResultDto> ListAsync(Guid companyId, ListTasksQuery query, CancellationToken cancellationToken);
++}
++
+ public interface ICompanyTaskService
+ {
+     Task<TaskDetailDto> CreateTaskAsync(Guid companyId, CreateTaskCommand command, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/TasksController.cs b/src/VirtualCompany.Api/Controllers/TasksController.cs
+--- a/src/VirtualCompany.Api/Controllers/TasksController.cs
++++ b/src/VirtualCompany.Api/Controllers/TasksController.cs
+@@ -13,20 +13,25 @@ namespace VirtualCompany.Api.Controllers;
+ [RequireCompanyContext]
+ public sealed class TasksController : ControllerBase
+ {
+-    private readonly ICompanyTaskService _taskService;
++    private readonly ICompanyTaskCommandService _taskCommands;
++    private readonly ICompanyTaskQueryService _taskQueries;
+ 
+-    public TasksController(ICompanyTaskService taskService)
++    public TasksController(
++        ICompanyTaskCommandService taskCommands,
++        ICompanyTaskQueryService taskQueries)
+     {
+-        _taskService = taskService;
++        _taskCommands = taskCommands;
++        _taskQueries = taskQueries;
+     }
+ 
+     [HttpPost]
+-    public async Task<ActionResult<TaskDetailDto>> CreateAsync(
++    public async Task<ActionResult<TaskCommandResultDto>> CreateAsync(
+         Guid companyId,
+         [FromBody] CreateTaskCommand command,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            var task = await _taskService.CreateTaskAsync(companyId, command, cancellationToken);
+-            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = task.Id }, task);
++            var result = await _taskCommands.CreateTaskAsync(companyId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = result.Id }, result);
+         }
+         catch (TaskValidationException ex)
+         {
+@@ -47,14 +52,14 @@ public sealed class TasksController : ControllerBase
+     }
+ 
+     [HttpPost("{taskId:guid}/subtasks")]
+-    public async Task<ActionResult<TaskDetailDto>> CreateSubtaskAsync(
++    public async Task<ActionResult<TaskCommandResultDto>> CreateSubtaskAsync(
+         Guid companyId,
+         Guid taskId,
+         [FromBody] CreateSubtaskCommand command,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            var task = await _taskService.CreateSubtaskAsync(companyId, taskId, command, cancellationToken);
+-            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = task.Id }, task);
++            var result = await _taskCommands.CreateSubtaskAsync(companyId, taskId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = result.Id }, result);
+         }
+         catch (TaskValidationException ex)
+         {
+@@ -82,7 +87,7 @@ public sealed class TasksController : ControllerBase
+     {
+         try
+         {
+-            return Ok(await _taskService.GetByIdAsync(companyId, taskId, cancellationToken));
++            return Ok(await _taskQueries.GetByIdAsync(companyId, new GetTaskByIdQuery(taskId), cancellationToken));
+         }
+         catch (KeyNotFoundException)
+         {
+@@ -112,8 +117,8 @@ public sealed class TasksController : ControllerBase
+     {
+         try
+         {
+-            var filter = new TaskListFilterDto(status, assignedAgentId, parentTaskId, dueBefore, dueAfter, skip, take);
+-            return Ok(await _taskService.ListAsync(companyId, filter, cancellationToken));
++            var query = new ListTasksQuery(status, assignedAgentId, parentTaskId, dueBefore, dueAfter, skip, take);
++            return Ok(await _taskQueries.ListAsync(companyId, query, cancellationToken));
+         }
+         catch (TaskValidationException ex)
+         {
+@@ -126,14 +131,14 @@ public sealed class TasksController : ControllerBase
+     }
+ 
+     [HttpPatch("{taskId:guid}/status")]
+-    public async Task<ActionResult<TaskDetailDto>> UpdateStatusAsync(
++    public async Task<ActionResult<TaskCommandResultDto>> UpdateStatusAsync(
+         Guid companyId,
+         Guid taskId,
+         [FromBody] UpdateTaskStatusCommand command,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _taskService.UpdateStatusAsync(companyId, taskId, command, cancellationToken));
++            return Ok(await _taskCommands.UpdateStatusAsync(companyId, taskId, command, cancellationToken));
+         }
+         catch (TaskValidationException ex)
+         {
+@@ -150,14 +155,14 @@ public sealed class TasksController : ControllerBase
+     }
+ 
+     [HttpPatch("{taskId:guid}/assignment")]
+-    public async Task<ActionResult<TaskDetailDto>> ReassignAsync(
++    public async Task<ActionResult<TaskCommandResultDto>> ReassignAsync(
+         Guid companyId,
+         Guid taskId,
+         [FromBody] ReassignTaskCommand command,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _taskService.ReassignAsync(companyId, taskId, command, cancellationToken));
++            return Ok(await _taskCommands.ReassignAsync(companyId, taskId, command, cancellationToken));
+         }
+         catch (TaskValidationException ex)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -124,7 +124,9 @@ public static class DependencyInjection
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+         services.AddScoped<CompanyMemoryService>();
++        services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
++        services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
+         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskCommandService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskCommandService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskCommandService.cs
+@@ -0,0 +1,56 @@
++using VirtualCompany.Application.Tasks;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyTaskCommandService : ICompanyTaskCommandService
++{
++    private readonly ICompanyTaskService _legacyTaskService;
++
++    public CompanyTaskCommandService(ICompanyTaskService legacyTaskService)
++    {
++        _legacyTaskService = legacyTaskService;
++    }
++
++    public async Task<TaskCommandResultDto> CreateTaskAsync(
++        Guid companyId,
++        CreateTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        var task = await _legacyTaskService.CreateTaskAsync(companyId, command, cancellationToken);
++        return ToCommandResult(task);
++    }
++
++    public async Task<TaskCommandResultDto> CreateSubtaskAsync(
++        Guid companyId,
++        Guid parentTaskId,
++        CreateSubtaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        var task = await _legacyTaskService.CreateSubtaskAsync(companyId, parentTaskId, command, cancellationToken);
++        return ToCommandResult(task);
++    }
++
++    public async Task<TaskCommandResultDto> UpdateStatusAsync(
++        Guid companyId,
++        Guid taskId,
++        UpdateTaskStatusCommand command,
++        CancellationToken cancellationToken)
++    {
++        var task = await _legacyTaskService.UpdateStatusAsync(companyId, taskId, command, cancellationToken);
++        return ToCommandResult(task);
++    }
++
++    public async Task<TaskCommandResultDto> ReassignAsync(
++        Guid companyId,
++        Guid taskId,
++        ReassignTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        var task = await _legacyTaskService.ReassignAsync(companyId, taskId, command, cancellationToken);
++        return ToCommandResult(task);
++    }
++
++    private static TaskCommandResultDto ToCommandResult(TaskDetailDto task) =>
++        new(
++            task.Id,
++            task.CompanyId,
++            task.Status,
++            task.UpdatedAt);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -13,7 +13,7 @@ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+-public sealed class CompanyTaskService : ICompanyTaskService
++public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryService
+ {
+     private const int TypeMaxLength = 100;
+     private const int TitleMaxLength = 200;
+@@ -135,6 +135,23 @@ public sealed class CompanyTaskService : ICompanyTaskService
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+     }
+ 
++    public Task<TaskDetailDto> GetByIdAsync(
++        Guid companyId,
++        GetTaskByIdQuery query,
++        CancellationToken cancellationToken) =>
++        GetByIdAsync(companyId, query.TaskId, cancellationToken);
++
++    public Task<TaskListResultDto> ListAsync(
++        Guid companyId,
++        ListTasksQuery query,
++        CancellationToken cancellationToken) =>
++        ListAsync(
++            companyId,
++            new TaskListFilterDto(
++                query.Status, query.AssignedAgentId, query.ParentTaskId,
++                query.DueBefore, query.DueAfter, query.Skip, query.Take),
++            cancellationToken);
++
+     public async Task<TaskDetailDto> GetByIdAsync(
+         Guid companyId,
+         Guid taskId,
+END_OF_PATCH

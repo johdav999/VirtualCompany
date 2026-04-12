@@ -752,7 +752,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.NotNull(payload);
         Assert.Equal("paused", payload!.Status);
         Assert.Equal("Paused while finance approvals are being reviewed.", payload.RoleBrief);
-        Assert.True(payload.CanReceiveAssignments);
+        Assert.False(payload.CanReceiveAssignments);
         Assert.True(payload.UpdatedUtc > seed.OriginalUpdatedUtc);
 
         using var scope = _factory.Services.CreateScope();
@@ -903,19 +903,21 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         Assert.Equal(HttpStatusCode.NotFound, crossTenantUpdate.StatusCode);
     }
 
-    [Fact]
-    public void Archived_agents_are_blocked_from_future_assignment_paths()
+    [Theory]
+    [InlineData(AgentStatus.Paused)]
+    [InlineData(AgentStatus.Archived)]
+    public void Paused_and_archived_agents_are_blocked_from_future_assignment_paths(AgentStatus status)
     {
         var agent = new Agent(
             Guid.NewGuid(),
             Guid.NewGuid(),
             "operations",
-            "Archived Ops",
+            status == AgentStatus.Paused ? "Paused Ops" : "Archived Ops",
             "Operations Manager",
             "Operations",
             null,
             AgentSeniority.Lead,
-            AgentStatus.Archived,
+            status,
             objectives: Payload(("primary", new JsonArray(JsonValue.Create("Keep workflow stable")))),
             kpis: Payload(("targets", new JsonArray(JsonValue.Create("cycle_time")))),
             tools: Payload(("allowed", new JsonArray(JsonValue.Create("project_management")))),
@@ -934,7 +936,10 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
                 }))));
 
         var exception = Assert.Throws<InvalidOperationException>(() => agent.EnsureCanReceiveAssignments());
-        Assert.Contains(Agent.ArchivedAssignmentErrorMessage, exception.Message);
+        var expectedMessage = status == AgentStatus.Paused
+            ? Agent.PausedAssignmentErrorMessage
+            : Agent.ArchivedAssignmentErrorMessage;
+        Assert.Contains(expectedMessage, exception.Message);
     }
 
     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)

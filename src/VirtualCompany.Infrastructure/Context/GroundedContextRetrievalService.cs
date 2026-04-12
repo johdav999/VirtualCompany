@@ -959,7 +959,6 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
 
     private static double ComputeStructuredRecordScore(string retrievalIntent, string recordText, double baseScore)
         => Math.Round(baseScore + (ComputeTokenOverlap(retrievalIntent, recordText) * 0.55d), 6);
-    }
 
     private static double ComputeRecencyScore(DateTime timestampUtc, DateTime nowUtc, double windowDays)
     {

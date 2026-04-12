@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.1.2",
+  "promptPath": ".ai-design/prompts/TASK-10.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T15:05:56.760Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T15-05-56-760Z_TASK-10.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T15-05-56-760Z_TASK-10.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T15:11:44.744Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ed\", WorkTaskStatus.Blocked },\n+        { \"awaiting_approval\", WorkTaskStatus.AwaitingApproval },\n+        { \"completed\", WorkTaskStatus.Completed },\n+        { \"failed\", WorkTaskStatus.Failed }\n+    };\n+\n+    [Theory]\n+    [MemberData(nameof(CanonicalStatuses))]\n+    public void Parse_accepts_canonical_task_status_values(string value, WorkTaskStatus expectedStatus)\n+    {\n+        Assert.True(WorkTaskStatusValues.TryParse(value, out var parsedStatus));\n+        Assert.Equal(expectedStatus, parsedStatus);\n+        Assert.Equal(value, parsedStatus.ToStorageValue());\n+    }\n+\n+    [Fact]\n+    public void Allowed_values_are_exactly_canonical_task_status_values()\n+    {\n+        Assert.Equal(\n+            [\"new\", \"in_progress\", \"blocked\", \"awaiting_approval\", \"completed\", \"failed\"],\n+            WorkTaskStatusValues.AllowedValues);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"InProgress\")]\n+    [InlineData(\"pending\")]\n+    [InlineData(\"done\")]\n+    [InlineData(\"\")]\n+    public void TryParse_rejects_noncanonical_task_status_values(string value)\n+    {\n+        Assert.False(WorkTaskStatusValues.TryParse(value, out _));\n+    }\n+\n+    [Fact]\n+    public void New_task_defaults_to_new_status()\n+    {\n+        var task = new WorkTask(Guid.NewGuid(), Guid.NewGuid(), \"orchestration\", \"Check launch readiness\", null, WorkTaskPriority.Normal, null, null, \"human\", Guid.NewGuid());\n+\n+        Assert.Equal(WorkTaskStatus.New, task.Status);\n+        Assert.Null(task.CompletedUtc);\n+    }\n+\n+    [Fact]\n+    public void Completed_status_sets_completed_timestamp_and_noncompleted_status_clears_it()\n+    {\n+        var task = new WorkTask(Guid.NewGuid(), Guid.NewGuid(), \"orchestration\", \"Check launch readiness\", null, WorkTaskPriority.Normal, null, null, \"human\", Guid.NewGuid());\n+\n+        task.UpdateStatus(WorkTaskStatus.Completed);\n+        Assert.NotNull(task.CompletedUtc);\n+\n+        task.UpdateStatus(WorkTaskStatus.Blocked);\n+        Assert.Null(task.CompletedUtc);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "Blocked },\n+        { \"awaiting_approval\", WorkTaskStatus.AwaitingApproval },\n+        { \"completed\", WorkTaskStatus.Completed },\n+        { \"failed\", WorkTaskStatus.Failed }\n+    };\n+\n+    [Theory]\n+    [MemberData(nameof(CanonicalStatuses))]\n+    public void Parse_accepts_canonical_task_status_values(string value, WorkTaskStatus expectedStatus)\n+    {\n+        Assert.True(WorkTaskStatusValues.TryParse(value, out var parsedStatus));\n+        Assert.Equal(expectedStatus, parsedStatus);\n+        Assert.Equal(value, parsedStatus.ToStorageValue());\n+    }\n+\n+    [Fact]\n+    public void Allowed_values_are_exactly_canonical_task_status_values()\n+    {\n+        Assert.Equal(\n+            [\"new\", \"in_progress\", \"blocked\", \"awaiting_approval\", \"completed\", \"failed\"],\n+            WorkTaskStatusValues.AllowedValues);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"InProgress\")]\n+    [InlineData(\"pending\")]\n+    [InlineData(\"done\")]\n+    [InlineData(\"\")]\n+    public void TryParse_rejects_noncanonical_task_status_values(string value)\n+    {\n+        Assert.False(WorkTaskStatusValues.TryParse(value, out _));\n+    }\n+\n+    [Fact]\n+    public void New_task_defaults_to_new_status()\n+    {\n+        var task = new WorkTask(Guid.NewGuid(), Guid.NewGuid(), \"orchestration\", \"Check launch readiness\", null, WorkTaskPriority.Normal, null, null, \"human\", Guid.NewGuid());\n+\n+        Assert.Equal(WorkTaskStatus.New, task.Status);\n+        Assert.Null(task.CompletedUtc);\n+    }\n+\n+    [Fact]\n+    public void Completed_status_sets_completed_timestamp_and_noncompleted_status_clears_it()\n+    {\n+        var task = new WorkTask(Guid.NewGuid(), Guid.NewGuid(), \"orchestration\", \"Check launch readiness\", null, WorkTaskPriority.Normal, null, null, \"human\", Guid.NewGuid());\n+\n+        task.UpdateStatus(WorkTaskStatus.Completed);\n+        Assert.NotNull(task.CompletedUtc);\n+\n+        task.UpdateStatus(WorkTaskStatus.Blocked);\n+        Assert.Null(task.CompletedUtc);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n166,690\n",
+  "verbosityMode": "verbose"
+}

@@ -7,6 +7,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
 using System.Text.RegularExpressions;
+using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
@@ -416,13 +418,15 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
 
     public async Task<int> ProcessPendingAsync(CancellationToken cancellationToken)
     {
+        var staleClaimCutoffUtc = DateTime.UtcNow - ClaimTimeout;
+
         var candidateDocuments = await _dbContext.CompanyKnowledgeDocuments
             .IgnoreQueryFilters()
             .Where(document =>
                 (document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Queued ||
                  (document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexing &&
                   document.IndexingStartedUtc != null &&
-                  document.IndexingStartedUtc <= DateTime.UtcNow - ClaimTimeout)) &&
+                  document.IndexingStartedUtc <= staleClaimCutoffUtc)) &&
                 (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.ScanClean ||
                  document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed))
             .OrderBy(document => document.IndexingRequestedUtc ?? document.UpdatedUtc)
@@ -1033,6 +1037,7 @@ public sealed class CompanyKnowledgeIndexingBackgroundService : BackgroundServic
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptions<KnowledgeIndexingOptions> _options;
     private readonly ILogger<CompanyKnowledgeIndexingBackgroundService> _logger;
+    private bool _disabledDueToMissingSchema;
 
     public CompanyKnowledgeIndexingBackgroundService(
         IServiceScopeFactory scopeFactory,
@@ -1057,12 +1062,25 @@ public sealed class CompanyKnowledgeIndexingBackgroundService : BackgroundServic
         {
             try
             {
+                if (_disabledDueToMissingSchema)
+                {
+                    break;
+                }
+
                 using var scope = _scopeFactory.CreateScope();
                 var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
                 await processor.ProcessPendingAsync(stoppingToken);
             }
             catch (OperationCanceledException)
             {
+                break;
+            }
+            catch (Exception ex) when (IsMissingKnowledgeSchema(ex))
+            {
+                _disabledDueToMissingSchema = true;
+                _logger.LogWarning(
+                    ex,
+                    "Knowledge indexing background service is disabled because the knowledge document schema is not available in the current database.");
                 break;
             }
             catch (Exception ex)
@@ -1072,6 +1090,29 @@ public sealed class CompanyKnowledgeIndexingBackgroundService : BackgroundServic
 
             await timer.WaitForNextTickAsync(stoppingToken);
         }
+    }
+
+    private static bool IsMissingKnowledgeSchema(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (current is SqliteException sqliteException &&
+                sqliteException.SqliteErrorCode == 1 &&
+                sqliteException.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase) &&
+                sqliteException.Message.Contains("knowledge_documents", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (current is SqlException sqlException &&
+                sqlException.Number == 208 &&
+                sqlException.Message.Contains("knowledge_documents", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
@@ -1328,6 +1369,20 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
 
     private static string? NormalizePostgreSqlIdentifier(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+
+    private static IReadOnlyList<string> NormalizeIdentifiers(IReadOnlyList<string>? values)
+    {
+        if (values is null || values.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
 
     private static string BuildSingleIdentifierConstraintPredicate(string jsonColumn, IReadOnlyList<string> keys, string parameterName)
     {

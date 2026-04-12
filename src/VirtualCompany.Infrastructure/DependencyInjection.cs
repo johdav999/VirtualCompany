@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +10,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Context;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Tasks;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Companies;
@@ -34,22 +36,16 @@ public static class DependencyInjection
     {
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
-            ?? "Host=localhost;Port=5432;Database=virtualcompany;Username=postgres;Password=postgres;Include Error Detail=true";
+            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True";
 
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
 
         services.AddDbContext<VirtualCompanyDbContext>(options =>
-        {
-            if (LooksLikeSqliteConnectionString(connectionString))
-            {
-                options.UseSqlite(connectionString);
-                return;
-            }
-
-            options.UseNpgsql(
-                connectionString,
-                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure());
-        });
+            options
+                .UseSqlServer(
+                    connectionString,
+                    sqlServerOptions => sqlServerOptions.EnableRetryOnFailure())
+                .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
 
         services.AddOptions<CompanyDocumentOptions>()
             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
@@ -128,6 +124,10 @@ public static class DependencyInjection
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
         services.AddScoped<CompanyMemoryService>();
+        services.AddScoped<CompanyTaskService>();
+        services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+        services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+        services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
@@ -154,9 +154,4 @@ public static class DependencyInjection
 
         return services;
     }
-
-    private static bool LooksLikeSqliteConnectionString(string connectionString) =>
-        connectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase) ||
-        connectionString.Contains(".db", StringComparison.OrdinalIgnoreCase) ||
-        connectionString.Contains(".sqlite", StringComparison.OrdinalIgnoreCase);
 }

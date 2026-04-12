@@ -44,7 +44,7 @@ public sealed class CompanyAgentAssignmentGuard : IAgentAssignmentGuard
         throw new AgentAssignmentValidationException(
             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
-                [fieldName] = [Agent.ArchivedAssignmentErrorMessage]
+                [fieldName] = [Agent.GetAssignmentErrorMessage(agent.Status)]
             });
     }
 
