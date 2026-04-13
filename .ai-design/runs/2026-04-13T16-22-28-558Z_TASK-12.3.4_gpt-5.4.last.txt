@@ -1,0 +1,133 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 2d9e2b6..a7f2a0d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -195,6 +195,17 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     {
+         var claimedMessages = await ClaimBatchAsync(cancellationToken);
+         var handledCount = 0;
++        var processedCount = 0;
++        var retryCount = 0;
++        var permanentFailureCount = 0;
++
++        if (claimedMessages.Count > 0)
++        {
++            _logger.LogInformation(
++                "Company outbox dispatcher claimed {ClaimedCount} message(s) for processing.",
++                claimedMessages.Count);
++        }
+ 
+         foreach (var message in claimedMessages)
+         {
+@@ -249,6 +260,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
++                    processedCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.PermanentFailure:
+                 case BackgroundJobExecutionOutcome.Blocked:
+@@ -263,6 +275,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
++                    permanentFailureCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.RetryScheduled:
+                 {
+@@ -281,10 +294,21 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         nextAttemptAtUtc);
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
++                    retryCount++;
+                     break;
+                 }
+             }
+         }
+ 
++        if (claimedMessages.Count > 0)
++        {
++            _logger.LogInformation(
++                "Company outbox dispatcher completed batch. Claimed: {ClaimedCount}, Processed: {ProcessedCount}, RetryScheduled: {RetryCount}, PermanentFailures: {PermanentFailureCount}.",
++                claimedMessages.Count,
++                processedCount,
++                retryCount,
++                permanentFailureCount);
++        }
++
+         return handledCount;
+     }
+ 
+@@ -717,7 +741,6 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+                     _logger.LogInformation("Company outbox dispatcher processed {HandledCount} message(s) in the current cycle.", handledCount);
+                 }
+ 
+-
+                 if (handledCount < batchSize)
+                 {
+                     await Task.Delay(pollInterval, stoppingToken);
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs b/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
+index 9b0c1c4..6b0dabc 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
+@@ -161,6 +161,58 @@ public sealed class NotificationOutboxDispatcherTests : IClassFixture<TestWebApp
+         Assert.Empty(await dbContext.CompanyNotifications.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
+     }
+ 
++    [Fact]
++    public async Task OutboxProcessor_marks_cross_tenant_notification_payload_as_terminal_failure()
++    {
++        var companyId = Guid.NewGuid();
++        var payloadCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var outboxMessageId = Guid.NewGuid();
++        var sourceEntityId = Guid.NewGuid();
++
++        await SeedNotificationOutboxAsync(
++            _factory.Services,
++            companyId,
++            userId,
++            outboxMessageId,
++            new NotificationDeliveryRequestedMessage(
++                payloadCompanyId,
++                CompanyNotificationType.ApprovalRequested.ToStorageValue(),
++                CompanyNotificationPriority.High.ToStorageValue(),
++                "Approval requested",
++                "Review the approval request.",
++                "approval_request",
++                sourceEntityId,
++                "/inbox",
++                userId,
++                null,
++                null,
++                null,
++                $"approval-requested:{sourceEntityId:N}",
++                "notification-tenant-mismatch"));
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);
++
++            Assert.Equal(1, handledCount);
++        }
++
++        using var assertionScope = _factory.Services.CreateScope();
++        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var outboxMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);
++
++        Assert.Equal(CompanyOutboxMessageStatus.Failed, outboxMessage.Status);
++        Assert.Equal(1, outboxMessage.AttemptCount);
++        Assert.NotNull(outboxMessage.ProcessedUtc);
++        Assert.Contains("tenant", outboxMessage.LastError, StringComparison.OrdinalIgnoreCase);
++        Assert.False(await dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .AnyAsync(x =>
++                x.CompanyId == companyId ||
++                x.CompanyId == payloadCompanyId));
++    }
++
+     private static async Task SeedNotificationOutboxAsync(
+         IServiceProvider services,
+         Guid companyId,
+END_OF_PATCH

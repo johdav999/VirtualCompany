@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.5",
+  "promptPath": ".ai-design/prompts/TASK-12.3.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T16:23:50.187Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T16-23-50-187Z_TASK-12.3.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T16-23-50-187Z_TASK-12.3.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T16:26:40.334Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nOutboxAsync(\n+            _factory.Services,\n+            companyId,\n+            userId,\n+            outboxMessageId,\n+            new NotificationDeliveryRequestedMessage(\n+                payloadCompanyId,\n+                CompanyNotificationType.ApprovalRequested.ToStorageValue(),\n+                CompanyNotificationPriority.High.ToStorageValue(),\n+                \"Approval requested\",\n+                \"Review the approval request.\",\n+                \"approval_request\",\n+                sourceEntityId,\n+                \"/inbox\",\n+                userId,\n+                null,\n+                null,\n+                null,\n+                $\"approval-requested:{sourceEntityId:N}\",\n+                \"notification-tenant-mismatch\"));\n+\n+        using (var scope = _factory.Services.CreateScope())\n+        {\n+            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();\n+            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);\n+\n+            Assert.Equal(1, handledCount);\n+        }\n+\n+        using var assertionScope = _factory.Services.CreateScope();\n+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        var outboxMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);\n+\n+        Assert.Equal(CompanyOutboxMessageStatus.Failed, outboxMessage.Status);\n+        Assert.Equal(1, outboxMessage.AttemptCount);\n+        Assert.NotNull(outboxMessage.ProcessedUtc);\n+        Assert.Contains(\"tenant\", outboxMessage.LastError, StringComparison.OrdinalIgnoreCase);\n+        Assert.False(await dbContext.CompanyNotifications\n+            .IgnoreQueryFilters()\n+            .AnyAsync(x =>\n+                x.CompanyId == companyId ||\n+                x.CompanyId == payloadCompanyId));\n+    }\n+\n     private static async Task SeedNotificationOutboxAsync(\n         IServiceProvider services,\n         Guid companyId,\nEND_OF_PATCH\n",
+  "stderrTail": "        _factory.Services,\n+            companyId,\n+            userId,\n+            outboxMessageId,\n+            new NotificationDeliveryRequestedMessage(\n+                payloadCompanyId,\n+                CompanyNotificationType.ApprovalRequested.ToStorageValue(),\n+                CompanyNotificationPriority.High.ToStorageValue(),\n+                \"Approval requested\",\n+                \"Review the approval request.\",\n+                \"approval_request\",\n+                sourceEntityId,\n+                \"/inbox\",\n+                userId,\n+                null,\n+                null,\n+                null,\n+                $\"approval-requested:{sourceEntityId:N}\",\n+                \"notification-tenant-mismatch\"));\n+\n+        using (var scope = _factory.Services.CreateScope())\n+        {\n+            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();\n+            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);\n+\n+            Assert.Equal(1, handledCount);\n+        }\n+\n+        using var assertionScope = _factory.Services.CreateScope();\n+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();\n+        var outboxMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);\n+\n+        Assert.Equal(CompanyOutboxMessageStatus.Failed, outboxMessage.Status);\n+        Assert.Equal(1, outboxMessage.AttemptCount);\n+        Assert.NotNull(outboxMessage.ProcessedUtc);\n+        Assert.Contains(\"tenant\", outboxMessage.LastError, StringComparison.OrdinalIgnoreCase);\n+        Assert.False(await dbContext.CompanyNotifications\n+            .IgnoreQueryFilters()\n+            .AnyAsync(x =>\n+                x.CompanyId == companyId ||\n+                x.CompanyId == payloadCompanyId));\n+    }\n+\n     private static async Task SeedNotificationOutboxAsync(\n         IServiceProvider services,\n         Guid companyId,\nEND_OF_PATCH\ntokens used\n73,035\n",
+  "verbosityMode": "summary"
+}

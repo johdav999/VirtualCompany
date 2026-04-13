@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Briefings;
 using VirtualCompany.Infrastructure.Tenancy;
+using AppBriefings = VirtualCompany.Application.Briefings;
+using MobileDtos = VirtualCompany.Shared.Mobile;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -41,11 +43,42 @@ public sealed class BriefingsController : ControllerBase
     }
 
     [HttpGet("latest")]
-    public async Task<ActionResult<DashboardBriefingCardDto>> GetLatestAsync(Guid companyId, CancellationToken cancellationToken)
+    public async Task<ActionResult<AppBriefings.DashboardBriefingCardDto>> GetLatestAsync(Guid companyId, CancellationToken cancellationToken)
     {
         try
         {
             return Ok(await _briefingService.GetLatestDashboardBriefingsAsync(companyId, cancellationToken));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("latest/mobile")]
+    public async Task<ActionResult<MobileDtos.MobileBriefingDto>> GetLatestMobileAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var latest = await _briefingService.GetLatestDashboardBriefingsAsync(companyId, cancellationToken);
+            var daily = latest.Daily;
+            if (daily is null)
+            {
+                return Ok(new MobileDtos.MobileBriefingDto { SyncedAtUtc = DateTime.UtcNow });
+            }
+
+            return Ok(new MobileDtos.MobileBriefingDto
+            {
+                Id = daily.Id,
+                Title = daily.Title,
+                Summary = TrimForMobile(daily.SummaryBody, 360),
+                GeneratedUtc = daily.GeneratedUtc,
+                Highlights = daily.SourceReferences
+                    .Select(x => string.IsNullOrWhiteSpace(x.Status) ? x.Label : $"{x.Label} ({x.Status})")
+                    .Take(5)
+                    .ToList(),
+                SyncedAtUtc = DateTime.UtcNow
+            });
         }
         catch (UnauthorizedAccessException)
         {
@@ -108,6 +141,9 @@ public sealed class BriefingsController : ControllerBase
             return Forbid();
         }
     }
+
+    private static string TrimForMobile(string value, int maxLength) =>
+        value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
 
     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))

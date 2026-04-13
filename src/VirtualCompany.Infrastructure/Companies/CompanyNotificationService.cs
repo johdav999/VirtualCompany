@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Approvals;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Domain.Entities;
@@ -14,15 +15,18 @@ public sealed class CompanyNotificationService : INotificationInboxService
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
     private readonly IApprovalRequestService _approvalRequestService;
+    private readonly IAuditEventWriter _auditEventWriter;
 
     public CompanyNotificationService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver membershipContextResolver,
-        IApprovalRequestService approvalRequestService)
+        IApprovalRequestService approvalRequestService,
+        IAuditEventWriter auditEventWriter)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
         _approvalRequestService = approvalRequestService;
+        _auditEventWriter = auditEventWriter;
     }
 
     public async Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
@@ -38,7 +42,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
 
         var approvals = (await _approvalRequestService.ListAsync(companyId, "pending", cancellationToken))
             .Where(x => IsEligibleApprover(x, membership))
-            .OrderByDescending(x => x.CreatedAt)
+            .ApplyApprovalInboxOrdering()
             .Take(50)
             .Select(ToInboxItemDto)
             .ToList();
@@ -170,6 +174,43 @@ public sealed class CompanyNotificationService : INotificationInboxService
         return approval;
     }
 
+    public async Task<ApprovalDecisionResultDto> DecideApprovalAsync(
+        Guid companyId,
+        Guid approvalId,
+        ApprovalDecisionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var membership = await RequireMembershipAsync(companyId, cancellationToken);
+        var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
+
+        if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(command.Decision)] = [$"Only pending approvals can be decided from the inbox. Current status: {approval.Status}."]
+            });
+        }
+
+        if (!IsEligibleApprover(approval, membership))
+        {
+            throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
+        }
+
+        var normalizedCommand = command.ApprovalId == Guid.Empty
+            ? command with { ApprovalId = approvalId }
+            : command;
+
+        if (normalizedCommand.ApprovalId != approvalId)
+        {
+            throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
+            });
+        }
+
+        return await _approvalRequestService.DecideAsync(companyId, normalizedCommand, cancellationToken);
+    }
+
     public async Task<NotificationListItemDto> SetStatusAsync(
         Guid companyId,
         Guid notificationId,
@@ -180,6 +221,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
         var notification = await _dbContext.CompanyNotifications
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.Id == notificationId, cancellationToken)
             ?? throw new KeyNotFoundException("Notification not found.");
+        var previousStatus = notification.Status;
 
         switch (command.Status.Trim().ToLowerInvariant())
         {
@@ -196,8 +238,52 @@ public sealed class CompanyNotificationService : INotificationInboxService
                 throw new ArgumentOutOfRangeException(nameof(command), command.Status, "Notification status must be unread, read, or actioned.");
         }
 
+        if (notification.Status == CompanyNotificationStatus.Actioned &&
+            previousStatus != CompanyNotificationStatus.Actioned)
+        {
+            await WriteNotificationActionedAuditAsync(notification, membership.UserId, previousStatus, cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         return ToDto(notification);
+    }
+
+    private async Task WriteNotificationActionedAuditAsync(
+        CompanyNotification notification,
+        Guid actorUserId,
+        CompanyNotificationStatus previousStatus,
+        CancellationToken cancellationToken)
+    {
+        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["notificationId"] = notification.Id.ToString("N"),
+            ["notificationType"] = notification.Type.ToStorageValue(),
+            ["previousStatus"] = previousStatus.ToStorageValue(),
+            ["newStatus"] = notification.Status.ToStorageValue(),
+            ["recipientUserId"] = notification.UserId.ToString("N"),
+            ["relatedEntityType"] = notification.RelatedEntityType,
+            ["relatedEntityId"] = notification.RelatedEntityId?.ToString("N")
+        };
+
+        if (string.Equals(notification.RelatedEntityType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase) &&
+            notification.RelatedEntityId is Guid approvalId)
+        {
+            metadata["approvalRequestId"] = approvalId.ToString("N");
+        }
+
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                notification.CompanyId,
+                AuditActorTypes.User,
+                actorUserId,
+                AuditEventActions.CompanyNotificationActioned,
+                AuditTargetTypes.CompanyNotification,
+                notification.Id.ToString("N"),
+                AuditEventOutcomes.Succeeded,
+                RationaleSummary: $"Notification {notification.Type.ToStorageValue()} was marked actioned from inbox.",
+                DataSources: ["notifications", "http_request"],
+                Metadata: metadata),
+            cancellationToken);
     }
 
     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
@@ -258,6 +344,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
     private static ApprovalInboxItemDto ToInboxItemDto(ApprovalRequestDto approval) =>
         new(
             approval.Id,
+            approval.CompanyId,
             approval.ApprovalType,
             approval.TargetEntityType,
             approval.TargetEntityId,

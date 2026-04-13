@@ -204,6 +204,59 @@ public sealed class NotificationOutboxDispatcherTests : IClassFixture<TestWebApp
         Assert.Empty(await dbContext.CompanyNotifications.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
     }
 
+    [Fact]
+    public async Task OutboxProcessor_marks_cross_tenant_notification_payload_as_terminal_failure()
+    {
+        var companyId = Guid.NewGuid();
+        var payloadCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var outboxMessageId = Guid.NewGuid();
+        var sourceEntityId = Guid.NewGuid();
+
+        await SeedNotificationOutboxAsync(
+            _factory.Services,
+            companyId,
+            userId,
+            outboxMessageId,
+            new NotificationDeliveryRequestedMessage(
+                payloadCompanyId,
+                CompanyNotificationType.ApprovalRequested.ToStorageValue(),
+                CompanyNotificationPriority.High.ToStorageValue(),
+                "Approval requested",
+                "Review the approval request.",
+                "approval_request",
+                sourceEntityId,
+                "/inbox",
+                userId,
+                null,
+                null,
+                null,
+                $"approval-requested:{sourceEntityId:N}",
+                "notification-tenant-mismatch"));
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);
+
+            Assert.Equal(1, handledCount);
+        }
+
+        using var assertionScope = _factory.Services.CreateScope();
+        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var outboxMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);
+
+        Assert.Equal(CompanyOutboxMessageStatus.Failed, outboxMessage.Status);
+        Assert.Equal(1, outboxMessage.AttemptCount);
+        Assert.NotNull(outboxMessage.ProcessedUtc);
+        Assert.Contains("tenant", outboxMessage.LastError, StringComparison.OrdinalIgnoreCase);
+        Assert.False(await dbContext.CompanyNotifications
+            .IgnoreQueryFilters()
+            .AnyAsync(x =>
+                x.CompanyId == companyId ||
+                x.CompanyId == payloadCompanyId));
+    }
+
     private static async Task SeedNotificationOutboxAsync(
         IServiceProvider services,
         Guid companyId,

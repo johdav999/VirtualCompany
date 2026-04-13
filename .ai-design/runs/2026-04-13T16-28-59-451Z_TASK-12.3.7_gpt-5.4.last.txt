@@ -1,0 +1,48 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -259,6 +259,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             switch (execution.Outcome)
+             {
+                 case BackgroundJobExecutionOutcome.Succeeded:
++                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
+                     message.MarkProcessed();
+                     _logger.LogInformation(
+                         "Dispatched company outbox message {Topic} ({MessageType}) successfully on attempt {Attempt}.",
+@@ -268,7 +269,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
+-                    permanentFailureCount++;
++                    processedCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.RetryScheduled:
+                 {
+@@ -287,6 +288,24 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     retryCount++;
+                     break;
+                 }
++                case BackgroundJobExecutionOutcome.Blocked:
++                case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.RetryExhausted:
++                {
++                    var failureMessage = ResolveFailureMessage(execution);
++                    message.MarkDiscarded(failureMessage);
++                    _logger.LogError(
++                        "Discarded company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Outcome: {Outcome}. FailureClassification: {FailureClassification}. Error: {ErrorMessage}",
++                        message.Topic,
++                        message.MessageType ?? message.Topic,
++                        attempt,
++                        execution.Outcome,
++                        execution.FailureClassification,
++                        failureMessage);
++                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
++                    await _dbContext.SaveChangesAsync(cancellationToken);
++                    handledCount++;
++                    permanentFailureCount++;
++                    break;
++                }
+             }
+         }
+ 
+END_OF_PATCH

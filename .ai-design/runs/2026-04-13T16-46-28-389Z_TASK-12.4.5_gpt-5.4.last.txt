@@ -1,0 +1,143 @@
+diff --git a/README.md b/README.md
+index 3a4d4a1..d65c1b2 100644
+--- a/README.md
++++ b/README.md
+@@ -142,9 +142,12 @@ Users can read and update in-app/mobile delivery preferences at `api/companies/{
+ 
+ ## Mobile Companion Scope
+ 
+-`VirtualCompany.Mobile` is a companion experience for sign-in, company selection, alerts, approvals, daily briefing, direct agent chat, and quick company status/task follow-up summaries.
+-Full setup and administration remain web-first: company onboarding, agent hiring/configuration, workflow definition/administration, deep cockpit analytics, and broad system management are not mobile parity goals.
+-The mobile app centralizes this boundary in `MobileCompanionScope` so navigation and route guards stay aligned with the supported companion surface.
++The product direction is web-first, mobile-companion. The Blazor web app remains the primary command center for setup, administration, dashboard work, and deep operations.
++Responsive web may cover some early mobile access, but it is an interim bridge rather than the final mobile strategy.
++`VirtualCompany.Mobile` is the intended long-term .NET MAUI companion experience for sign-in, company selection, alerts, approvals, daily briefing, direct agent chat, and quick company status/task follow-up summaries.
++Full setup and administration remain web-first: company onboarding, agent hiring/configuration, workflow definition/administration, deep cockpit analytics, and broad system management are not mobile parity goals.
++Web and MAUI clients should reuse the same backend APIs and shared contracts. Mobile-specific business workflows or mobile-only endpoints should only be added when a later story explicitly requires them.
++The mobile app centralizes this boundary in `MobileCompanionScope` so navigation, route guards, and product copy stay aligned with the supported companion surface.
+ 
+ 
+ ## Workflow v1
+diff --git a/src/VirtualCompany.Shared/MobileCompanionScope.cs b/src/VirtualCompany.Shared/MobileCompanionScope.cs
+index d762f12..7f0c8f3 100644
+--- a/src/VirtualCompany.Shared/MobileCompanionScope.cs
++++ b/src/VirtualCompany.Shared/MobileCompanionScope.cs
+@@ -16,8 +16,12 @@ public static class MobileCompanionScope
+ {
+     public const string LandingRoute = "MainPage";
+     public const string CompanionScopeDescription = "Mobile is optimized for approvals, alerts, daily briefing, quick company status, task follow-up, and direct agent chat.";
++    public const string ProductDirectionDescription = "Web-first, mobile-companion: the Blazor web app remains the primary command center, while the .NET MAUI app is the intended focused companion.";
++    public const string ResponsiveWebBridgeMessage = "Responsive web may cover some early mobile access, but it is an interim bridge rather than the final mobile strategy.";
++    public const string MauiTargetCompanionMessage = "The long-term companion experience remains the .NET MAUI app for approvals, alerts, briefings, quick chat, and lightweight follow-up.";
+     public const string WebFirstAdministrationMessage = "For full setup, agent configuration, workflow administration, cockpit analytics, and system management, use the web app.";
++    public const string SharedBackendApiReuseMessage = "Web and MAUI clients reuse the same backend APIs and shared contracts; mobile does not get separate business workflows in this slice.";
+ 
+     public static IReadOnlyList<MobileCompanionCapability> SupportedCapabilities { get; } =
+     [
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml b/src/VirtualCompany.Mobile/MainPage.xaml
+index 2d5d5ee..40756f8 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml
++++ b/src/VirtualCompany.Mobile/MainPage.xaml
+@@ -15,11 +15,20 @@
+                     Style="{StaticResource SubHeadline}"
+                     SemanticProperties.HeadingLevel="Level2" />
+                 <Label
+-                    Text="Use the mobile companion for fast review and follow-up while the full workspace remains web-first."
++                    x:Name="ProductDirectionLabel"
+                     FontSize="15"
+                     TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                 <Label
+                     x:Name="SupportedFeaturesLabel"
++                    FontSize="14"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                <Label
++                    x:Name="ResponsiveBridgeLabel"
++                    FontSize="14"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                <Label
++                    x:Name="ApiReuseLabel"
++                    FontSize="14"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                <Label
++                    x:Name="WebFirstAdministrationLabel"
+                     FontSize="14"
+                     TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+-                <Label
+-                    Text="For setup, agent configuration, workflow administration, cockpit analytics, and system management, use the web app."
+-                    FontSize="14"
+-                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+             </VerticalStackLayout>
+ 
+             <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml.cs b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+index 8309d7b..351f8f1 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml.cs
++++ b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+@@ -24,7 +24,11 @@ public partial class MainPage : ContentPage
+ 	{
+ 		InitializeComponent();
+         BindingContext = this;
+-        SupportedFeaturesLabel.Text = $"Mobile supports: {string.Join(", ", MobileCompanionScope.SupportedFeatureLabels)}.";
++        ProductDirectionLabel.Text = MobileCompanionScope.ProductDirectionDescription;
++        SupportedFeaturesLabel.Text = MobileCompanionScope.CompanionScopeDescription;
++        ResponsiveBridgeLabel.Text = MobileCompanionScope.ResponsiveWebBridgeMessage;
++        ApiReuseLabel.Text = MobileCompanionScope.SharedBackendApiReuseMessage;
++        WebFirstAdministrationLabel.Text = MobileCompanionScope.WebFirstAdministrationMessage;
+         Loaded += async (_, _) => await BootstrapAsync();
+ 	}
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Home.razor b/src/VirtualCompany.Web/Pages/Home.razor
+index 5043b1e..e929d20 100644
+--- a/src/VirtualCompany.Web/Pages/Home.razor
++++ b/src/VirtualCompany.Web/Pages/Home.razor
+@@ -1,4 +1,5 @@
+ @page "/"
++@using VirtualCompany.Shared.Mobile
+ @inject OnboardingApiClient ApiClient
+ @inject NavigationManager Navigation
+ 
+@@ -61,6 +62,13 @@ else
+                     <li>Complete onboarding and land in the dashboard with starter guidance.</li>
+                 </ul>
+ 
++                <div class="alert alert-secondary mt-4 mb-0">
++                    <strong>Mobile companion direction</strong>
++                    <div>@MobileCompanionScope.ProductDirectionDescription</div>
++                    <div>@MobileCompanionScope.ResponsiveWebBridgeMessage</div>
++                    <div>@MobileCompanionScope.SharedBackendApiReuseMessage</div>
++                </div>
++
+                 @if (progress?.IsCompleted == true && !string.IsNullOrWhiteSpace(progress.DashboardPath))
+                 {
+                     <div class="mt-4">
+diff --git a/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+index 353f9e2..bb78d44 100644
+--- a/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+@@ -24,6 +24,24 @@ public sealed class MobileCompanionScopeTests
+         Assert.Equal(expected, MobileCompanionScope.CapabilityRouteKeys.Keys);
+     }
+ 
++    [Fact]
++    public void Product_direction_keeps_responsive_web_interim_and_maui_target_explicit()
++    {
++        Assert.Contains("Web-first", MobileCompanionScope.ProductDirectionDescription);
++        Assert.Contains(".NET MAUI", MobileCompanionScope.ProductDirectionDescription);
++        Assert.Contains("interim bridge", MobileCompanionScope.ResponsiveWebBridgeMessage);
++        Assert.Contains("final mobile strategy", MobileCompanionScope.ResponsiveWebBridgeMessage);
++        Assert.Contains(".NET MAUI app", MobileCompanionScope.MauiTargetCompanionMessage);
++    }
++
++    [Fact]
++    public void Companion_copy_keeps_backend_reuse_and_limited_scope_explicit()
++    {
++        Assert.Contains("approvals", MobileCompanionScope.CompanionScopeDescription);
++        Assert.Contains("quick chat", MobileCompanionScope.MauiTargetCompanionMessage);
++        Assert.Contains("same backend APIs", MobileCompanionScope.SharedBackendApiReuseMessage);
++        Assert.Contains("does not get separate business workflows", MobileCompanionScope.SharedBackendApiReuseMessage);
++    }
++
+     [Theory]
+     [InlineData("MainPage")]
+     [InlineData("///MainPage")]
+END_OF_PATCH

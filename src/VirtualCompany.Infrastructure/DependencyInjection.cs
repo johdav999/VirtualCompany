@@ -23,6 +23,7 @@ using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
@@ -223,6 +224,7 @@ public static class DependencyInjection
         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
         services.AddScoped<CompanyWorkflowService>();
         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());

@@ -1,0 +1,113 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 4274252..de04731 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -152,6 +152,7 @@ public static class AuditTargetTypes
+     public const string ConversationTaskLink = "conversation_task_link";
+     public const string WorkflowException = "workflow_exception";
+     public const string ExecutionException = "execution_exception";
++    public const string CompanyNotification = "company_notification";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -205,4 +206,5 @@ public static class AuditEventActions
+     public const string MultiAgentWorkerCompleted = "multi_agent.worker.completed";
+     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
+     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
++    public const string CompanyNotificationActioned = "company.notification.actioned";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 34b3c89..ee37aa8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Domain.Entities;
+@@ -14,15 +15,18 @@ public sealed class CompanyNotificationService : INotificationInboxService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IApprovalRequestService _approvalRequestService;
++    private readonly IAuditEventWriter _auditEventWriter;
+ 
+     public CompanyNotificationService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+-        IApprovalRequestService approvalRequestService)
++        IApprovalRequestService approvalRequestService,
++        IAuditEventWriter auditEventWriter)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _approvalRequestService = approvalRequestService;
++        _auditEventWriter = auditEventWriter;
+     }
+ 
+     public async Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -180,6 +184,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         var notification = await _dbContext.CompanyNotifications
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.Id == notificationId, cancellationToken)
+             ?? throw new KeyNotFoundException("Notification not found.");
++        var previousStatus = notification.Status;
+ 
+         switch (command.Status.Trim().ToLowerInvariant())
+         {
+@@ -196,10 +201,54 @@ public sealed class CompanyNotificationService : INotificationInboxService
+                 throw new ArgumentOutOfRangeException(nameof(command), command.Status, "Notification status must be unread, read, or actioned.");
+         }
+ 
++        if (notification.Status == CompanyNotificationStatus.Actioned &&
++            previousStatus != CompanyNotificationStatus.Actioned)
++        {
++            await WriteNotificationActionedAuditAsync(notification, membership.UserId, previousStatus, cancellationToken);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(notification);
+     }
+ 
++    private async Task WriteNotificationActionedAuditAsync(
++        CompanyNotification notification,
++        Guid actorUserId,
++        CompanyNotificationStatus previousStatus,
++        CancellationToken cancellationToken)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["notificationId"] = notification.Id.ToString("N"),
++            ["notificationType"] = notification.Type.ToStorageValue(),
++            ["previousStatus"] = previousStatus.ToStorageValue(),
++            ["newStatus"] = notification.Status.ToStorageValue(),
++            ["recipientUserId"] = notification.UserId.ToString("N"),
++            ["relatedEntityType"] = notification.RelatedEntityType,
++            ["relatedEntityId"] = notification.RelatedEntityId?.ToString("N")
++        };
++
++        if (string.Equals(notification.RelatedEntityType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase) &&
++            notification.RelatedEntityId is Guid approvalId)
++        {
++            metadata["approvalRequestId"] = approvalId.ToString("N");
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                notification.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                AuditEventActions.CompanyNotificationActioned,
++                AuditTargetTypes.CompanyNotification,
++                notification.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                RationaleSummary: $"Notification {notification.Type.ToStorageValue()} was marked actioned from inbox.",
++                DataSources: ["notifications", "http_request"],
++                Metadata: metadata),
++            cancellationToken);
++    }
++
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
+         await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
+         ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+END_OF_PATCH

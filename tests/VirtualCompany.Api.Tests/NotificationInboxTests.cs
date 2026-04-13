@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -125,6 +127,20 @@ public sealed class NotificationInboxTests
     }
 
     [Fact]
+    public void Approval_inbox_sort_places_pending_newest_first_before_terminal_items()
+    {
+        var olderPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));
+        var newerPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 9, 0, 0, DateTimeKind.Utc));
+        var approved = CreateApproval(ApprovalRequestStatus.Approved.ToStorageValue(), new DateTime(2026, 4, 13, 10, 0, 0, DateTimeKind.Utc));
+
+        var ordered = new[] { olderPending, approved, newerPending }
+            .ApplyApprovalInboxOrdering()
+            .ToList();
+
+        Assert.Equal([newerPending.Id, olderPending.Id, approved.Id], ordered.Select(x => x.Id));
+    }
+
+    [Fact]
     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()
     {
         var userId = Guid.NewGuid();
@@ -159,6 +175,29 @@ public sealed class NotificationInboxTests
             "/inbox",
             "{}",
             $"{type.ToStorageValue()}:{Guid.NewGuid():N}");
+
+    private static ApprovalRequestDto CreateApproval(string status, DateTime createdAt) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            ApprovalTargetEntityType.Task.ToStorageValue(),
+            Guid.NewGuid(),
+            "user",
+            Guid.NewGuid(),
+            "policy",
+            "manager",
+            null,
+            status,
+            new Dictionary<string, JsonNode?>(),
+            Array.Empty<ApprovalStepDto>(),
+            null,
+            null,
+            null,
+            "Approval required.",
+            "Affected data.",
+            Array.Empty<ApprovalAffectedEntityDto>(),
+            null,
+            createdAt);
 
     private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>
         typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);

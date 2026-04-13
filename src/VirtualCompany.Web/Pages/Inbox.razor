@@ -217,7 +217,7 @@ else
         try
         {
             approvalComments.TryGetValue(approval.Id, out var comment);
-            await ApprovalApiClient.DecideAsync(
+            await InboxApiClient.DecidePendingApprovalAsync(
                 companyId,
                 approval.Id,
                 new ApprovalDecisionRequest
@@ -228,6 +228,7 @@ else
                     Comment = comment
                 });
             inbox = await InboxApiClient.GetInboxAsync(companyId);
+            approvalComments.Remove(approval.Id);
         }
         catch (OnboardingApiException ex)
         {

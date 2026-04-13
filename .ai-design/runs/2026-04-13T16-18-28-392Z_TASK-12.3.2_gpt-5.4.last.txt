@@ -1,0 +1,236 @@
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -61,5 +61,6 @@ public interface INotificationInboxService
+     Task<IReadOnlyList<NotificationListItemDto>> ListAsync(Guid companyId, ListNotificationInboxQuery query, CancellationToken cancellationToken);
+     Task<NotificationUnreadCountDto> GetUnreadCountAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> CreateAsync(Guid companyId, CreateNotificationCommand command, CancellationToken cancellationToken);
+     Task<ApprovalRequestDto> GetApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
++    Task<ApprovalDecisionResultDto> DecideApprovalAsync(Guid companyId, Guid approvalId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -176,6 +176,39 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         return approval;
+     }
+ 
++    public async Task<ApprovalDecisionResultDto> DecideApprovalAsync(
++        Guid companyId,
++        Guid approvalId,
++        ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
++
++        if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.Decision)] = [$"Only pending approvals can be decided from the inbox. Current status: {approval.Status}."]
++            });
++        }
++
++        if (!IsEligibleApprover(approval, membership))
++        {
++            throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
++        }
++
++        var normalizedCommand = command.ApprovalId == Guid.Empty
++            ? command with { ApprovalId = approvalId }
++            : command;
++
++        if (normalizedCommand.ApprovalId != approvalId)
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
++            });
++        }
++
++        return await _approvalRequestService.DecideAsync(companyId, normalizedCommand, cancellationToken);
++    }
++
+     public async Task<NotificationListItemDto> SetStatusAsync(
+         Guid companyId,
+         Guid notificationId,
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -128,6 +128,49 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("approvals/inbox/{approvalId:guid}/decisions")]
++    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideApprovalInboxAsync(
++        Guid companyId,
++        Guid approvalId,
++        [FromBody] ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (command.ApprovalId == Guid.Empty)
++        {
++            command = command with { ApprovalId = approvalId };
++        }
++
++        if (command.ApprovalId != approvalId)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++
++        try
++        {
++            return Ok(await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken));
++        }
++        catch (ApprovalValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
++        }
++    }
++
+     [HttpPost("notifications/{notificationId:guid}/read")]
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+     public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/InboxApiClient.cs
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -34,6 +34,32 @@ public sealed class InboxApiClient
+         return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/inbox/{approvalId}", cancellationToken);
+     }
+ 
++    public Task<ApprovalDecisionResultViewModel> DecidePendingApprovalAsync(
++        Guid companyId,
++        Guid approvalId,
++        ApprovalDecisionRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var approval = ApprovalApiClient.OfflineApprovals(companyId).Single(x => x.Id == approvalId);
++            approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
++            var currentStep = approval.CurrentStep;
++            if (currentStep is not null)
++            {
++                currentStep.Status = approval.Status;
++                currentStep.DecidedAt = DateTime.UtcNow;
++                currentStep.Comment = request.Comment?.Trim();
++                approval.RejectionComment = approval.Status == "rejected" ? currentStep.Comment : null;
++            }
++
++            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, DecidedStep = currentStep, IsFinalized = true });
++        }
++
++        return SendAsync<ApprovalDecisionResultViewModel>(
++            HttpMethod.Post,
++            $"api/companies/{companyId}/approvals/inbox/{approvalId}/decisions",
++            request,
++            cancellationToken);
++    }
++
+     public Task<NotificationListItemViewModel> SetStatusAsync(Guid companyId, Guid notificationId, string status, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -281,17 +281,18 @@ else
+         errorMessage = null;
+         try
+         {
+-            var result = await ApprovalApiClient.DecideAsync(
+-                companyId,
+-                selectedApproval.Id,
+-                new ApprovalDecisionRequest
+-                {
+-                    ApprovalId = selectedApproval.Id,
+-                    StepId = selectedApproval.CurrentStep.Id,
+-                    Decision = decision,
+-                    Comment = decisionComment
+-                });
++            var request = new ApprovalDecisionRequest
++            {
++                ApprovalId = selectedApproval.Id,
++                StepId = selectedApproval.CurrentStep.Id,
++                Decision = decision,
++                Comment = decisionComment
++            };
++            var result = IsPendingInboxFilter
++                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, selectedApproval.Id, request)
++                : await ApprovalApiClient.DecideAsync(companyId, selectedApproval.Id, request);
+             selectedApproval = result.Approval;
++            decisionComment = null;
+             await LoadApprovalInboxAsync(companyId);
+         }
+         catch (OnboardingApiException ex)
+@@ -323,6 +324,7 @@ else
+     private static ApprovalRequestViewModel ToApprovalRequestViewModel(ApprovalInboxItemViewModel item) =>
+         new()
+         {
+             Id = item.Id,
++            CompanyId = item.CompanyId,
+             TargetEntityType = item.TargetEntityType,
+             TargetEntityId = item.TargetEntityId,
+             ApprovalType = item.ApprovalType,
+diff --git a/src/VirtualCompany.Web/Pages/Inbox.razor b/src/VirtualCompany.Web/Pages/Inbox.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/Inbox.razor
++++ b/src/VirtualCompany.Web/Pages/Inbox.razor
+@@ -209,7 +209,7 @@ else
+         try
+         {
+             approvalComments.TryGetValue(approval.Id, out var comment);
+-            await ApprovalApiClient.DecideAsync(
++            await InboxApiClient.DecidePendingApprovalAsync(
+                 companyId,
+                 approval.Id,
+                 new ApprovalDecisionRequest
+@@ -221,6 +221,7 @@ else
+                     Comment = comment
+                 });
+             inbox = await InboxApiClient.GetInboxAsync(companyId);
++            approvalComments.Remove(approval.Id);
+         }
+         catch (OnboardingApiException ex)
+         {
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/InboxApiClient.cs
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -165,6 +165,7 @@ public sealed class ApprovalInboxItemViewModel
+ {
+     public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
+     public string ApprovalType { get; set; } = string.Empty;
+     public string TargetEntityType { get; set; } = string.Empty;
+     public Guid TargetEntityId { get; set; }
+END_OF_PATCH

@@ -1,0 +1,1074 @@
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -132,84 +132,6 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
+-    [HttpPost("approvals/inbox/{approvalId:guid}/decisions")]
+-    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideApprovalInboxAsync(
+-        Guid companyId,
+-        Guid approvalId,
+-        [FromBody] ApprovalDecisionCommand command,
+-        CancellationToken cancellationToken)
+-    {
+-        if (command.ApprovalId == Guid.Empty)
+-        {
+-            command = command with { ApprovalId = approvalId };
+-        }
+-
+-        if (command.ApprovalId != approvalId)
+-        {
+-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+-            {
+-                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
+-            })
+-            {
+-                Title = "Validation failed",
+-                Status = StatusCodes.Status400BadRequest
+-            });
+-        }
+-
+-        try
+-        {
+-            return Ok(await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken));
+-        }
+-        catch (ApprovalValidationException ex)
+-        {
+-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
+-            {
+-                Title = "Validation failed",
+-                Status = StatusCodes.Status400BadRequest
+-            });
+-        }
+-        catch (KeyNotFoundException)
+-        {
+-            return NotFound();
+-        }
+-        catch (UnauthorizedAccessException)
+-        {
+-            return Forbid();
+-        }
+-        catch (InvalidOperationException ex)
+-        {
+-            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
+-        }
+-    }
+-
+-    [HttpPost("approvals/inbox/{approvalId:guid}/decisions")]
+-    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideApprovalInboxAsync(
+-        Guid companyId,
+-        Guid approvalId,
+-        [FromBody] ApprovalDecisionCommand command,
+-        CancellationToken cancellationToken)
+-    {
+-        if (command.ApprovalId == Guid.Empty)
+-        {
+-            command = command with { ApprovalId = approvalId };
+-        }
+-
+-        if (command.ApprovalId != approvalId)
+-        {
+-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+-            {
+-                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
+-            })
+-            {
+-                Title = "Validation failed",
+-                Status = StatusCodes.Status400BadRequest
+-            });
+-        }
+-
+-        try
+-        {
+-            return Ok(await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken));
+-        }
+-        catch (ApprovalValidationException ex)
+-        {
+-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
+-            {
+-                Title = "Validation failed",
+-                Status = StatusCodes.Status400BadRequest
+-            });
+-        }
+-        catch (KeyNotFoundException)
+-        {
+-            return NotFound();
+-        }
+-        catch (UnauthorizedAccessException)
+-        {
+-            return Forbid();
+-        }
+-        catch (InvalidOperationException ex)
+-        {
+-            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
+-        }
+-    }
+-
+     [HttpPost("notifications/{notificationId:guid}/read")]
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+     public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+diff --git a/src/VirtualCompany.Mobile/AppShell.xaml b/src/VirtualCompany.Mobile/AppShell.xaml
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Mobile/AppShell.xaml
++++ b/src/VirtualCompany.Mobile/AppShell.xaml
+@@ -3,15 +3,11 @@
+     x:Class="VirtualCompany.Mobile.AppShell"
+     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+-    xmlns:local="clr-namespace:VirtualCompany.Mobile"
++    xmlns:views="clr-namespace:VirtualCompany.Mobile"
+     Title="Virtual Company">
+-
+     <ShellContent
+-        Title="Home"
+-        ContentTemplate="{DataTemplate local:MainPage}"
++        Title="Companion"
++        ContentTemplate="{DataTemplate views:MainPage}"
+         Route="MainPage" />
+-
+ </Shell>
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml b/src/VirtualCompany.Mobile/MainPage.xaml
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml
++++ b/src/VirtualCompany.Mobile/MainPage.xaml
+@@ -1,272 +1,345 @@
+ <?xml version="1.0" encoding="utf-8" ?>
+ <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+-             x:Class="VirtualCompany.Mobile.MainPage">
++             x:Class="VirtualCompany.Mobile.MainPage"
++             Title="Companion">
+     <ScrollView>
+-        <VerticalStackLayout
+-            Padding="24"
+-            Spacing="20">
+-            <Label
+-                Text="Virtual Company"
+-                Style="{StaticResource Headline}"
+-                SemanticProperties.HeadingLevel="Level1" />
++        <VerticalStackLayout Padding="20" Spacing="18">
++            <VerticalStackLayout Spacing="6">
++                <Label
++                    Text="Virtual Company"
++                    Style="{StaticResource Headline}"
++                    SemanticProperties.HeadingLevel="Level1" />
++                <Label
++                    Text="Approvals, alerts, briefing, and quick chat"
++                    Style="{StaticResource SubHeadline}"
++                    SemanticProperties.HeadingLevel="Level2" />
++                <Label
++                    Text="Use the mobile companion for fast review and follow-up while the full workspace remains web-first."
++                    FontSize="15"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++            </VerticalStackLayout>
+ 
+-            <Label
+-                Text="Approvals, alerts, and quick chat"
+-                Style="{StaticResource SubHeadline}"
+-                SemanticProperties.HeadingLevel="Level2" />
+-
+-            <Label
+-                Text="Use your company context to review pending approvals, triage notifications, and send quick messages to an agent."
+-                FontSize="16" />
+-
+-            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="16">
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+-                        Text="Connection"
++                        Text="Sign in"
+                         FontAttributes="Bold"
+                         FontSize="18" />
+-
+                     <Label
+                         Text="API base URL"
+                         FontAttributes="Bold" />
+                     <Entry
+                         x:Name="ApiBaseUrlEntry"
+                         Keyboard="Url"
+-                        Text="http://localhost:5301/" />
++                        Text="http://localhost:5301/"
++                        Placeholder="http://localhost:5301/" />
+ 
+                     <Label
+-                        Text="Company ID"
++                        Text="Development subject"
+                         FontAttributes="Bold" />
+                     <Entry
+-                        x:Name="CompanyIdEntry"
+-                        Keyboard="Default"
+-                        Placeholder="00000000-0000-0000-0000-000000000000" />
++                        x:Name="DevelopmentSubjectEntry"
++                        Text="alice"
++                        Placeholder="alice" />
+ 
+                     <Label
+-                        Text="Development user"
++                        Text="Email"
+                         FontAttributes="Bold" />
+                     <Entry
+-                        x:Name="DevelopmentSubjectEntry"
+-                        Text="alice" />
++                        x:Name="DevelopmentEmailEntry"
++                        Keyboard="Email"
++                        Text="alice@example.com"
++                        Placeholder="alice@example.com" />
+ 
+-                    <Button
+-                        Text="Refresh inbox"
+-                        Clicked="OnRefreshClicked" />
++                    <Label
++                        Text="Display name"
++                        FontAttributes="Bold" />
++                    <Entry
++                        x:Name="DevelopmentDisplayNameEntry"
++                        Text="Alice Admin"
++                        Placeholder="Alice Admin" />
+ 
++                    <Button
++                        Text="Sign in / refresh session"
++                        Clicked="OnSignInClicked" />
+                     <Label
+                         x:Name="StatusLabel"
+-                        Text="Enter a company ID, then refresh."
++                        Text="Sign in to load your company memberships."
+                         TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                 </VerticalStackLayout>
+             </Border>
+ 
+-            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="16">
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+-                        Text="Approvals"
++                        Text="Company"
+                         FontAttributes="Bold"
+                         FontSize="18" />
++                    <Picker
++                        x:Name="CompanyPicker"
++                        Title="Select company"
++                        ItemDisplayBinding="{Binding CompanyName}"
++                        SelectedIndexChanged="OnCompanySelectionChanged" />
++                    <Button
++                        Text="Refresh companion"
++                        Clicked="OnRefreshClicked" />
++                </VerticalStackLayout>
++            </Border>
++
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
++                <VerticalStackLayout Spacing="12">
++                    <Label
++                        Text="Company status"
++                        FontAttributes="Bold"
++                        FontSize="18" />
++                    <Label
++                        x:Name="CompanyStatusLabel"
++                        Text="Select a company to load status."
++                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                    <FlexLayout BindableLayout.ItemsSource="{Binding SummaryKpis}"
++                                Direction="Row"
++                                Wrap="Wrap"
++                                AlignItems="Start">
++                        <BindableLayout.ItemTemplate>
++                            <DataTemplate>
++                                <Border Padding="12" Margin="0,0,8,8" Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}">
++                                    <VerticalStackLayout Spacing="4" WidthRequest="140">
++                                        <Label Text="{Binding Label}" FontAttributes="Bold" />
++                                        <Label Text="{Binding CurrentValue}" FontSize="20" />
++                                        <Label Text="{Binding DeltaText}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                                    </VerticalStackLayout>
++                                </Border>
++                            </DataTemplate>
++                        </BindableLayout.ItemTemplate>
++                    </FlexLayout>
++                    <CollectionView ItemsSource="{Binding TaskFollowUps}" SelectionMode="None" HeightRequest="180">
++                        <CollectionView.EmptyView>
++                            <Label
++                                Text="No recent task follow-ups."
++                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                        </CollectionView.EmptyView>
++                        <CollectionView.ItemTemplate>
++                            <DataTemplate>
++                                <VerticalStackLayout Padding="0,0,0,10" Spacing="4">
++                                    <Label Text="{Binding Title}" FontAttributes="Bold" />
++                                    <Label Text="{Binding Summary}" LineBreakMode="WordWrap" />
++                                </VerticalStackLayout>
++                            </DataTemplate>
++                        </CollectionView.ItemTemplate>
++                    </CollectionView>
++                </VerticalStackLayout>
++            </Border>
+ 
+-                    <Label
+-                        x:Name="SummaryLabel"
+-                        Text="No inbox loaded."
+-                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
++                <VerticalStackLayout Spacing="12">
++                    <HorizontalStackLayout Spacing="10">
++                        <Label
++                            Text="Alerts"
++                            FontAttributes="Bold"
++                            FontSize="18" />
++                        <Label
++                            x:Name="InboxSummaryLabel"
++                            Text=""
++                            VerticalTextAlignment="Center"
++                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                    </HorizontalStackLayout>
+ 
+-                    <CollectionView
+-                        ItemsSource="{Binding PendingApprovals}"
+-                        SelectionMode="None">
++                    <CollectionView ItemsSource="{Binding Notifications}" SelectionMode="None" HeightRequest="320">
+                         <CollectionView.EmptyView>
+                             <Label
+-                                Text="No pending approvals."
++                                Text="No alerts for this company."
+                                 TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                         </CollectionView.EmptyView>
+                         <CollectionView.ItemTemplate>
+                             <DataTemplate>
+-                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="12" Margin="0,0,0,12">
++                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="12" Margin="0,0,0,12">
+                                     <VerticalStackLayout Spacing="8">
+                                         <HorizontalStackLayout Spacing="8">
+                                             <Label
+-                                                Text="{Binding ApprovalType}"
++                                                Text="{Binding Priority}"
+                                                 FontAttributes="Bold" />
+-                                            <Label Text="approval" />
+                                             <Label
+                                                 Text="{Binding Status}"
+                                                 TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                         </HorizontalStackLayout>
+                                         <Label
+-                                            Text="{Binding RationaleSummary}"
+-                                            LineBreakMode="WordWrap" />
+-                                        <Label
+-                                            Text="{Binding AffectedDataSummary}"
+-                                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}"
+-                                            LineBreakMode="WordWrap" />
++                                            Text="{Binding Title}"
++                                            FontAttributes="Bold" />
+                                         <Label
+-                                            Text="{Binding ThresholdSummary}"
+-                                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}"
++                                            Text="{Binding Body}"
+                                             LineBreakMode="WordWrap" />
+-                                        <Entry
+-                                            Placeholder="Decision comment"
+-                                            Text="{Binding DecisionComment}" />
+                                         <HorizontalStackLayout Spacing="8">
+                                             <Button
+-                                                Text="Approve"
+-                                                Clicked="OnApproveClicked"
+-                                                CommandParameter="{Binding .}" />
++                                                Text="Mark read"
++                                                Clicked="OnMarkReadClicked"
++                                                CommandParameter="{Binding .}" />
+                                             <Button
+-                                                Text="Reject"
+-                                                Clicked="OnRejectClicked"
++                                                Text="Actioned"
++                                                Clicked="OnMarkActionedClicked"
+                                                 CommandParameter="{Binding .}" />
+                                         </HorizontalStackLayout>
+                                     </VerticalStackLayout>
+@@ -277,47 +350,53 @@
+                 </VerticalStackLayout>
+             </Border>
+ 
+-            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="16">
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+-                        Text="Alerts"
++                        Text="Approvals"
+                         FontAttributes="Bold"
+                         FontSize="18" />
++                    <Label
++                        x:Name="ApprovalSummaryLabel"
++                        Text="No approvals loaded."
++                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+ 
+                     <CollectionView
+-                        ItemsSource="{Binding Notifications}"
+-                        SelectionMode="None">
++                        ItemsSource="{Binding PendingApprovals}"
++                        SelectionMode="None"
++                        HeightRequest="360">
+                         <CollectionView.EmptyView>
+                             <Label
+-                                Text="No notifications."
++                                Text="No pending approvals."
+                                 TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                         </CollectionView.EmptyView>
+                         <CollectionView.ItemTemplate>
+                             <DataTemplate>
+-                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="12" Margin="0,0,0,12">
++                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="12" Margin="0,0,0,12">
+                                     <VerticalStackLayout Spacing="8">
+                                         <HorizontalStackLayout Spacing="8">
+                                             <Label
+-                                                Text="{Binding Priority}"
++                                                Text="{Binding ApprovalType}"
+                                                 FontAttributes="Bold" />
++                                            <Label Text="approval" />
+                                             <Label
+                                                 Text="{Binding Status}"
+                                                 TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                         </HorizontalStackLayout>
+                                         <Label
+-                                            Text="{Binding Title}"
+-                                            FontAttributes="Bold" />
++                                            Text="{Binding RationaleSummary}"
++                                            LineBreakMode="WordWrap" />
+                                         <Label
+-                                            Text="{Binding Body}"
++                                            Text="{Binding AffectedDataSummary}"
++                                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}"
+                                             LineBreakMode="WordWrap" />
++                                        <Entry
++                                            Placeholder="Decision comment"
++                                            Text="{Binding DecisionComment}" />
+                                         <HorizontalStackLayout Spacing="8">
+                                             <Button
+-                                                Text="Mark read"
+-                                                Clicked="OnMarkReadClicked"
++                                                Text="Approve"
++                                                Clicked="OnApproveClicked"
+                                                 CommandParameter="{Binding .}" />
+                                             <Button
+-                                                Text="Actioned"
+-                                                Clicked="OnMarkActionedClicked"
++                                                Text="Reject"
++                                                Clicked="OnRejectClicked"
+                                                 CommandParameter="{Binding .}" />
+                                         </HorizontalStackLayout>
+                                     </VerticalStackLayout>
+@@ -328,16 +407,62 @@
+                 </VerticalStackLayout>
+             </Border>
+ 
+-            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" StrokeThickness="1" Padding="16">
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+-                        Text="Quick chat"
++                        Text="Daily briefing"
+                         FontAttributes="Bold"
+                         FontSize="18" />
++                    <Label
++                        x:Name="BriefingTitleLabel"
++                        Text="No briefing loaded."
++                        FontAttributes="Bold" />
++                    <Label
++                        x:Name="BriefingSummaryLabel"
++                        Text=""
++                        LineBreakMode="WordWrap"
++                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                    <CollectionView ItemsSource="{Binding BriefingHighlights}" SelectionMode="None" HeightRequest="160">
++                        <CollectionView.EmptyView>
++                            <Label
++                                Text="No briefing highlights."
++                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                        </CollectionView.EmptyView>
++                        <CollectionView.ItemTemplate>
++                            <DataTemplate>
++                                <VerticalStackLayout Padding="0,0,0,8">
++                                    <Label Text="{Binding Label}" FontAttributes="Bold" />
++                                    <Label Text="{Binding Route}" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                                </VerticalStackLayout>
++                            </DataTemplate>
++                        </CollectionView.ItemTemplate>
++                    </CollectionView>
++                </VerticalStackLayout>
++            </Border>
+ 
++            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
++                <VerticalStackLayout Spacing="12">
++                    <Label
++                        Text="Quick agent chat"
++                        FontAttributes="Bold"
++                        FontSize="18" />
++                    <Picker
++                        x:Name="AgentPicker"
++                        Title="Select agent"
++                        ItemDisplayBinding="{Binding DisplayName}"
++                        SelectedIndexChanged="OnAgentSelectionChanged" />
+                     <Label
+-                        Text="Agent ID"
+-                        FontAttributes="Bold" />
++                        Text="Agent ID"
++                        FontAttributes="Bold" />
+                     <Entry
+                         x:Name="AgentIdEntry"
+                         Keyboard="Default"
+@@ -364,7 +489,7 @@
+                         ItemsSource="{Binding Conversations}"
+                         SelectionMode="None"
+                         HeightRequest="180">
+                         <CollectionView.EmptyView>
+                             <Label
+                                 Text="No recent conversations loaded."
+@@ -375,9 +500,12 @@
+                             <DataTemplate>
+                                 <Button
+                                     Text="{Binding AgentDisplayName}"
+                                     Clicked="OnConversationClicked"
+                                     CommandParameter="{Binding .}" />
+                             </DataTemplate>
+                         </CollectionView.ItemTemplate>
+                     </CollectionView>
+ 
+@@ -387,7 +515,7 @@
+                         SelectionMode="None"
+                         HeightRequest="240">
+                         <CollectionView.EmptyView>
+                             <Label
+                                 Text="No messages loaded."
+@@ -429,7 +557,6 @@
+                 </VerticalStackLayout>
+             </Border>
+         </VerticalStackLayout>
+     </ScrollView>
+ </ContentPage>
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml.cs b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml.cs
++++ b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+@@ -1,10 +1,9 @@
+ using System.Collections.ObjectModel;
+ using VirtualCompany.Mobile.Services;
+ 
+-墙盯amespace VirtualCompany.Mobile;
++namespace VirtualCompany.Mobile;
+ 
+ public partial class MainPage : ContentPage
+ {
+     private readonly MobileCompanionApiClient apiClient = new(new HttpClient());
+     private Guid? activeCompanyId;
+@@ -13,14 +12,22 @@ public partial class MainPage : ContentPage
+     public ObservableCollection<ApprovalInboxItemViewModel> PendingApprovals { get; } = [];
+     public ObservableCollection<NotificationListItemViewModel> Notifications { get; } = [];
+     public ObservableCollection<DirectConversationViewModel> Conversations { get; } = [];
+     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
++    public ObservableCollection<CompanyMembershipViewModel> Memberships { get; } = [];
++    public ObservableCollection<CompanyAgentSummaryViewModel> Agents { get; } = [];
++    public ObservableCollection<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; } = [];
++    public ObservableCollection<ExecutiveCockpitActivityItemViewModel> TaskFollowUps { get; } = [];
++    public ObservableCollection<BriefingSourceReferenceViewModel> BriefingHighlights { get; } = [];
+ 
+ 	public MainPage()
+ 	{
+ 		InitializeComponent();
+         BindingContext = this;
++        Loaded += async (_, _) => await BootstrapAsync();
+ 	}
+ 
++    private async void OnSignInClicked(object? sender, EventArgs e) => await BootstrapAsync(force: true);
++
+     private async void OnRefreshClicked(object? sender, EventArgs e)
+     {
+-        if (!TryApplyConnectionSettings(out var companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -28,11 +35,106 @@ public partial class MainPage : ContentPage
+         await RunOperationAsync("Loading inbox...", async () =>
+         {
+-            var inbox = await apiClient.GetInboxAsync(companyId);
+-            activeCompanyId = companyId;
+-            PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+-            Notifications.ReplaceWith(inbox.Notifications);
+-            SummaryLabel.Text = $"{inbox.UnreadCount} unread alert(s), {inbox.PendingApprovalCount} approval(s) waiting.";
+-            StatusLabel.Text = "Inbox refreshed.";
++            await LoadCompanionAsync(companyId);
++            StatusLabel.Text = "Companion refreshed.";
++        });
++    }
++
++    private async Task BootstrapAsync(bool force = false)
++    {
++        if (!ApplyConnectionSettings(force))
++        {
++            return;
++        }
++
++        await RunOperationAsync("Signing in...", async () =>
++        {
++            var context = await apiClient.GetCurrentUserAsync();
++            Memberships.ReplaceWith(context.Memberships);
++            CompanyPicker.ItemsSource = Memberships;
++
++            var rememberedCompanyId = Preferences.Default.Get("mobile.selectedCompanyId", string.Empty);
++            var selectedCompany = Memberships.FirstOrDefault(x =>
++                x.CompanyId.ToString().Equals(rememberedCompanyId, StringComparison.OrdinalIgnoreCase))
++                ?? context.ActiveCompany?.ToMembership()
++                ?? (Memberships.Count == 1 ? Memberships[0] : null);
++
++            if (selectedCompany is null)
++            {
++                CompanyStatusLabel.Text = "Choose a company to continue.";
++                StatusLabel.Text = context.CompanySelectionRequired
++                    ? "Select a company."
++                    : "No company memberships were returned for this user.";
++                return;
++            }
++
++            CompanyPicker.SelectedItem = selectedCompany;
++            await SelectCompanyAsync(selectedCompany.CompanyId);
+         });
+     }
+ 
++    private async void OnCompanySelectionChanged(object? sender, EventArgs e)
++    {
++        if (CompanyPicker.SelectedItem is CompanyMembershipViewModel membership)
++        {
++            await RunOperationAsync($"Switching to {membership.CompanyName}...", async () =>
++            {
++                await SelectCompanyAsync(membership.CompanyId);
++            });
++        }
++    }
++
++    private async Task SelectCompanyAsync(Guid companyId)
++    {
++        var selection = await apiClient.SelectCompanyAsync(companyId);
++        activeCompanyId = selection.CompanyId;
++        apiClient.SetCompanyContext(selection.CompanyId);
++        Preferences.Default.Set("mobile.selectedCompanyId", selection.CompanyId.ToString());
++        await LoadCompanionAsync(selection.CompanyId);
++        StatusLabel.Text = $"{selection.ActiveCompany.CompanyName} selected.";
++    }
++
++    private async Task LoadCompanionAsync(Guid companyId)
++    {
++        var inboxTask = apiClient.GetInboxAsync(companyId);
++        var dashboardTask = apiClient.GetExecutiveDashboardAsync(companyId);
++        var briefingTask = apiClient.GetLatestBriefingsAsync(companyId);
++        var agentsTask = apiClient.GetAgentsAsync(companyId);
++        var conversationsTask = apiClient.GetDirectConversationsAsync(companyId);
++
++        await Task.WhenAll(inboxTask, dashboardTask, briefingTask, agentsTask, conversationsTask);
++
++        var inbox = await inboxTask;
++        PendingApprovals.ReplaceWith(inbox.PendingApprovals);
++        Notifications.ReplaceWith(inbox.Notifications);
++        InboxSummaryLabel.Text = $"{inbox.UnreadCount} unread";
++        ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
++
++        var dashboard = await dashboardTask;
++        CompanyStatusLabel.Text = $"{dashboard.CompanyName}: {dashboard.PendingApprovals.TotalCount} approval(s), {dashboard.Alerts.Count} alert(s).";
++        SummaryKpis.ReplaceWith(dashboard.SummaryKpis);
++        TaskFollowUps.ReplaceWith(dashboard.RecentActivity.Where(x =>
++            x.ActivityType.Contains("task", StringComparison.OrdinalIgnoreCase) ||
++            x.Title.Contains("task", StringComparison.OrdinalIgnoreCase)));
++
++        var briefing = (await briefingTask).Daily;
++        if (briefing is null)
++        {
++            BriefingTitleLabel.Text = "No daily briefing available.";
++            BriefingSummaryLabel.Text = "Refresh later after the briefing pipeline runs.";
++            BriefingHighlights.Clear();
++        }
++        else
++        {
++            BriefingTitleLabel.Text = briefing.Title;
++            BriefingSummaryLabel.Text = briefing.SummaryBody;
++            BriefingHighlights.ReplaceWith(briefing.SourceReferences);
++        }
++
++        Agents.ReplaceWith(await agentsTask);
++        AgentPicker.ItemsSource = Agents;
++
++        var conversations = await conversationsTask;
++        Conversations.ReplaceWith(conversations.Items);
++    }
++
+     private async void OnApproveClicked(object? sender, EventArgs e)
+     {
+         if (sender is Button { CommandParameter: ApprovalInboxItemViewModel approval })
+@@ -45,7 +147,7 @@ public partial class MainPage : ContentPage
+ 
+     private async Task DecideApprovalAsync(ApprovalInboxItemViewModel approval, string decision)
+     {
+-        if (activeCompanyId is not Guid companyId && !TryApplyConnectionSettings(out companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -70,7 +172,7 @@ public partial class MainPage : ContentPage
+                 });
+             var inbox = await apiClient.GetInboxAsync(companyId);
+             PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+             Notifications.ReplaceWith(inbox.Notifications);
+-            SummaryLabel.Text = $"{inbox.UnreadCount} unread alert(s), {inbox.PendingApprovalCount} approval(s) waiting.";
++            ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
+             StatusLabel.Text = $"Approval {decision}d.";
+         });
+     }
+@@ -91,7 +193,7 @@ public partial class MainPage : ContentPage
+ 
+     private async Task SetNotificationStatusAsync(NotificationListItemViewModel notification, string status)
+     {
+-        if (activeCompanyId is not Guid companyId && !TryApplyConnectionSettings(out companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -109,11 +211,21 @@ public partial class MainPage : ContentPage
+         });
+     }
+ 
++    private void OnAgentSelectionChanged(object? sender, EventArgs e)
++    {
++        if (AgentPicker.SelectedItem is CompanyAgentSummaryViewModel agent)
++        {
++            AgentIdEntry.Text = agent.Id.ToString();
++        }
++    }
++
+     private async void OnOpenChatClicked(object? sender, EventArgs e)
+     {
+-        if (!TryApplyConnectionSettings(out var companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+ 
+@@ -140,7 +252,7 @@ public partial class MainPage : ContentPage
+ 
+     private async void OnLoadConversationsClicked(object? sender, EventArgs e)
+     {
+-        if (!TryApplyConnectionSettings(out var companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -161,7 +273,7 @@ public partial class MainPage : ContentPage
+             return;
+         }
+ 
+-        if (activeCompanyId is not Guid companyId && !TryApplyConnectionSettings(out companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -180,7 +292,7 @@ public partial class MainPage : ContentPage
+ 
+     private async void OnSendMessageClicked(object? sender, EventArgs e)
+     {
+-        if (activeCompanyId is not Guid companyId && !TryApplyConnectionSettings(out companyId))
++        if (!TryGetActiveCompany(out var companyId))
+         {
+             return;
+         }
+@@ -207,8 +319,15 @@ public partial class MainPage : ContentPage
+         {
+             var result = await apiClient.SendMessageAsync(companyId, activeConversation.Id, body);
+             activeConversation = result.Conversation;
+-            Messages.Add(result.HumanMessage);
+-            Messages.Add(result.AgentMessage);
++            if (result.HumanMessage is not null)
++            {
++                Messages.Add(result.HumanMessage);
++            }
++
++            if (result.AgentMessage is not null)
++            {
++                Messages.Add(result.AgentMessage);
++            }
+             MessageEditor.Text = string.Empty;
+             StatusLabel.Text = "Message sent.";
+         });
+@@ -220,32 +339,49 @@ public partial class MainPage : ContentPage
+         Messages.ReplaceWith(page.Items);
+     }
+ 
+-    private bool TryApplyConnectionSettings(out Guid companyId)
++    private bool ApplyConnectionSettings(bool force)
+     {
+-        companyId = default;
+-        if (!Uri.TryCreate(ApiBaseUrlEntry.Text?.Trim(), UriKind.Absolute, out var baseAddress))
++        var storedBaseUrl = Preferences.Default.Get("mobile.apiBaseUrl", ApiBaseUrlEntry.Text?.Trim() ?? string.Empty);
++        var baseUrl = force ? ApiBaseUrlEntry.Text?.Trim() : storedBaseUrl;
++        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseAddress))
+         {
+             StatusLabel.Text = "Enter a valid API base URL.";
+             return false;
+         }
+ 
+-        if (!Guid.TryParse(CompanyIdEntry.Text, out companyId))
++        var subject = DevelopmentSubjectEntry.Text?.Trim();
++        if (string.IsNullOrWhiteSpace(subject))
+         {
+-            StatusLabel.Text = "Enter a valid company ID.";
++            StatusLabel.Text = "Enter a development subject.";
+             return false;
+         }
+ 
++        Preferences.Default.Set("mobile.apiBaseUrl", baseAddress.ToString());
++        Preferences.Default.Set("mobile.devSubject", subject);
+         apiClient.BaseAddress = baseAddress;
+-        apiClient.SetDevelopmentIdentity(DevelopmentSubjectEntry.Text?.Trim());
+-        activeCompanyId = companyId;
++        apiClient.SetDevelopmentIdentity(subject, DevelopmentEmailEntry.Text?.Trim(), DevelopmentDisplayNameEntry.Text?.Trim());
+         return true;
+     }
+ 
++    private bool TryGetActiveCompany(out Guid companyId)
++    {
++        if (activeCompanyId is Guid selectedCompanyId)
++        {
++            companyId = selectedCompanyId;
++            return true;
++        }
++
++        companyId = default;
++        StatusLabel.Text = "Select a company first.";
++        return false;
++    }
++
+     private async Task RunOperationAsync(string progressMessage, Func<Task> operation)
+     {
+         StatusLabel.Text = progressMessage;
+         try
+         {
+             await operation();
+         }
++        catch (UnauthorizedAccessException)
++        {
++            StatusLabel.Text = "Session expired or unauthorized. Sign in again.";
++        }
+         catch (MobileCompanionApiException ex)
+         {
+             StatusLabel.Text = ex.Message;
+diff --git a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
++++ b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+@@ -17,21 +17,59 @@ public sealed class MobileCompanionApiClient
+         this.httpClient = httpClient;
+     }
+ 
+     public Uri? BaseAddress
+     {
+         get => httpClient.BaseAddress;
+         set => httpClient.BaseAddress = value;
+     }
+ 
+-    public void SetDevelopmentIdentity(string? subject)
++    public void SetDevelopmentIdentity(string? subject, string? email, string? displayName)
+     {
+         RemoveDevelopmentHeaders();
+ 
+         if (string.IsNullOrWhiteSpace(subject))
+         {
+             return;
+         }
+ 
+         httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Subject", subject);
++        if (!string.IsNullOrWhiteSpace(email))
++        {
++            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Email", email);
++        }
++
++        if (!string.IsNullOrWhiteSpace(displayName))
++        {
++            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-DisplayName", displayName);
++        }
++
+         httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Dev-Auth-Provider", "dev-header");
+     }
+ 
++    public void SetCompanyContext(Guid? companyId)
++    {
++        httpClient.DefaultRequestHeaders.Remove("X-Company-Id");
++        if (companyId is Guid value)
++        {
++            httpClient.DefaultRequestHeaders.TryAddWithoutValidation("X-Company-Id", value.ToString());
++        }
++    }
++
++    public Task<CurrentUserContextViewModel> GetCurrentUserAsync(CancellationToken cancellationToken = default) =>
++        GetAsync<CurrentUserContextViewModel>("api/auth/me", cancellationToken);
++
++    public Task<CompanySelectionViewModel> SelectCompanyAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        SendAsync<CompanySelectionViewModel>(
++            HttpMethod.Post,
++            "api/auth/select-company",
++            new { companyId },
++            cancellationToken);
++
+     public Task<InboxViewModel> GetInboxAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<InboxViewModel>($"api/companies/{companyId}/inbox", cancellationToken);
+ 
++    public Task<ExecutiveCockpitDashboardViewModel> GetExecutiveDashboardAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<ExecutiveCockpitDashboardViewModel>($"api/companies/{companyId}/executive-cockpit", cancellationToken);
++
++    public Task<DashboardBriefingCardViewModel> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<DashboardBriefingCardViewModel>($"api/companies/{companyId}/briefings/latest", cancellationToken);
++
++    public Task<List<CompanyAgentSummaryViewModel>> GetAgentsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<List<CompanyAgentSummaryViewModel>>($"api/companies/{companyId}/agents", cancellationToken);
++
+     public Task<ApprovalDecisionResultViewModel> DecideApprovalAsync(
+         Guid companyId,
+         Guid approvalId,
+@@ -158,8 +196,10 @@ public sealed class MobileCompanionApiClient
+     private void RemoveDevelopmentHeaders()
+     {
+         httpClient.DefaultRequestHeaders.Remove("X-Dev-Auth-Subject");
++        httpClient.DefaultRequestHeaders.Remove("X-Dev-Auth-Email");
++        httpClient.DefaultRequestHeaders.Remove("X-Dev-Auth-DisplayName");
+         httpClient.DefaultRequestHeaders.Remove("X-Dev-Auth-Provider");
+     }
+ 
+     private sealed class ApiProblemResponse
+@@ -179,6 +219,52 @@ public sealed class MobileCompanionApiException : Exception
+     }
+ }
+ 
++public sealed class CurrentUserContextViewModel
++{
++    public CurrentUserViewModel User { get; set; } = new();
++    public List<CompanyMembershipViewModel> Memberships { get; set; } = [];
++    public ResolvedCompanyContextViewModel? ActiveCompany { get; set; }
++    public bool CompanySelectionRequired { get; set; }
++}
++
++public sealed class CurrentUserViewModel
++{
++    public Guid Id { get; set; }
++    public string Email { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public string AuthProvider { get; set; } = string.Empty;
++    public string AuthSubject { get; set; } = string.Empty;
++}
++
++public sealed class CompanyMembershipViewModel
++{
++    public Guid MembershipId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string MembershipRole { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
++public sealed class ResolvedCompanyContextViewModel
++{
++    public Guid MembershipId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public string MembershipRole { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++
++    public CompanyMembershipViewModel ToMembership() => new()
++    {
++        MembershipId = MembershipId,
++        CompanyId = CompanyId,
++        CompanyName = CompanyName,
++        MembershipRole = MembershipRole,
++        Status = Status
++    };
++}
++
++public sealed class CompanySelectionViewModel
++{
++    public Guid CompanyId { get; set; }
++    public ResolvedCompanyContextViewModel ActiveCompany { get; set; } = new();
++}
++
+ public sealed class InboxViewModel
+ {
+     public List<NotificationListItemViewModel> Notifications { get; set; } = [];
+@@ -320,7 +406,7 @@ public sealed class SendDirectAgentMessageResultViewModel
+ {
+     public DirectConversationViewModel Conversation { get; set; } = new();
+-    public ChatMessageViewModel HumanMessage { get; set; } = new();
+-    public ChatMessageViewModel AgentMessage { get; set; } = new();
++    public ChatMessageViewModel? HumanMessage { get; set; }
++    public ChatMessageViewModel? AgentMessage { get; set; }
+ }
++
++public sealed class CompanyAgentSummaryViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
++public sealed class DashboardBriefingCardViewModel
++{
++    public CompanyBriefingViewModel? Daily { get; set; }
++    public CompanyBriefingViewModel? Weekly { get; set; }
++}
++
++public sealed class CompanyBriefingViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string BriefingType { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string SummaryBody { get; set; } = string.Empty;
++    public List<BriefingSourceReferenceViewModel> SourceReferences { get; set; } = [];
++    public DateTime GeneratedUtc { get; set; }
++}
++
++public sealed class BriefingSourceReferenceViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public Guid EntityId { get; set; }
++    public string Label { get; set; } = string.Empty;
++    public string? Status { get; set; }
++    public string? Route { get; set; }
++}
++
++public sealed class ExecutiveCockpitDashboardViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
++    public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
++    public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
++    public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
++}
++
++public sealed class ExecutiveCockpitSummaryKpiViewModel
++{
++    public string Key { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public int CurrentValue { get; set; }
++    public string DeltaText { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitPendingApprovalsViewModel
++{
++    public int TotalCount { get; set; }
++}
++
++public sealed class ExecutiveCockpitAlertViewModel
++{
++    public Guid Id { get; set; }
++    public string Severity { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitActivityItemViewModel
++{
++    public Guid Id { get; set; }
++    public string ActivityType { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public DateTime OccurredUtc { get; set; }
++}
+END_OF_PATCH

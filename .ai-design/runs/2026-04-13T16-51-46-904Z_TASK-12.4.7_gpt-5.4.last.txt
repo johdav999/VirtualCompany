@@ -1,0 +1,1019 @@
+diff --git a/src/VirtualCompany.Shared/MobileBackendApiContracts.cs b/src/VirtualCompany.Shared/MobileBackendApiContracts.cs
+index 2d89e70..2d4d0e1 100644
+--- a/src/VirtualCompany.Shared/MobileBackendApiContracts.cs
++++ b/src/VirtualCompany.Shared/MobileBackendApiContracts.cs
+@@ -12,6 +12,9 @@ public static class MobileBackendApiRoutes
+     public static string Inbox(Guid companyId) =>
+         $"api/companies/{companyId}/inbox";
+ 
++    public static string CompactInbox(Guid companyId, int take, DateTime? sinceUtc = null) =>
++        $"api/companies/{companyId}/inbox/mobile?take={take}{FormatSince(sinceUtc)}";
++
+     public static string MobileSummary(Guid companyId) =>
+         $"api/companies/{companyId}/mobile/summary";
+ 
+@@ -19,6 +22,9 @@ public static class MobileBackendApiRoutes
+         $"api/companies/{companyId}/briefings/latest";
+ 
++    public static string CompactLatestBriefing(Guid companyId) =>
++        $"api/companies/{companyId}/briefings/latest/mobile";
++
+     public static string Agents(Guid companyId) =>
+         $"api/companies/{companyId}/agents";
+ 
+@@ -35,14 +41,25 @@ public static class MobileBackendApiRoutes
+     public static string OpenDirectConversation(Guid companyId, Guid agentId) =>
+         $"api/companies/{companyId}/agents/{agentId}/conversations/direct";
+ 
+-    public static string DirectConversations(Guid companyId, int skip, int take) =>
+-        $"api/companies/{companyId}/conversations/direct?skip={skip}&take={take}";
++    public static string DirectConversations(Guid companyId, int skip, int take, DateTime? sinceUtc = null) =>
++        $"api/companies/{companyId}/conversations/direct?skip={skip}&take={take}{FormatSince(sinceUtc)}";
++
++    public static string CompactDirectConversations(Guid companyId, int skip, int take, DateTime? sinceUtc = null) =>
++        $"api/companies/{companyId}/conversations/direct/mobile?skip={skip}&take={take}{FormatSince(sinceUtc)}";
+ 
+-    public static string ConversationMessages(Guid companyId, Guid conversationId, int skip, int take) =>
+-        $"api/companies/{companyId}/conversations/{conversationId}/messages?skip={skip}&take={take}";
++    public static string ConversationMessages(Guid companyId, Guid conversationId, int skip, int take, DateTime? sinceUtc = null) =>
++        $"api/companies/{companyId}/conversations/{conversationId}/messages?skip={skip}&take={take}{FormatSince(sinceUtc)}";
++
++    public static string CompactConversationMessages(Guid companyId, Guid conversationId, int skip, int take, DateTime? sinceUtc = null) =>
++        $"api/companies/{companyId}/conversations/{conversationId}/messages/mobile?skip={skip}&take={take}{FormatSince(sinceUtc)}";
+ 
+     public static string SendConversationMessage(Guid companyId, Guid conversationId) =>
+         $"api/companies/{companyId}/conversations/{conversationId}/messages";
++
++    private static string FormatSince(DateTime? sinceUtc) =>
++        sinceUtc.HasValue
++            ? $"&sinceUtc={Uri.EscapeDataString(sinceUtc.Value.ToUniversalTime().ToString("O"))}"
++            : string.Empty;
+ }
+ 
+ public sealed class SelectCompanyRequestDto
+@@ -99,6 +116,42 @@ public sealed class NotificationListItemDto
+     public Guid? ActionedByUserId { get; set; }
+ }
+ 
++public sealed class MobileInboxDto
++{
++    public List<MobileAlertListItemDto> Alerts { get; set; } = [];
++    public List<MobileApprovalListItemDto> PendingApprovals { get; set; } = [];
++    public int UnreadCount { get; set; }
++    public int PendingApprovalCount { get; set; }
++    public DateTime SyncedAtUtc { get; set; }
++}
++
++public sealed class MobileAlertListItemDto
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string? Summary { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string? RelatedEntityType { get; set; }
++    public Guid? RelatedEntityId { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime? ReadAt { get; set; }
++}
++
++public sealed class MobileApprovalListItemDto
++{
++    public Guid Id { get; set; }
++    public string ApprovalType { get; set; } = string.Empty;
++    public string TargetEntityType { get; set; } = string.Empty;
++    public Guid TargetEntityId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string RationaleSummary { get; set; } = string.Empty;
++    public string AffectedDataSummary { get; set; } = string.Empty;
++    public string? ThresholdSummary { get; set; }
++    public ApprovalStepDto? CurrentStep { get; set; }
++    public DateTime CreatedAt { get; set; }
++}
++
+ public sealed class ApprovalInboxItemDto
+ {
+@@ -170,6 +223,7 @@ public sealed class ApprovalDecisionCommandDto
+     public string Decision { get; set; } = string.Empty;
+     public Guid? StepId { get; set; }
+     public string? Comment { get; set; }
++    public Guid? ClientRequestId { get; set; }
+ }
+ 
+ public sealed class ApprovalDecisionResultDto
+@@ -218,6 +272,30 @@ public sealed class DirectConversationPageDto
+     public int Take { get; set; }
+ }
+ 
++public sealed class MobileConversationSummaryDto
++{
++    public Guid Id { get; set; }
++    public Guid AgentId { get; set; }
++    public string AgentDisplayName { get; set; } = string.Empty;
++    public string AgentRoleName { get; set; } = string.Empty;
++    public string? LatestMessagePreview { get; set; }
++    public DateTime UpdatedAt { get; set; }
++}
++
++public sealed class MobileConversationPageDto
++{
++    public List<MobileConversationSummaryDto> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++}
++
++public sealed class MobileMessageListItemDto
++{
++    public Guid Id { get; set; }
++    public string SenderType { get; set; } = string.Empty;
++    public string Body { get; set; } = string.Empty;
++    public DateTime CreatedAt { get; set; }
++}
++
+ public sealed class ChatMessageDto
+ {
+@@ -245,6 +323,15 @@ public sealed class ChatMessagePageDto
+     public int Take { get; set; }
+ }
+ 
++public sealed class MobileMessagePageDto
++{
++    public List<MobileMessageListItemDto> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++    public DateTime SyncedAtUtc { get; set; }
++}
++
+ public sealed class SendDirectAgentMessageCommandDto
+ {
+     public string Body { get; set; } = string.Empty;
++    public Guid? ClientRequestId { get; set; }
+ }
+ 
+ public sealed class SendDirectAgentMessageResultDto
+@@ -278,6 +365,16 @@ public sealed class DashboardBriefingCardDto
+     public CompanyBriefingDto? Weekly { get; set; }
+ }
+ 
++public sealed class MobileBriefingDto
++{
++    public Guid? Id { get; set; }
++    public string? Title { get; set; }
++    public string? Summary { get; set; }
++    public DateTime? GeneratedUtc { get; set; }
++    public List<string> Highlights { get; set; } = [];
++    public DateTime SyncedAtUtc { get; set; }
++}
++
+ public sealed class CompanyBriefingDto
+ {
+diff --git a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+index 4b8c3aa..baf66d5 100644
+--- a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
++++ b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+@@ -16,7 +16,8 @@ public sealed record ApprovalDecisionCommand(
+     Guid ApprovalId,
+     string Decision,
+     Guid? StepId = null,
+-    string? Comment = null);
++    string? Comment = null,
++    Guid? ClientRequestId = null);
+ 
+ public sealed record ApprovalRequestDto(
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 8a3867a..c2f862c 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -18,7 +18,7 @@ public sealed record GetConversationMessagesQuery(int? Skip, int? Take);
+ 
+ public sealed record GetDirectConversationsQuery(int? Skip, int? Take);
+ 
+-public sealed record SendDirectAgentMessageCommand(string Body);
++public sealed record SendDirectAgentMessageCommand(string Body, Guid? ClientRequestId = null);
+ 
+ public sealed record CreateTaskFromChatCommand(
+diff --git a/src/VirtualCompany.Api/Controllers/BriefingsController.cs b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+index b43ff75..7c9af3c 100644
+--- a/src/VirtualCompany.Api/Controllers/BriefingsController.cs
++++ b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared.Mobile;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -40,6 +41,34 @@ public sealed class BriefingsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("latest/mobile")]
++    public async Task<ActionResult<MobileBriefingDto>> GetLatestMobileAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var latest = await _briefingService.GetLatestDashboardBriefingsAsync(companyId, cancellationToken);
++            var daily = latest.Daily;
++            if (daily is null)
++            {
++                return Ok(new MobileBriefingDto { SyncedAtUtc = DateTime.UtcNow });
++            }
++
++            return Ok(new MobileBriefingDto
++            {
++                Id = daily.Id,
++                Title = daily.Title,
++                Summary = TrimForMobile(daily.SummaryBody, 360),
++                GeneratedUtc = daily.GeneratedUtc,
++                Highlights = daily.SourceReferences
++                    .Select(x => string.IsNullOrWhiteSpace(x.Status) ? x.Label : $"{x.Label} ({x.Status})")
++                    .Take(5)
++                    .ToList(),
++                SyncedAtUtc = DateTime.UtcNow
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("generate")]
+     [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+@@ -93,6 +122,9 @@ public sealed class BriefingsController : ControllerBase
+         }
+     }
+ 
++    private static string TrimForMobile(string value, int maxLength) =>
++        value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
++
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+diff --git a/src/VirtualCompany.Api/Controllers/DirectChatController.cs b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+index 65e66a9..66ddf6b 100644
+--- a/src/VirtualCompany.Api/Controllers/DirectChatController.cs
++++ b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Chat;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared.Mobile;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -50,6 +51,34 @@ public sealed class DirectChatController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("conversations/direct/mobile")]
++    public async Task<ActionResult<MobileConversationPageDto>> GetMobileDirectConversationsAsync(
++        Guid companyId,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        [FromQuery] DateTime? sinceUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var page = await _directChatService.GetDirectConversationsAsync(companyId, new GetDirectConversationsQuery(skip, take), cancellationToken);
++            var items = page.Items
++                .Where(x => !sinceUtc.HasValue || x.UpdatedAt > sinceUtc.Value.ToUniversalTime())
++                .Select(x => new MobileConversationSummaryDto
++                {
++                    Id = x.Id,
++                    AgentId = x.AgentId,
++                    AgentDisplayName = x.AgentDisplayName,
++                    AgentRoleName = x.AgentRoleName,
++                    LatestMessagePreview = x.Subject,
++                    UpdatedAt = x.UpdatedAt
++                })
++                .ToList();
++            return Ok(new MobileConversationPageDto { Items = items, TotalCount = page.TotalCount, Skip = page.Skip, Take = page.Take });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("conversations/{conversationId:guid}/messages")]
+     public async Task<ActionResult<ChatMessagePageDto>> GetMessagesAsync(
+@@ -75,6 +104,36 @@ public sealed class DirectChatController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("conversations/{conversationId:guid}/messages/mobile")]
++    public async Task<ActionResult<MobileMessagePageDto>> GetMobileMessagesAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        [FromQuery] DateTime? sinceUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var page = await _directChatService.GetMessagesAsync(companyId, conversationId, new GetConversationMessagesQuery(skip, take), cancellationToken);
++            var items = page.Items
++                .Where(x => !sinceUtc.HasValue || x.CreatedAt > sinceUtc.Value.ToUniversalTime())
++                .Select(x => new MobileMessageListItemDto
++                {
++                    Id = x.Id,
++                    SenderType = x.SenderType,
++                    Body = TrimForMobile(x.Body, 1200),
++                    CreatedAt = x.CreatedAt
++                })
++                .ToList();
++            return Ok(new MobileMessagePageDto { Items = items, TotalCount = page.TotalCount, Skip = page.Skip, Take = page.Take, SyncedAtUtc = DateTime.UtcNow });
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("conversations/{conversationId:guid}/messages")]
+     public async Task<ActionResult<SendDirectAgentMessageResultDto>> SendMessageAsync(
+@@ -181,6 +240,9 @@ public sealed class DirectChatController : ControllerBase
+         }
+     }
+ 
++    private static string TrimForMobile(string value, int maxLength) =>
++        value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
++
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 01b07b1..4e0bb21 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared.Mobile;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -28,6 +29,46 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("inbox/mobile")]
++    public async Task<ActionResult<MobileInboxDto>> GetMobileInboxAsync(
++        Guid companyId,
++        [FromQuery] int? take,
++        [FromQuery] DateTime? sinceUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var inbox = await _notificationInboxService.GetInboxAsync(companyId, cancellationToken);
++            var limit = Math.Clamp(take ?? 30, 1, 50);
++            var since = sinceUtc?.ToUniversalTime();
++            var alerts = inbox.Notifications
++                .Where(x => !since.HasValue || x.CreatedAt > since.Value)
++                .Take(limit)
++                .Select(x => new MobileAlertListItemDto
++                {
++                    Id = x.Id,
++                    Type = x.Type,
++                    Priority = x.Priority,
++                    Title = x.Title,
++                    Summary = TrimForMobile(x.Body, 180),
++                    Status = x.Status,
++                    RelatedEntityType = x.RelatedEntityType,
++                    RelatedEntityId = x.RelatedEntityId,
++                    CreatedAt = x.CreatedAt,
++                    ReadAt = x.ReadAt
++                })
++                .ToList();
++
++            return Ok(new MobileInboxDto
++            {
++                Alerts = alerts,
++                PendingApprovals = inbox.PendingApprovals.Take(limit).Select(ToMobileApproval).ToList(),
++                UnreadCount = inbox.UnreadCount,
++                PendingApprovalCount = inbox.PendingApprovalCount,
++                SyncedAtUtc = DateTime.UtcNow
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("notifications")]
+     public async Task<ActionResult<IReadOnlyList<NotificationListItemDto>>> GetNotificationsAsync(
+@@ -202,6 +243,31 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    private static MobileApprovalListItemDto ToMobileApproval(ApprovalInboxItemDto approval) =>
++        new()
++        {
++            Id = approval.Id,
++            ApprovalType = approval.ApprovalType,
++            TargetEntityType = approval.TargetEntityType,
++            TargetEntityId = approval.TargetEntityId,
++            Status = approval.Status,
++            RationaleSummary = TrimForMobile(approval.RationaleSummary, 220),
++            AffectedDataSummary = TrimForMobile(approval.AffectedDataSummary, 180),
++            ThresholdSummary = string.IsNullOrWhiteSpace(approval.ThresholdSummary) ? null : TrimForMobile(approval.ThresholdSummary, 160),
++            CurrentStep = approval.CurrentStep,
++            CreatedAt = approval.CreatedAt
++        };
++
++    private static string? TrimForMobile(string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.ReplaceLineEndings(" ").Trim();
++        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength].TrimEnd() + "...";
++    }
++
+     [HttpPost("notifications/{notificationId:guid}/read")]
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 388931c..90d55ec 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -145,6 +145,12 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         Validate(command);
+ 
++        var clientRequestId = command.ClientRequestId is Guid requestId && requestId != Guid.Empty
++            ? requestId
++            : (Guid?)null;
++        if (clientRequestId is Guid retryRequestId && await TryGetRetriedSendResultAsync(companyId, conversationId, retryRequestId, cancellationToken) is { } retryResult)
++        {
++            return retryResult;
++        }
++
+         var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
+         if (conversation.AgentId is not Guid agentId)
+         {
+@@ -161,7 +167,10 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             ChatSenderTypes.User,
+             membership.UserId,
+             ChatMessageTypes.Text,
+-            command.Body);
++            command.Body,
++            clientRequestId is null
++                ? null
++                : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase) { ["client_request_id"] = JsonValue.Create(clientRequestId.Value.ToString("N")) });
+ 
+         _dbContext.Messages.Add(humanMessage);
+@@ -189,6 +198,45 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             ToMessageDto(agentMessage));
+     }
+ 
++    private async Task<SendDirectAgentMessageResultDto?> TryGetRetriedSendResultAsync(
++        Guid companyId,
++        Guid conversationId,
++        Guid clientRequestId,
++        CancellationToken cancellationToken)
++    {
++        var recentMessages = await _dbContext.Messages
++            .AsNoTracking()
++            .Include(x => x.Conversation)
++            .ThenInclude(x => x.Agent)
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.Conversation.CompanyId == companyId &&
++                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(80)
++            .ToListAsync(cancellationToken);
++
++        var humanMessage = recentMessages
++            .Where(x => string.Equals(x.SenderType, ChatSenderTypes.User, StringComparison.OrdinalIgnoreCase))
++            .FirstOrDefault(x => TryReadClientRequestId(x.StructuredPayload) == clientRequestId);
++        if (humanMessage is null || humanMessage.Conversation.Agent is null)
++        {
++            return null;
++        }
++
++        var agentMessage = recentMessages
++            .Where(x => x.CreatedUtc >= humanMessage.CreatedUtc)
++            .OrderBy(x => x.CreatedUtc)
++            .FirstOrDefault(x => string.Equals(x.SenderType, ChatSenderTypes.Agent, StringComparison.OrdinalIgnoreCase));
++
++        return new SendDirectAgentMessageResultDto(
++            ToConversationDto(humanMessage.Conversation, humanMessage.Conversation.Agent),
++            ToMessageDto(humanMessage),
++            agentMessage is null ? null! : ToMessageDto(agentMessage));
++    }
++
++    private static Guid? TryReadClientRequestId(IReadOnlyDictionary<string, JsonNode?> payload) =>
++        payload.TryGetValue("client_request_id", out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var text) &&
++        Guid.TryParse(text, out var requestId)
++            ? requestId
++            : null;
++
+     public async Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+index f57312c..5bc2316 100644
+--- a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
++++ b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+@@ -54,8 +54,8 @@ public sealed class MobileCompanionApiClient
+             new SelectCompanyRequestDto { CompanyId = companyId },
+             cancellationToken);
+ 
+-    public Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+-        GetAsync<NotificationInboxDto>(MobileBackendApiRoutes.Inbox(companyId), cancellationToken);
++    public Task<MobileInboxDto> GetInboxAsync(Guid companyId, DateTime? sinceUtc = null, CancellationToken cancellationToken = default) =>
++        GetAsync<MobileInboxDto>(MobileBackendApiRoutes.CompactInbox(companyId, take: 30, sinceUtc), cancellationToken);
+ 
+     public Task<MobileHomeSummaryResponse> GetMobileSummaryAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<MobileHomeSummaryResponse>(MobileBackendApiRoutes.MobileSummary(companyId), cancellationToken);
+ 
+-    public Task<DashboardBriefingCardDto> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+-        GetAsync<DashboardBriefingCardDto>(MobileBackendApiRoutes.LatestBriefings(companyId), cancellationToken);
++    public Task<MobileBriefingDto> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<MobileBriefingDto>(MobileBackendApiRoutes.CompactLatestBriefing(companyId), cancellationToken);
+@@ -96,12 +96,12 @@ public sealed class MobileCompanionApiClient
+             new SetNotificationStatusCommandDto { Status = status },
+             cancellationToken);
+ 
+-    public Task<DirectConversationDto> OpenConversationAsync(
++    public Task<DirectConversationDto> OpenConversationAsync(
+         Guid companyId,
+         Guid agentId,
+         CancellationToken cancellationToken = default) =>
+         SendAsync<DirectConversationDto>(
+@@ -111,18 +111,18 @@ public sealed class MobileCompanionApiClient
+             new OpenDirectAgentConversationCommandDto { AgentId = agentId },
+             cancellationToken);
+ 
+-    public Task<DirectConversationPageDto> GetDirectConversationsAsync(
++    public Task<MobileConversationPageDto> GetDirectConversationsAsync(
+         Guid companyId,
+         CancellationToken cancellationToken = default) =>
+-        GetAsync<DirectConversationPageDto>(MobileBackendApiRoutes.DirectConversations(companyId, skip: 0, take: 25), cancellationToken);
++        GetAsync<MobileConversationPageDto>(MobileBackendApiRoutes.CompactDirectConversations(companyId, skip: 0, take: 25), cancellationToken);
+ 
+-    public Task<ChatMessagePageDto> GetMessagesAsync(
++    public Task<MobileMessagePageDto> GetMessagesAsync(
+         Guid companyId,
+         Guid conversationId,
+         CancellationToken cancellationToken = default) =>
+-        GetAsync<ChatMessagePageDto>(MobileBackendApiRoutes.ConversationMessages(companyId, conversationId, skip: 0, take: 50), cancellationToken);
++        GetAsync<MobileMessagePageDto>(MobileBackendApiRoutes.CompactConversationMessages(companyId, conversationId, skip: 0, take: 50), cancellationToken);
+ 
+     public Task<SendDirectAgentMessageResultDto> SendMessageAsync(
+         Guid companyId,
+         Guid conversationId,
+         string body,
++        Guid clientRequestId,
+         CancellationToken cancellationToken = default) =>
+         SendAsync<SendDirectAgentMessageResultDto>(
+             HttpMethod.Post,
+             MobileBackendApiRoutes.SendConversationMessage(companyId, conversationId),
+-            new SendDirectAgentMessageCommandDto { Body = body },
++            new SendDirectAgentMessageCommandDto { Body = body, ClientRequestId = clientRequestId },
+             cancellationToken);
+diff --git a/src/VirtualCompany.Mobile/Services/MobileLocalCache.cs b/src/VirtualCompany.Mobile/Services/MobileLocalCache.cs
+new file mode 100644
+index 0000000..e7100f8
+--- /dev/null
++++ b/src/VirtualCompany.Mobile/Services/MobileLocalCache.cs
+@@ -0,0 +1,63 @@
++using System.Text.Json;
++
++namespace VirtualCompany.Mobile.Services;
++
++public sealed class MobileLocalCache
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly string userScope;
++    private readonly Guid companyId;
++
++    public MobileLocalCache(string userScope, Guid companyId)
++    {
++        this.userScope = Normalize(userScope);
++        this.companyId = companyId;
++    }
++
++    public async Task SaveAsync<T>(string key, T value, CancellationToken cancellationToken = default)
++    {
++        var json = JsonSerializer.Serialize(value, SerializerOptions);
++        await SecureStorage.Default.SetAsync(BuildKey(key), json);
++    }
++
++    public async Task<T?> TryReadAsync<T>(string key, CancellationToken cancellationToken = default)
++    {
++        var json = await SecureStorage.Default.GetAsync(BuildKey(key));
++        return string.IsNullOrWhiteSpace(json)
++            ? default
++            : JsonSerializer.Deserialize<T>(json, SerializerOptions);
++    }
++
++    public async Task QueueAsync<T>(string key, T value, CancellationToken cancellationToken = default)
++    {
++        var queued = await TryReadAsync<List<T>>(key, cancellationToken) ?? [];
++        queued.Add(value);
++        await SaveAsync(key, queued, cancellationToken);
++    }
++
++    public Task<List<T>> ReadQueueAsync<T>(string key, CancellationToken cancellationToken = default) =>
++        TryReadAsync<List<T>>(key, cancellationToken).ContinueWith(task => task.Result ?? [], cancellationToken);
++
++    public Task ClearQueueAsync(string key, CancellationToken cancellationToken = default) =>
++        SaveAsync(key, Array.Empty<object>(), cancellationToken);
++
++    private string BuildKey(string key) =>
++        $"vc.mobile.{userScope}.{companyId:N}.{Normalize(key)}";
++
++    private static string Normalize(string value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "anonymous"
++            : new string(value.Trim().ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray());
++}
++
++public sealed class PendingMobileApprovalDecision
++{
++    public Guid ClientRequestId { get; set; }
++    public Guid ApprovalId { get; set; }
++    public Guid? StepId { get; set; }
++    public string Decision { get; set; } = string.Empty;
++}
++
++public sealed class PendingMobileChatSend
++{
++    public Guid ClientRequestId { get; set; }
++    public Guid ConversationId { get; set; }
++    public string Body { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml.cs b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+index 7a2e8de..bbdb6aa 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml.cs
++++ b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+@@ -7,14 +7,16 @@ namespace VirtualCompany.Mobile;
+ public partial class MainPage : ContentPage
+ {
+     private readonly MobileCompanionApiClient apiClient = new(new HttpClient());
++    private string activeUserScope = "anonymous";
+     private Guid? activeCompanyId;
+     private DirectConversationDto? activeConversation;
++    private MobileLocalCache? localCache;
+ 
+-    public ObservableCollection<ApprovalInboxItemDto> PendingApprovals { get; } = [];
+-    public ObservableCollection<NotificationListItemDto> Notifications { get; } = [];
+-    public ObservableCollection<DirectConversationDto> Conversations { get; } = [];
+-    public ObservableCollection<ChatMessageDto> Messages { get; } = [];
++    public ObservableCollection<MobileApprovalListItemDto> PendingApprovals { get; } = [];
++    public ObservableCollection<MobileAlertListItemDto> Notifications { get; } = [];
++    public ObservableCollection<MobileConversationSummaryDto> Conversations { get; } = [];
++    public ObservableCollection<MobileMessageListItemDto> Messages { get; } = [];
+@@ -68,6 +70,7 @@ public partial class MainPage : ContentPage
+         {
+             var context = await apiClient.GetCurrentUserAsync();
++            activeUserScope = context.User.Id == Guid.Empty ? context.User.Email : context.User.Id.ToString("N");
+             Memberships.ReplaceWith(context.Memberships);
+             CompanyPicker.ItemsSource = Memberships;
+@@ -100,6 +103,7 @@ public partial class MainPage : ContentPage
+         activeCompanyId = selection.CompanyId;
++        localCache = new MobileLocalCache(activeUserScope, selection.CompanyId);
+         apiClient.SetCompanyContext(selection.CompanyId);
+         Preferences.Default.Set("mobile.selectedCompanyId", selection.CompanyId.ToString());
++        await FlushPendingWritesAsync(selection.CompanyId);
+         await LoadCompanionAsync(selection.CompanyId);
+         StatusLabel.Text = $"{selection.ActiveCompany.CompanyName} selected.";
+@@ -116,8 +120,22 @@ public partial class MainPage : ContentPage
+         var conversationsTask = apiClient.GetDirectConversationsAsync(companyId);
+ 
+-        // Agent summaries power chat selection only; mobile does not expose hiring or configuration.
+-        await Task.WhenAll(inboxTask, mobileSummaryTask, briefingTask, agentsTask, conversationsTask);
++        try
++        {
++            // Agent summaries power chat selection only; mobile does not expose hiring or configuration.
++            await Task.WhenAll(inboxTask, mobileSummaryTask, briefingTask, agentsTask, conversationsTask);
++        }
++        catch (MobileCompanionApiException) when (localCache is not null)
++        {
++            await RestoreCachedCompanionAsync();
++            StatusLabel.Text = "Offline. Showing last successful mobile sync.";
++            return;
++        }
+ 
+         var inbox = await inboxTask;
+         PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+-        Notifications.ReplaceWith(inbox.Notifications);
++        Notifications.ReplaceWith(inbox.Alerts);
+         InboxSummaryLabel.Text = $"{inbox.UnreadCount} unread";
+         ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
++        if (localCache is not null)
++        {
++            await localCache.SaveAsync("inbox", inbox);
++        }
+@@ -132,20 +150,20 @@ public partial class MainPage : ContentPage
+         SummaryKpis.ReplaceWith(mobileSummary.CompanyStatus.Metrics);
+         TaskFollowUps.ReplaceWith(mobileSummary.TaskFollowUps);
++        if (localCache is not null)
++        {
++            await localCache.SaveAsync("summary", mobileSummary);
++        }
+ 
+-        var briefing = (await briefingTask).Daily;
+-        if (briefing is null)
++        var briefing = await briefingTask;
++        if (briefing.Id is null)
+         {
+             BriefingTitleLabel.Text = "No daily briefing available.";
+             BriefingSummaryLabel.Text = "Refresh later after the briefing pipeline runs.";
+             BriefingHighlights.Clear();
+         }
+         else
+         {
+-            BriefingTitleLabel.Text = briefing.Title;
+-            BriefingSummaryLabel.Text = briefing.SummaryBody;
+-            BriefingHighlights.ReplaceWith(briefing.SourceReferences);
++            BriefingTitleLabel.Text = briefing.Title;
++            BriefingSummaryLabel.Text = briefing.Summary;
++            BriefingHighlights.ReplaceWith(briefing.Highlights.Select(x => new BriefingSourceReferenceDto { Label = x }));
+         }
++        if (localCache is not null)
++        {
++            await localCache.SaveAsync("briefing", briefing);
++        }
+@@ -157,6 +175,38 @@ public partial class MainPage : ContentPage
+ 
+         var conversations = await conversationsTask;
+         Conversations.ReplaceWith(conversations.Items);
++        if (localCache is not null)
++        {
++            await localCache.SaveAsync("conversations", conversations);
++        }
++    }
++
++    private async Task RestoreCachedCompanionAsync()
++    {
++        if (localCache is null)
++        {
++            return;
++        }
++
++        if (await localCache.TryReadAsync<MobileInboxDto>("inbox") is { } inbox)
++        {
++            PendingApprovals.ReplaceWith(inbox.PendingApprovals);
++            Notifications.ReplaceWith(inbox.Alerts);
++            InboxSummaryLabel.Text = $"{inbox.UnreadCount} unread";
++            ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
++        }
++
++        if (await localCache.TryReadAsync<MobileHomeSummaryResponse>("summary") is { } mobileSummary)
++        {
++            CompanyStatusHeadlineLabel.Text = mobileSummary.CompanyStatus.Headline;
++            CompanyStatusLabel.Text = $"{mobileSummary.CompanyStatus.CompanyName}: {mobileSummary.CompanyStatus.Subtitle}";
++            SummaryKpis.ReplaceWith(mobileSummary.CompanyStatus.Metrics);
++            TaskFollowUps.ReplaceWith(mobileSummary.TaskFollowUps);
++        }
++
++        if (await localCache.TryReadAsync<MobileBriefingDto>("briefing") is { } briefing)
++        {
++            BriefingTitleLabel.Text = briefing.Title ?? "No daily briefing available.";
++            BriefingSummaryLabel.Text = briefing.Summary ?? "Refresh later after the briefing pipeline runs.";
++            BriefingHighlights.ReplaceWith(briefing.Highlights.Select(x => new BriefingSourceReferenceDto { Label = x }));
++        }
++
++        if (await localCache.TryReadAsync<MobileConversationPageDto>("conversations") is { } conversations)
++        {
++            Conversations.ReplaceWith(conversations.Items);
++        }
+     }
+ 
+@@ -174,7 +224,7 @@ public partial class MainPage : ContentPage
+         }
+     }
+ 
+-    private async Task DecideApprovalAsync(ApprovalInboxItemDto approval, string decision)
++    private async Task DecideApprovalAsync(MobileApprovalListItemDto approval, string decision)
+     {
+@@ -190,15 +240,30 @@ public partial class MainPage : ContentPage
+         await RunOperationAsync($"{decision} approval...", async () =>
+         {
+-            await apiClient.DecideApprovalAsync(
++            var clientRequestId = Guid.NewGuid();
++            var request = new ApprovalDecisionCommandDto
++            {
++                ApprovalId = approval.Id,
++                StepId = approval.CurrentStep.Id,
++                Decision = decision,
++                ClientRequestId = clientRequestId
++            };
++
++            if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet && localCache is not null)
++            {
++                await localCache.QueueAsync("pending-approvals", new PendingMobileApprovalDecision
++                {
++                    ClientRequestId = clientRequestId,
++                    ApprovalId = approval.Id,
++                    StepId = approval.CurrentStep.Id,
++                    Decision = decision
++                });
++                StatusLabel.Text = $"Offline. Approval {decision} queued for retry.";
++                return;
++            }
++
++            await apiClient.DecideApprovalAsync(
+                 companyId,
+                 approval.Id,
+-                new ApprovalDecisionRequest
+-                {
+-                    ApprovalId = approval.Id,
+-                    StepId = approval.CurrentStep.Id,
+-                    Decision = decision,
+-                    Comment = null
+-                });
++                request);
+             var inbox = await apiClient.GetInboxAsync(companyId);
+             PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+-            Notifications.ReplaceWith(inbox.Notifications);
++            Notifications.ReplaceWith(inbox.Alerts);
+             ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
+             StatusLabel.Text = $"Approval {decision}d.";
+@@ -210,7 +275,7 @@ public partial class MainPage : ContentPage
+ 
+     private async void OnMarkReadClicked(object? sender, EventArgs e)
+     {
+-        if (sender is Button { CommandParameter: NotificationListItemDto notification })
++        if (sender is Button { CommandParameter: MobileAlertListItemDto notification })
+         {
+@@ -220,7 +285,7 @@ public partial class MainPage : ContentPage
+ 
+     private async void OnMarkActionedClicked(object? sender, EventArgs e)
+     {
+-        if (sender is Button { CommandParameter: NotificationListItemDto notification })
++        if (sender is Button { CommandParameter: MobileAlertListItemDto notification })
+         {
+@@ -228,7 +293,7 @@ public partial class MainPage : ContentPage
+         }
+     }
+ 
+-    private async Task SetNotificationStatusAsync(NotificationListItemDto notification, string status)
++    private async Task SetNotificationStatusAsync(MobileAlertListItemDto notification, string status)
+     {
+@@ -241,7 +306,18 @@ public partial class MainPage : ContentPage
+         {
+             var updated = await apiClient.SetNotificationStatusAsync(companyId, notification.Id, status);
+             var index = Notifications.IndexOf(notification);
+             if (index >= 0)
+             {
+-                Notifications[index] = updated;
++                Notifications[index] = new MobileAlertListItemDto
++                {
++                    Id = updated.Id,
++                    Type = updated.Type,
++                    Priority = updated.Priority,
++                    Title = updated.Title,
++                    Summary = updated.Body,
++                    Status = updated.Status,
++                    RelatedEntityType = updated.RelatedEntityType,
++                    RelatedEntityId = updated.RelatedEntityId,
++                    CreatedAt = updated.CreatedAt,
++                    ReadAt = updated.ReadAt
++                };
+             }
+@@ -297,7 +373,7 @@ public partial class MainPage : ContentPage
+ 
+     private async void OnConversationClicked(object? sender, EventArgs e)
+     {
+-        if (sender is not Button { CommandParameter: DirectConversationDto conversation })
++        if (sender is not Button { CommandParameter: MobileConversationSummaryDto conversation })
+         {
+@@ -314,7 +390,7 @@ public partial class MainPage : ContentPage
+         await RunOperationAsync("Loading chat...", async () =>
+         {
+-            activeConversation = conversation;
++            activeConversation = new DirectConversationDto { Id = conversation.Id, AgentId = conversation.AgentId, AgentDisplayName = conversation.AgentDisplayName, AgentRoleName = conversation.AgentRoleName };
+             AgentIdEntry.Text = conversation.AgentId.ToString();
+             await LoadMessagesAsync(companyId, conversation.Id);
+@@ -348,7 +424,21 @@ public partial class MainPage : ContentPage
+ 
+         await RunOperationAsync("Sending message...", async () =>
+         {
+-            var result = await apiClient.SendMessageAsync(companyId, activeConversation.Id, body);
++            var clientRequestId = Guid.NewGuid();
++            if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet && localCache is not null)
++            {
++                await localCache.QueueAsync("pending-chat", new PendingMobileChatSend
++                {
++                    ClientRequestId = clientRequestId,
++                    ConversationId = activeConversation.Id,
++                    Body = body
++                });
++                Messages.Add(new MobileMessageListItemDto { Id = clientRequestId, SenderType = "pending", Body = body, CreatedAt = DateTime.UtcNow });
++                MessageEditor.Text = string.Empty;
++                StatusLabel.Text = "Offline. Message queued for retry.";
++                return;
++            }
++
++            var result = await apiClient.SendMessageAsync(companyId, activeConversation.Id, body, clientRequestId);
+             activeConversation = result.Conversation;
+             if (result.HumanMessage is not null)
+             {
+-                Messages.Add(result.HumanMessage);
++                Messages.Add(new MobileMessageListItemDto { Id = result.HumanMessage.Id, SenderType = result.HumanMessage.SenderType, Body = result.HumanMessage.Body, CreatedAt = result.HumanMessage.CreatedAt });
+             }
+ 
+             if (result.AgentMessage is not null)
+             {
+-                Messages.Add(result.AgentMessage);
++                Messages.Add(new MobileMessageListItemDto { Id = result.AgentMessage.Id, SenderType = result.AgentMessage.SenderType, Body = result.AgentMessage.Body, CreatedAt = result.AgentMessage.CreatedAt });
+             }
+@@ -362,7 +452,8 @@ public partial class MainPage : ContentPage
+     private async Task LoadMessagesAsync(Guid companyId, Guid conversationId)
+     {
+         var page = await apiClient.GetMessagesAsync(companyId, conversationId);
+         Messages.ReplaceWith(page.Items);
++        if (localCache is not null)
++        {
++            await localCache.SaveAsync($"messages.{conversationId:N}", page);
++        }
+     }
+ 
+@@ -412,6 +503,45 @@ public partial class MainPage : ContentPage
+             StatusLabel.Text = "Operation canceled.";
+         }
+     }
++
++    private async Task FlushPendingWritesAsync(Guid companyId)
++    {
++        if (localCache is null || Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
++        {
++            return;
++        }
++
++        var pendingApprovals = await localCache.ReadQueueAsync<PendingMobileApprovalDecision>("pending-approvals");
++        foreach (var pending in pendingApprovals)
++        {
++            await apiClient.DecideApprovalAsync(
++                companyId,
++                pending.ApprovalId,
++                new ApprovalDecisionCommandDto
++                {
++                    ApprovalId = pending.ApprovalId,
++                    StepId = pending.StepId,
++                    Decision = pending.Decision,
++                    ClientRequestId = pending.ClientRequestId
++                });
++        }
++
++        if (pendingApprovals.Count > 0)
++        {
++            await localCache.ClearQueueAsync("pending-approvals");
++        }
++
++        var pendingChat = await localCache.ReadQueueAsync<PendingMobileChatSend>("pending-chat");
++        foreach (var pending in pendingChat)
++        {
++            await apiClient.SendMessageAsync(companyId, pending.ConversationId, pending.Body, pending.ClientRequestId);
++        }
++
++        if (pendingChat.Count > 0)
++        {
++            await localCache.ClearQueueAsync("pending-chat");
++        }
++    }
+ 
+     private static CompanyMembershipDto ToMembership(this ResolvedCompanyContextDto context) =>
+diff --git a/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+index c96d248..43fb655 100644
+--- a/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+@@ -55,11 +55,15 @@ public sealed class MobileCompanionScopeTests
+             MobileBackendApiRoutes.AuthMe,
+             MobileBackendApiRoutes.SelectCompany,
+             MobileBackendApiRoutes.Inbox(companyId),
++            MobileBackendApiRoutes.CompactInbox(companyId, take: 30),
+             MobileBackendApiRoutes.MobileSummary(companyId),
+             MobileBackendApiRoutes.LatestBriefings(companyId),
++            MobileBackendApiRoutes.CompactLatestBriefing(companyId),
+             MobileBackendApiRoutes.Agents(companyId),
+             MobileBackendApiRoutes.ApprovalDecision(companyId, approvalId),
+             MobileBackendApiRoutes.NotificationStatus(companyId, notificationId),
+             MobileBackendApiRoutes.OpenDirectConversation(companyId, agentId),
++            MobileBackendApiRoutes.CompactDirectConversations(companyId, skip: 0, take: 25),
++            MobileBackendApiRoutes.CompactConversationMessages(companyId, conversationId, skip: 0, take: 50),
+             MobileBackendApiRoutes.DirectConversations(companyId, skip: 0, take: 25),
+             MobileBackendApiRoutes.ConversationMessages(companyId, conversationId, skip: 0, take: 50),
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.4.4",
+  "promptPath": ".ai-design/prompts/TASK-12.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T16:44:13.047Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T16-44-13-047Z_TASK-12.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T16-44-13-047Z_TASK-12.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T16:46:27.394Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "s);\n+        Assert.Equal(expected, MobileCompanionScope.CapabilityRouteKeys.Keys);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"MainPage\")]\n+    [InlineData(\"///MainPage\")]\n+    [InlineData(\"alerts\")]\n+    [InlineData(\"approvals\")]\n+    [InlineData(\"daily-briefing\")]\n+    [InlineData(\"direct-agent-chat\")]\n+    [InlineData(\"company-status\")]\n+    [InlineData(\"task-follow-up\")]\n+    public void Supported_companion_routes_are_allowed(string route)\n+    {\n+        Assert.True(MobileCompanionScope.IsRouteSupported(route));\n+    }\n+\n+    [Theory]\n+    [InlineData(\"onboarding\")]\n+    [InlineData(\"company-setup\")]\n+    [InlineData(\"agents\")]\n+    [InlineData(\"agent-hiring\")]\n+    [InlineData(\"agent-configuration\")]\n+    [InlineData(\"workflows\")]\n+    [InlineData(\"workflow-builder\")]\n+    [InlineData(\"executive-cockpit\")]\n+    [InlineData(\"cockpit\")]\n+    [InlineData(\"analytics\")]\n+    [InlineData(\"admin\")]\n+    [InlineData(\"management\")]\n+    [InlineData(\"settings\")]\n+    [InlineData(\"admin/approvals\")]\n+    [InlineData(\"workflow-builder/task-follow-up\")]\n+    public void Web_first_admin_routes_are_not_allowed(string route)\n+    {\n+        Assert.False(MobileCompanionScope.IsRouteSupported(route));\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\nindex b4a5ae7..ff8c388 100644\n--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n+++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n@@ -18,8 +18,9 @@\n   <ItemGroup>\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Api\\VirtualCompany.Api.csproj\" />\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Domain\\VirtualCompany.Domain.csproj\" />\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Infrastructure\\VirtualCompany.Infrastructure.csproj\" />\n+    <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Shared\\VirtualCompany.Shared.csproj\" />\n   </ItemGroup>\n \n </Project>\nEND_OF_PATCH\n",
+  "stderrTail": ".Equal(expected, MobileCompanionScope.CapabilityRouteKeys.Keys);\n+    }\n+\n+    [Theory]\n+    [InlineData(\"MainPage\")]\n+    [InlineData(\"///MainPage\")]\n+    [InlineData(\"alerts\")]\n+    [InlineData(\"approvals\")]\n+    [InlineData(\"daily-briefing\")]\n+    [InlineData(\"direct-agent-chat\")]\n+    [InlineData(\"company-status\")]\n+    [InlineData(\"task-follow-up\")]\n+    public void Supported_companion_routes_are_allowed(string route)\n+    {\n+        Assert.True(MobileCompanionScope.IsRouteSupported(route));\n+    }\n+\n+    [Theory]\n+    [InlineData(\"onboarding\")]\n+    [InlineData(\"company-setup\")]\n+    [InlineData(\"agents\")]\n+    [InlineData(\"agent-hiring\")]\n+    [InlineData(\"agent-configuration\")]\n+    [InlineData(\"workflows\")]\n+    [InlineData(\"workflow-builder\")]\n+    [InlineData(\"executive-cockpit\")]\n+    [InlineData(\"cockpit\")]\n+    [InlineData(\"analytics\")]\n+    [InlineData(\"admin\")]\n+    [InlineData(\"management\")]\n+    [InlineData(\"settings\")]\n+    [InlineData(\"admin/approvals\")]\n+    [InlineData(\"workflow-builder/task-follow-up\")]\n+    public void Web_first_admin_routes_are_not_allowed(string route)\n+    {\n+        Assert.False(MobileCompanionScope.IsRouteSupported(route));\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\nindex b4a5ae7..ff8c388 100644\n--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n+++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj\n@@ -18,8 +18,9 @@\n   <ItemGroup>\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Api\\VirtualCompany.Api.csproj\" />\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Domain\\VirtualCompany.Domain.csproj\" />\n     <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Infrastructure\\VirtualCompany.Infrastructure.csproj\" />\n+    <ProjectReference Include=\"..\\..\\src\\VirtualCompany.Shared\\VirtualCompany.Shared.csproj\" />\n   </ItemGroup>\n \n </Project>\nEND_OF_PATCH\ntokens used\n39,286\n",
+  "verbosityMode": "summary"
+}

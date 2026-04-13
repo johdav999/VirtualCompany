@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Application.Approvals;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Notifications;
@@ -40,6 +41,21 @@ public static class CompanyNotificationInboxOrdering
             _ => UnreadRoutinePriority
         };
     }
+
+    public static int GetSortPriority(ApprovalRequestDto approval)
+    {
+        ArgumentNullException.ThrowIfNull(approval);
+
+        return string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase)
+            ? PendingApprovalPriority
+            : ReadOrActionedPriority;
+    }
+
+    public static IOrderedEnumerable<ApprovalRequestDto> ApplyApprovalInboxOrdering(this IEnumerable<ApprovalRequestDto> approvals) =>
+        approvals
+            .OrderBy(GetSortPriority)
+            .ThenByDescending(approval => approval.CreatedAt)
+            .ThenBy(approval => approval.Id);
 
     public static IOrderedQueryable<CompanyNotification> ApplyInboxOrdering(this IQueryable<CompanyNotification> query) =>
         query

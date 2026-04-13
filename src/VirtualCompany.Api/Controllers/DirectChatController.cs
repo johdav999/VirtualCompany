@@ -4,6 +4,8 @@ using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Chat;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Infrastructure.Tenancy;
+using AppChat = VirtualCompany.Application.Chat;
+using MobileDtos = VirtualCompany.Shared.Mobile;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -21,7 +23,7 @@ public sealed class DirectChatController : ControllerBase
     }
 
     [HttpPost("agents/{agentId:guid}/conversations/direct")]
-    public async Task<ActionResult<DirectConversationDto>> OpenDirectConversationAsync(
+    public async Task<ActionResult<AppChat.DirectConversationDto>> OpenDirectConversationAsync(
         Guid companyId,
         Guid agentId,
         CancellationToken cancellationToken)
@@ -45,7 +47,7 @@ public sealed class DirectChatController : ControllerBase
     }
 
     [HttpGet("conversations/direct")]
-    public async Task<ActionResult<DirectConversationPageDto>> GetDirectConversationsAsync(
+    public async Task<ActionResult<AppChat.DirectConversationPageDto>> GetDirectConversationsAsync(
         Guid companyId,
         [FromQuery] int? skip,
         [FromQuery] int? take,
@@ -65,8 +67,39 @@ public sealed class DirectChatController : ControllerBase
         }
     }
 
+    [HttpGet("conversations/direct/mobile")]
+    public async Task<ActionResult<MobileDtos.MobileConversationPageDto>> GetMobileDirectConversationsAsync(
+        Guid companyId,
+        [FromQuery] int? skip,
+        [FromQuery] int? take,
+        [FromQuery] DateTime? sinceUtc,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page = await _directChatService.GetDirectConversationsAsync(companyId, new GetDirectConversationsQuery(skip, take), cancellationToken);
+            var items = page.Items
+                .Where(x => !sinceUtc.HasValue || x.UpdatedAt > sinceUtc.Value.ToUniversalTime())
+                .Select(x => new MobileDtos.MobileConversationSummaryDto
+                {
+                    Id = x.Id,
+                    AgentId = x.AgentId,
+                    AgentDisplayName = x.AgentDisplayName,
+                    AgentRoleName = x.AgentRoleName,
+                    LatestMessagePreview = x.Subject,
+                    UpdatedAt = x.UpdatedAt
+                })
+                .ToList();
+            return Ok(new MobileDtos.MobileConversationPageDto { Items = items, TotalCount = page.TotalCount, Skip = page.Skip, Take = page.Take });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
     [HttpGet("conversations/{conversationId:guid}/messages")]
-    public async Task<ActionResult<ChatMessagePageDto>> GetMessagesAsync(
+    public async Task<ActionResult<AppChat.ChatMessagePageDto>> GetMessagesAsync(
         Guid companyId,
         Guid conversationId,
         [FromQuery] int? skip,
@@ -91,8 +124,46 @@ public sealed class DirectChatController : ControllerBase
         }
     }
 
+    [HttpGet("conversations/{conversationId:guid}/messages/mobile")]
+    public async Task<ActionResult<MobileDtos.MobileMessagePageDto>> GetMobileMessagesAsync(
+        Guid companyId,
+        Guid conversationId,
+        [FromQuery] int? skip,
+        [FromQuery] int? take,
+        [FromQuery] DateTime? sinceUtc,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page = await _directChatService.GetMessagesAsync(companyId, conversationId, new GetConversationMessagesQuery(skip, take), cancellationToken);
+            var items = page.Items
+                .Where(x => !sinceUtc.HasValue || x.CreatedAt > sinceUtc.Value.ToUniversalTime())
+                .Select(x => new MobileDtos.MobileMessageListItemDto
+                {
+                    Id = x.Id,
+                    SenderType = x.SenderType,
+                    Body = TrimForMobile(x.Body, 1200),
+                    CreatedAt = x.CreatedAt
+                })
+                .ToList();
+            return Ok(new MobileDtos.MobileMessagePageDto { Items = items, TotalCount = page.TotalCount, Skip = page.Skip, Take = page.Take, SyncedAtUtc = DateTime.UtcNow });
+        }
+        catch (DirectChatValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
     [HttpPost("conversations/{conversationId:guid}/messages")]
-    public async Task<ActionResult<SendDirectAgentMessageResultDto>> SendMessageAsync(
+    public async Task<ActionResult<AppChat.SendDirectAgentMessageResultDto>> SendMessageAsync(
         Guid companyId,
         Guid conversationId,
         [FromBody] SendDirectAgentMessageCommand command,
@@ -200,6 +271,9 @@ public sealed class DirectChatController : ControllerBase
             return Forbid();
         }
     }
+
+    private static string TrimForMobile(string value, int maxLength) =>
+        value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
 
     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))

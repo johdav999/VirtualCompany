@@ -1,0 +1,377 @@
+diff --git a/README.md b/README.md
+index 7c6e3d1..fbf7e2b 100644
+--- a/README.md
++++ b/README.md
+@@ -213,6 +213,13 @@ Users can read and update in-app/mobile delivery preferences at `api/companies/{
+ - The API accepts `X-Correlation-ID` on incoming requests.
+ - When absent, the API generates a correlation ID and returns it in the response header.
+ - Technical logs and safe error responses include the same correlation ID for support workflows.
++
++## Mobile Companion Scope
++
++`VirtualCompany.Mobile` is a companion experience for sign-in, company selection, alerts, approvals, daily briefing, direct agent chat, and quick company status/task follow-up summaries.
++Full setup and administration remain web-first: company onboarding, agent hiring/configuration, workflow definition/administration, deep cockpit analytics, and broad system management are not mobile parity goals.
++The mobile app centralizes this boundary in `MobileCompanionScope` so navigation and route guards stay aligned with the supported companion surface.
+ 
+ 
+ ## Workflow v1
+diff --git a/src/VirtualCompany.Mobile/AppShell.xaml b/src/VirtualCompany.Mobile/AppShell.xaml
+index 5fa4b75..aa1c4bc 100644
+--- a/src/VirtualCompany.Mobile/AppShell.xaml
++++ b/src/VirtualCompany.Mobile/AppShell.xaml
+@@ -5,10 +5,10 @@
+     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+     xmlns:views="clr-namespace:VirtualCompany.Mobile"
+     Title="Virtual Company">
+     <ShellContent
+-        Title="Companion"
++        Title="Mobile companion"
+         ContentTemplate="{DataTemplate views:MainPage}"
+         Route="MainPage" />
+ </Shell>
+diff --git a/src/VirtualCompany.Mobile/AppShell.xaml.cs b/src/VirtualCompany.Mobile/AppShell.xaml.cs
+index 55d0415..29a36cb 100644
+--- a/src/VirtualCompany.Mobile/AppShell.xaml.cs
++++ b/src/VirtualCompany.Mobile/AppShell.xaml.cs
+@@ -1,9 +1,26 @@
++using VirtualCompany.Shared.Mobile;
++
+ namespace VirtualCompany.Mobile;
+ 
+ public partial class AppShell : Shell
+ {
+ 	public AppShell()
+ 	{
+ 		InitializeComponent();
++        Navigating += OnNavigating;
+ 	}
++
++    private static void OnNavigating(object? sender, ShellNavigatingEventArgs e)
++    {
++        var targetRoute = e.Target.Location.OriginalString;
++        if (MobileCompanionScope.IsRouteSupported(targetRoute))
++        {
++            return;
++        }
++
++        e.Cancel();
++        MainThread.BeginInvokeOnMainThread(async () =>
++        {
++            await Current.DisplayAlert("Available on web", MobileCompanionScope.WebFirstAdministrationMessage, "OK");
++        });
++    }
+ }
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml b/src/VirtualCompany.Mobile/MainPage.xaml
+index 9c8be1e..56a0a7f 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml
++++ b/src/VirtualCompany.Mobile/MainPage.xaml
+@@ -15,10 +15,18 @@
+                     Style="{StaticResource SubHeadline}"
+                     SemanticProperties.HeadingLevel="Level2" />
+                 <Label
+                     Text="Use the mobile companion for fast review and follow-up while the full workspace remains web-first."
+                     FontSize="15"
+                     TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                <Label
++                    x:Name="SupportedFeaturesLabel"
++                    FontSize="14"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                <Label
++                    Text="For setup, agent configuration, workflow administration, cockpit analytics, and system management, use the web app."
++                    FontSize="14"
++                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+             </VerticalStackLayout>
+ 
+             <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+@@ -318,10 +326,14 @@
+                 <VerticalStackLayout Spacing="12">
+                     <Label
+                         Text="Quick agent chat"
+                         FontAttributes="Bold"
+                         FontSize="18" />
++                    <Label
++                        Text="Chat is for quick questions and follow-up, not agent hiring or configuration."
++                        FontSize="14"
++                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                     <Picker
+                         x:Name="AgentPicker"
+                         Title="Select agent"
+                         ItemDisplayBinding="{Binding DisplayName}"
+                         SelectedIndexChanged="OnAgentSelectionChanged" />
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml.cs b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+index 78d8e66..808221b 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml.cs
++++ b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+@@ -24,10 +24,11 @@ public partial class MainPage : ContentPage
+ 	public MainPage()
+ 	{
+ 		InitializeComponent();
+         BindingContext = this;
++        SupportedFeaturesLabel.Text = $"Mobile supports: {string.Join(", ", MobileCompanionScope.SupportedFeatureLabels)}.";
+         Loaded += async (_, _) => await BootstrapAsync();
+ 	}
+ 
+     private async void OnSignInClicked(object? sender, EventArgs e) => await BootstrapAsync(force: true);
+ 
+@@ -105,10 +106,11 @@ public partial class MainPage : ContentPage
+         var mobileSummaryTask = apiClient.GetMobileSummaryAsync(companyId);
+         var briefingTask = apiClient.GetLatestBriefingsAsync(companyId);
+         var agentsTask = apiClient.GetAgentsAsync(companyId);
+         var conversationsTask = apiClient.GetDirectConversationsAsync(companyId);
+ 
++        // Agent summaries power chat selection only; mobile does not expose hiring or configuration.
+         await Task.WhenAll(inboxTask, mobileSummaryTask, briefingTask, agentsTask, conversationsTask);
+ 
+         var inbox = await inboxTask;
+         PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+         Notifications.ReplaceWith(inbox.Notifications);
+diff --git a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+index 10958af..2e31ee2 100644
+--- a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
++++ b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+@@ -62,13 +62,10 @@ public sealed class MobileCompanionApiClient
+ 
+     public Task<InboxViewModel> GetInboxAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<InboxViewModel>($"api/companies/{companyId}/inbox", cancellationToken);
+ 
+-    public Task<ExecutiveCockpitDashboardViewModel> GetExecutiveDashboardAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+-        GetAsync<ExecutiveCockpitDashboardViewModel>($"api/companies/{companyId}/executive-cockpit", cancellationToken);
+-
+     public Task<MobileHomeSummaryResponse> GetMobileSummaryAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<MobileHomeSummaryResponse>($"api/companies/{companyId}/mobile/summary", cancellationToken);
+ 
+     public Task<DashboardBriefingCardViewModel> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<DashboardBriefingCardViewModel>($"api/companies/{companyId}/briefings/latest", cancellationToken);
+@@ -421,50 +418,5 @@ public sealed class CompanyBriefingViewModel
+ public sealed class BriefingSourceReferenceViewModel
+ {
+     public string EntityType { get; set; } = string.Empty;
+     public Guid EntityId { get; set; }
+     public string Label { get; set; } = string.Empty;
+     public string? Status { get; set; }
+     public string? Route { get; set; }
+ }
+-
+-public sealed class ExecutiveCockpitDashboardViewModel
+-{
+-    public Guid CompanyId { get; set; }
+-    public string CompanyName { get; set; } = string.Empty;
+-    public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
+-    public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
+-    public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
+-    public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
+-}
+-
+-public sealed class ExecutiveCockpitSummaryKpiViewModel
+-{
+-    public string Key { get; set; } = string.Empty;
+-    public string Label { get; set; } = string.Empty;
+-    public int CurrentValue { get; set; }
+-    public string DeltaText { get; set; } = string.Empty;
+-}
+-
+-public sealed class ExecutiveCockpitPendingApprovalsViewModel
+-{
+-    public int TotalCount { get; set; }
+-}
+-
+-public sealed class ExecutiveCockpitAlertViewModel
+-{
+-    public Guid Id { get; set; }
+-    public string Severity { get; set; } = string.Empty;
+-    public string Title { get; set; } = string.Empty;
+-    public string Summary { get; set; } = string.Empty;
+-}
+-
+-public sealed class ExecutiveCockpitActivityItemViewModel
+-{
+-    public Guid Id { get; set; }
+-    public string ActivityType { get; set; } = string.Empty;
+-    public string Title { get; set; } = string.Empty;
+-    public string Summary { get; set; } = string.Empty;
+-    public DateTime OccurredUtc { get; set; }
+-}
+diff --git a/src/VirtualCompany.Shared/MobileCompanionScope.cs b/src/VirtualCompany.Shared/MobileCompanionScope.cs
+new file mode 100644
+index 0000000..39b78e6
+--- /dev/null
++++ b/src/VirtualCompany.Shared/MobileCompanionScope.cs
+@@ -0,0 +1,83 @@
++namespace VirtualCompany.Shared.Mobile;
++
++public enum MobileCompanionCapability
++{
++    SignIn,
++    CompanySelection,
++    Alerts,
++    Approvals,
++    DailyBriefing,
++    DirectAgentChat,
++    CompanyStatus,
++    TaskFollowUp
++}
++
++public static class MobileCompanionScope
++{
++    public const string LandingRoute = "MainPage";
++    public const string CompanionScopeDescription = "Mobile is optimized for approvals, alerts, daily briefing, quick company status, task follow-up, and direct agent chat.";
++    public const string WebFirstAdministrationMessage = "For full setup, agent configuration, workflow administration, cockpit analytics, and system management, use the web app.";
++
++    public static IReadOnlyList<MobileCompanionCapability> SupportedCapabilities { get; } =
++    [
++        MobileCompanionCapability.SignIn,
++        MobileCompanionCapability.CompanySelection,
++        MobileCompanionCapability.Alerts,
++        MobileCompanionCapability.Approvals,
++        MobileCompanionCapability.DailyBriefing,
++        MobileCompanionCapability.DirectAgentChat,
++        MobileCompanionCapability.CompanyStatus,
++        MobileCompanionCapability.TaskFollowUp
++    ];
++
++    public static IReadOnlyList<string> SupportedFeatureLabels { get; } =
++    [
++        "sign-in",
++        "company selection",
++        "alerts",
++        "approvals",
++        "daily briefing",
++        "direct agent chat",
++        "company status",
++        "task follow-up"
++    ];
++
++    public static IReadOnlyDictionary<MobileCompanionCapability, string> CapabilityRouteKeys { get; } =
++        new Dictionary<MobileCompanionCapability, string>
++        {
++            [MobileCompanionCapability.SignIn] = "sign-in",
++            [MobileCompanionCapability.CompanySelection] = "company-selection",
++            [MobileCompanionCapability.Alerts] = "alerts",
++            [MobileCompanionCapability.Approvals] = "approvals",
++            [MobileCompanionCapability.DailyBriefing] = "daily-briefing",
++            [MobileCompanionCapability.DirectAgentChat] = "direct-agent-chat",
++            [MobileCompanionCapability.CompanyStatus] = "company-status",
++            [MobileCompanionCapability.TaskFollowUp] = "task-follow-up"
++        };
++
++    public static IReadOnlySet<string> UnsupportedRouteKeys { get; } =
++        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++        {
++            "admin",
++            "agents",
++            "agent-admin",
++            "agent-configuration",
++            "agent-hiring",
++            "analytics",
++            "cockpit",
++            "company-setup",
++            "executive-cockpit",
++            "management",
++            "onboarding",
++            "settings",
++            "workflow-builder",
++            "workflow-definition",
++            "workflows"
++        };
++
++    public static bool IsRouteSupported(string? route)
++    {
++        var normalized = NormalizeRoute(route);
++        if (string.IsNullOrWhiteSpace(normalized) ||
++            string.Equals(normalized, LandingRoute, StringComparison.OrdinalIgnoreCase))
++        {
++            return true;
++        }
++
++        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
++        return segments.Length > 0 &&
++            !segments.Any(segment => UnsupportedRouteKeys.Contains(segment)) &&
++            segments.Any(segment => CapabilityRouteKeys.Values.Contains(segment, StringComparer.OrdinalIgnoreCase));
++    }
++
++    private static string NormalizeRoute(string? route) =>
++        (route ?? string.Empty).Split('?', '#')[0].Trim('/');
++}
+diff --git a/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+new file mode 100644
+index 0000000..1a275e1
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MobileCompanionScopeTests.cs
+@@ -0,0 +1,57 @@
++using VirtualCompany.Shared.Mobile;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MobileCompanionScopeTests
++{
++    [Fact]
++    public void Supported_capabilities_are_limited_to_mobile_companion_scenarios()
++    {
++        MobileCompanionCapability[] expected =
++        [
++            MobileCompanionCapability.SignIn,
++            MobileCompanionCapability.CompanySelection,
++            MobileCompanionCapability.Alerts,
++            MobileCompanionCapability.Approvals,
++            MobileCompanionCapability.DailyBriefing,
++            MobileCompanionCapability.DirectAgentChat,
++            MobileCompanionCapability.CompanyStatus,
++            MobileCompanionCapability.TaskFollowUp
++        ];
++
++        Assert.Equal(expected, MobileCompanionScope.SupportedCapabilities);
++        Assert.Equal(expected, MobileCompanionScope.CapabilityRouteKeys.Keys);
++    }
++
++    [Theory]
++    [InlineData("MainPage")]
++    [InlineData("///MainPage")]
++    [InlineData("alerts")]
++    [InlineData("approvals")]
++    [InlineData("daily-briefing")]
++    [InlineData("direct-agent-chat")]
++    [InlineData("company-status")]
++    [InlineData("task-follow-up")]
++    public void Supported_companion_routes_are_allowed(string route)
++    {
++        Assert.True(MobileCompanionScope.IsRouteSupported(route));
++    }
++
++    [Theory]
++    [InlineData("onboarding")]
++    [InlineData("company-setup")]
++    [InlineData("agents")]
++    [InlineData("agent-hiring")]
++    [InlineData("agent-configuration")]
++    [InlineData("workflows")]
++    [InlineData("workflow-builder")]
++    [InlineData("executive-cockpit")]
++    [InlineData("cockpit")]
++    [InlineData("analytics")]
++    [InlineData("admin")]
++    [InlineData("management")]
++    [InlineData("settings")]
++    [InlineData("admin/approvals")]
++    [InlineData("workflow-builder/task-follow-up")]
++    public void Web_first_admin_routes_are_not_allowed(string route)
++    {
++        Assert.False(MobileCompanionScope.IsRouteSupported(route));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+index b4a5ae7..ff8c388 100644
+--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
++++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+@@ -18,8 +18,9 @@
+   <ItemGroup>
+     <ProjectReference Include="..\..\src\VirtualCompany.Api\VirtualCompany.Api.csproj" />
+     <ProjectReference Include="..\..\src\VirtualCompany.Domain\VirtualCompany.Domain.csproj" />
+     <ProjectReference Include="..\..\src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj" />
++    <ProjectReference Include="..\..\src\VirtualCompany.Shared\VirtualCompany.Shared.csproj" />
+   </ItemGroup>
+ 
+ </Project>
+END_OF_PATCH

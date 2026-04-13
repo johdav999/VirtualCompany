@@ -140,6 +140,15 @@ Users can read and update in-app/mobile delivery preferences at `api/companies/{
 - When absent, the API generates a correlation ID and returns it in the response header.
 - Technical logs and safe error responses include the same correlation ID for support workflows.
 
+## Mobile Companion Scope
+
+The product direction is web-first, mobile-companion. The Blazor web app remains the primary command center for setup, administration, dashboard work, and deep operations.
+Responsive web may cover some early mobile access, but it is an interim bridge rather than the final mobile strategy.
+`VirtualCompany.Mobile` is the intended long-term .NET MAUI companion experience for sign-in, company selection, alerts, approvals, daily briefing, direct agent chat, and quick company status/task follow-up summaries.
+Full setup and administration remain web-first: company onboarding, agent hiring/configuration, workflow definition/administration, deep cockpit analytics, and broad system management are not mobile parity goals.
+Web and MAUI clients should reuse the same backend APIs and shared contracts. Mobile-specific business workflows or mobile-only endpoints should only be added when a later story explicitly requires them.
+The mobile app centralizes this boundary in `MobileCompanionScope` so navigation, route guards, and product copy stay aligned with the supported companion surface.
+
 
 ## Workflow v1
 

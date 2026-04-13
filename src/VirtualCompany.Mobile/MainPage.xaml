@@ -1,26 +1,391 @@
 ﻿<?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-             x:Class="VirtualCompany.Mobile.MainPage">
-
+             x:Class="VirtualCompany.Mobile.MainPage"
+             Title="Companion">
     <ScrollView>
-        <VerticalStackLayout
-            Padding="24"
-            Spacing="16">
-            <Label
-                Text="Virtual Company"
-                Style="{StaticResource Headline}"
-                SemanticProperties.HeadingLevel="Level1" />
+        <VerticalStackLayout Padding="20" Spacing="18">
+            <VerticalStackLayout Spacing="6">
+                <Label
+                    Text="Virtual Company"
+                    Style="{StaticResource Headline}"
+                    SemanticProperties.HeadingLevel="Level1" />
+                <Label
+                    Text="Approvals, alerts, briefing, and quick chat"
+                    Style="{StaticResource SubHeadline}"
+                    SemanticProperties.HeadingLevel="Level2" />
+                <Label
+                    x:Name="ProductDirectionLabel"
+                    FontSize="15"
+                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                <Label
+                    x:Name="SupportedFeaturesLabel"
+                    FontSize="14"
+                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                <Label
+                    x:Name="ResponsiveBridgeLabel"
+                    FontSize="14"
+                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                <Label
+                    x:Name="ApiReuseLabel"
+                    FontSize="14"
+                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                <Label
+                    x:Name="WebFirstAdministrationLabel"
+                    FontSize="14"
+                    TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+            </VerticalStackLayout>
 
-            <Label
-                Text="Mobile workspace initialized."
-                Style="{StaticResource SubHeadline}"
-                SemanticProperties.HeadingLevel="Level2" />
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Sign in"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Label
+                        Text="API base URL"
+                        FontAttributes="Bold" />
+                    <Entry
+                        x:Name="ApiBaseUrlEntry"
+                        Keyboard="Url"
+                        Text="http://localhost:5301/"
+                        Placeholder="http://localhost:5301/" />
 
-            <Label
-                Text="Replace this placeholder with the first production mobile workflow."
-                FontSize="16" />
+                    <Label
+                        Text="Development subject"
+                        FontAttributes="Bold" />
+                    <Entry
+                        x:Name="DevelopmentSubjectEntry"
+                        Text="alice"
+                        Placeholder="alice" />
+
+                    <Label
+                        Text="Email"
+                        FontAttributes="Bold" />
+                    <Entry
+                        x:Name="DevelopmentEmailEntry"
+                        Keyboard="Email"
+                        Text="alice@example.com"
+                        Placeholder="alice@example.com" />
+
+                    <Label
+                        Text="Display name"
+                        FontAttributes="Bold" />
+                    <Entry
+                        x:Name="DevelopmentDisplayNameEntry"
+                        Text="Alice Admin"
+                        Placeholder="Alice Admin" />
+
+                    <Button
+                        Text="Sign in / refresh session"
+                        Clicked="OnSignInClicked" />
+                    <Label
+                        x:Name="StatusLabel"
+                        Text="Sign in to load your company memberships."
+                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Company"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Picker
+                        x:Name="CompanyPicker"
+                        Title="Select company"
+                        ItemDisplayBinding="{Binding CompanyName}"
+                        SelectedIndexChanged="OnCompanySelectionChanged" />
+                    <Button
+                        Text="Refresh companion"
+                        Clicked="OnRefreshClicked" />
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Company status"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Label
+                        x:Name="CompanyStatusHeadlineLabel"
+                        Text="Select a company to load status."
+                        FontAttributes="Bold" />
+                    <Label
+                        x:Name="CompanyStatusLabel"
+                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                    <FlexLayout BindableLayout.ItemsSource="{Binding SummaryKpis}"
+                                Direction="Row"
+                                Wrap="Wrap"
+                                AlignItems="Start">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="12" Margin="0,0,8,8" Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}">
+                                    <VerticalStackLayout Spacing="4" WidthRequest="140">
+                                        <Label Text="{Binding Label}" FontAttributes="Bold" />
+                                        <Label Text="{Binding Value}" FontSize="20" />
+                                        <Label Text="{Binding StatusHint}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </FlexLayout>
+                    <CollectionView ItemsSource="{Binding TaskFollowUps}" SelectionMode="None" HeightRequest="180">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No recent task follow-ups."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <VerticalStackLayout Padding="0,0,0,10" Spacing="4">
+                                    <Label Text="{Binding Title}" FontAttributes="Bold" />
+                                    <Label Text="{Binding Summary}" LineBreakMode="WordWrap" />
+                                    <HorizontalStackLayout Spacing="8">
+                                        <Label Text="{Binding Priority}" FontAttributes="Bold" FontSize="12" />
+                                        <Label Text="{Binding Status}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                        <Label Text="{Binding AssignedAgentDisplayName}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                    </HorizontalStackLayout>
+                                </VerticalStackLayout>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <HorizontalStackLayout Spacing="10">
+                        <Label
+                            Text="Alerts"
+                            FontAttributes="Bold"
+                            FontSize="18" />
+                        <Label
+                            x:Name="InboxSummaryLabel"
+                            Text=""
+                            VerticalTextAlignment="Center"
+                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                    </HorizontalStackLayout>
+
+                    <CollectionView ItemsSource="{Binding Notifications}" SelectionMode="None" HeightRequest="320">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No alerts for this company."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="12" Margin="0,0,0,12">
+                                    <VerticalStackLayout Spacing="8">
+                                        <HorizontalStackLayout Spacing="8">
+                                            <Label
+                                                Text="{Binding Priority}"
+                                                FontAttributes="Bold" />
+                                            <Label
+                                                Text="{Binding Status}"
+                                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                        </HorizontalStackLayout>
+                                        <Label
+                                            Text="{Binding Title}"
+                                            FontAttributes="Bold" />
+                                        <Label
+                                            Text="{Binding Body}"
+                                            LineBreakMode="WordWrap" />
+                                        <HorizontalStackLayout Spacing="8">
+                                            <Button
+                                                Text="Mark read"
+                                                Clicked="OnMarkReadClicked"
+                                                CommandParameter="{Binding .}" />
+                                            <Button
+                                                Text="Actioned"
+                                                Clicked="OnMarkActionedClicked"
+                                                CommandParameter="{Binding .}" />
+                                        </HorizontalStackLayout>
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Approvals"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Label
+                        x:Name="ApprovalSummaryLabel"
+                        Text="No approvals loaded."
+                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+
+                    <CollectionView
+                        ItemsSource="{Binding PendingApprovals}"
+                        SelectionMode="None"
+                        HeightRequest="360">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No pending approvals."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="12" Margin="0,0,0,12">
+                                    <VerticalStackLayout Spacing="8">
+                                        <HorizontalStackLayout Spacing="8">
+                                            <Label
+                                                Text="{Binding ApprovalType}"
+                                                FontAttributes="Bold" />
+                                            <Label Text="approval" />
+                                            <Label
+                                                Text="{Binding Status}"
+                                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                        </HorizontalStackLayout>
+                                        <Label
+                                            Text="{Binding RationaleSummary}"
+                                            LineBreakMode="WordWrap" />
+                                        <Label
+                                            Text="{Binding AffectedDataSummary}"
+                                            TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}"
+                                            LineBreakMode="WordWrap" />
+                                        <HorizontalStackLayout Spacing="8">
+                                            <Button
+                                                Text="Approve"
+                                                Clicked="OnApproveClicked"
+                                                CommandParameter="{Binding .}" />
+                                            <Button
+                                                Text="Reject"
+                                                Clicked="OnRejectClicked"
+                                                CommandParameter="{Binding .}" />
+                                        </HorizontalStackLayout>
+                                    </VerticalStackLayout>
+                                </Border>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Daily briefing"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Label
+                        x:Name="BriefingTitleLabel"
+                        Text="No briefing loaded."
+                        FontAttributes="Bold" />
+                    <Label
+                        x:Name="BriefingSummaryLabel"
+                        Text=""
+                        LineBreakMode="WordWrap"
+                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                    <CollectionView ItemsSource="{Binding BriefingHighlights}" SelectionMode="None" HeightRequest="160">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No briefing highlights."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <VerticalStackLayout Padding="0,0,0,8">
+                                    <Label Text="{Binding Label}" FontAttributes="Bold" />
+                                    <Label Text="{Binding Route}" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                </VerticalStackLayout>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+                </VerticalStackLayout>
+            </Border>
+
+            <Border Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}" Padding="16">
+                <VerticalStackLayout Spacing="12">
+                    <Label
+                        Text="Quick agent chat"
+                        FontAttributes="Bold"
+                        FontSize="18" />
+                    <Label
+                        Text="Chat is for quick questions and follow-up, not agent hiring or configuration."
+                        FontSize="14"
+                        TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                    <Picker
+                        x:Name="AgentPicker"
+                        Title="Select agent"
+                        ItemDisplayBinding="{Binding DisplayName}"
+                        SelectedIndexChanged="OnAgentSelectionChanged" />
+                    <Label
+                        Text="Agent ID"
+                        FontAttributes="Bold" />
+                    <Entry
+                        x:Name="AgentIdEntry"
+                        Keyboard="Default"
+                        Placeholder="Open or select an agent conversation" />
+
+                    <HorizontalStackLayout Spacing="8">
+                        <Button
+                            Text="Open chat"
+                            Clicked="OnOpenChatClicked" />
+                        <Button
+                            Text="Load recent"
+                            Clicked="OnLoadConversationsClicked" />
+                    </HorizontalStackLayout>
+
+                    <CollectionView
+                        ItemsSource="{Binding Conversations}"
+                        SelectionMode="None"
+                        HeightRequest="180">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No recent conversations loaded."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <Button
+                                    Text="{Binding AgentDisplayName}"
+                                    Clicked="OnConversationClicked"
+                                    CommandParameter="{Binding .}" />
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+
+                    <CollectionView
+                        ItemsSource="{Binding Messages}"
+                        SelectionMode="None"
+                        HeightRequest="240">
+                        <CollectionView.EmptyView>
+                            <Label
+                                Text="No messages loaded."
+                                TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                        </CollectionView.EmptyView>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <VerticalStackLayout Padding="0,0,0,12">
+                                    <Label
+                                        Text="{Binding SenderType}"
+                                        FontAttributes="Bold" />
+                                    <Label
+                                        Text="{Binding Body}"
+                                        LineBreakMode="WordWrap" />
+                                </VerticalStackLayout>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+
+                    <Editor
+                        x:Name="MessageEditor"
+                        AutoSize="TextChanges"
+                        Placeholder="Message the selected agent"
+                        HeightRequest="96" />
+                    <Button
+                        Text="Send"
+                        Clicked="OnSendMessageClicked" />
+                </VerticalStackLayout>
+            </Border>
         </VerticalStackLayout>
     </ScrollView>
-
 </ContentPage>

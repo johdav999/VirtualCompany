@@ -179,6 +179,14 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
         Validate(command);
 
+        var clientRequestId = command.ClientRequestId is Guid requestId && requestId != Guid.Empty
+            ? requestId
+            : (Guid?)null;
+        if (clientRequestId is Guid retryRequestId && await TryGetRetriedSendResultAsync(companyId, conversationId, retryRequestId, cancellationToken) is { } retryResult)
+        {
+            return retryResult;
+        }
+
         var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
         if (conversation.AgentId is not Guid agentId)
         {
@@ -193,7 +201,10 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
             ChatSenderTypes.User,
             membership.UserId,
             ChatMessageTypes.Text,
-            command.Body);
+            command.Body,
+            clientRequestId is null
+                ? null
+                : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase) { ["client_request_id"] = JsonValue.Create(clientRequestId.Value.ToString("N")) });
 
         _dbContext.Messages.Add(humanMessage);
         conversation.Touch();
@@ -235,6 +246,52 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
             ToMessageDto(humanMessage),
             ToMessageDto(agentMessage));
     }
+
+    private async Task<SendDirectAgentMessageResultDto?> TryGetRetriedSendResultAsync(
+        Guid companyId,
+        Guid conversationId,
+        Guid clientRequestId,
+        CancellationToken cancellationToken)
+    {
+        var recentMessages = await _dbContext.Messages
+            .AsNoTracking()
+            .Include(x => x.Conversation)
+            .ThenInclude(x => x.Agent)
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.ConversationId == conversationId &&
+                x.Conversation.CompanyId == companyId &&
+                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent)
+            .OrderByDescending(x => x.CreatedUtc)
+            .Take(80)
+            .ToListAsync(cancellationToken);
+
+        var humanMessage = recentMessages
+            .Where(x => string.Equals(x.SenderType, ChatSenderTypes.User, StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault(x => TryReadClientRequestId(x.StructuredPayload) == clientRequestId);
+        if (humanMessage is null || humanMessage.Conversation.Agent is null)
+        {
+            return null;
+        }
+
+        var agentMessage = recentMessages
+            .Where(x => x.CreatedUtc >= humanMessage.CreatedUtc)
+            .OrderBy(x => x.CreatedUtc)
+            .FirstOrDefault(x => string.Equals(x.SenderType, ChatSenderTypes.Agent, StringComparison.OrdinalIgnoreCase));
+
+        return new SendDirectAgentMessageResultDto(
+            ToConversationDto(humanMessage.Conversation, humanMessage.Conversation.Agent),
+            ToMessageDto(humanMessage),
+            agentMessage is null ? null! : ToMessageDto(agentMessage));
+    }
+
+    private static Guid? TryReadClientRequestId(IReadOnlyDictionary<string, JsonNode?> payload) =>
+        payload.TryGetValue("client_request_id", out var node) &&
+        node is JsonValue value &&
+        value.TryGetValue<string>(out var text) &&
+        Guid.TryParse(text, out var requestId)
+            ? requestId
+            : null;
 
     public async Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(
         Guid companyId,

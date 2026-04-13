@@ -48,6 +48,7 @@ public sealed record NotificationUnreadCountDto(int UnreadCount);
 
 public sealed record ApprovalInboxItemDto(
     Guid Id,
+    Guid CompanyId,
     string ApprovalType,
     string TargetEntityType,
     Guid TargetEntityId,
@@ -71,5 +72,6 @@ public interface INotificationInboxService
     Task<NotificationUnreadCountDto> GetUnreadCountAsync(Guid companyId, CancellationToken cancellationToken);
     Task<NotificationListItemDto> CreateAsync(Guid companyId, CreateNotificationCommand command, CancellationToken cancellationToken);
     Task<ApprovalRequestDto> GetApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
+    Task<ApprovalDecisionResultDto> DecideApprovalAsync(Guid companyId, Guid approvalId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
     Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
 }

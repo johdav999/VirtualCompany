@@ -1,0 +1,108 @@
+diff --git a/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs b/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs
+index 2ab45c0..e7afc85 100644
+--- a/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs
++++ b/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs
+@@ -1,5 +1,6 @@
+ using System.Linq.Expressions;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Notifications;
+@@ -42,6 +43,21 @@ public static class CompanyNotificationInboxOrdering
+         };
+     }
+ 
++    public static int GetSortPriority(ApprovalRequestDto approval)
++    {
++        ArgumentNullException.ThrowIfNull(approval);
++
++        return string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase)
++            ? PendingApprovalPriority
++            : ReadOrActionedPriority;
++    }
++
++    public static IOrderedEnumerable<ApprovalRequestDto> ApplyApprovalInboxOrdering(this IEnumerable<ApprovalRequestDto> approvals) =>
++        approvals
++            .OrderBy(GetSortPriority)
++            .ThenByDescending(approval => approval.CreatedAt)
++            .ThenBy(approval => approval.Id);
++
+     public static IOrderedQueryable<CompanyNotification> ApplyInboxOrdering(this IQueryable<CompanyNotification> query) =>
+         query
+             .OrderBy(SortPriorityExpression)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index c4fc324..7a0edc3 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -41,7 +41,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+ 
+         var approvals = (await _approvalRequestService.ListAsync(companyId, "pending", cancellationToken))
+             .Where(x => IsEligibleApprover(x, membership))
+-            .OrderByDescending(x => x.CreatedAt)
++            .ApplyApprovalInboxOrdering()
+             .Take(50)
+             .Select(ToInboxItemDto)
+             .ToList();
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+index c61e8ea..2905721 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+@@ -1,3 +1,5 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -113,6 +115,20 @@ public sealed class NotificationInboxTests
+         Assert.Same(matching, item);
+     }
+ 
++    [Fact]
++    public void Approval_inbox_sort_places_pending_newest_first_before_terminal_items()
++    {
++        var olderPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));
++        var newerPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 9, 0, 0, DateTimeKind.Utc));
++        var approved = CreateApproval(ApprovalRequestStatus.Approved.ToStorageValue(), new DateTime(2026, 4, 13, 10, 0, 0, DateTimeKind.Utc));
++
++        var ordered = new[] { olderPending, approved, newerPending }
++            .ApplyApprovalInboxOrdering()
++            .ToList();
++
++        Assert.Equal([newerPending.Id, olderPending.Id, approved.Id], ordered.Select(x => x.Id));
++    }
++
+     [Fact]
+     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()
+     {
+@@ -161,6 +177,28 @@ public sealed class NotificationInboxTests
+             "{}",
+             $"{type.ToStorageValue()}:{Guid.NewGuid():N}");
+ 
++    private static ApprovalRequestDto CreateApproval(string status, DateTime createdAt) =>
++        new(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            ApprovalTargetEntityType.Task.ToStorageValue(),
++            Guid.NewGuid(),
++            "user",
++            Guid.NewGuid(),
++            "policy",
++            "manager",
++            null,
++            status,
++            new Dictionary<string, JsonNode?>(),
++            Array.Empty<ApprovalStepDto>(),
++            null,
++            null,
++            null,
++            "Approval required.",
++            "Affected data.",
++            Array.Empty<ApprovalAffectedEntityDto>(),
++            null,
++            createdAt);
++
+     private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>
+         typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);
+ }
+END_OF_PATCH

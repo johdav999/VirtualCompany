@@ -1,0 +1,488 @@
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 7b4c2e8..b38da50 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -133,6 +133,56 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("approvals/inbox/{approvalId:guid}/decisions")]
++    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideApprovalInboxAsync(
++        Guid companyId,
++        Guid approvalId,
++        [FromBody] ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (command.ApprovalId == Guid.Empty)
++        {
++            command = command with { ApprovalId = approvalId };
++        }
++
++        if (command.ApprovalId != approvalId)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++
++        try
++        {
++            return Ok(await _notificationInboxService.DecideApprovalAsync(companyId, approvalId, command, cancellationToken));
++        }
++        catch (ApprovalValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
++        }
++    }
++
+     [HttpPost("notifications/{notificationId:guid}/read")]
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+     public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 4274252..de04731 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -152,6 +152,7 @@ public static class AuditTargetTypes
+     public const string ConversationTaskLink = "conversation_task_link";
+     public const string WorkflowException = "workflow_exception";
+     public const string ExecutionException = "execution_exception";
++    public const string CompanyNotification = "company_notification";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -205,4 +206,5 @@ public static class AuditEventActions
+     public const string MultiAgentWorkerCompleted = "multi_agent.worker.completed";
+     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
+     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
++    public const string CompanyNotificationActioned = "company.notification.actioned";
+ }
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+index 2859e1c..d7495d8 100644
+--- a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -44,6 +44,7 @@ public sealed record NotificationUnreadCountDto(int UnreadCount);
+ 
+ public sealed record ApprovalInboxItemDto(
+     Guid Id,
++    Guid CompanyId,
+     string ApprovalType,
+     string TargetEntityType,
+     Guid TargetEntityId,
+@@ -71,5 +72,6 @@ public interface INotificationInboxService
+     Task<NotificationUnreadCountDto> GetUnreadCountAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> CreateAsync(Guid companyId, CreateNotificationCommand command, CancellationToken cancellationToken);
+     Task<ApprovalRequestDto> GetApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
++    Task<ApprovalDecisionResultDto> DecideApprovalAsync(Guid companyId, Guid approvalId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
+ }
+\ No newline at end of file
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 34b3c89..d92143a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Domain.Entities;
+@@ -14,15 +15,18 @@ public sealed class CompanyNotificationService : INotificationInboxService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IApprovalRequestService _approvalRequestService;
++    private readonly IAuditEventWriter _auditEventWriter;
+ 
+     public CompanyNotificationService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+-        IApprovalRequestService approvalRequestService)
++        IApprovalRequestService approvalRequestService,
++        IAuditEventWriter auditEventWriter)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _approvalRequestService = approvalRequestService;
++        _auditEventWriter = auditEventWriter;
+     }
+ 
+     public async Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -170,6 +174,43 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         return approval;
+     }
+ 
++    public async Task<ApprovalDecisionResultDto> DecideApprovalAsync(
++        Guid companyId,
++        Guid approvalId,
++        ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
++
++        if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.Decision)] = [$"Only pending approvals can be decided from the inbox. Current status: {approval.Status}."]
++            });
++        }
++
++        if (!IsEligibleApprover(approval, membership))
++        {
++            throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
++        }
++
++        var normalizedCommand = command.ApprovalId == Guid.Empty
++            ? command with { ApprovalId = approvalId }
++            : command;
++
++        if (normalizedCommand.ApprovalId != approvalId)
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.ApprovalId)] = ["Approval id must match the route."]
++            });
++        }
++
++        return await _approvalRequestService.DecideAsync(companyId, normalizedCommand, cancellationToken);
++    }
++
+     public async Task<NotificationListItemDto> SetStatusAsync(
+         Guid companyId,
+         Guid notificationId,
+@@ -180,6 +221,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         var notification = await _dbContext.CompanyNotifications
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.Id == notificationId, cancellationToken)
+             ?? throw new KeyNotFoundException("Notification not found.");
++        var previousStatus = notification.Status;
+ 
+         switch (command.Status.Trim().ToLowerInvariant())
+         {
+@@ -196,10 +238,54 @@ public sealed class CompanyNotificationService : INotificationInboxService
+                 throw new ArgumentOutOfRangeException(nameof(command), command.Status, "Notification status must be unread, read, or actioned.");
+         }
+ 
++        if (notification.Status == CompanyNotificationStatus.Actioned &&
++            previousStatus != CompanyNotificationStatus.Actioned)
++        {
++            await WriteNotificationActionedAuditAsync(notification, membership.UserId, previousStatus, cancellationToken);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(notification);
+     }
+ 
++    private async Task WriteNotificationActionedAuditAsync(
++        CompanyNotification notification,
++        Guid actorUserId,
++        CompanyNotificationStatus previousStatus,
++        CancellationToken cancellationToken)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["notificationId"] = notification.Id.ToString("N"),
++            ["notificationType"] = notification.Type.ToStorageValue(),
++            ["previousStatus"] = previousStatus.ToStorageValue(),
++            ["newStatus"] = notification.Status.ToStorageValue(),
++            ["recipientUserId"] = notification.UserId.ToString("N"),
++            ["relatedEntityType"] = notification.RelatedEntityType,
++            ["relatedEntityId"] = notification.RelatedEntityId?.ToString("N")
++        };
++
++        if (string.Equals(notification.RelatedEntityType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase) &&
++            notification.RelatedEntityId is Guid approvalId)
++        {
++            metadata["approvalRequestId"] = approvalId.ToString("N");
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                notification.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                AuditEventActions.CompanyNotificationActioned,
++                AuditTargetTypes.CompanyNotification,
++                notification.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                RationaleSummary: $"Notification {notification.Type.ToStorageValue()} was marked actioned from inbox.",
++                DataSources: ["notifications", "http_request"],
++                Metadata: metadata),
++            cancellationToken);
++    }
++
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
+         await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
+         ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+@@ -329,6 +415,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+     private static ApprovalInboxItemDto ToInboxItemDto(ApprovalRequestDto approval) =>
+         new(
+             approval.Id,
++            approval.CompanyId,
+             approval.ApprovalType,
+             approval.TargetEntityType,
+             approval.TargetEntityId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index a188968..a8d3741 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -202,6 +202,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     {
+         var claimedMessages = await ClaimBatchAsync(cancellationToken);
+         var handledCount = 0;
++        var processedCount = 0;
++        var retryCount = 0;
++        var permanentFailureCount = 0;
++
++        if (claimedMessages.Count > 0)
++        {
++            _logger.LogInformation(
++                "Company outbox dispatcher claimed {ClaimedCount} message(s) for processing.",
++                claimedMessages.Count);
++        }
+ 
+         foreach (var message in claimedMessages)
+         {
+@@ -258,6 +268,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
++                    processedCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.PermanentFailure:
+                 case BackgroundJobExecutionOutcome.Blocked:
+@@ -271,6 +282,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
++                    permanentFailureCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.RetryScheduled:
+                 {
+@@ -285,11 +297,22 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         nextAttemptAtUtc);
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
++                    retryCount++;
+                     break;
+                 }
+             }
+         }
+ 
++        if (claimedMessages.Count > 0)
++        {
++            _logger.LogInformation(
++                "Company outbox dispatcher completed batch. Claimed: {ClaimedCount}, Processed: {ProcessedCount}, RetryScheduled: {RetryCount}, PermanentFailures: {PermanentFailureCount}.",
++                claimedMessages.Count,
++                processedCount,
++                retryCount,
++                permanentFailureCount);
++        }
++
+         return handledCount;
+     }
+ 
+@@ -715,7 +738,6 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
+                     _logger.LogInformation("Company outbox dispatcher processed {HandledCount} message(s) in the current cycle.", handledCount);
+                 }
+ 
+-
+                 if (handledCount < batchSize)
+                 {
+                     await Task.Delay(pollInterval, stoppingToken);
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+index 7fddedc..061c327 100644
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -275,17 +275,18 @@ else
+         errorMessage = null;
+         try
+         {
+-            var result = await ApprovalApiClient.DecideAsync(
+-                companyId,
+-                selectedApproval.Id,
+-                new ApprovalDecisionRequest
+-                {
+-                    ApprovalId = selectedApproval.Id,
+-                    StepId = selectedApproval.CurrentStep.Id,
+-                    Decision = decision,
+-                    Comment = decisionComment
+-                });
++            var request = new ApprovalDecisionRequest
++            {
++                ApprovalId = selectedApproval.Id,
++                StepId = selectedApproval.CurrentStep.Id,
++                Decision = decision,
++                Comment = decisionComment
++            };
++            var result = IsPendingInboxFilter
++                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, selectedApproval.Id, request)
++                : await ApprovalApiClient.DecideAsync(companyId, selectedApproval.Id, request);
+             selectedApproval = result.Approval;
++            decisionComment = null;
+             await LoadApprovalInboxAsync(companyId);
+         }
+         catch (OnboardingApiException ex)
+@@ -320,6 +321,7 @@ else
+         new()
+         {
+             Id = item.Id,
++            CompanyId = item.CompanyId,
+             TargetEntityType = item.TargetEntityType,
+             TargetEntityId = item.TargetEntityId,
+             ApprovalType = item.ApprovalType,
+diff --git a/src/VirtualCompany.Web/Pages/Inbox.razor b/src/VirtualCompany.Web/Pages/Inbox.razor
+index 4b4a195..78b94f4 100644
+--- a/src/VirtualCompany.Web/Pages/Inbox.razor
++++ b/src/VirtualCompany.Web/Pages/Inbox.razor
+@@ -217,7 +217,7 @@ else
+         try
+         {
+             approvalComments.TryGetValue(approval.Id, out var comment);
+-            await ApprovalApiClient.DecideAsync(
++            await InboxApiClient.DecidePendingApprovalAsync(
+                 companyId,
+                 approval.Id,
+                 new ApprovalDecisionRequest
+@@ -228,6 +228,7 @@ else
+                     Comment = comment
+                 });
+             inbox = await InboxApiClient.GetInboxAsync(companyId);
++            approvalComments.Remove(approval.Id);
+         }
+         catch (OnboardingApiException ex)
+         {
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+index b2a9da1..76f5364 100644
+--- a/src/VirtualCompany.Web/Services/InboxApiClient.cs
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -35,6 +35,35 @@ public sealed class InboxApiClient
+         return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/inbox/{approvalId}", cancellationToken);
+     }
+ 
++    public Task<ApprovalDecisionResultViewModel> DecidePendingApprovalAsync(
++        Guid companyId,
++        Guid approvalId,
++        ApprovalDecisionRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var approval = ApprovalApiClient.OfflineApprovals(companyId).Single(x => x.Id == approvalId);
++            approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
++            var currentStep = approval.CurrentStep;
++            if (currentStep is not null)
++            {
++                currentStep.Status = approval.Status;
++                currentStep.DecidedAt = DateTime.UtcNow;
++                currentStep.Comment = request.Comment?.Trim();
++                approval.RejectionComment = approval.Status == "rejected" ? currentStep.Comment : null;
++            }
++
++            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, DecidedStep = currentStep, IsFinalized = true });
++        }
++
++        return SendAsync<ApprovalDecisionResultViewModel>(
++            HttpMethod.Post,
++            $"api/companies/{companyId}/approvals/inbox/{approvalId}/decisions",
++            request,
++            cancellationToken);
++    }
++
+     public Task<NotificationListItemViewModel> SetStatusAsync(Guid companyId, Guid notificationId, string status, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+@@ -167,6 +196,7 @@ public sealed class NotificationListItemViewModel
+ public sealed class ApprovalInboxItemViewModel
+ {
+     public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
+     public string ApprovalType { get; set; } = string.Empty;
+     public string TargetEntityType { get; set; } = string.Empty;
+     public Guid TargetEntityId { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs b/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
+index 61a9567..0a515df 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationOutboxDispatcherTests.cs
+@@ -204,6 +204,59 @@ public sealed class NotificationOutboxDispatcherTests : IClassFixture<TestWebApp
+         Assert.Empty(await dbContext.CompanyNotifications.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
+     }
+ 
++    [Fact]
++    public async Task OutboxProcessor_marks_cross_tenant_notification_payload_as_terminal_failure()
++    {
++        var companyId = Guid.NewGuid();
++        var payloadCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var outboxMessageId = Guid.NewGuid();
++        var sourceEntityId = Guid.NewGuid();
++
++        await SeedNotificationOutboxAsync(
++            _factory.Services,
++            companyId,
++            userId,
++            outboxMessageId,
++            new NotificationDeliveryRequestedMessage(
++                payloadCompanyId,
++                CompanyNotificationType.ApprovalRequested.ToStorageValue(),
++                CompanyNotificationPriority.High.ToStorageValue(),
++                "Approval requested",
++                "Review the approval request.",
++                "approval_request",
++                sourceEntityId,
++                "/inbox",
++                userId,
++                null,
++                null,
++                null,
++                $"approval-requested:{sourceEntityId:N}",
++                "notification-tenant-mismatch"));
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);
++
++            Assert.Equal(1, handledCount);
++        }
++
++        using var assertionScope = _factory.Services.CreateScope();
++        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var outboxMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x => x.Id == outboxMessageId);
++
++        Assert.Equal(CompanyOutboxMessageStatus.Failed, outboxMessage.Status);
++        Assert.Equal(1, outboxMessage.AttemptCount);
++        Assert.NotNull(outboxMessage.ProcessedUtc);
++        Assert.Contains("tenant", outboxMessage.LastError, StringComparison.OrdinalIgnoreCase);
++        Assert.False(await dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .AnyAsync(x =>
++                x.CompanyId == companyId ||
++                x.CompanyId == payloadCompanyId));
++    }
++
+     private static async Task SeedNotificationOutboxAsync(
+         IServiceProvider services,
+         Guid companyId,
+END_OF_PATCH

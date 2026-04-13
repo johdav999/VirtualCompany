@@ -1,4 +1,5 @@
 ﻿@page "/"
+@using VirtualCompany.Shared.Mobile
 @inject OnboardingApiClient ApiClient
 @inject NavigationManager Navigation
 
@@ -63,6 +64,13 @@ else
                     <li>Save progress and resume the same setup session later.</li>
                     <li>Complete onboarding and land in the dashboard with starter guidance.</li>
                 </ul>
+
+                <div class="alert alert-secondary mt-4 mb-0">
+                    <strong>Mobile companion direction</strong>
+                    <div>@MobileCompanionScope.ProductDirectionDescription</div>
+                    <div>@MobileCompanionScope.ResponsiveWebBridgeMessage</div>
+                    <div>@MobileCompanionScope.SharedBackendApiReuseMessage</div>
+                </div>
 
                 @if (progress?.IsCompleted == true && !string.IsNullOrWhiteSpace(progress.DashboardPath))
                 {

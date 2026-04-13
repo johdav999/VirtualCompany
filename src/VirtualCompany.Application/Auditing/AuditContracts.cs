@@ -152,6 +152,7 @@ public static class AuditTargetTypes
     public const string ConversationTaskLink = "conversation_task_link";
     public const string WorkflowException = "workflow_exception";
     public const string ExecutionException = "execution_exception";
+    public const string CompanyNotification = "company_notification";
 }
 
 public static class AuditEventOutcomes
@@ -205,4 +206,5 @@ public static class AuditEventActions
     public const string MultiAgentWorkerCompleted = "multi_agent.worker.completed";
     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
+    public const string CompanyNotificationActioned = "company.notification.actioned";
 }

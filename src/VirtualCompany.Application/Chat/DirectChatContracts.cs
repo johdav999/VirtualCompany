@@ -26,7 +26,7 @@ public sealed record GetConversationMessagesQuery(int? Skip, int? Take);
 
 public sealed record GetDirectConversationsQuery(int? Skip, int? Take);
 
-public sealed record SendDirectAgentMessageCommand(string Body);
+public sealed record SendDirectAgentMessageCommand(string Body, Guid? ClientRequestId = null);
 
 public sealed record CreateTaskFromChatCommand(
     Guid? SourceMessageId,

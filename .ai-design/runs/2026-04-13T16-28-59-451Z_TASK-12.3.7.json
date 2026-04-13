@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.7",
+  "promptPath": ".ai-design/prompts/TASK-12.3.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T16:28:59.451Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T16-28-59-451Z_TASK-12.3.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T16-28-59-451Z_TASK-12.3.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T16:30:24.441Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "MessageType}) successfully on attempt {Attempt}.\",\n@@ -268,7 +269,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor\n                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);\n                     await _dbContext.SaveChangesAsync(cancellationToken);\n                     handledCount++;\n-                    permanentFailureCount++;\n+                    processedCount++;\n                     break;\n                 case BackgroundJobExecutionOutcome.RetryScheduled:\n                 {\n@@ -287,6 +288,24 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor\n                     retryCount++;\n                     break;\n                 }\n+                case BackgroundJobExecutionOutcome.Blocked:\n+                case BackgroundJobExecutionOutcome.PermanentFailure:\n+                case BackgroundJobExecutionOutcome.RetryExhausted:\n+                {\n+                    var failureMessage = ResolveFailureMessage(execution);\n+                    message.MarkDiscarded(failureMessage);\n+                    _logger.LogError(\n+                        \"Discarded company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Outcome: {Outcome}. FailureClassification: {FailureClassification}. Error: {ErrorMessage}\",\n+                        message.Topic,\n+                        message.MessageType ?? message.Topic,\n+                        attempt,\n+                        execution.Outcome,\n+                        execution.FailureClassification,\n+                        failureMessage);\n+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);\n+                    await _dbContext.SaveChangesAsync(cancellationToken);\n+                    handledCount++;\n+                    permanentFailureCount++;\n+                    break;\n+                }\n             }\n         }\n \nEND_OF_PATCH\n",
+  "stderrTail": "ssfully on attempt {Attempt}.\",\n@@ -268,7 +269,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor\n                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);\n                     await _dbContext.SaveChangesAsync(cancellationToken);\n                     handledCount++;\n-                    permanentFailureCount++;\n+                    processedCount++;\n                     break;\n                 case BackgroundJobExecutionOutcome.RetryScheduled:\n                 {\n@@ -287,6 +288,24 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor\n                     retryCount++;\n                     break;\n                 }\n+                case BackgroundJobExecutionOutcome.Blocked:\n+                case BackgroundJobExecutionOutcome.PermanentFailure:\n+                case BackgroundJobExecutionOutcome.RetryExhausted:\n+                {\n+                    var failureMessage = ResolveFailureMessage(execution);\n+                    message.MarkDiscarded(failureMessage);\n+                    _logger.LogError(\n+                        \"Discarded company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Outcome: {Outcome}. FailureClassification: {FailureClassification}. Error: {ErrorMessage}\",\n+                        message.Topic,\n+                        message.MessageType ?? message.Topic,\n+                        attempt,\n+                        execution.Outcome,\n+                        execution.FailureClassification,\n+                        failureMessage);\n+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);\n+                    await _dbContext.SaveChangesAsync(cancellationToken);\n+                    handledCount++;\n+                    permanentFailureCount++;\n+                    break;\n+                }\n             }\n         }\n \nEND_OF_PATCH\ntokens used\n99,337\n",
+  "verbosityMode": "summary"
+}

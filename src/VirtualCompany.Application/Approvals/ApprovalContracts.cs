@@ -23,7 +23,8 @@ public sealed record ApprovalDecisionCommand(
     Guid ApprovalId,
     string Decision,
     Guid? StepId = null,
-    string? Comment = null);
+    string? Comment = null,
+    Guid? ClientRequestId = null);
 
 public sealed record ApprovalRequestDto(
     Guid Id,

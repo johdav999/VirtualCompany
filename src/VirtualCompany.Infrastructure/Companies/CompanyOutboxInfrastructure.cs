@@ -202,6 +202,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     {
         var claimedMessages = await ClaimBatchAsync(cancellationToken);
         var handledCount = 0;
+        var processedCount = 0;
+        var retryCount = 0;
+        var permanentFailureCount = 0;
+
+        if (claimedMessages.Count > 0)
+        {
+            _logger.LogInformation(
+                "Company outbox dispatcher claimed {ClaimedCount} message(s) for processing.",
+                claimedMessages.Count);
+        }
 
         foreach (var message in claimedMessages)
         {
@@ -249,6 +259,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             switch (execution.Outcome)
             {
                 case BackgroundJobExecutionOutcome.Succeeded:
+                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
                     message.MarkProcessed();
                     _logger.LogInformation(
                         "Dispatched company outbox message {Topic} ({MessageType}) successfully on attempt {Attempt}.",
@@ -258,19 +269,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
-                    break;
-                case BackgroundJobExecutionOutcome.PermanentFailure:
-                case BackgroundJobExecutionOutcome.Blocked:
-                case BackgroundJobExecutionOutcome.RetryExhausted:
-                    message.MarkDiscarded(ResolveFailureMessage(execution));
-                    _logger.LogError(
-                        "Marked company outbox message {Topic} ({MessageType}) as terminal failure on attempt {Attempt}.",
-                        message.Topic,
-                        message.MessageType ?? message.Topic,
-                        attempt);
-                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
-                    await _dbContext.SaveChangesAsync(cancellationToken);
-                    handledCount++;
+                    processedCount++;
                     break;
                 case BackgroundJobExecutionOutcome.RetryScheduled:
                 {
@@ -285,9 +284,40 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         nextAttemptAtUtc);
                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
+                    retryCount++;
+                    break;
+                }
+                case BackgroundJobExecutionOutcome.Blocked:
+                case BackgroundJobExecutionOutcome.PermanentFailure:
+                case BackgroundJobExecutionOutcome.RetryExhausted:
+                {
+                    var failureMessage = ResolveFailureMessage(execution);
+                    message.MarkDiscarded(failureMessage);
+                    _logger.LogError(
+                        "Discarded company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Outcome: {Outcome}. FailureClassification: {FailureClassification}. Error: {ErrorMessage}",
+                        message.Topic,
+                        message.MessageType ?? message.Topic,
+                        attempt,
+                        execution.Outcome,
+                        execution.FailureClassification,
+                        failureMessage);
+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    handledCount++;
+                    permanentFailureCount++;
                     break;
                 }
             }
+        }
+
+        if (claimedMessages.Count > 0)
+        {
+            _logger.LogInformation(
+                "Company outbox dispatcher completed batch. Claimed: {ClaimedCount}, Processed: {ProcessedCount}, RetryScheduled: {RetryCount}, PermanentFailures: {PermanentFailureCount}.",
+                claimedMessages.Count,
+                processedCount,
+                retryCount,
+                permanentFailureCount);
         }
 
         return handledCount;
@@ -714,7 +744,6 @@ internal sealed class CompanyOutboxDispatcherBackgroundService : BackgroundServi
                 {
                     _logger.LogInformation("Company outbox dispatcher processed {HandledCount} message(s) in the current cycle.", handledCount);
                 }
-
 
                 if (handledCount < batchSize)
                 {

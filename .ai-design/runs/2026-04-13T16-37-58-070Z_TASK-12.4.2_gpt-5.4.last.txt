@@ -1,0 +1,660 @@
+diff --git a/src/VirtualCompany.Application/VirtualCompany.Application.csproj b/src/VirtualCompany.Application/VirtualCompany.Application.csproj
+index 5b9c6c3..a3d8f2d 100644
+--- a/src/VirtualCompany.Application/VirtualCompany.Application.csproj
++++ b/src/VirtualCompany.Application/VirtualCompany.Application.csproj
+@@ -2,6 +2,7 @@
+ 
+   <ItemGroup>
+     <ProjectReference Include="..\VirtualCompany.Domain\VirtualCompany.Domain.csproj" />
++    <ProjectReference Include="..\VirtualCompany.Shared\VirtualCompany.Shared.csproj" />
+   </ItemGroup>
+ 
+   <PropertyGroup>
+diff --git a/src/VirtualCompany.Application/Mobile/MobileSummaryContracts.cs b/src/VirtualCompany.Application/Mobile/MobileSummaryContracts.cs
+new file mode 100644
+index 0000000..4d3a6d7
+--- /dev/null
++++ b/src/VirtualCompany.Application/Mobile/MobileSummaryContracts.cs
+@@ -0,0 +1,13 @@
++using VirtualCompany.Shared.Mobile;
++
++namespace VirtualCompany.Application.Mobile;
++
++public sealed record GetMobileHomeSummaryQuery(Guid CompanyId, int TaskFollowUpLimit = 5);
++
++public interface IMobileSummaryService
++{
++    Task<MobileHomeSummaryResponse> GetHomeSummaryAsync(
++        GetMobileHomeSummaryQuery query,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Shared/MobileSummaryContracts.cs b/src/VirtualCompany.Shared/MobileSummaryContracts.cs
+new file mode 100644
+index 0000000..93b4c81
+--- /dev/null
++++ b/src/VirtualCompany.Shared/MobileSummaryContracts.cs
+@@ -0,0 +1,51 @@
++namespace VirtualCompany.Shared.Mobile;
++
++public sealed record MobileHomeSummaryResponse(
++    MobileCompanyStatusSummaryDto CompanyStatus,
++    IReadOnlyList<MobileTaskFollowUpSummaryDto> TaskFollowUps,
++    bool HasTaskFollowUps);
++
++public sealed record MobileCompanyStatusSummaryDto(
++    Guid CompanyId,
++    string CompanyName,
++    DateTime GeneratedAtUtc,
++    DateTime? LastActivityUtc,
++    string Headline,
++    string? Subtitle,
++    int PendingApprovalCount,
++    int ActiveAlertCount,
++    int OpenTaskCount,
++    int BlockedTaskCount,
++    int OverdueTaskCount,
++    IReadOnlyList<MobileCompanyStatusMetricDto> Metrics);
++
++public sealed record MobileCompanyStatusMetricDto(
++    string Key,
++    string Label,
++    int Value,
++    string StatusHint);
++
++public sealed record MobileTaskFollowUpSummaryDto(
++    Guid TaskId,
++    string Title,
++    string Status,
++    string Priority,
++    string? AssignedAgentDisplayName,
++    string? Summary,
++    DateTime UpdatedAtUtc,
++    DateTime? DueAtUtc,
++    bool IsOverdue);
+diff --git a/src/VirtualCompany.Api/Controllers/MobileSummaryController.cs b/src/VirtualCompany.Api/Controllers/MobileSummaryController.cs
+new file mode 100644
+index 0000000..6f0a0b4
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/MobileSummaryController.cs
+@@ -0,0 +1,34 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Mobile;
++using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared.Mobile;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/mobile/summary")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class MobileSummaryController : ControllerBase
++{
++    private readonly IMobileSummaryService _mobileSummaryService;
++
++    public MobileSummaryController(IMobileSummaryService mobileSummaryService)
++    {
++        _mobileSummaryService = mobileSummaryService;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<MobileHomeSummaryResponse>> GetAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _mobileSummaryService.GetHomeSummaryAsync(new GetMobileHomeSummaryQuery(companyId), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9a5c801..b4b8930 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -16,6 +16,7 @@ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Mobile;
+ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -218,6 +219,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyMobileSummaryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyMobileSummaryService.cs
+new file mode 100644
+index 0000000..58f345a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyMobileSummaryService.cs
+@@ -0,0 +1,218 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Mobile;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Shared.Mobile;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyMobileSummaryService : IMobileSummaryService
++{
++    private const int DefaultTaskFollowUpLimit = 5;
++    private const int MaxTaskFollowUpLimit = 10;
++    private const int MobileSummaryMaxLength = 180;
++
++    private static readonly WorkTaskStatus[] OpenTaskStatuses =
++    [
++        WorkTaskStatus.New,
++        WorkTaskStatus.InProgress,
++        WorkTaskStatus.Blocked,
++        WorkTaskStatus.AwaitingApproval
++    ];
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyMobileSummaryService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<MobileHomeSummaryResponse> GetHomeSummaryAsync(
++        GetMobileHomeSummaryQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var take = Math.Clamp(query.TaskFollowUpLimit <= 0 ? DefaultTaskFollowUpLimit : query.TaskFollowUpLimit, 1, MaxTaskFollowUpLimit);
++
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.Id == query.CompanyId)
++            .Select(x => new { x.Id, x.Name })
++            .SingleOrDefaultAsync(cancellationToken)
++            ?? throw new KeyNotFoundException("Company not found.");
++
++        var pendingApprovalCountTask = _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == query.CompanyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
++
++        var notificationAlertCountTask = _dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == query.CompanyId &&
++                     x.Status != CompanyNotificationStatus.Actioned &&
++                     x.Status != CompanyNotificationStatus.Suppressed &&
++                     (x.Priority == CompanyNotificationPriority.High ||
++                      x.Priority == CompanyNotificationPriority.Critical ||
++                      x.Type == CompanyNotificationType.Escalation ||
++                      x.Type == CompanyNotificationType.WorkflowFailure),
++                cancellationToken);
++
++        var workflowAlertCountTask = _dbContext.WorkflowExceptions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == query.CompanyId && x.Status == WorkflowExceptionStatus.Open, cancellationToken);
++
++        var openTaskCountTask = _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == query.CompanyId && OpenTaskStatuses.Contains(x.Status), cancellationToken);
++
++        var blockedTaskCountTask = _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == query.CompanyId &&
++                     (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed),
++                cancellationToken);
++
++        var overdueTaskCountTask = _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == query.CompanyId &&
++                     x.DueUtc.HasValue &&
++                     x.DueUtc.Value < nowUtc &&
++                     OpenTaskStatuses.Contains(x.Status),
++                cancellationToken);
++
++        var taskRowsTask = _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(take)
++            .Select(x => new MobileTaskFollowUpRow(
++                x.Id,
++                x.Title,
++                x.Status,
++                x.Priority,
++                x.AssignedAgent == null ? null : x.AssignedAgent.DisplayName,
++                x.RationaleSummary,
++                x.UpdatedUtc,
++                x.DueUtc))
++            .ToListAsync(cancellationToken);
++
++        var latestTaskActivityTask = _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => (DateTime?)x.UpdatedUtc)
++            .MaxAsync(cancellationToken);
++
++        var latestNotificationActivityTask = _dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => (DateTime?)x.CreatedUtc)
++            .MaxAsync(cancellationToken);
++
++        await Task.WhenAll(
++            pendingApprovalCountTask,
++            notificationAlertCountTask,
++            workflowAlertCountTask,
++            openTaskCountTask,
++            blockedTaskCountTask,
++            overdueTaskCountTask,
++            taskRowsTask,
++            latestTaskActivityTask,
++            latestNotificationActivityTask);
++
++        var pendingApprovalCount = await pendingApprovalCountTask;
++        var activeAlertCount = await notificationAlertCountTask + await workflowAlertCountTask;
++        var openTaskCount = await openTaskCountTask;
++        var blockedTaskCount = await blockedTaskCountTask;
++        var overdueTaskCount = await overdueTaskCountTask;
++        var latestActivityUtc = Max(await latestTaskActivityTask, await latestNotificationActivityTask);
++
++        var companyStatus = new MobileCompanyStatusSummaryDto(
++            company.Id,
++            company.Name,
++            nowUtc,
++            latestActivityUtc,
++            BuildHeadline(pendingApprovalCount, activeAlertCount, blockedTaskCount, overdueTaskCount),
++            latestActivityUtc is null ? "No recent task or alert activity." : "Latest task and alert activity is summarized below.",
++            pendingApprovalCount,
++            activeAlertCount,
++            openTaskCount,
++            blockedTaskCount,
++            overdueTaskCount,
++            [
++                new MobileCompanyStatusMetricDto("pending_approvals", "Approvals", pendingApprovalCount, pendingApprovalCount > 0 ? "attention" : "neutral"),
++                new MobileCompanyStatusMetricDto("active_alerts", "Alerts", activeAlertCount, activeAlertCount > 0 ? "attention" : "neutral"),
++                new MobileCompanyStatusMetricDto("open_tasks", "Open tasks", openTaskCount, openTaskCount > 0 ? "active" : "neutral"),
++                new MobileCompanyStatusMetricDto("blocked_tasks", "Blocked", blockedTaskCount, blockedTaskCount > 0 ? "attention" : "neutral"),
++                new MobileCompanyStatusMetricDto("overdue_tasks", "Overdue", overdueTaskCount, overdueTaskCount > 0 ? "attention" : "neutral")
++            ]);
++
++        var followUps = (await taskRowsTask)
++            .Select(x => new MobileTaskFollowUpSummaryDto(
++                x.Id,
++                x.Title,
++                x.Status.ToStorageValue(),
++                x.Priority.ToStorageValue(),
++                x.AssignedAgentDisplayName,
++                BuildTaskSummary(x, nowUtc),
++                x.UpdatedUtc,
++                x.DueUtc,
++                x.DueUtc.HasValue && x.DueUtc.Value < nowUtc && OpenTaskStatuses.Contains(x.Status)))
++            .ToList();
++
++        return new MobileHomeSummaryResponse(companyStatus, followUps, followUps.Count > 0);
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static string BuildHeadline(int pendingApprovalCount, int activeAlertCount, int blockedTaskCount, int overdueTaskCount)
++    {
++        if (activeAlertCount > 0 || blockedTaskCount > 0 || overdueTaskCount > 0)
++        {
++            return "Needs executive follow-up";
++        }
++
++        return pendingApprovalCount > 0 ? "Approvals waiting" : "Operations steady";
++    }
++
++    private static string BuildTaskSummary(MobileTaskFollowUpRow task, DateTime nowUtc)
++    {
++        if (!string.IsNullOrWhiteSpace(task.RationaleSummary))
++        {
++            return TrimForMobile(task.RationaleSummary);
++        }
++
++        var assignee = string.IsNullOrWhiteSpace(task.AssignedAgentDisplayName) ? "Unassigned" : task.AssignedAgentDisplayName;
++        var dueText = task.DueUtc.HasValue && task.DueUtc.Value < nowUtc ? " Past due." : string.Empty;
++        return TrimForMobile($"{assignee}. Task is {task.Status.ToStorageValue().Replace('_', ' ')}.{dueText}");
++    }
++
++    private static string TrimForMobile(string value) =>
++        value.Trim().Length <= MobileSummaryMaxLength
++            ? value.Trim()
++            : value.Trim()[..MobileSummaryMaxLength].TrimEnd() + "...";
++
++    private static DateTime? Max(DateTime? left, DateTime? right) =>
++        left is null ? right : right is null ? left : left > right ? left : right;
++
++    private sealed record MobileTaskFollowUpRow(
++        Guid Id,
++        string Title,
++        WorkTaskStatus Status,
++        WorkTaskPriority Priority,
++        string? AssignedAgentDisplayName,
++        string? RationaleSummary,
++        DateTime UpdatedUtc,
++        DateTime? DueUtc);
++}
+diff --git a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+index 9cfdfc1..b8f343e 100644
+--- a/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
++++ b/src/VirtualCompany.Mobile/Services/MobileCompanionApiClient.cs
+@@ -1,6 +1,7 @@
+ using System.Net.Http.Json;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using VirtualCompany.Shared.Mobile;
+ 
+ namespace VirtualCompany.Mobile.Services;
+ 
+@@ -57,6 +58,9 @@ public sealed class MobileCompanionApiClient
+     public Task<ExecutiveCockpitDashboardViewModel> GetExecutiveDashboardAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<ExecutiveCockpitDashboardViewModel>($"api/companies/{companyId}/executive-cockpit", cancellationToken);
+ 
++    public Task<MobileHomeSummaryResponse> GetMobileSummaryAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<MobileHomeSummaryResponse>($"api/companies/{companyId}/mobile/summary", cancellationToken);
++
+     public Task<DashboardBriefingCardViewModel> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<DashboardBriefingCardViewModel>($"api/companies/{companyId}/briefings/latest", cancellationToken);
+ 
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml b/src/VirtualCompany.Mobile/MainPage.xaml
+index 2bc6ed1..cbba7e4 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml
++++ b/src/VirtualCompany.Mobile/MainPage.xaml
+@@ -84,8 +84,11 @@
+                         FontAttributes="Bold"
+                         FontSize="18" />
+                     <Label
++                        x:Name="CompanyStatusHeadlineLabel"
++                        Text="Select a company to load status."
++                        FontAttributes="Bold" />
++                    <Label
+                         x:Name="CompanyStatusLabel"
+-                        Text="Select a company to load status."
+                         TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                     <FlexLayout BindableLayout.ItemsSource="{Binding SummaryKpis}"
+                                 Direction="Row"
+@@ -98,8 +101,8 @@
+                                 <Border Padding="12" Margin="0,0,8,8" Stroke="{AppThemeBinding Light=#D0D7DE, Dark=#30363D}">
+                                     <VerticalStackLayout Spacing="4" WidthRequest="140">
+                                         <Label Text="{Binding Label}" FontAttributes="Bold" />
+-                                        <Label Text="{Binding CurrentValue}" FontSize="20" />
+-                                        <Label Text="{Binding DeltaText}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                                        <Label Text="{Binding Value}" FontSize="20" />
++                                        <Label Text="{Binding StatusHint}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
+                                     </VerticalStackLayout>
+                                 </Border>
+                             </DataTemplate>
+@@ -119,7 +122,17 @@
+                                     <Label Text="{Binding Title}" FontAttributes="Bold" />
+                                     <Label Text="{Binding Summary}" LineBreakMode="WordWrap" />
++                                    <HorizontalStackLayout Spacing="8">
++                                        <Label Text="{Binding Priority}" FontAttributes="Bold" FontSize="12" />
++                                        <Label Text="{Binding Status}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                                        <Label Text="{Binding AssignedAgentDisplayName}" FontSize="12" TextColor="{AppThemeBinding Light=#57606A, Dark=#8B949E}" />
++                                    </HorizontalStackLayout>
+                                 </VerticalStackLayout>
+                             </DataTemplate>
+                         </CollectionView.ItemTemplate>
+diff --git a/src/VirtualCompany.Mobile/MainPage.xaml.cs b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+index 2a0f676..f28d8b1 100644
+--- a/src/VirtualCompany.Mobile/MainPage.xaml.cs
++++ b/src/VirtualCompany.Mobile/MainPage.xaml.cs
+@@ -1,5 +1,6 @@
+ using System.Collections.ObjectModel;
+ using VirtualCompany.Mobile.Services;
++using VirtualCompany.Shared.Mobile;
+ 
+ namespace VirtualCompany.Mobile;
+ 
+@@ -17,8 +18,8 @@ public partial class MainPage : ContentPage
+     public ObservableCollection<DirectConversationViewModel> Conversations { get; } = [];
+     public ObservableCollection<ChatMessageViewModel> Messages { get; } = [];
+     public ObservableCollection<CompanyMembershipViewModel> Memberships { get; } = [];
+     public ObservableCollection<CompanyAgentSummaryViewModel> Agents { get; } = [];
+-    public ObservableCollection<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; } = [];
+-    public ObservableCollection<ExecutiveCockpitActivityItemViewModel> TaskFollowUps { get; } = [];
++    public ObservableCollection<MobileCompanyStatusMetricDto> SummaryKpis { get; } = [];
++    public ObservableCollection<MobileTaskFollowUpSummaryDto> TaskFollowUps { get; } = [];
+     public ObservableCollection<BriefingSourceReferenceViewModel> BriefingHighlights { get; } = [];
+ 
+ 	public MainPage()
+@@ -106,12 +107,12 @@ public partial class MainPage : ContentPage
+     private async Task LoadCompanionAsync(Guid companyId)
+     {
+         var inboxTask = apiClient.GetInboxAsync(companyId);
+-        var dashboardTask = apiClient.GetExecutiveDashboardAsync(companyId);
++        var mobileSummaryTask = apiClient.GetMobileSummaryAsync(companyId);
+         var briefingTask = apiClient.GetLatestBriefingsAsync(companyId);
+         var agentsTask = apiClient.GetAgentsAsync(companyId);
+         var conversationsTask = apiClient.GetDirectConversationsAsync(companyId);
+ 
+-        await Task.WhenAll(inboxTask, dashboardTask, briefingTask, agentsTask, conversationsTask);
++        await Task.WhenAll(inboxTask, mobileSummaryTask, briefingTask, agentsTask, conversationsTask);
+ 
+         var inbox = await inboxTask;
+         PendingApprovals.ReplaceWith(inbox.PendingApprovals);
+@@ -119,11 +120,11 @@ public partial class MainPage : ContentPage
+         InboxSummaryLabel.Text = $"{inbox.UnreadCount} unread";
+         ApprovalSummaryLabel.Text = $"{inbox.PendingApprovalCount} pending approval(s).";
+ 
+-        var dashboard = await dashboardTask;
+-        CompanyStatusLabel.Text = $"{dashboard.CompanyName}: {dashboard.PendingApprovals.TotalCount} approval(s), {dashboard.Alerts.Count} alert(s).";
+-        SummaryKpis.ReplaceWith(dashboard.SummaryKpis);
+-        TaskFollowUps.ReplaceWith(dashboard.RecentActivity.Where(x =>
+-            x.ActivityType.Contains("task", StringComparison.OrdinalIgnoreCase) ||
+-            x.Title.Contains("task", StringComparison.OrdinalIgnoreCase)));
++        var mobileSummary = await mobileSummaryTask;
++        CompanyStatusHeadlineLabel.Text = mobileSummary.CompanyStatus.Headline;
++        CompanyStatusLabel.Text = $"{mobileSummary.CompanyStatus.CompanyName}: {mobileSummary.CompanyStatus.Subtitle}";
++        SummaryKpis.ReplaceWith(mobileSummary.CompanyStatus.Metrics);
++        TaskFollowUps.ReplaceWith(mobileSummary.TaskFollowUps);
+ 
+         var briefing = (await briefingTask).Daily;
+         if (briefing is null)
+diff --git a/tests/VirtualCompany.Api.Tests/MobileSummaryIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/MobileSummaryIntegrationTests.cs
+new file mode 100644
+index 0000000..8193a45
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MobileSummaryIntegrationTests.cs
+@@ -0,0 +1,149 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Shared.Mobile;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MobileSummaryIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public MobileSummaryIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Mobile_summary_returns_empty_company_status_for_sparse_workspace()
++    {
++        var companyId = await SeedSparseCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{companyId}/mobile/summary");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var summary = await response.Content.ReadFromJsonAsync<MobileHomeSummaryResponse>();
++
++        Assert.NotNull(summary);
++        Assert.Equal(companyId, summary!.CompanyStatus.CompanyId);
++        Assert.Equal("Operations steady", summary.CompanyStatus.Headline);
++        Assert.Equal(0, summary.CompanyStatus.PendingApprovalCount);
++        Assert.Equal(0, summary.CompanyStatus.ActiveAlertCount);
++        Assert.Equal(0, summary.CompanyStatus.OpenTaskCount);
++        Assert.Equal(0, summary.CompanyStatus.BlockedTaskCount);
++        Assert.Equal(0, summary.CompanyStatus.OverdueTaskCount);
++        Assert.False(summary.HasTaskFollowUps);
++        Assert.Empty(summary.TaskFollowUps);
++    }
++
++    [Fact]
++    public async Task Mobile_summary_is_tenant_scoped_and_orders_recent_task_follow_ups()
++    {
++        var seed = await SeedMobileSummaryCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/mobile/summary");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var summary = await response.Content.ReadFromJsonAsync<MobileHomeSummaryResponse>();
++
++        Assert.NotNull(summary);
++        Assert.Equal(seed.CompanyId, summary!.CompanyStatus.CompanyId);
++        Assert.Equal("Needs executive follow-up", summary.CompanyStatus.Headline);
++        Assert.Equal(1, summary.CompanyStatus.PendingApprovalCount);
++        Assert.Equal(1, summary.CompanyStatus.ActiveAlertCount);
++        Assert.Equal(2, summary.CompanyStatus.OpenTaskCount);
++        Assert.Equal(1, summary.CompanyStatus.BlockedTaskCount);
++        Assert.Equal(1, summary.CompanyStatus.OverdueTaskCount);
++        Assert.Contains(summary.CompanyStatus.Metrics, x => x.Key == "open_tasks" && x.Value == 2);
++        Assert.True(summary.HasTaskFollowUps);
++        Assert.Equal([seed.NewerTaskId, seed.OlderTaskId], summary.TaskFollowUps.Select(x => x.TaskId).ToArray());
++
++        var newer = summary.TaskFollowUps[0];
++        Assert.Equal("critical", newer.Priority);
++        Assert.Equal("blocked", newer.Status);
++        Assert.Equal("Avery Ops", newer.AssignedAgentDisplayName);
++        Assert.Contains("Vendor response is missing", newer.Summary);
++        Assert.True(newer.IsOverdue);
++        Assert.DoesNotContain(summary.TaskFollowUps, x => x.TaskId == seed.OtherCompanyTaskId);
++
++        var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/mobile/summary");
++        Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "mobile-summary-founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "mobile-summary-founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Mobile Summary Founder");
++        return client;
++    }
++
++    private async Task<Guid> SeedSparseCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "mobile-summary-founder@example.com", "Mobile Summary Founder", "dev-header", "mobile-summary-founder"));
++            dbContext.Companies.Add(new Company(companyId, "Sparse Mobile Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return companyId;
++    }
++
++    private async Task<MobileSummarySeed> SeedMobileSummaryCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var newerTaskId = Guid.NewGuid();
++        var olderTaskId = Guid.NewGuid();
++        var otherCompanyTaskId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "mobile-summary-founder@example.com", "Mobile Summary Founder", "dev-header", "mobile-summary-founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "Mobile Summary Company"), new Company(otherCompanyId, "Other Mobile Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var newerTask = new WorkTask(newerTaskId, companyId, "ops", "Unblock vendor launch", null, WorkTaskPriority.Critical, agentId, null, "user", userId);
++            newerTask.SetDueDate(DateTime.UtcNow.AddDays(-1));
++            newerTask.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: "Vendor response is missing; confirm ownership before tomorrow's launch review.");
++            SetTaskTimestamps(newerTask, DateTime.UtcNow.AddMinutes(-10), null);
++
++            var olderTask = new WorkTask(olderTaskId, companyId, "ops", "Prepare launch readout", null, WorkTaskPriority.High, agentId, null, "user", userId);
++            olderTask.UpdateStatus(WorkTaskStatus.InProgress);
++            SetTaskTimestamps(olderTask, DateTime.UtcNow.AddHours(-2), null);
++
++            var otherCompanyTask = new WorkTask(otherCompanyTaskId, otherCompanyId, "ops", "Other company task", null, WorkTaskPriority.Critical, null, null, "user", userId);
++            otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
++
++            dbContext.WorkTasks.AddRange(newerTask, olderTask, otherCompanyTask);
++            dbContext.ApprovalRequests.Add(ApprovalRequest.CreateForTarget(Guid.NewGuid(), companyId, ApprovalTargetEntityType.Task, olderTaskId, "agent", agentId, "threshold", Payload(("amount", JsonValue.Create(25000))), "owner", null, []));
++            dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), companyId, userId, CompanyNotificationType.WorkflowFailure, CompanyNotificationPriority.Critical, "Workflow failed", "A workflow step failed.", "workflow_exception", Guid.NewGuid(), "/workflows", "{}", $"mobile-summary:{Guid.NewGuid():N}"));
++            return Task.CompletedTask;
++        });
++
++        return new MobileSummarySeed(companyId, otherCompanyId, newerTaskId, olderTaskId, otherCompanyTaskId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties) =>
++        properties.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static void SetTaskTimestamps(WorkTask task, DateTime updatedUtc, DateTime? completedUtc)
++    {
++        typeof(WorkTask).GetProperty(nameof(WorkTask.UpdatedUtc))!.SetValue(task, updatedUtc);
++        if (completedUtc.HasValue)
++        {
++            typeof(WorkTask).GetProperty(nameof(WorkTask.CompletedUtc))!.SetValue(task, completedUtc.Value);
++        }
++    }
++
++    private sealed record MobileSummarySeed(Guid CompanyId, Guid OtherCompanyId, Guid NewerTaskId, Guid OlderTaskId, Guid OtherCompanyTaskId);
++}
+END_OF_PATCH

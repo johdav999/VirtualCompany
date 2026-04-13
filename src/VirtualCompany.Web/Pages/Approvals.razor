@@ -275,17 +275,18 @@ else
         errorMessage = null;
         try
         {
-            var result = await ApprovalApiClient.DecideAsync(
-                companyId,
-                selectedApproval.Id,
-                new ApprovalDecisionRequest
-                {
-                    ApprovalId = selectedApproval.Id,
-                    StepId = selectedApproval.CurrentStep.Id,
-                    Decision = decision,
-                    Comment = decisionComment
-                });
+            var request = new ApprovalDecisionRequest
+            {
+                ApprovalId = selectedApproval.Id,
+                StepId = selectedApproval.CurrentStep.Id,
+                Decision = decision,
+                Comment = decisionComment
+            };
+            var result = IsPendingInboxFilter
+                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, selectedApproval.Id, request)
+                : await ApprovalApiClient.DecideAsync(companyId, selectedApproval.Id, request);
             selectedApproval = result.Approval;
+            decisionComment = null;
             await LoadApprovalInboxAsync(companyId);
         }
         catch (OnboardingApiException ex)
@@ -320,6 +321,7 @@ else
         new()
         {
             Id = item.Id,
+            CompanyId = item.CompanyId,
             TargetEntityType = item.TargetEntityType,
             TargetEntityId = item.TargetEntityId,
             ApprovalType = item.ApprovalType,

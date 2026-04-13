@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.6",
+  "promptPath": ".ai-design/prompts/TASK-12.3.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T16:26:40.831Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T16-26-40-831Z_TASK-12.3.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T16-26-40-831Z_TASK-12.3.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T16:28:58.823Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "    }\n \n+    [Fact]\n+    public void Approval_inbox_sort_places_pending_newest_first_before_terminal_items()\n+    {\n+        var olderPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));\n+        var newerPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 9, 0, 0, DateTimeKind.Utc));\n+        var approved = CreateApproval(ApprovalRequestStatus.Approved.ToStorageValue(), new DateTime(2026, 4, 13, 10, 0, 0, DateTimeKind.Utc));\n+\n+        var ordered = new[] { olderPending, approved, newerPending }\n+            .ApplyApprovalInboxOrdering()\n+            .ToList();\n+\n+        Assert.Equal([newerPending.Id, olderPending.Id, approved.Id], ordered.Select(x => x.Id));\n+    }\n+\n     [Fact]\n     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n     {\n@@ -161,6 +177,28 @@ public sealed class NotificationInboxTests\n             \"{}\",\n             $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n \n+    private static ApprovalRequestDto CreateApproval(string status, DateTime createdAt) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            ApprovalTargetEntityType.Task.ToStorageValue(),\n+            Guid.NewGuid(),\n+            \"user\",\n+            Guid.NewGuid(),\n+            \"policy\",\n+            \"manager\",\n+            null,\n+            status,\n+            new Dictionary<string, JsonNode?>(),\n+            Array.Empty<ApprovalStepDto>(),\n+            null,\n+            null,\n+            null,\n+            \"Approval required.\",\n+            \"Affected data.\",\n+            Array.Empty<ApprovalAffectedEntityDto>(),\n+            null,\n+            createdAt);\n+\n     private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>\n         typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "\n+    public void Approval_inbox_sort_places_pending_newest_first_before_terminal_items()\n+    {\n+        var olderPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));\n+        var newerPending = CreateApproval(ApprovalRequestStatus.Pending.ToStorageValue(), new DateTime(2026, 4, 13, 9, 0, 0, DateTimeKind.Utc));\n+        var approved = CreateApproval(ApprovalRequestStatus.Approved.ToStorageValue(), new DateTime(2026, 4, 13, 10, 0, 0, DateTimeKind.Utc));\n+\n+        var ordered = new[] { olderPending, approved, newerPending }\n+            .ApplyApprovalInboxOrdering()\n+            .ToList();\n+\n+        Assert.Equal([newerPending.Id, olderPending.Id, approved.Id], ordered.Select(x => x.Id));\n+    }\n+\n     [Fact]\n     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n     {\n@@ -161,6 +177,28 @@ public sealed class NotificationInboxTests\n             \"{}\",\n             $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n \n+    private static ApprovalRequestDto CreateApproval(string status, DateTime createdAt) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            ApprovalTargetEntityType.Task.ToStorageValue(),\n+            Guid.NewGuid(),\n+            \"user\",\n+            Guid.NewGuid(),\n+            \"policy\",\n+            \"manager\",\n+            null,\n+            status,\n+            new Dictionary<string, JsonNode?>(),\n+            Array.Empty<ApprovalStepDto>(),\n+            null,\n+            null,\n+            null,\n+            \"Approval required.\",\n+            \"Affected data.\",\n+            Array.Empty<ApprovalAffectedEntityDto>(),\n+            null,\n+            createdAt);\n+\n     private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>\n         typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);\n }\nEND_OF_PATCH\ntokens used\n46,962\n",
+  "verbosityMode": "summary"
+}

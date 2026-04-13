@@ -35,6 +35,35 @@ public sealed class InboxApiClient
         return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/inbox/{approvalId}", cancellationToken);
     }
 
+    public Task<ApprovalDecisionResultViewModel> DecidePendingApprovalAsync(
+        Guid companyId,
+        Guid approvalId,
+        ApprovalDecisionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode)
+        {
+            var approval = ApprovalApiClient.OfflineApprovals(companyId).Single(x => x.Id == approvalId);
+            approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
+            var currentStep = approval.CurrentStep;
+            if (currentStep is not null)
+            {
+                currentStep.Status = approval.Status;
+                currentStep.DecidedAt = DateTime.UtcNow;
+                currentStep.Comment = request.Comment?.Trim();
+                approval.RejectionComment = approval.Status == "rejected" ? currentStep.Comment : null;
+            }
+
+            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, DecidedStep = currentStep, IsFinalized = true });
+        }
+
+        return SendAsync<ApprovalDecisionResultViewModel>(
+            HttpMethod.Post,
+            $"api/companies/{companyId}/approvals/{approvalId}/decisions",
+            request,
+            cancellationToken);
+    }
+
     public Task<NotificationListItemViewModel> SetStatusAsync(Guid companyId, Guid notificationId, string status, CancellationToken cancellationToken = default)
     {
         if (_useOfflineMode)
@@ -167,6 +196,7 @@ public sealed class NotificationListItemViewModel
 public sealed class ApprovalInboxItemViewModel
 {
     public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
     public string ApprovalType { get; set; } = string.Empty;
     public string TargetEntityType { get; set; } = string.Empty;
     public Guid TargetEntityId { get; set; }
