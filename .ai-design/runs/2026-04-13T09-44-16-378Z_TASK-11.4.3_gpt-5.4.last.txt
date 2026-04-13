@@ -1,0 +1,264 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+index 5e6f6d7..0df5d2a 100644
+--- a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+@@ -54,7 +54,10 @@ public sealed record CollaborationStepDto(
+ 
+ public sealed record AgentContributionDto(
+     Guid AgentId,
++    string AgentName,
++    string? AgentRole,
+     Guid SubtaskId,
++    Guid SourceTaskId,
+     int Sequence,
+     string Status,
+     string Output,
+@@ -62,6 +65,10 @@ public sealed record AgentContributionDto(
+     decimal? ConfidenceScore,
+     string CorrelationId);
+ 
++public sealed record ConsolidatedMultiAgentResponseDto(
++    string FinalResponse,
++    IReadOnlyList<AgentContributionDto> Contributions);
++
+ public sealed record MultiAgentCollaborationResultDto(
+     Guid PlanId,
+     Guid CompanyId,
+@@ -73,6 +80,7 @@ public sealed record MultiAgentCollaborationResultDto(
+     IReadOnlyList<AgentContributionDto> Contributions,
+     IReadOnlyList<CollaborationStepDto> Steps,
+     IReadOnlyList<Guid> FailedSubtaskIds,
++    ConsolidatedMultiAgentResponseDto ConsolidatedResponse,
+     Dictionary<string, JsonNode?> StructuredOutput,
+     string CorrelationId);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+index 0f0ab7b..d39fe0d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+@@ -78,6 +78,11 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 $"{nameof(command.Workers)}.{worker.AgentId:N}",
+                 runtimeBudget.Token);
+         }
++        var workerProfiles = await LoadWorkerExecutionAgentsAsync(
++            command.CompanyId,
++            workers.Select(x => x.AgentId),
++            runtimeBudget.Token);
+ 
+         var planId = Guid.NewGuid();
+         var parentTask = await _taskCommands.CreateTaskAsync(
+@@ -227,8 +232,12 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                         MultiAgentCollaborationTaskTypes.WorkerSubtask),
+                     runtimeBudget.Token);
+ 
++                var workerProfile = workerProfiles[step.AssignedAgentId];
+                 var contribution = new AgentContributionDto(
+                     step.AssignedAgentId,
++                    workerProfile.DisplayName,
++                    workerProfile.RoleName,
++                    step.SubtaskId.Value,
+                     step.SubtaskId.Value,
+                     step.Sequence,
+                     workerResult.Status,
+@@ -274,8 +283,12 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                         0m),
+                     runtimeBudget.Token);
+ 
++                var workerProfile = workerProfiles[step.AssignedAgentId];
+                 var contribution = new AgentContributionDto(
+                     step.AssignedAgentId,
++                    workerProfile.DisplayName,
++                    workerProfile.RoleName,
++                    step.SubtaskId.Value,
+                     step.SubtaskId.Value,
+                     step.Sequence,
+                     OrchestrationStatusValues.Failed,
+@@ -366,6 +379,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             finalSteps.OrderBy(x => x.Sequence).ToList(),
+             contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList(),
++            new ConsolidatedMultiAgentResponseDto(finalResponse, contributions.OrderBy(x => x.Sequence).ToList()),
+             structuredOutput,
+             correlationId);
+     }
+@@ -528,6 +542,26 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             .Select(agent => new WorkerSubtaskRequest(
+                 agent.AgentId,
+                 $"Assess {agent.Department} implications for: {NormalizeRequired(command.Objective)}",
+                 BuildGeneratedWorkerInstructions(agent, command.Objective)))
+             .ToList();
+     }
++
++    private async Task<IReadOnlyDictionary<Guid, WorkerExecutionAgent>> LoadWorkerExecutionAgentsAsync(
++        Guid companyId,
++        IEnumerable<Guid> agentIds,
++        CancellationToken cancellationToken)
++    {
++        var ids = agentIds.Distinct().ToList();
++        var agents = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
++            .Select(x => new WorkerExecutionAgent(x.Id, x.DisplayName, x.RoleName, x.Department))
++            .ToListAsync(cancellationToken);
++
++        return agents.ToDictionary(x => x.AgentId);
++    }
+ 
+     private static Dictionary<string, JsonNode?> BuildParentInputPayload(
+         StartMultiAgentCollaborationCommand command,
+         Guid planId,
+         CollaborationLimitDto limits,
+@@ -621,8 +655,36 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             ["limits"] = JsonSerializer.SerializeToNode(limits),
+             ["steps"] = JsonSerializer.SerializeToNode(steps.OrderBy(x => x.Sequence).ToList()),
+             ["contributions"] = JsonSerializer.SerializeToNode(contributions.OrderBy(x => x.Sequence).ToList()),
++            ["sourceAttribution"] = JsonSerializer.SerializeToNode(contributions.OrderBy(x => x.Sequence).Select(contribution => new
++            {
++                contribution.Sequence,
++                contribution.AgentId,
++                contribution.AgentName,
++                contribution.AgentRole,
++                contribution.SubtaskId,
++                contribution.SourceTaskId,
++                contribution.Status,
++                contribution.RationaleSummary,
++                contribution.ConfidenceScore,
++                contribution.CorrelationId
++            }).ToList()),
++            ["consolidatedResponse"] = JsonSerializer.SerializeToNode(new ConsolidatedMultiAgentResponseDto(
++                finalResponse,
++                contributions.OrderBy(x => x.Sequence).ToList())),
+             ["failedSubtaskIds"] = JsonSerializer.SerializeToNode(contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList()),
+             ["correlationId"] = JsonValue.Create(correlationId),
+             ["startedAtUtc"] = JsonValue.Create(startedUtc),
+             ["completedAtUtc"] = JsonValue.Create(DateTime.UtcNow),
+             ["shared_engine"] = JsonValue.Create("multi_agent_coordinator")
+@@ -666,19 +728,31 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+         var failed = contributions.Where(IsFailed).OrderBy(x => x.Sequence).ToList();
+         var builder = new StringBuilder();
+         builder.Append("Manager-worker collaboration result for: ");
+         builder.AppendLine(objective.Trim());
++        builder.Append("Synthesis: ");
+ 
+         if (completed.Count == 0)
+         {
+-            builder.AppendLine("No worker completed successfully.");
++            builder.AppendLine("No worker completed successfully, so there is no attributed worker result to synthesize.");
+         }
+         else
+         {
++            builder.Append("Consolidated ");
++            builder.Append(completed.Count);
++            builder.AppendLine(" attributed worker result(s) into the final answer below.");
++            builder.AppendLine("Attributed worker sources:");
+             foreach (var contribution in completed)
+             {
+-                builder.Append("Agent ");
++                builder.Append("- ");
++                builder.Append(contribution.AgentName);
++                if (!string.IsNullOrWhiteSpace(contribution.AgentRole))
++                {
++                    builder.Append(" (");
++                    builder.Append(contribution.AgentRole);
++                    builder.Append(')');
++                }
++                builder.Append("; agent ");
+                 builder.Append(contribution.AgentId.ToString("N"));
+-                builder.Append(": ");
++                builder.Append("; source task ");
++                builder.Append(contribution.SourceTaskId.ToString("N"));
++                builder.Append("): ");
+                 builder.AppendLine(Trim(contribution.Output, 700));
+             }
+         }
+@@ -686,7 +760,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+         if (failed.Count > 0)
+         {
+-            builder.Append("Failed worker subtasks: ");
++            builder.Append("Failed worker subtasks excluded from synthesis: ");
+             builder.AppendLine(string.Join(", ", failed.Select(x => x.SubtaskId.ToString("N"))));
+         }
+ 
+@@ -774,5 +848,6 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+     }
+ 
+     private sealed record WorkerPlanAgent(Guid AgentId, string DisplayName, string RoleName, string Department, string? RoleBrief);
++    private sealed record WorkerExecutionAgent(Guid AgentId, string DisplayName, string RoleName, string Department);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+index 2b0b4ab..e72b8f9 100644
+--- a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+@@ -70,12 +70,22 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         Assert.All(payload.Contributions, contribution =>
+         {
+             Assert.NotEqual(Guid.Empty, contribution.SubtaskId);
++            Assert.Equal(contribution.SubtaskId, contribution.SourceTaskId);
++            Assert.False(string.IsNullOrWhiteSpace(contribution.AgentName));
++            Assert.False(string.IsNullOrWhiteSpace(contribution.AgentRole));
+             Assert.False(string.IsNullOrWhiteSpace(contribution.RationaleSummary));
+             Assert.Contains(contribution.AgentId, new[] { seed.FinanceAgentId, seed.OperationsAgentId });
+         });
++        Assert.Equal(payload.FinalResponse, payload.ConsolidatedResponse.FinalResponse);
++        Assert.Equal(2, payload.ConsolidatedResponse.Contributions.Count);
++        Assert.Contains("Attributed worker sources:", payload.FinalResponse);
++        Assert.Contains("Finance Worker", payload.FinalResponse);
++        Assert.Contains("Operations Worker", payload.FinalResponse);
+         Assert.Contains(seed.FinanceAgentId.ToString("N"), payload.FinalResponse);
+         Assert.Contains(seed.OperationsAgentId.ToString("N"), payload.FinalResponse);
++        Assert.All(payload.ConsolidatedResponse.Contributions, contribution => Assert.False(string.IsNullOrWhiteSpace(contribution.AgentName)));
+         Assert.Equal(2, payload.Steps.Count);
+         Assert.All(payload.Steps, step =>
+         {
+             Assert.Equal(payload.ParentTaskId, step.ParentTaskId);
+@@ -98,7 +108,20 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         Assert.Equal(payload.PlanId.ToString("N"), parent.OutputPayload["planId"]!.GetValue<string>());
+         Assert.True(parent.OutputPayload.ContainsKey("contributions"));
++        Assert.True(parent.OutputPayload.ContainsKey("sourceAttribution"));
++        Assert.True(parent.OutputPayload.ContainsKey("consolidatedResponse"));
+         Assert.DoesNotContain("chain-of-thought", parent.RationaleSummary ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++        var sourceAttribution = parent.OutputPayload["sourceAttribution"]!.AsArray();
++        Assert.Equal(2, sourceAttribution.Count);
++        Assert.All(sourceAttribution, source =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(source!["agentName"]!.GetValue<string>()));
++            Assert.False(string.IsNullOrWhiteSpace(source["rationaleSummary"]!.GetValue<string>()));
++            Assert.NotEqual(Guid.Empty, Guid.Parse(source["sourceTaskId"]!.GetValue<string>()));
++        });
++        var consolidatedResponse = parent.OutputPayload["consolidatedResponse"]!.AsObject();
++        Assert.Equal(payload.FinalResponse, consolidatedResponse["finalResponse"]!.GetValue<string>());
++        Assert.Equal(2, consolidatedResponse["contributions"]!.AsArray().Count);
+ 
+         var subtasks = await dbContext.WorkTasks
+             .AsNoTracking()
+@@ -353,6 +376,7 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         public string FinalResponse { get; set; } = string.Empty;
+         public string CorrelationId { get; set; } = string.Empty;
+         public List<ContributionResponse> Contributions { get; set; } = [];
++        public ConsolidatedResponse ConsolidatedResponse { get; set; } = new();
+         public List<StepResponse> Steps { get; set; } = [];
+     }
+ 
+@@ -360,7 +384,10 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+     {
+         public Guid AgentId { get; set; }
++        public string AgentName { get; set; } = string.Empty;
++        public string? AgentRole { get; set; }
+         public Guid SubtaskId { get; set; }
++        public Guid SourceTaskId { get; set; }
+         public int Sequence { get; set; }
+         public string Status { get; set; } = string.Empty;
+         public string Output { get; set; } = string.Empty;
+@@ -368,6 +395,12 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+     }
+ 
++    private sealed class ConsolidatedResponse
++    {
++        public string FinalResponse { get; set; } = string.Empty;
++        public List<ContributionResponse> Contributions { get; set; } = [];
++    }
++
+     private sealed class StepResponse
+     {
+         public int Sequence { get; set; }
+END_OF_PATCH

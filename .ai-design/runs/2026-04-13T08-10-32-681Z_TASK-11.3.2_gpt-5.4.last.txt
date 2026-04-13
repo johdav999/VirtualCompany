@@ -1,0 +1,299 @@
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index 6a6c4e1..63d58e1 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -26,10 +26,11 @@ public enum ToolActionType
+ 
+ public enum ToolExecutionStatus
+ {
+-    Denied = 1,
+-    AwaitingApproval = 2,
+-    Executed = 3,
+-    Failed = 4
++    Started = 1,
++    Denied = 2,
++    AwaitingApproval = 3,
++    Executed = 4,
++    Failed = 5
+ }
+ 
+ public static class AgentStatusValues
+@@ -299,6 +300,7 @@ public static class ToolExecutionStatusValues
+ {
+     private static readonly IReadOnlyDictionary<ToolExecutionStatus, string> Values = new Dictionary<ToolExecutionStatus, string>
+     {
++        [ToolExecutionStatus.Started] = "started",
+         [ToolExecutionStatus.Denied] = "denied",
+         [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
+         [ToolExecutionStatus.Executed] = "executed",
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 2696c6d..d81a9ea 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -61,7 +61,7 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         WorkflowInstanceId = workflowInstanceId;
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+-        Status = ToolExecutionStatus.Denied;
++        Status = ToolExecutionStatus.Started;
+         RequestPayload = CloneNodes(requestPayload);
+         PolicyDecision = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+         ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index a8aa57d..2998f1c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -847,47 +847,56 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+ {
+     public void Configure(EntityTypeBuilder<ToolExecutionAttempt> builder)
+     {
+-        builder.ToTable("tool_execution_attempts");
++        builder.ToTable("tool_executions");
+ 
+         builder.HasKey(x => x.Id);
+-        builder.Property(x => x.AgentId).IsRequired();
+-        builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+-        builder.Property(x => x.TaskId);
+-        builder.Property(x => x.WorkflowInstanceId);
+-        builder.Property(x => x.CorrelationId).HasMaxLength(128);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
++        builder.Property(x => x.ToolName).HasColumnName("tool_name").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.TaskId).HasColumnName("task_id");
++        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+         builder.Property(x => x.ActionType)
++            .HasColumnName("action_type")
+             .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+-        builder.Property(x => x.Scope).HasMaxLength(100);
++        builder.Property(x => x.Scope).HasColumnName("scope").HasMaxLength(100);
+         builder.Property(x => x.Status)
++            .HasColumnName("status")
+             .HasConversion(value => value.ToStorageValue(), value => ToolExecutionStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
++        builder.Property(x => x.ApprovalRequestId).HasColumnName("approval_request_id");
+         builder.Property(x => x.RequestPayload)
+-            .HasColumnName("request_payload_json")
++            .HasColumnName("request_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.Property(x => x.PolicyDecision)
+             .HasColumnName("policy_decision_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.Property(x => x.ResultPayload)
+-            .HasColumnName("result_payload_json")
++            .HasColumnName("response_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+-        builder.Property(x => x.StartedUtc).IsRequired();
+-        builder.Property(x => x.CompletedUtc);
+-        builder.Property(x => x.CreatedUtc).IsRequired();
+-        builder.Property(x => x.UpdatedUtc).IsRequired();
+-        builder.Property(x => x.ExecutedUtc);
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.ExecutedUtc).HasColumnName("executed_at");
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+-        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+-        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.StartedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.StartedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.StartedUtc });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413140000_RenameToolExecutionAttemptsToToolExecutions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413140000_RenameToolExecutionAttemptsToToolExecutions.cs
+new file mode 100644
+index 0000000..1210d9f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413140000_RenameToolExecutionAttemptsToToolExecutions.cs
+@@ -0,0 +1,201 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class RenameToolExecutionAttemptsToToolExecutions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.RenameTable(
++            name: "tool_execution_attempts",
++            newName: "tool_executions");
++
++        migrationBuilder.RenameColumn(name: "Id", table: "tool_executions", newName: "id");
++        migrationBuilder.RenameColumn(name: "CompanyId", table: "tool_executions", newName: "company_id");
++        migrationBuilder.RenameColumn(name: "AgentId", table: "tool_executions", newName: "agent_id");
++        migrationBuilder.RenameColumn(name: "TaskId", table: "tool_executions", newName: "task_id");
++        migrationBuilder.RenameColumn(name: "WorkflowInstanceId", table: "tool_executions", newName: "workflow_instance_id");
++        migrationBuilder.RenameColumn(name: "ToolName", table: "tool_executions", newName: "tool_name");
++        migrationBuilder.RenameColumn(name: "ActionType", table: "tool_executions", newName: "action_type");
++        migrationBuilder.RenameColumn(name: "Scope", table: "tool_executions", newName: "scope");
++        migrationBuilder.RenameColumn(name: "Status", table: "tool_executions", newName: "status");
++        migrationBuilder.RenameColumn(name: "ApprovalRequestId", table: "tool_executions", newName: "approval_request_id");
++        migrationBuilder.RenameColumn(name: "CorrelationId", table: "tool_executions", newName: "correlation_id");
++        migrationBuilder.RenameColumn(name: "request_payload_json", table: "tool_executions", newName: "request_json");
++        migrationBuilder.RenameColumn(name: "result_payload_json", table: "tool_executions", newName: "response_json");
++        migrationBuilder.RenameColumn(name: "StartedUtc", table: "tool_executions", newName: "started_at");
++        migrationBuilder.RenameColumn(name: "CompletedUtc", table: "tool_executions", newName: "completed_at");
++        migrationBuilder.RenameColumn(name: "CreatedUtc", table: "tool_executions", newName: "created_at");
++        migrationBuilder.RenameColumn(name: "UpdatedUtc", table: "tool_executions", newName: "updated_at");
++        migrationBuilder.RenameColumn(name: "ExecutedUtc", table: "tool_executions", newName: "executed_at");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_execution_attempts_CompanyId_CorrelationId",
++            table: "tool_executions",
++            newName: "IX_tool_executions_company_id_correlation_id");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_execution_attempts_CompanyId_AgentId_CreatedUtc",
++            table: "tool_executions",
++            newName: "IX_tool_executions_company_id_agent_id_started_at");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_execution_attempts_CompanyId_Status_CreatedUtc",
++            table: "tool_executions",
++            newName: "IX_tool_executions_company_id_status_started_at");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_executions_company_id_task_id",
++            table: "tool_executions",
++            columns: new[] { "company_id", "task_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_executions_company_id_workflow_instance_id",
++            table: "tool_executions",
++            columns: new[] { "company_id", "workflow_instance_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_executions_company_id_started_at",
++            table: "tool_executions",
++            columns: new[] { "company_id", "started_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_tool_executions_company_id_task_id",
++            table: "tool_executions");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tool_executions_company_id_workflow_instance_id",
++            table: "tool_executions");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tool_executions_company_id_started_at",
++            table: "tool_executions");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_executions_company_id_status_started_at",
++            table: "tool_executions",
++            newName: "IX_tool_execution_attempts_CompanyId_Status_CreatedUtc");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_executions_company_id_agent_id_started_at",
++            table: "tool_executions",
++            newName: "IX_tool_execution_attempts_CompanyId_AgentId_CreatedUtc");
++
++        migrationBuilder.RenameIndex(
++            name: "IX_tool_executions_company_id_correlation_id",
++            table: "tool_executions",
++            newName: "IX_tool_execution_attempts_CompanyId_CorrelationId");
++
++        migrationBuilder.RenameColumn(name: "executed_at", table: "tool_executions", newName: "ExecutedUtc");
++        migrationBuilder.RenameColumn(name: "updated_at", table: "tool_executions", newName: "UpdatedUtc");
++        migrationBuilder.RenameColumn(name: "created_at", table: "tool_executions", newName: "CreatedUtc");
++        migrationBuilder.RenameColumn(name: "completed_at", table: "tool_executions", newName: "CompletedUtc");
++        migrationBuilder.RenameColumn(name: "started_at", table: "tool_executions", newName: "StartedUtc");
++        migrationBuilder.RenameColumn(name: "response_json", table: "tool_executions", newName: "result_payload_json");
++        migrationBuilder.RenameColumn(name: "request_json", table: "tool_executions", newName: "request_payload_json");
++        migrationBuilder.RenameColumn(name: "correlation_id", table: "tool_executions", newName: "CorrelationId");
++        migrationBuilder.RenameColumn(name: "approval_request_id", table: "tool_executions", newName: "ApprovalRequestId");
++        migrationBuilder.RenameColumn(name: "status", table: "tool_executions", newName: "Status");
++        migrationBuilder.RenameColumn(name: "scope", table: "tool_executions", newName: "Scope");
++        migrationBuilder.RenameColumn(name: "action_type", table: "tool_executions", newName: "ActionType");
++        migrationBuilder.RenameColumn(name: "tool_name", table: "tool_executions", newName: "ToolName");
++        migrationBuilder.RenameColumn(name: "workflow_instance_id", table: "tool_executions", newName: "WorkflowInstanceId");
++        migrationBuilder.RenameColumn(name: "task_id", table: "tool_executions", newName: "TaskId");
++        migrationBuilder.RenameColumn(name: "agent_id", table: "tool_executions", newName: "AgentId");
++        migrationBuilder.RenameColumn(name: "company_id", table: "tool_executions", newName: "CompanyId");
++        migrationBuilder.RenameColumn(name: "id", table: "tool_executions", newName: "Id");
++
++        migrationBuilder.RenameTable(
++            name: "tool_executions",
++            newName: "tool_execution_attempts");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index a6ec32b..3e1b2f6 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -357,6 +357,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+             thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+             escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
++        var taskId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
+ 
+         using var client = CreateAuthenticatedClient();
+         var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+@@ -368,6 +370,9 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+             thresholdCategory = "approval",
+             thresholdKey = "expenseUsd",
+             thresholdValue = 750,
++            taskId,
++            workflowInstanceId,
++            correlationId = "corr-allowed-execution-persistence",
+             requestPayload = new { expenseId = "exp-300" }
+         });
+ 
+@@ -391,12 +396,25 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+ 
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal(seed.CompanyId, attempt.CompanyId);
++        Assert.Equal(seed.AgentId, attempt.AgentId);
++        Assert.Equal(taskId, attempt.TaskId);
++        Assert.Equal(workflowInstanceId, attempt.WorkflowInstanceId);
++        Assert.Equal("corr-allowed-execution-persistence", attempt.CorrelationId);
++        Assert.Equal("erp", attempt.ToolName);
++        Assert.Equal(ToolActionType.Execute, attempt.ActionType);
+         Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.True(attempt.StartedUtc <= attempt.CompletedUtc);
++        Assert.NotNull(attempt.CompletedUtc);
+         Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
+         Assert.Equal("default_deny", attempt.PolicyDecision["metadata"]!["policyMode"]!.GetValue<string>());
+         Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
+         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal("allow", attempt.PolicyDecision["metadata"]!["decisionOutcome"]!.GetValue<string>());
+         Assert.Equal("erp", attempt.PolicyDecision["tool"]!["toolName"]!.GetValue<string>());
+         Assert.Equal(PolicyDecisionEvaluationVersions.Current, attempt.PolicyDecision["audit"]!["policyVersion"]!.GetValue<string>());
++        Assert.Equal("exp-300", attempt.RequestPayload["expenseId"]!.GetValue<string>());
+         Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
++        Assert.True(attempt.ResultPayload["success"]!.GetValue<bool>());
+         Assert.Equal("expenseUsd", attempt.PolicyDecision["thresholdEvaluations"]![0]!["key"]!.GetValue<string>());
+         Assert.NotNull(attempt.ExecutedUtc);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index 0b26c5d..dc8b8a7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -552,6 +552,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations)
+     {
+         var metadata = CreateBaseMetadata(request, evaluatedActionType, thresholdEvaluations);
++        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Allow);
+         metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Executed.ToStorageValue());
+ 
+         return new ToolExecutionDecisionDto(
+END_OF_PATCH

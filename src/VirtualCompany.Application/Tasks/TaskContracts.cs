@@ -15,7 +15,8 @@ public sealed record CreateTaskCommand(
     Guid? WorkflowInstanceId = null,
     Dictionary<string, JsonNode?>? OutputPayload = null,
     string? RationaleSummary = null,
-    decimal? ConfidenceScore = null);
+    decimal? ConfidenceScore = null,
+    string? CorrelationId = null);
 
 public sealed record CreateSubtaskCommand(
     string Type,
@@ -28,7 +29,8 @@ public sealed record CreateSubtaskCommand(
     Guid? WorkflowInstanceId = null,
     Dictionary<string, JsonNode?>? OutputPayload = null,
     string? RationaleSummary = null,
-    decimal? ConfidenceScore = null);
+    decimal? ConfidenceScore = null,
+    string? CorrelationId = null);
 
 public sealed record UpdateTaskStatusCommand(
     string Status,
@@ -74,6 +76,22 @@ public sealed record TaskParentSummaryDto(
     string Title,
     string Status);
 
+public sealed record TaskSubtaskSummaryDto(
+    Guid Id,
+    Guid CompanyId,
+    string Type,
+    string Title,
+    string Priority,
+    string Status,
+    DateTime? DueAt,
+    Guid? AssignedAgentId,
+    Guid? ParentTaskId,
+    Guid? WorkflowInstanceId,
+    DateTime CreatedAt,
+    DateTime UpdatedAt,
+    DateTime? CompletedAt,
+    TaskAgentSummaryDto? AssignedAgent);
+
 public sealed record TaskDetailDto(
     Guid Id,
     Guid CompanyId,
@@ -96,7 +114,9 @@ public sealed record TaskDetailDto(
     DateTime UpdatedAt,
     DateTime? CompletedAt,
     TaskAgentSummaryDto? AssignedAgent,
-    TaskParentSummaryDto? ParentTask);
+    TaskParentSummaryDto? ParentTask,
+    string? CorrelationId = null,
+    IReadOnlyList<TaskSubtaskSummaryDto>? Subtasks = null);
 
 public sealed record TaskListItemDto(
     Guid Id,

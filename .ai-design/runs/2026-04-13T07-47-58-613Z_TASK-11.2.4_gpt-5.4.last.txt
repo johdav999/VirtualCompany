@@ -1,0 +1,527 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+index 2c9a4c1..b6e1c4d 100644
+--- a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -132,7 +132,12 @@ public sealed record SingleAgentRuntimeContext(
+     CompanyRuntimeContext Company,
+     GroundedPromptContextDto? GroundedContext,
+     IReadOnlyList<ToolMetadataDto> AvailableTools,
+-    string Intent);
++    string Intent)
++{
++    public Guid? InitiatingActorId { get; init; }
++
++    public string? InitiatingActorType { get; init; }
++}
+ 
+ public sealed record CompanyRuntimeContext(
+     Guid CompanyId,
+@@ -244,6 +249,61 @@ public sealed record OrchestrationArtifact(
+     string Name,
+     Dictionary<string, JsonNode?> Payload);
+ 
++public sealed record OrchestrationUserOutput(
++    string DisplayMessage,
++    string ContentType = "text/plain");
++
++public sealed record OrchestrationSourceReference(
++    string SourceType,
++    string SourceId,
++    string Title,
++    string? ParentSourceType,
++    string? ParentSourceId,
++    string? SectionId,
++    string? Locator,
++    int Rank,
++    double? Score,
++    string? Snippet,
++    IReadOnlyDictionary<string, string?> Metadata);
++
++public sealed record OrchestrationToolExecutionReference(
++    Guid ExecutionId,
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    string Status,
++    Guid? ApprovalRequestId,
++    string PolicyOutcome,
++    string CorrelationId);
++
++public sealed record OrchestrationTaskArtifact(
++    Guid TaskId,
++    string Status,
++    Dictionary<string, JsonNode?> OutputPayload,
++    string? RationaleSummary,
++    decimal? ConfidenceScore,
++    IReadOnlyList<OrchestrationSourceReference> SourceReferences,
++    IReadOnlyList<OrchestrationToolExecutionReference> ToolExecutionReferences,
++    string CorrelationId);
++
++public sealed record OrchestrationAuditArtifact(
++    Guid CompanyId,
++    string ActorType,
++    Guid? ActorId,
++    string Action,
++    string TargetType,
++    string TargetId,
++    string Outcome,
++    string? RationaleSummary,
++    IReadOnlyCollection<string> DataSources,
++    IReadOnlyDictionary<string, string?> Metadata,
++    string CorrelationId,
++    DateTime OccurredUtc);
++
++public sealed record OrchestrationCompositeFinalResult(
++    OrchestrationUserOutput UserOutput,
++    OrchestrationTaskArtifact TaskArtifact,
++    IReadOnlyList<OrchestrationAuditArtifact> AuditArtifacts,
++    string? RationaleSummary,
++    IReadOnlyList<OrchestrationSourceReference> SourceReferences,
++    IReadOnlyList<OrchestrationToolExecutionReference> ToolExecutionReferences,
++    string CorrelationId);
++
+ public sealed record OrchestrationMetadata(
+     Guid OrchestrationId,
+     Guid PromptId,
+@@ -269,7 +329,19 @@ public sealed record OrchestrationResult(
+     OrchestrationMetadata Metadata,
+     string CorrelationId,
+     string? FailureReason = null);
+-
++{
++    public OrchestrationUserOutput UserOutput { get; init; } = new(UserFacingOutput);
++
++    public OrchestrationTaskArtifact? TaskArtifact { get; init; }
++
++    public IReadOnlyList<OrchestrationAuditArtifact> AuditArtifacts { get; init; } = Array.Empty<OrchestrationAuditArtifact>();
++
++    public IReadOnlyList<OrchestrationSourceReference> SourceReferences { get; init; } = Array.Empty<OrchestrationSourceReference>();
++
++    public IReadOnlyList<OrchestrationToolExecutionReference> ToolExecutionReferences { get; init; } = Array.Empty<OrchestrationToolExecutionReference>();
++
++    public OrchestrationCompositeFinalResult? FinalResult { get; init; }
++}
++
+ public sealed record OrchestrationAuditWriteRequest(
+     SingleAgentRuntimeContext RuntimeContext,
+     PromptBuildResult Prompt,
+@@ -342,4 +414,5 @@ public static class OrchestrationArtifactTypes
+     public const string TaskOutput = "task_output";
+     public const string ToolExecution = "tool_execution";
+     public const string ContextReferences = "context_references";
++    public const string AuditEvent = "audit_event";
+ }
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+index 94e21a8..73c1df2 100644
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -330,8 +330,11 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             ["outputContract"] = JsonSerializer.SerializeToNode(new
+             {
+                 userFacingOutput = "Required concise external answer.",
+-                artifacts = "Structured task, prompt, tool, and context references.",
+-                auditMetadata = "Required correlation IDs and execution timestamps."
++                taskArtifact = "Structured task output payload for persistence.",
++                auditArtifacts = "Audit-ready action, outcome, metadata, data source, and correlation records.",
++                sourceReferences = "Human-usable retrieval or context references when available.",
++                toolExecutionReferences = "Structured tool execution references when available.",
++                rationaleSummary = "Concise explanation summary only; do not expose hidden reasoning."
+             }, JsonOptions)
+         };
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index d1c1b0f..ac52b49 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -100,7 +100,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 company,
+                 groundedContext,
+                 ResolveAvailableTools(agent),
+-                NormalizeIntent(request.Intent));
++                NormalizeIntent(request.Intent))
++            {
++                InitiatingActorId = request.InitiatingActorId,
++                InitiatingActorType = request.InitiatingActorType
++            };
+ 
+             var prompt = _promptBuilder.Build(new PromptBuildRequest(runtimeContext));
+             var toolRequests = ResolveToolInvocations(request.ToolInvocations, task.InputPayload);
+@@ -120,9 +124,17 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             var confidence = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.Failed.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+                 ? 0.4m
+                 : 0.76m;
+-            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence);
+-            var artifacts = BuildArtifacts(prompt, structuredOutput, toolResults, groundedContext);
++            var userOutput = new OrchestrationUserOutput(userFacingOutput);
++            var sourceReferences = BuildSourceReferences(groundedContext);
++            var toolExecutionReferences = BuildToolExecutionReferences(toolResults);
++            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence, sourceReferences, toolExecutionReferences);
+             var metadata = BuildMetadata(runtimeContext, prompt, toolResults, startedAtUtc, completedAtUtc);
++            var taskArtifact = BuildTaskArtifact(runtimeContext, status, structuredOutput, rationale, confidence, sourceReferences, toolExecutionReferences);
++            var auditArtifacts = BuildAuditArtifacts(runtimeContext, metadata, status, rationale, sourceReferences, completedAtUtc);
++            var finalResult = new OrchestrationCompositeFinalResult(userOutput, taskArtifact, auditArtifacts, rationale, sourceReferences, toolExecutionReferences, correlationId);
++
++            var artifacts = BuildArtifacts(prompt, structuredOutput, toolResults, groundedContext, taskArtifact, auditArtifacts);
+ 
+             var result = new OrchestrationResult(
+                 runtimeContext.OrchestrationId,
+@@ -139,7 +151,15 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 artifacts,
+                 metadata,
+                 correlationId);
+-
++            result = result with
++            {
++                UserOutput = userOutput,
++                TaskArtifact = taskArtifact,
++                AuditArtifacts = auditArtifacts,
++                SourceReferences = sourceReferences,
++                ToolExecutionReferences = toolExecutionReferences,
++                FinalResult = finalResult
++            };
+             await PersistTaskResultAsync(task.Id, result, cancellationToken);
+             await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -279,7 +299,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ? WorkTaskStatus.AwaitingApproval
+             : WorkTaskStatus.Completed;
+ 
+-        task.UpdateStatus(taskStatus, result.StructuredOutput, result.RationaleSummary, result.ConfidenceScore);
++        task.UpdateStatus(taskStatus, result.TaskArtifact?.OutputPayload ?? result.StructuredOutput, result.RationaleSummary, result.ConfidenceScore);
+     }
+ 
+     private static string NormalizeIntent(string? intent) =>
+@@ -430,7 +450,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IReadOnlyList<ToolInvocationResult> toolResults,
+         string userFacingOutput,
+         string rationale,
+-        decimal confidence)
++        decimal confidence,
++        IReadOnlyList<OrchestrationSourceReference> sourceReferences,
++        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences)
+     {
+         return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -447,13 +469,19 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ["rationaleSummary"] = JsonValue.Create(rationale),
+             ["confidenceScore"] = JsonValue.Create(confidence),
+             ["toolExecutions"] = JsonSerializer.SerializeToNode(toolResults.Select(ToToolExecutionSummary).ToList()),
+-            ["sourceReferenceCount"] = JsonValue.Create(context.GroundedContext?.Context.Counts.SourceReferences ?? 0)
++            ["toolExecutionReferences"] = JsonSerializer.SerializeToNode(toolExecutionReferences),
++            ["sourceReferences"] = JsonSerializer.SerializeToNode(sourceReferences),
++            ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count)
+         };
+     }
+ 
+     private static IReadOnlyList<OrchestrationArtifact> BuildArtifacts(
+         PromptBuildResult prompt,
+         Dictionary<string, JsonNode?> structuredOutput,
+         IReadOnlyList<ToolInvocationResult> toolResults,
+-        GroundedPromptContextDto? groundedContext)
++        GroundedPromptContextDto? groundedContext,
++        OrchestrationTaskArtifact taskArtifact,
++        IReadOnlyList<OrchestrationAuditArtifact> auditArtifacts)
+     {
+         var artifacts = new List<OrchestrationArtifact>
+         {
+@@ -461,6 +489,16 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             new(OrchestrationArtifactTypes.TaskOutput, "task_output", CloneNodes(structuredOutput))
+         };
+ 
++        artifacts.Add(new OrchestrationArtifact(
++            OrchestrationArtifactTypes.TaskOutput,
++            "task_artifact",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["taskId"] = JsonValue.Create(taskArtifact.TaskId.ToString("N")),
++                ["status"] = JsonValue.Create(taskArtifact.Status),
++                ["outputPayload"] = JsonSerializer.SerializeToNode(taskArtifact.OutputPayload),
++                ["rationaleSummary"] = JsonValue.Create(taskArtifact.RationaleSummary),
++                ["confidenceScore"] = JsonValue.Create(taskArtifact.ConfidenceScore),
++                ["correlationId"] = JsonValue.Create(taskArtifact.CorrelationId)
++            }));
++
+         if (toolResults.Count > 0)
+         {
+             artifacts.Add(new OrchestrationArtifact(
+@@ -489,9 +527,103 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 }));
+         }
+ 
++        artifacts.Add(new OrchestrationArtifact(
++            OrchestrationArtifactTypes.AuditEvent,
++            "audit_artifacts",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["items"] = JsonSerializer.SerializeToNode(auditArtifacts)
++            }));
++
+         return artifacts;
+     }
+ 
++    private static IReadOnlyList<OrchestrationSourceReference> BuildSourceReferences(GroundedPromptContextDto? groundedContext) =>
++        groundedContext?.Context.SourceReferences.Select(static reference =>
++            new OrchestrationSourceReference(
++                reference.SourceType,
++                reference.SourceId,
++                reference.Title,
++                reference.ParentSourceType,
++                reference.ParentSourceId,
++                reference.SectionId,
++                reference.Locator,
++                reference.Rank,
++                reference.Score,
++                string.IsNullOrWhiteSpace(reference.Snippet) ? null : reference.Snippet,
++                new Dictionary<string, string?>(reference.Metadata, StringComparer.OrdinalIgnoreCase)))
++            .ToList() ?? Array.Empty<OrchestrationSourceReference>();
++
++    private static IReadOnlyList<OrchestrationToolExecutionReference> BuildToolExecutionReferences(IReadOnlyList<ToolInvocationResult> toolResults) =>
++        toolResults.Select(static result =>
++            new OrchestrationToolExecutionReference(
++                result.ExecutionId,
++                result.ToolName,
++                result.ActionType,
++                result.Scope,
++                result.Status,
++                result.ApprovalRequestId,
++                result.PolicyDecision.Outcome,
++                result.CorrelationId))
++            .ToList();
++
++    private static OrchestrationTaskArtifact BuildTaskArtifact(
++        SingleAgentRuntimeContext context,
++        string orchestrationStatus,
++        Dictionary<string, JsonNode?> outputPayload,
++        string? rationale,
++        decimal? confidence,
++        IReadOnlyList<OrchestrationSourceReference> sourceReferences,
++        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences)
++    {
++        var taskStatus = string.Equals(orchestrationStatus, OrchestrationStatusValues.AwaitingApproval, StringComparison.OrdinalIgnoreCase)
++            ? WorkTaskStatus.AwaitingApproval.ToStorageValue()
++            : WorkTaskStatus.Completed.ToStorageValue();
++
++        return new OrchestrationTaskArtifact(
++            context.Task.Id,
++            taskStatus,
++            CloneNodes(outputPayload),
++            rationale,
++            confidence,
++            sourceReferences,
++            toolExecutionReferences,
++            context.CorrelationId);
++    }
++
++    private static IReadOnlyList<OrchestrationAuditArtifact> BuildAuditArtifacts(
++        SingleAgentRuntimeContext context,
++        OrchestrationMetadata metadata,
++        string status,
++        string? rationale,
++        IReadOnlyList<OrchestrationSourceReference> sourceReferences,
++        DateTime occurredUtc)
++    {
++        var dataSources = new List<string>
++        {
++            "single_agent_orchestration",
++            "prompt_builder",
++            "tool_executor"
++        };
++
++        if (sourceReferences.Count > 0)
++        {
++            dataSources.Add("grounded_context");
++        }
++
++        var auditMetadata = new Dictionary<string, string?>(metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
++        {
++            ["orchestrationId"] = metadata.OrchestrationId.ToString("N"),
++            ["promptId"] = metadata.PromptId.ToString("N"),
++            ["correlationId"] = metadata.CorrelationId,
++            ["status"] = status
++        };
++
++        return
++        [
++            new OrchestrationAuditArtifact(
++                context.Company.CompanyId,
++                AuditActorTypes.Agent,
++                context.Agent.Id,
++                AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++                AuditTargetTypes.WorkTask,
++                context.Task.Id.ToString("N"),
++                string.Equals(status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase) ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Pending,
++                rationale,
++                dataSources,
++                auditMetadata,
++                context.CorrelationId,
++                occurredUtc)
++        ];
++    }
++
+     private static OrchestrationMetadata BuildMetadata(
+         SingleAgentRuntimeContext context,
+         PromptBuildResult prompt,
+@@ -514,6 +646,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 ["agentRoleName"] = context.Agent.RoleName,
+                 ["agentAutonomyLevel"] = context.Agent.AutonomyLevel,
+                 ["taskType"] = context.Task.Type,
++                ["initiatingActorType"] = context.InitiatingActorType,
++                ["initiatingActorId"] = context.InitiatingActorId?.ToString("N"),
+                 ["policyInterceptionPoint"] = "tool_executor"
+             });
+     }
+@@ -642,31 +776,36 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
+     {
+         ArgumentNullException.ThrowIfNull(request);
+ 
++        var artifact = request.Result.AuditArtifacts.FirstOrDefault();
++
+         return _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+-                request.RuntimeContext.Company.CompanyId,
+-                string.IsNullOrWhiteSpace(request.Result.Metadata.AuditMetadata.GetValueOrDefault("actorType"))
+-                    ? AuditActorTypes.Agent
+-                    : request.Result.Metadata.AuditMetadata["actorType"]!,
+-                request.RuntimeContext.Agent.Id,
+-                AuditEventActions.SingleAgentTaskOrchestrationExecuted,
+-                AuditTargetTypes.WorkTask,
+-                request.RuntimeContext.Task.Id.ToString("N"),
+-                string.Equals(request.Result.Status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase)
+-                    ? AuditEventOutcomes.Succeeded
+-                    : AuditEventOutcomes.Pending,
+-                request.Result.RationaleSummary,
+-                ["single_agent_orchestration", "prompt_builder", "tool_executor"],
+-                new Dictionary<string, string?>(request.Result.Metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
+-                {
+-                    ["orchestrationId"] = request.Result.OrchestrationId.ToString("N"),
+-                    ["promptId"] = request.Prompt.PromptId.ToString("N"),
+-                    ["correlationId"] = request.Result.CorrelationId,
+-                    ["status"] = request.Result.Status
+-                },
+-                request.Result.CorrelationId,
+-                request.Result.Metadata.CompletedAtUtc),
++                artifact?.CompanyId ?? request.RuntimeContext.Company.CompanyId,
++                artifact?.ActorType ?? AuditActorTypes.Agent,
++                artifact?.ActorId ?? request.RuntimeContext.Agent.Id,
++                artifact?.Action ?? AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++                artifact?.TargetType ?? AuditTargetTypes.WorkTask,
++                artifact?.TargetId ?? request.RuntimeContext.Task.Id.ToString("N"),
++                artifact?.Outcome ?? ResolveAuditOutcome(request.Result.Status),
++                artifact?.RationaleSummary ?? request.Result.RationaleSummary,
++                artifact?.DataSources ?? ["single_agent_orchestration", "prompt_builder", "tool_executor"],
++                artifact?.Metadata ?? BuildFallbackAuditMetadata(request),
++                artifact?.CorrelationId ?? request.Result.CorrelationId,
++                artifact?.OccurredUtc ?? request.Result.Metadata.CompletedAtUtc),
+             cancellationToken);
+     }
++
++    private static string ResolveAuditOutcome(string status) =>
++        string.Equals(status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase)
++            ? AuditEventOutcomes.Succeeded
++            : AuditEventOutcomes.Pending;
++
++    private static IReadOnlyDictionary<string, string?> BuildFallbackAuditMetadata(OrchestrationAuditWriteRequest request) =>
++        new Dictionary<string, string?>(request.Result.Metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
++        {
++            ["orchestrationId"] = request.Result.OrchestrationId.ToString("N"),
++            ["promptId"] = request.Prompt.PromptId.ToString("N"),
++            ["correlationId"] = request.Result.CorrelationId,
++            ["status"] = request.Result.Status
++        };
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 129077c..c349cf2 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -63,7 +63,20 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("completed", payload.Status);
+         Assert.Equal("orch-test-correlation", payload.CorrelationId);
+         Assert.Contains("Nora Ledger completed task", payload.UserFacingOutput);
++        Assert.NotNull(payload.FinalResult);
++        Assert.Equal(payload.UserFacingOutput, payload.FinalResult!.UserOutput.DisplayMessage);
++        Assert.Equal("orch-test-correlation", payload.FinalResult.CorrelationId);
++        Assert.NotNull(payload.TaskArtifact);
++        Assert.Equal(seed.TaskId, payload.TaskArtifact!.TaskId);
++        Assert.Equal("completed", payload.TaskArtifact.Status);
++        Assert.Equal("orch-test-correlation", payload.TaskArtifact.CorrelationId);
++        Assert.NotNull(payload.TaskArtifact.OutputPayload);
++        Assert.Equal(payload.UserFacingOutput, payload.TaskArtifact.OutputPayload!.Value.GetProperty("userFacingOutput").GetString());
++        Assert.NotNull(payload.RationaleSummary);
++        Assert.DoesNotContain("chain-of-thought", payload.RationaleSummary, StringComparison.OrdinalIgnoreCase);
++        Assert.Single(payload.AuditArtifacts);
++        Assert.Equal("single_agent_task.orchestration.executed", payload.AuditArtifacts[0].Action);
++        Assert.Equal("orch-test-correlation", payload.AuditArtifacts[0].CorrelationId);
+         Assert.Single(payload.ToolExecutions);
++        Assert.Single(payload.ToolExecutionReferences);
+         Assert.Equal("executed", payload.ToolExecutions[0].Status);
+         Assert.Equal("orch-test-correlation", payload.ToolExecutions[0].CorrelationId);
+         Assert.NotNull(payload.ToolExecutions[0].ResultPayload);
+@@ -80,6 +93,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("orch-test-correlation", task.OutputPayload["correlationId"]!.GetValue<string>());
+         Assert.Equal(seed.AgentId.ToString("N"), task.OutputPayload["agentId"]!.GetValue<string>());
+         Assert.NotNull(task.RationaleSummary);
++        Assert.True(task.OutputPayload.ContainsKey("toolExecutionReferences"));
++        Assert.True(task.OutputPayload.ContainsKey("sourceReferences"));
++        Assert.True(task.OutputPayload.ContainsKey("rationaleSummary"));
+         Assert.True(task.ConfidenceScore > 0);
+ 
+         var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
+@@ -191,11 +207,51 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         public string Status { get; set; } = string.Empty;
+         public string UserFacingOutput { get; set; } = string.Empty;
+         public string CorrelationId { get; set; } = string.Empty;
++        public string? RationaleSummary { get; set; }
++        public OrchestrationUserOutputResponse UserOutput { get; set; } = new();
++        public OrchestrationTaskArtifactResponse? TaskArtifact { get; set; }
++        public List<OrchestrationAuditArtifactResponse> AuditArtifacts { get; set; } = [];
++        public List<OrchestrationToolExecutionReferenceResponse> ToolExecutionReferences { get; set; } = [];
++        public OrchestrationFinalResultResponse? FinalResult { get; set; }
+         public List<ToolInvocationResponse> ToolExecutions { get; set; } = [];
+     }
+ 
++    private sealed class OrchestrationUserOutputResponse
++    {
++        public string DisplayMessage { get; set; } = string.Empty;
++        public string ContentType { get; set; } = string.Empty;
++    }
++
++    private sealed class OrchestrationTaskArtifactResponse
++    {
++        public Guid TaskId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public JsonElement? OutputPayload { get; set; }
++        public string CorrelationId { get; set; } = string.Empty;
++    }
++
++    private sealed class OrchestrationAuditArtifactResponse
++    {
++        public string Action { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
++    }
++
++    private sealed class OrchestrationToolExecutionReferenceResponse
++    {
++        public Guid ExecutionId { get; set; }
++        public string ToolName { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
++    }
++
++    private sealed class OrchestrationFinalResultResponse
++    {
++        public OrchestrationUserOutputResponse UserOutput { get; set; } = new();
++        public OrchestrationTaskArtifactResponse? TaskArtifact { get; set; }
++        public List<OrchestrationAuditArtifactResponse> AuditArtifacts { get; set; } = [];
++        public string? RationaleSummary { get; set; }
++        public string CorrelationId { get; set; } = string.Empty;
++    }
++
+     private sealed class ToolInvocationResponse
+     {
+         public Guid ExecutionId { get; set; }
+         public string Status { get; set; } = string.Empty;
+         public string CorrelationId { get; set; } = string.Empty;
+         public JsonElement? ResultPayload { get; set; }
+     }
+ }
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.5",
+  "promptPath": ".ai-design/prompts/TASK-12.3.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:51:58.099Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-51-58-099Z_TASK-12.3.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-51-58-099Z_TASK-12.3.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:54:48.467Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "oLowerInvariant() switch\n+        {\n+            \"approval_requested\" => CompanyNotificationType.ApprovalRequested,\n+            \"escalation\" => CompanyNotificationType.Escalation,\n+            \"workflow_failure\" => CompanyNotificationType.WorkflowFailure,\n+            \"briefing_available\" => CompanyNotificationType.BriefingAvailable,\n+            _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,\n+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, \"Unsupported notification type value.\")\n+        };\n+\n     private static bool IsEligibleApprover(ApprovalRequestDto approval, ResolvedCompanyMembershipContext membership)\n     {\n         var current = approval.CurrentStep;\ndiff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\nindex a6e8c25..6bcd617 100644\n--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\n+++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\n@@ -536,12 +536,12 @@ internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispat\n         var notificationType = ParseNotificationType(message.NotificationType);\n         var priority = CompanyNotificationPriorityValues.Parse(message.Priority);\n         var recipients = await ResolveRecipientsAsync(message, cancellationToken);\n+        var createdCount = 0;\n+        var pendingDedupeKeys = new List<string>();\n \n         foreach (var userId in recipients)\n         {\n             var dedupeKey = $\"{message.DedupeKey}:{userId:N}\";\n-            var createdCount = 0;\n-            var pendingDedupeKeys = new List<string>();\n             var exists = await _dbContext.CompanyNotifications\n                 .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == userId && x.DedupeKey == dedupeKey, cancellationToken);\n             if (exists)\nEND_OF_PATCH\n",
+  "stderrTail": "witch\n+        {\n+            \"approval_requested\" => CompanyNotificationType.ApprovalRequested,\n+            \"escalation\" => CompanyNotificationType.Escalation,\n+            \"workflow_failure\" => CompanyNotificationType.WorkflowFailure,\n+            \"briefing_available\" => CompanyNotificationType.BriefingAvailable,\n+            _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,\n+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, \"Unsupported notification type value.\")\n+        };\n+\n     private static bool IsEligibleApprover(ApprovalRequestDto approval, ResolvedCompanyMembershipContext membership)\n     {\n         var current = approval.CurrentStep;\ndiff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\nindex a6e8c25..6bcd617 100644\n--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\n+++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs\n@@ -536,12 +536,12 @@ internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispat\n         var notificationType = ParseNotificationType(message.NotificationType);\n         var priority = CompanyNotificationPriorityValues.Parse(message.Priority);\n         var recipients = await ResolveRecipientsAsync(message, cancellationToken);\n+        var createdCount = 0;\n+        var pendingDedupeKeys = new List<string>();\n \n         foreach (var userId in recipients)\n         {\n             var dedupeKey = $\"{message.DedupeKey}:{userId:N}\";\n-            var createdCount = 0;\n-            var pendingDedupeKeys = new List<string>();\n             var exists = await _dbContext.CompanyNotifications\n                 .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == userId && x.DedupeKey == dedupeKey, cancellationToken);\n             if (exists)\nEND_OF_PATCH\ntokens used\n65,800\n",
+  "verbosityMode": "summary"
+}

@@ -93,6 +93,7 @@ else
                         </ul>
                         <div class="dashboard-actions mt-4">
                             <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
+                            <a class="btn btn-outline-primary" href="@AgentRosterPath">Open agent roster</a>
                             <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
                         </div>
                     </div>
@@ -101,6 +102,46 @@ else
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
                     <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+
+            @if (CompanyId is Guid selectedCompanyId)
+            {
+                <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
+            }
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">Executive briefings</h2>
+                @if (briefings?.Daily is null && briefings?.Weekly is null)
+                {
+                    <p class="text-body-secondary mb-0">No briefing has been generated for this workspace yet.</p>
+                }
+                else
+                {
+                    @if (briefings?.Daily is not null)
+                    {
+                        <article class="mb-4">
+                            <strong>@briefings.Daily.Title</strong>
+                            <div class="text-body-secondary">@briefings.Daily.GeneratedUtc.ToLocalTime():g</div>
+                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Daily.SummaryBody)</p>
+                            @if (briefings.Daily.SourceReferences.Count > 0)
+                            {
+                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Daily.SourceReferences)</div>
+                            }
+                        </article>
+                    }
+
+                    @if (briefings?.Weekly is not null)
+                    {
+                        <article>
+                            <strong>@briefings.Weekly.Title</strong>
+                            <div class="text-body-secondary">@briefings.Weekly.GeneratedUtc.ToLocalTime():g</div>
+                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Weekly.SummaryBody)</p>
+                            @if (briefings.Weekly.SourceReferences.Count > 0)
+                            {
+                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Weekly.SourceReferences)</div>
+                            }
+                        </article>
+                    }
                 }
             </div>
 
@@ -119,6 +160,10 @@ else
                     <ul class="mb-0">
                         <li>Use onboarding to create or resume a workspace if no company is selected.</li>
                         <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
+                        @if (CompanyId is Guid)
+                        {
+                            <li><a href="@AgentRosterPath">Open the agent roster to start a direct chat.</a></li>
+                        }
                         <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
                     </ul>
                 }
@@ -138,8 +183,10 @@ else
     private OnboardingProgressViewModel? onboardingProgress;
     private CompanyAccessViewModel? companyAccess;
     private CompanyDashboardEntryViewModel? dashboardEntry;
+    private DashboardBriefingCardViewModel? briefings;
     private string? errorMessage;
     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+    private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -163,6 +210,7 @@ else
             onboardingProgress = await ApiClient.GetProgressAsync();
             companyAccess = null;
             dashboardEntry = null;
+            briefings = null;
 
             if (CompanyId is not Guid companyId)
             {
@@ -183,6 +231,7 @@ else
 
             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
+            briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
 
             if (dashboardEntry?.RequiresOnboarding == true)
             {
@@ -194,6 +243,7 @@ else
         {
             errorMessage = ex.Message;
             companyAccess = null;
+            briefings = null;
             dashboardEntry = null;
         }
         finally
@@ -203,4 +253,38 @@ else
     }
 
     private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+
+    private static string FirstParagraph(string value)
+    {
+        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+        return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + "...";
+    }
+
+    private static string FormatBriefingReferences(IReadOnlyList<BriefingSourceReferenceViewModel> references)
+    {
+        var groups = references
+            .Where(reference => !string.IsNullOrWhiteSpace(reference.Label))
+            .GroupBy(reference => ReferenceGroupLabel(reference.EntityType))
+            .OrderBy(group => group.Key)
+            .Select(group =>
+            {
+                var labels = group
+                    .Take(3)
+                    .Select(ReferenceLabel);
+                return $"Related {group.Key}: {string.Join(", ", labels)}";
+            })
+            .ToList();
+
+        return groups.Count == 0 ? "Related items available." : string.Join(" | ", groups);
+    }
+
+    private static string ReferenceGroupLabel(string entityType) =>
+        entityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? "tasks" :
+        entityType.Equals("approval", StringComparison.OrdinalIgnoreCase) ? "approvals" :
+        "items";
+
+    private static string ReferenceLabel(BriefingSourceReferenceViewModel reference) =>
+        string.IsNullOrWhiteSpace(reference.Status)
+            ? reference.Label
+            : $"{reference.Label} ({reference.Status})";
 }

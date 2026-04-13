@@ -36,10 +36,11 @@ public enum ToolActionType
 
 public enum ToolExecutionStatus
 {
-    Denied = 1,
-    AwaitingApproval = 2,
-    Executed = 3,
-    Failed = 4
+    Started = 1,
+    Denied = 2,
+    AwaitingApproval = 3,
+    Executed = 4,
+    Failed = 5
 }
 
 public static class AgentStatusValues
@@ -340,6 +341,7 @@ public static class ToolExecutionStatusValues
 {
     private static readonly IReadOnlyDictionary<ToolExecutionStatus, string> Values = new Dictionary<ToolExecutionStatus, string>
     {
+        [ToolExecutionStatus.Started] = "started",
         [ToolExecutionStatus.Denied] = "denied",
         [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
         [ToolExecutionStatus.Executed] = "executed",

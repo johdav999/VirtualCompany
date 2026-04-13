@@ -1,9 +1,33 @@
+using System.Text.Json.Nodes;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Agents;
 
 public static class ExecuteAgentToolCommandValidator
 {
+    private static readonly HashSet<string> DirectExternalExecutionPayloadKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "endpoint",
+        "endpointUrl",
+        "url",
+        "uri",
+        "httpMethod",
+        "headers",
+        "authorization",
+        "token",
+        "accessToken",
+        "apiKey",
+        "connectionString",
+        "sql",
+        "sqlText",
+        "rawSql",
+        "typeName",
+        "methodName",
+        "serviceType",
+        "adapterType",
+        "filePath"
+    };
+
     public static void ValidateAndThrow(ExecuteAgentToolCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -56,10 +80,59 @@ public static class ExecuteAgentToolCommandValidator
             }
         }
 
+        if (command.RequestPayload is not null)
+        {
+            foreach (var path in FindDirectExternalExecutionPayloadPaths(command.RequestPayload))
+            {
+                AddError(errors, $"{nameof(command.RequestPayload)}.{path}", "Tool requests cannot specify direct external execution details.");
+            }
+        }
+
         if (errors.Count > 0)
         {
             throw new AgentExecutionValidationException(
                 errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
+        }
+    }
+
+    private static IEnumerable<string> FindDirectExternalExecutionPayloadPaths(IReadOnlyDictionary<string, JsonNode?> payload)
+    {
+        foreach (var (key, value) in payload)
+        {
+            foreach (var path in FindDirectExternalExecutionPayloadPaths(key, value))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static IEnumerable<string> FindDirectExternalExecutionPayloadPaths(string path, JsonNode? node)
+    {
+        var key = path.Split('.', '[')[^1];
+        if (DirectExternalExecutionPayloadKeys.Contains(key))
+        {
+            yield return path;
+        }
+
+        if (node is JsonObject jsonObject)
+        {
+            foreach (var (childKey, childValue) in jsonObject)
+            {
+                foreach (var childPath in FindDirectExternalExecutionPayloadPaths($"{path}.{childKey}", childValue))
+                {
+                    yield return childPath;
+                }
+            }
+        }
+        else if (node is JsonArray jsonArray)
+        {
+            for (var index = 0; index < jsonArray.Count; index++)
+            {
+                foreach (var childPath in FindDirectExternalExecutionPayloadPaths($"{path}[{index}]", jsonArray[index]))
+                {
+                    yield return childPath;
+                }
+            }
         }
     }
 

@@ -49,6 +49,26 @@ else
                 <h1>Workflows for @(companyAccess?.CompanyName ?? "your company")</h1>
                 <p class="text-body-secondary">Choose from approved workflow templates. Freeform workflow builders and custom step graphs are not available in v1.</p>
 
+                <form class="agent-filter-bar mt-4" method="get">
+                    <input type="hidden" name="companyId" value="@CompanyId" />
+                    @if (WorkflowInstanceId is Guid workflowInstanceId)
+                    {
+                        <input type="hidden" name="workflowInstanceId" value="@workflowInstanceId" />
+                    }
+                    @if (ExceptionId is Guid exceptionId)
+                    {
+                        <input type="hidden" name="exceptionId" value="@exceptionId" />
+                    }
+                    <div>
+                        <label class="form-label" for="workflow-state-filter">Instance state</label>
+                        <input id="workflow-state-filter" class="form-control" name="state" value="@State" placeholder="failed, blocked, started" />
+                    </div>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="submit">Apply filter</button>
+                        <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={CompanyId}")">Clear</a>
+                    </div>
+                </form>
+
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
                     <div class="alert alert-danger">@errorMessage</div>
@@ -78,6 +98,23 @@ else
                         </button>
                     }
                 </div>
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h4 mb-3">Instance detail</h2>
+                @if (selectedInstance is null)
+                {
+                    <p class="text-body-secondary mb-0">Select a workflow instance below or drill in from the dashboard.</p>
+                }
+                else
+                {
+                    <dl class="kv-list">
+                        <dt>Workflow</dt><dd>@selectedInstance.DefinitionName</dd>
+                        <dt>State</dt><dd>@ToDisplayText(selectedInstance.State)</dd>
+                        <dt>Current step</dt><dd>@(selectedInstance.CurrentStep ?? "Not set")</dd>
+                        <dt>Updated</dt><dd>@selectedInstance.UpdatedAt.ToLocalTime().ToString("g")</dd>
+                    </dl>
+                }
             </div>
 
             <div class="wizard-card">
@@ -138,9 +175,13 @@ else
                         <tbody>
                             @foreach (var instance in instances)
                             {
-                                <tr>
-                                    <td>@instance.DefinitionName</td>
-                                    <td><span class="badge @GetStateBadge(instance.State)">@instance.State</span></td>
+                                <tr class="@(selectedInstance?.Id == instance.Id ? "table-active" : null)">
+                                    <td>
+                                        <a class="fw-semibold text-decoration-none" href="@BuildWorkflowInstanceUri(instance.CompanyId, instance.Id, State, ExceptionId)">
+                                            @instance.DefinitionName
+                                        </a>
+                                    </td>
+                                    <td><span class="badge @GetStateBadge(instance.State)">@ToDisplayText(instance.State)</span></td>
                                     <td>@(instance.CurrentStep ?? "Not set")</td>
                                     <td>@instance.TriggerSource</td>
                                     <td>@instance.StartedAt.ToLocalTime().ToString("g")</td>
@@ -158,6 +199,15 @@ else
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
+    [SupplyParameterFromQuery(Name = "workflowInstanceId")]
+    public Guid? WorkflowInstanceId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "exceptionId")]
+    public Guid? ExceptionId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "state")]
+    public string? State { get; set; }
+
     private bool isLoading = true;
     private bool isStarting;
     private string? errorMessage;
@@ -167,6 +217,7 @@ else
     private CompanyAccessViewModel? companyAccess;
     private List<WorkflowCatalogItemViewModel> catalog = [];
     private List<WorkflowInstanceViewModel> instances = [];
+    private WorkflowInstanceViewModel? selectedInstance;
 
     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
         currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
@@ -195,7 +246,19 @@ else
             {
                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
                 catalog = (await WorkflowApiClient.GetCatalogAsync(companyId)).ToList();
-                instances = (await WorkflowApiClient.GetInstancesAsync(companyId)).ToList();
+                instances = (await WorkflowApiClient.GetInstancesAsync(companyId))
+                    .Where(instance => string.IsNullOrWhiteSpace(State) || string.Equals(instance.State, State, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (WorkflowInstanceId is Guid workflowInstanceId)
+                {
+                    selectedInstance = instances.FirstOrDefault(x => x.Id == workflowInstanceId)
+                        ?? await WorkflowApiClient.GetInstanceAsync(companyId, workflowInstanceId);
+                    if (!instances.Any(x => x.Id == selectedInstance.Id))
+                    {
+                        instances.Insert(0, selectedInstance);
+                    }
+                }
+
                 selectedWorkflowCode ??= catalog.FirstOrDefault()?.Code;
             }
         }
@@ -250,4 +313,15 @@ else
         state.Equals("blocked", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" :
         state.Equals("completed", StringComparison.OrdinalIgnoreCase) ? "text-bg-success" :
         "text-bg-secondary";
+
+    private static string ToDisplayText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+
+    private static string BuildWorkflowInstanceUri(Guid companyId, Guid workflowInstanceId, string? state, Guid? exceptionId)
+    {
+        var query = new List<string> { $"companyId={companyId}", $"workflowInstanceId={workflowInstanceId}" };
+        if (!string.IsNullOrWhiteSpace(state)) query.Add($"state={Uri.EscapeDataString(state)}");
+        if (exceptionId is Guid selectedExceptionId) query.Add($"exceptionId={selectedExceptionId}");
+        return $"/workflows?{string.Join("&", query)}";
+    }
 }

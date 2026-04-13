@@ -1,0 +1,1631 @@
+diff --git a/src/VirtualCompany.Domain/Entities/ChatEntities.cs b/src/VirtualCompany.Domain/Entities/ChatEntities.cs
+new file mode 100644
+index 0000000..a76a522
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ChatEntities.cs
+@@ -0,0 +1,167 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class Conversation : ICompanyOwnedEntity
++{
++    private const int ChannelTypeMaxLength = 64;
++    private const int SubjectMaxLength = 200;
++
++    private Conversation()
++    {
++    }
++
++    public Conversation(
++        Guid id,
++        Guid companyId,
++        string channelType,
++        string? subject,
++        Guid createdByUserId,
++        Guid? agentId,
++        IDictionary<string, JsonNode?>? metadata = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (createdByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("CreatedByUserId is required.", nameof(createdByUserId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId cannot be empty.", nameof(agentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ChannelType = NormalizeRequired(channelType, nameof(channelType), ChannelTypeMaxLength);
++        Subject = NormalizeOptional(subject, nameof(subject), SubjectMaxLength);
++        CreatedByUserId = createdByUserId;
++        AgentId = agentId;
++        Metadata = CloneNodes(metadata);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ChannelType { get; private set; } = null!;
++    public string? Subject { get; private set; }
++    public Guid CreatedByUserId { get; private set; }
++    public Guid? AgentId { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User CreatedByUser { get; private set; } = null!;
++    public Agent? Agent { get; private set; }
++    public ICollection<Message> Messages { get; } = new List<Message>();
++
++    public void Touch() => UpdatedUtc = DateTime.UtcNow;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class Message : ICompanyOwnedEntity
++{
++    private const int SenderTypeMaxLength = 64;
++    private const int MessageTypeMaxLength = 64;
++    private const int BodyMaxLength = 16000;
++
++    private Message()
++    {
++    }
++
++    public Message(
++        Guid id,
++        Guid companyId,
++        Guid conversationId,
++        string senderType,
++        Guid? senderId,
++        string messageType,
++        string body,
++        IDictionary<string, JsonNode?>? structuredPayload = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (conversationId == Guid.Empty)
++        {
++            throw new ArgumentException("ConversationId is required.", nameof(conversationId));
++        }
++
++        if (senderId == Guid.Empty)
++        {
++            throw new ArgumentException("SenderId cannot be empty.", nameof(senderId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ConversationId = conversationId;
++        SenderType = NormalizeRequired(senderType, nameof(senderType), SenderTypeMaxLength);
++        SenderId = senderId;
++        MessageType = NormalizeRequired(messageType, nameof(messageType), MessageTypeMaxLength);
++        Body = NormalizeRequired(body, nameof(body), BodyMaxLength);
++        StructuredPayload = CloneNodes(structuredPayload);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ConversationId { get; private set; }
++    public string SenderType { get; private set; } = null!;
++    public Guid? SenderId { get; private set; }
++    public string MessageType { get; private set; } = null!;
++    public string Body { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> StructuredPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Conversation Conversation { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+new file mode 100644
+index 0000000..765a8e3
+--- /dev/null
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -0,0 +1,85 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Chat;
++
++public static class ChatChannelTypes
++{
++    public const string DirectAgent = "direct_agent";
++}
++
++public static class ChatSenderTypes
++{
++    public const string User = "user";
++    public const string Agent = "agent";
++}
++
++public static class ChatMessageTypes
++{
++    public const string Text = "text";
++}
++
++public sealed record OpenDirectAgentConversationCommand(Guid AgentId);
++
++public sealed record GetConversationMessagesQuery(int? Skip, int? Take);
++
++public sealed record SendDirectAgentMessageCommand(string Body);
++
++public sealed record CreateTaskFromChatCommand(
++    Guid? SourceMessageId,
++    string? Title,
++    string? Description,
++    string? Priority);
++
++public sealed record DirectConversationDto(
++    Guid Id,
++    Guid CompanyId,
++    string ChannelType,
++    Guid CreatedByUserId,
++    Guid AgentId,
++    string AgentDisplayName,
++    string AgentRoleName,
++    string AgentStatus,
++    string? Subject,
++    DateTime CreatedAt,
++    DateTime UpdatedAt);
++
++public sealed record ChatMessageDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid ConversationId,
++    string SenderType,
++    Guid? SenderId,
++    string MessageType,
++    string Body,
++    Dictionary<string, JsonNode?> StructuredPayload,
++    DateTime CreatedAt);
++
++public sealed record ChatMessagePageDto(
++    IReadOnlyList<ChatMessageDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
++
++public sealed record SendDirectAgentMessageResultDto(
++    DirectConversationDto Conversation,
++    ChatMessageDto HumanMessage,
++    ChatMessageDto AgentMessage);
++
++public sealed record CreateTaskFromChatResultDto(
++    Guid TaskId,
++    Guid ConversationId,
++    Guid? SourceMessageId);
++
++public sealed record DirectAgentChatReply(
++    string MessageText,
++    string? RationaleSummary,
++    Dictionary<string, JsonNode?> StructuredPayload);
++
++public interface ICompanyDirectChatService
++{
++    Task<DirectConversationDto> GetOrCreateDirectAgentConversationAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
++    Task<ChatMessagePageDto> GetMessagesAsync(Guid companyId, Guid conversationId, GetConversationMessagesQuery query, CancellationToken cancellationToken);
++    Task<SendDirectAgentMessageResultDto> SendMessageAsync(Guid companyId, Guid conversationId, SendDirectAgentMessageCommand command, CancellationToken cancellationToken);
++    Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(Guid companyId, Guid conversationId, CreateTaskFromChatCommand command, CancellationToken cancellationToken);
++}
++
++public interface IDirectAgentChatOrchestrator
++{
++    Task<DirectAgentChatReply> GenerateReplyAsync(Guid companyId, Guid conversationId, Guid agentId, Guid userId, string humanMessage, CancellationToken cancellationToken);
++}
++
++public sealed class DirectChatValidationException : Exception
++{
++    public DirectChatValidationException(IDictionary<string, string[]> errors)
++        : base("Direct chat validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8a17f2c..8ebd721 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -35,6 +35,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
++    public DbSet<Conversation> Conversations => Set<Conversation>();
++    public DbSet<Message> Messages => Set<Message>();
+     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+@@ -76,6 +78,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ApprovalRequest>()
+             .HasQueryFilter(request =>
+                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Conversation>()
++            .HasQueryFilter(conversation =>
++                CurrentCompanyId.HasValue && conversation.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Message>()
++            .HasQueryFilter(message =>
++                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 8bb5475..a84515c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -954,6 +954,77 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+     }
+ }
+ 
++internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conversation>
++{
++    public void Configure(EntityTypeBuilder<Conversation> builder)
++    {
++        builder.ToTable("conversations");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ChannelType).HasColumnName("channel_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(200);
++        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id");
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ChannelType, x.CreatedByUserId, x.AgentId })
++            .HasFilter("[agent_id] IS NOT NULL")
++            .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.CreatedByUser)
++            .WithMany()
++            .HasForeignKey(x => x.CreatedByUserId)
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Agent)
++            .WithMany()
++            .HasForeignKey(x => x.AgentId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class MessageConfiguration : IEntityTypeConfiguration<Message>
++{
++    public void Configure(EntityTypeBuilder<Message> builder)
++    {
++        builder.ToTable("messages");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConversationId).HasColumnName("conversation_id").IsRequired();
++        builder.Property(x => x.SenderType).HasColumnName("sender_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SenderId).HasColumnName("sender_id");
++        builder.Property(x => x.MessageType).HasColumnName("message_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Body).HasColumnName("body").HasMaxLength(16000).IsRequired();
++        builder.Property(x => x.StructuredPayload)
++            .HasColumnName("structured_payload")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConversationId });
++        builder.HasIndex(x => new { x.ConversationId, x.CreatedUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Conversation)
++            .WithMany(x => x.Messages)
++            .HasForeignKey(x => x.ConversationId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration<WorkflowDefinition>
+ {
+     private static readonly ValueConverter<WorkflowTriggerType, string> TriggerTypeConverter =
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+new file mode 100644
+index 0000000..1970c2e
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -0,0 +1,364 @@
++using System.Text;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Chat;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyDirectChatService : ICompanyDirectChatService
++{
++    private const int DefaultPageSize = 50;
++    private const int MaxPageSize = 200;
++    private const int MessageMaxLength = 16000;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IDirectAgentChatOrchestrator _orchestrator;
++    private readonly ICompanyTaskCommandService _taskCommandService;
++
++    public CompanyDirectChatService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IDirectAgentChatOrchestrator orchestrator,
++        ICompanyTaskCommandService taskCommandService)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _orchestrator = orchestrator;
++        _taskCommandService = taskCommandService;
++    }
++
++    public async Task<DirectConversationDto> GetOrCreateDirectAgentConversationAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var agent = await GetChatAgentAsync(companyId, agentId, cancellationToken);
++
++        var conversation = await _dbContext.Conversations
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.CreatedByUserId == membership.UserId &&
++                x.AgentId == agentId,
++                cancellationToken);
++
++        if (conversation is null)
++        {
++            conversation = new Conversation(
++                Guid.NewGuid(),
++                companyId,
++                ChatChannelTypes.DirectAgent,
++                $"Direct chat with {agent.DisplayName}",
++                membership.UserId,
++                agentId,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["thread_policy"] = JsonValue.Create("one_per_user_agent"),
++                    ["agent_role_name"] = JsonValue.Create(agent.RoleName)
++                });
++            _dbContext.Conversations.Add(conversation);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        return ToConversationDto(conversation, agent);
++    }
++
++    public async Task<ChatMessagePageDto> GetMessagesAsync(
++        Guid companyId,
++        Guid conversationId,
++        GetConversationMessagesQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
++
++        var skip = Math.Max(0, query.Skip ?? 0);
++        var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
++        var messagesQuery = _dbContext.Messages
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId);
++
++        var totalCount = await messagesQuery.CountAsync(cancellationToken);
++        var messages = await messagesQuery
++            .OrderByDescending(x => x.CreatedUtc)
++            .Skip(skip)
++            .Take(take)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        return new ChatMessagePageDto(
++            messages.Select(ToMessageDto).ToList(),
++            totalCount,
++            skip,
++            take);
++    }
++
++    public async Task<SendDirectAgentMessageResultDto> SendMessageAsync(
++        Guid companyId,
++        Guid conversationId,
++        SendDirectAgentMessageCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(command);
++
++        var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
++        if (conversation.AgentId is not Guid agentId)
++        {
++            throw new KeyNotFoundException("Direct agent conversation not found.");
++        }
++
++        var agent = await GetChatAgentAsync(companyId, agentId, cancellationToken);
++        var humanMessage = new Message(
++            Guid.NewGuid(),
++            companyId,
++            conversation.Id,
++            ChatSenderTypes.User,
++            membership.UserId,
++            ChatMessageTypes.Text,
++            command.Body);
++
++        _dbContext.Messages.Add(humanMessage);
++        conversation.Touch();
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var reply = await _orchestrator.GenerateReplyAsync(
++            companyId,
++            conversation.Id,
++            agentId,
++            membership.UserId,
++            command.Body,
++            cancellationToken);
++
++        var agentPayload = CloneNodes(reply.StructuredPayload);
++        if (!string.IsNullOrWhiteSpace(reply.RationaleSummary))
++        {
++            agentPayload["rationale_summary"] = JsonValue.Create(reply.RationaleSummary);
++        }
++
++        var agentMessage = new Message(
++            Guid.NewGuid(),
++            companyId,
++            conversation.Id,
++            ChatSenderTypes.Agent,
++            agentId,
++            ChatMessageTypes.Text,
++            reply.MessageText,
++            agentPayload);
++
++        _dbContext.Messages.Add(agentMessage);
++        conversation.Touch();
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new SendDirectAgentMessageResultDto(
++            ToConversationDto(conversation, agent),
++            ToMessageDto(humanMessage),
++            ToMessageDto(agentMessage));
++    }
++
++    public async Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(
++        Guid companyId,
++        Guid conversationId,
++        CreateTaskFromChatCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
++
++        if (conversation.AgentId is not Guid agentId)
++        {
++            throw new KeyNotFoundException("Direct agent conversation not found.");
++        }
++
++        Message? sourceMessage = null;
++        if (command.SourceMessageId is Guid sourceMessageId)
++        {
++            sourceMessage = await _dbContext.Messages
++                .AsNoTracking()
++                .SingleOrDefaultAsync(x =>
++                    x.CompanyId == companyId &&
++                    x.ConversationId == conversationId &&
++                    x.Id == sourceMessageId,
++                    cancellationToken);
++
++            if (sourceMessage is null)
++            {
++                throw new KeyNotFoundException("Source message not found.");
++            }
++        }
++
++        var recentMessages = await _dbContext.Messages
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(8)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        var title = NormalizeTaskTitle(command.Title, sourceMessage?.Body, conversation.Subject);
++        var description = NormalizeTaskDescription(command.Description, recentMessages);
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["source"] = JsonValue.Create("direct_agent_chat"),
++            ["conversation_id"] = JsonValue.Create(conversation.Id.ToString()),
++            ["agent_id"] = JsonValue.Create(agentId.ToString())
++        };
++
++        if (sourceMessage is not null)
++        {
++            payload["source_message_id"] = JsonValue.Create(sourceMessage.Id.ToString());
++        }
++
++        var task = await _taskCommandService.CreateTaskAsync(
++            companyId,
++            new CreateTaskCommand(
++                "chat_follow_up",
++                title,
++                description,
++                string.IsNullOrWhiteSpace(command.Priority) ? "normal" : command.Priority,
++                null,
++                agentId,
++                payload,
++                RationaleSummary: "Created explicitly from a direct agent chat interaction."),
++            cancellationToken);
++
++        return new CreateTaskFromChatResultDto(task.Id, conversation.Id, sourceMessage?.Id);
++    }
++
++    private async Task<Conversation> GetAccessibleConversationAsync(
++        Guid companyId,
++        Guid conversationId,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var conversation = await _dbContext.Conversations
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.Id == conversationId &&
++                x.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.CreatedByUserId == membership.UserId,
++                cancellationToken);
++
++        return conversation ?? throw new KeyNotFoundException("Conversation not found.");
++    }
++
++    private async Task<Agent> GetChatAgentAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++    {
++        var agent = await _dbContext.Agents
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        if (agent.Status is AgentStatus.Paused or AgentStatus.Archived)
++        {
++            throw new DirectChatValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [nameof(OpenDirectAgentConversationCommand.AgentId)] = ["Paused and archived agents cannot participate in direct chat."]
++                });
++        }
++
++        return agent;
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        return membership ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++    }
++
++    private static void Validate(SendDirectAgentMessageCommand command)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (string.IsNullOrWhiteSpace(command.Body))
++        {
++            errors[nameof(command.Body)] = ["Body is required."];
++        }
++        else if (command.Body.Trim().Length > MessageMaxLength)
++        {
++            errors[nameof(command.Body)] = [$"Body must be {MessageMaxLength} characters or fewer."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new DirectChatValidationException(errors);
++        }
++    }
++
++    private static string NormalizeTaskTitle(string? commandTitle, string? sourceMessageBody, string? conversationSubject)
++    {
++        var title = FirstNonEmpty(commandTitle, sourceMessageBody, conversationSubject, "Chat follow-up")!;
++        title = title.ReplaceLineEndings(" ").Trim();
++        return title.Length <= 200 ? title : string.Concat(title.AsSpan(0, 197), "...");
++    }
++
++    private static string NormalizeTaskDescription(string? commandDescription, IReadOnlyList<Message> recentMessages)
++    {
++        if (!string.IsNullOrWhiteSpace(commandDescription))
++        {
++            return commandDescription.Trim();
++        }
++
++        var builder = new StringBuilder("Created from direct agent chat.");
++        foreach (var message in recentMessages)
++        {
++            builder.AppendLine();
++            builder.Append(message.SenderType);
++            builder.Append(": ");
++            builder.Append(message.Body);
++        }
++
++        var description = builder.ToString();
++        return description.Length <= 4000 ? description : string.Concat(description.AsSpan(0, 3997), "...");
++    }
++
++    private static string? FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
++
++    private static DirectConversationDto ToConversationDto(Conversation conversation, Agent agent) =>
++        new(
++            conversation.Id,
++            conversation.CompanyId,
++            conversation.ChannelType,
++            conversation.CreatedByUserId,
++            agent.Id,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Status.ToStorageValue(),
++            conversation.Subject,
++            conversation.CreatedUtc,
++            conversation.UpdatedUtc);
++
++    private static ChatMessageDto ToMessageDto(Message message) =>
++        new(
++            message.Id,
++            message.CompanyId,
++            message.ConversationId,
++            message.SenderType,
++            message.SenderId,
++            message.MessageType,
++            message.Body,
++            CloneNodes(message.StructuredPayload),
++            message.CreatedUtc);
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
++        nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
++    private readonly IGroundedPromptContextService _groundedPromptContextService;
++
++    public DirectAgentChatOrchestrator(
++        VirtualCompanyDbContext dbContext,
++        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
++        IGroundedPromptContextService groundedPromptContextService)
++    {
++        _dbContext = dbContext;
++        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
++        _groundedPromptContextService = groundedPromptContextService;
++    }
++
++    public async Task<DirectAgentChatReply> GenerateReplyAsync(
++        Guid companyId,
++        Guid conversationId,
++        Guid agentId,
++        Guid userId,
++        string humanMessage,
++        CancellationToken cancellationToken)
++    {
++        var profile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
++        var history = await _dbContext.Messages
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(12)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        GroundedPromptContextDto? groundedContext = null;
++        try
++        {
++            groundedContext = await _groundedPromptContextService.PrepareAsync(
++                new GroundedPromptContextRequest(
++                    companyId,
++                    agentId,
++                    humanMessage,
++                    userId,
++                    Limits: new RetrievalSourceLimitOptions(3, 3, 3, 2),
++                    RetrievalPurpose: "direct_agent_chat"),
++                cancellationToken);
++        }
++        catch (GroundedContextRetrievalValidationException)
++        {
++            groundedContext = null;
++        }
++
++        var reply = BuildPersonaGroundedReply(profile, groundedContext, history, humanMessage);
++        var rationale = "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history. Raw reasoning was not generated or exposed.";
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["agent_display_name"] = JsonValue.Create(profile.DisplayName),
++            ["agent_role_name"] = JsonValue.Create(profile.RoleName),
++            ["rationale_summary"] = JsonValue.Create(rationale)
++        };
++
++        if (groundedContext is not null)
++        {
++            payload["retrieval_id"] = JsonValue.Create(groundedContext.RetrievalId.ToString());
++            payload["source_reference_count"] = JsonValue.Create(groundedContext.Context.SourceReferences.Count);
++        }
++
++        return new DirectAgentChatReply(reply, rationale, payload);
++    }
++
++    private static string BuildPersonaGroundedReply(
++        AgentRuntimeProfileDto profile,
++        GroundedPromptContextDto? context,
++        IReadOnlyList<Message> history,
++        string humanMessage)
++    {
++        var builder = new StringBuilder();
++        builder.Append(profile.DisplayName);
++        builder.Append(" here");
++        builder.Append(" (");
++        builder.Append(profile.RoleName);
++        builder.Append("). ");
++
++        if (!string.IsNullOrWhiteSpace(profile.RoleBrief))
++        {
++            builder.Append("I am handling this from my role brief: ");
++            builder.Append(Trim(profile.RoleBrief, 240));
++            builder.Append(' ');
++        }
++
++        var personalitySummary = ExtractSummary(profile.Objectives) ?? ExtractSummary(profile.Kpis);
++        if (!string.IsNullOrWhiteSpace(personalitySummary))
++        {
++            builder.Append(Trim(personalitySummary, 160));
++            builder.Append(' ');
++        }
++
++        if (context is not null && context.Context.Counts.SourceReferences > 0)
++        {
++            builder.Append("I found ");
++            builder.Append(context.Context.Counts.SourceReferences);
++            builder.Append(" scoped context reference(s) to keep this tenant-specific. ");
++        }
++
++        if (history.Count > 1)
++        {
++            builder.Append("I am using the recent exchange in this direct conversation. ");
++        }
++
++        builder.Append("For your message: ");
++        builder.Append(Trim(humanMessage, 600));
++        builder.Append(" My first-pass response is to clarify the desired outcome, identify the next concrete action, and create a task when you want this tracked.");
++
++        return builder.ToString();
++    }
++
++    private static string? ExtractSummary(IReadOnlyDictionary<string, JsonNode?> values)
++    {
++        if (values.TryGetValue("summary", out var node) && node is JsonValue value && value.TryGetValue<string>(out var summary))
++        {
++            return summary;
++        }
++
++        return null;
++    }
++
++    private static string Trim(string value, int maxLength)
++    {
++        var normalized = value.ReplaceLineEndings(" ").Trim();
++        return normalized.Length <= maxLength ? normalized : string.Concat(normalized.AsSpan(0, maxLength - 3), "...");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 4a7d510..90a96ea 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -10,6 +10,7 @@ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Chat;
+ using StackExchange.Redis;
+ using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Application.Auditing;
+@@ -179,6 +180,8 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
++        services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+diff --git a/src/VirtualCompany.Api/Controllers/DirectChatController.cs b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+new file mode 100644
+index 0000000..34c75d8
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+@@ -0,0 +1,142 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Chat;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class DirectChatController : ControllerBase
++{
++    private readonly ICompanyDirectChatService _directChatService;
++
++    public DirectChatController(ICompanyDirectChatService directChatService)
++    {
++        _directChatService = directChatService;
++    }
++
++    [HttpPost("agents/{agentId:guid}/conversations/direct")]
++    public async Task<ActionResult<DirectConversationDto>> OpenDirectConversationAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.GetOrCreateDirectAgentConversationAsync(companyId, agentId, cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("conversations/{conversationId:guid}/messages")]
++    public async Task<ActionResult<ChatMessagePageDto>> GetMessagesAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.GetMessagesAsync(companyId, conversationId, new GetConversationMessagesQuery(skip, take), cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("conversations/{conversationId:guid}/messages")]
++    public async Task<ActionResult<SendDirectAgentMessageResultDto>> SendMessageAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromBody] SendDirectAgentMessageCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.SendMessageAsync(companyId, conversationId, command, cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("conversations/{conversationId:guid}/tasks")]
++    public async Task<ActionResult<CreateTaskFromChatResultDto>> CreateTaskFromChatAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromBody] CreateTaskFromChatCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _directChatService.CreateTaskFromChatAsync(companyId, conversationId, command, cancellationToken);
++            return Created($"/api/companies/{companyId}/tasks/{result.TaskId}", result);
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (TaskValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
++        ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
++        {
++            Title = "Validation failed",
++            Status = StatusCodes.Status400BadRequest
++        });
++}
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 6c9cebd..0d3d590 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -69,6 +69,7 @@ using (var scope = app.Services.CreateScope())
+             await dbContext.Database.MigrateAsync();
+             await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
+             await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
++            await EnsureSqlServerDirectChatSchemaAsync(dbContext);
+         }
+         else
+         {
+@@ -405,6 +406,96 @@ static async Task EnsureSqlServerKnowledgeSchemaAsync(VirtualCompanyDbContext db
+     }
+ }
+ 
++static async Task EnsureSqlServerDirectChatSchemaAsync(VirtualCompanyDbContext dbContext)
++{
++    var providerName = dbContext.Database.ProviderName;
++    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
++    {
++        return;
++    }
++
++    var connection = dbContext.Database.GetDbConnection();
++    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
++    if (shouldCloseConnection)
++    {
++        await connection.OpenAsync();
++    }
++
++    try
++    {
++        if (!await SqlServerTableExistsAsync(connection, "conversations"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync(
++                """
++                CREATE TABLE [conversations] (
++                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_conversations] PRIMARY KEY,
++                    [company_id] uniqueidentifier NOT NULL,
++                    [channel_type] nvarchar(64) NOT NULL,
++                    [subject] nvarchar(200) NULL,
++                    [created_by_user_id] uniqueidentifier NOT NULL,
++                    [agent_id] uniqueidentifier NULL,
++                    [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_conversations_metadata_json] DEFAULT (N'{}'),
++                    [created_at] datetime2 NOT NULL,
++                    [updated_at] datetime2 NOT NULL,
++                    CONSTRAINT [FK_conversations_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_conversations_users_created_by_user_id] FOREIGN KEY ([created_by_user_id]) REFERENCES [users] ([Id]),
++                    CONSTRAINT [FK_conversations_agents_agent_id] FOREIGN KEY ([agent_id]) REFERENCES [agents] ([Id])
++                );
++                """);
++
++            await dbContext.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX [IX_conversations_company_id_channel_type_created_by_user_id_agent_id] ON [conversations] ([company_id], [channel_type], [created_by_user_id], [agent_id]) WHERE [agent_id] IS NOT NULL;""");
++            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_conversations_company_id_updated_at] ON [conversations] ([company_id], [updated_at]);""");
++            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_conversations_company_id_agent_id] ON [conversations] ([company_id], [agent_id]);""");
++        }
++
++        if (!await SqlServerTableExistsAsync(connection, "messages"))
++        {
++            await dbContext.Database.ExecuteSqlRawAsync(
++                """
++                CREATE TABLE [messages] (
++                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_messages] PRIMARY KEY,
++                    [company_id] uniqueidentifier NOT NULL,
++                    [conversation_id] uniqueidentifier NOT NULL,
++                    [sender_type] nvarchar(64) NOT NULL,
++                    [sender_id] uniqueidentifier NULL,
++                    [message_type] nvarchar(64) NOT NULL,
++                    [body] nvarchar(max) NOT NULL,
++                    [structured_payload] nvarchar(max) NOT NULL CONSTRAINT [DF_messages_structured_payload] DEFAULT (N'{}'),
++                    [created_at] datetime2 NOT NULL,
++                    CONSTRAINT [FK_messages_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_messages_conversations_conversation_id] FOREIGN KEY ([conversation_id]) REFERENCES [conversations] ([id]) ON DELETE CASCADE
++                );
++                """);
++
++            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_messages_company_id_conversation_id] ON [messages] ([company_id], [conversation_id]);""");
++            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_messages_conversation_id_created_at] ON [messages] ([conversation_id], [created_at]);""");
++        }
++    }
++    finally
++    {
++        if (shouldCloseConnection)
++        {
++            await connection.CloseAsync();
++        }
++    }
++}
++
+ static async Task<bool> SqlServerTableExistsAsync(DbConnection connection, string tableName)
+ {
+     await using var command = connection.CreateCommand();
+diff --git a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+new file mode 100644
+index 0000000..8b9b46b
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+@@ -0,0 +1,151 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class DirectChatApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public DirectChatApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<DirectConversationViewModel> OpenDirectConversationAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : SendAsync<DirectConversationViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/conversations/direct", new { agentId }, cancellationToken);
++
++    public Task<ChatMessagePageViewModel> GetMessagesAsync(Guid companyId, Guid conversationId, int skip = 0, int take = 50, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : GetAsync<ChatMessagePageViewModel>($"api/companies/{companyId}/conversations/{conversationId}/messages?skip={skip}&take={take}", cancellationToken);
++
++    public Task<SendDirectAgentMessageResultViewModel> SendMessageAsync(Guid companyId, Guid conversationId, string body, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : SendAsync<SendDirectAgentMessageResultViewModel>(HttpMethod.Post, $"api/companies/{companyId}/conversations/{conversationId}/messages", new SendDirectAgentMessageRequest { Body = body }, cancellationToken);
++
++    public Task<CreateTaskFromChatResultViewModel> CreateTaskFromChatAsync(Guid companyId, Guid conversationId, Guid? sourceMessageId, string? title, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : SendAsync<CreateTaskFromChatResultViewModel>(
++                HttpMethod.Post,
++                $"api/companies/{companyId}/conversations/{conversationId}/tasks",
++                new CreateTaskFromChatRequest { SourceMessageId = sourceMessageId, Title = title },
++                cancellationToken);
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await ReadAsync<T>(response, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri)
++            {
++                Content = JsonContent.Create(payload)
++            };
++
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await ReadAsync<T>(response, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var result = await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++        return result ?? throw new OnboardingApiException("The server returned an empty response.");
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var contentType = response.Content.Headers.ContentType?.MediaType;
++        if (!string.Equals(contentType, "application/json", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(contentType, "application/problem+json", StringComparison.OrdinalIgnoreCase))
++        {
++            await response.Content.ReadAsStringAsync(cancellationToken);
++            return new OnboardingApiException($"The request failed with status code {(int)response.StatusCode}.");
++        }
++
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class DirectConversationViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string ChannelType { get; set; } = string.Empty;
++    public Guid CreatedByUserId { get; set; }
++    public Guid AgentId { get; set; }
++    public string AgentDisplayName { get; set; } = string.Empty;
++    public string AgentRoleName { get; set; } = string.Empty;
++    public string AgentStatus { get; set; } = string.Empty;
++    public string? Subject { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime UpdatedAt { get; set; }
++}
++
++public sealed class ChatMessageViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public Guid ConversationId { get; set; }
++    public string SenderType { get; set; } = string.Empty;
++    public Guid? SenderId { get; set; }
++    public string MessageType { get; set; } = string.Empty;
++    public string Body { get; set; } = string.Empty;
++    public Dictionary<string, JsonNode?> StructuredPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedAt { get; set; }
++}
++
++public sealed class ChatMessagePageViewModel
++{
++    public List<ChatMessageViewModel> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++}
++
++public sealed class SendDirectAgentMessageRequest
++{
++    public string Body { get; set; } = string.Empty;
++}
++
++public sealed class SendDirectAgentMessageResultViewModel
++{
++    public DirectConversationViewModel Conversation { get; set; } = new();
++    public ChatMessageViewModel HumanMessage { get; set; } = new();
++    public ChatMessageViewModel AgentMessage { get; set; } = new();
++}
++
++public sealed class CreateTaskFromChatRequest
++{
++    public Guid? SourceMessageId { get; set; }
++    public string? Title { get; set; }
++    public string? Description { get; set; }
++    public string? Priority { get; set; }
++}
++
++public sealed class CreateTaskFromChatResultViewModel
++{
++    public Guid TaskId { get; set; }
++    public Guid ConversationId { get; set; }
++    public Guid? SourceMessageId { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 4d4ee2c..133a7b0 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -43,6 +43,11 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new DirectChatApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Pages/AgentChat.razor b/src/VirtualCompany.Web/Pages/AgentChat.razor
+new file mode 100644
+index 0000000..7a9a7e8
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/AgentChat.razor
+@@ -0,0 +1,213 @@
++@page "/agents/{AgentId:guid}/chat"
++@using System.ComponentModel.DataAnnotations
++@using Microsoft.AspNetCore.Components
++@using VirtualCompany.Web.Services
++@inject OnboardingApiClient OnboardingApiClient
++@inject AgentApiClient AgentApiClient
++@inject DirectChatApiClient DirectChatApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Agent Chat</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Agent chat</h1>
++        <p class="text-body-secondary mb-0">Opening direct conversation...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary mb-0">Direct chat requires an explicit company context.</p>
++        </div>
++    </section>
++}
++else if (!string.IsNullOrWhiteSpace(errorMessage))
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Agent chat</h1>
++            <div class="alert alert-danger mb-0">@errorMessage</div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <div class="agent-roster-header">
++                <div>
++                    <span class="dashboard-kicker">Direct chat</span>
++                    <h1 class="mb-2 mt-2">@conversation?.AgentDisplayName</h1>
++                    <p class="text-body-secondary mb-0">@conversation?.AgentRoleName</p>
++                </div>
++                <div class="dashboard-actions">
++                    <a class="btn btn-outline-secondary" href="@($"/agents/{AgentId}?companyId={CompanyId}")">Profile</a>
++                    <button class="btn btn-outline-primary" type="button" @onclick="CreateTaskAsync" disabled="@(isCreatingTask || conversation is null)">Create task</button>
++                </div>
++            </div>
++
++            @if (!string.IsNullOrWhiteSpace(successMessage))
++            {
++                <div class="alert alert-success mt-3">@successMessage</div>
++            }
++
++            <div class="activity-list mt-4">
++                @if (messages.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">Send the first message to start the direct conversation.</p>
++                }
++                else
++                {
++                    @foreach (var message in messages)
++                    {
++                        <article class="activity-item">
++                            <div class="agent-template-header">
++                                <strong>@GetSenderLabel(message)</strong>
++                                <span class="text-body-secondary small">@message.CreatedAt.ToLocalTime().ToString("g")</span>
++                            </div>
++                            <p class="mb-0 mt-2">@message.Body</p>
++                            @if (message.StructuredPayload.TryGetValue("rationale_summary", out var rationale) && rationale is not null)
++                            {
++                                <p class="text-body-secondary small mb-0 mt-2">Rationale: @rationale.ToString()</p>
++                            }
++                            <div class="mt-2">
++                                <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => SelectTaskSource(message.Id))">Use for task</button>
++                            </div>
++                        </article>
++                    }
++                }
++            </div>
++
++            <EditForm Model="@composer" OnValidSubmit="@SendAsync" class="mt-4">
++                <DataAnnotationsValidator />
++                <ValidationSummary />
++
++                <label class="form-label" for="chat-body">Message</label>
++                <InputTextArea id="chat-body" class="form-control" rows="4" @bind-Value="composer.Body" disabled="@isSending" />
++                <div class="dashboard-actions mt-3">
++                    <button class="btn btn-primary" type="submit" disabled="@isSending">Send</button>
++                    @if (selectedTaskSourceMessageId is Guid selectedMessage)
++                    {
++                        <span class="text-body-secondary">Task source selected: @selectedMessage</span>
++                    }
++                </div>
++            </EditForm>
++        </div>
++    </section>
++}
++
++@code {
++    [Parameter]
++    public Guid AgentId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private CurrentUserContextViewModel? currentUser;
++    private DirectConversationViewModel? conversation;
++    private readonly List<ChatMessageViewModel> messages = [];
++    private ChatComposerModel composer = new();
++    private bool isLoading = true;
++    private bool isSending;
++    private bool isCreatingTask;
++    private string? errorMessage;
++    private string? successMessage;
++    private Guid? selectedTaskSourceMessageId;
++
++    private CompanyMembershipViewModel? ActiveMembership =>
++        CompanyId is Guid companyId
++            ? currentUser?.Memberships.FirstOrDefault(x =>
++                x.CompanyId == companyId &&
++                string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            : null;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        successMessage = null;
++        messages.Clear();
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo($"/agents/{AgentId}/chat?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid selectedCompanyId && ActiveMembership is null)
++            {
++                errorMessage = "Your current account does not have access to the selected company.";
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                conversation = await DirectChatApiClient.OpenDirectConversationAsync(companyId, AgentId);
++                var page = await DirectChatApiClient.GetMessagesAsync(companyId, conversation.Id);
++                messages.AddRange(page.Items);
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task SendAsync()
++    {
++        if (CompanyId is not Guid companyId || conversation is null)
++        {
++            return;
++        }
++
++        isSending = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            var result = await DirectChatApiClient.SendMessageAsync(companyId, conversation.Id, composer.Body);
++            conversation = result.Conversation;
++            messages.Add(result.HumanMessage);
++            messages.Add(result.AgentMessage);
++            composer = new ChatComposerModel();
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSending = false;
++        }
++    }
++
++    private async Task CreateTaskAsync()
++    {
++        if (CompanyId is not Guid companyId || conversation is null)
++        {
++            return;
++        }
++
++        isCreatingTask = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            var sourceMessage = selectedTaskSourceMessageId ?? messages.LastOrDefault()?.Id;
++            var result = await DirectChatApiClient.CreateTaskFromChatAsync(companyId, conversation.Id, sourceMessage, conversation.Subject);
++            successMessage = $"Task {result.TaskId} was created from this chat.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isCreatingTask = false;
++        }
++    }
++
++    private void SelectTaskSource(Guid messageId)
++    {
++        selectedTaskSourceMessageId = messageId;
++        successMessage = "Selected this message as the task source.";
++    }
++
++    private string GetSenderLabel(ChatMessageViewModel message) =>
++        string.Equals(message.SenderType, "agent", StringComparison.OrdinalIgnoreCase)
++            ? conversation?.AgentDisplayName ?? "Agent"
++            : "You";
++
++    private sealed class ChatComposerModel
++    {
++        [Required, StringLength(16000)]
++        public string Body { get; set; } = string.Empty;
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+index 359de67..a9ea8b4 100644
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -54,6 +54,7 @@ else
+                     @if (currentProfile.Visibility.CanEditAgent)
+                     {
+                         <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId}&agentId={currentProfile.Id}")">Edit operating profile</a>
++                        <a class="btn btn-outline-primary" href="@($"/agents/{currentProfile.Id}/chat?companyId={CompanyId}")">Open chat</a>
+                     }
+                 </div>
+             </div>
+diff --git a/src/VirtualCompany.Web/Pages/AgentRoster.razor b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+index 53eeb18..5a979a5 100644
+--- a/src/VirtualCompany.Web/Pages/AgentRoster.razor
++++ b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+@@ -1,3 +1,3 @@
+ @page "/agents"
+-@rendermode InteractiveServer
++@rendermode InteractiveServer
+ @inherits Agents
+END_OF_PATCH

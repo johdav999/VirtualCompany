@@ -1,0 +1,244 @@
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 9b1ee1f..30f1e8d 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -7,7 +7,7 @@ using VirtualCompany.Infrastructure.Tenancy;
+ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+-[Route("api/companies/{companyId:guid}/inbox")]
++[Route("api/companies/{companyId:guid}")]
+ [Authorize(Policy = CompanyPolicies.CompanyMember)]
+ [RequireCompanyContext]
+ public sealed class NotificationsController : ControllerBase
+@@ -21,6 +21,7 @@ public sealed class NotificationsController : ControllerBase
+         _notificationInboxService = notificationInboxService;
+     }
+ 
++    [HttpGet("inbox")]
+     [HttpGet]
+     public async Task<ActionResult<NotificationInboxDto>> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+@@ -34,7 +35,45 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
+-    [HttpPatch("notifications/{notificationId:guid}/status")]
++    [HttpGet("notifications")]
++    [HttpGet("/api/notifications")]
++    public async Task<ActionResult<IReadOnlyList<NotificationListItemDto>>> GetNotificationsAsync(
++        [FromRoute] Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var inbox = await _notificationInboxService.GetInboxAsync(companyId, cancellationToken);
++            return Ok(inbox.Notifications);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("approvals/inbox")]
++    public async Task<ActionResult<IReadOnlyList<ApprovalInboxItemDto>>> GetApprovalInboxAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var inbox = await _notificationInboxService.GetInboxAsync(companyId, cancellationToken);
++            return Ok(inbox.PendingApprovals);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPatch("notifications/{notificationId:guid}/read")]
++    public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
++        SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("read"), cancellationToken);
++
++    [HttpPatch("notifications/{notificationId:guid}/unread")]
++    public Task<ActionResult<NotificationListItemDto>> MarkUnreadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
++        SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("unread"), cancellationToken);
++
++    [HttpPatch("inbox/notifications/{notificationId:guid}/status")]
++    [HttpPatch("notifications/{notificationId:guid}/status")]
+     public async Task<ActionResult<NotificationListItemDto>> SetStatusAsync(
+         Guid companyId,
+         Guid notificationId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0cd8b1f..0d75736 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -170,6 +170,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         var finalized = approval.Status != ApprovalRequestStatus.Pending;
+         if (finalized)
+         {
++            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, cancellationToken);
+             await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
+             if (linkedEntityTransition is not null)
+             {
+@@ -328,16 +329,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             }
+         }
+ 
+-        if (finalized)
+-        {
+-            await _dbContext.CompanyNotifications
+-                .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.RelatedEntityType == AuditTargetTypes.ApprovalRequest && x.RelatedEntityId == approval.Id)
+-                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Status, CompanyNotificationStatus.Actioned).SetProperty(x => x.ActionedUtc, DateTime.UtcNow).SetProperty(x => x.ReadUtc, DateTime.UtcNow),
+-                    cancellationToken);
+-        }
+-
+         return null;
+     }
+ 
++    private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken)
++    {
++        var now = DateTime.UtcNow;
++        await _dbContext.CompanyNotifications
++            .Where(x => x.CompanyId == companyId &&
++                        x.RelatedEntityType == AuditTargetTypes.ApprovalRequest &&
++                        x.RelatedEntityId == approvalId &&
++                        x.Status != CompanyNotificationStatus.Actioned)
++            .ExecuteUpdateAsync(
++                setters => setters
++                    .SetProperty(x => x.Status, CompanyNotificationStatus.Actioned)
++                    .SetProperty(x => x.ActionedUtc, now)
++                    .SetProperty(x => x.ReadUtc, x => x.ReadUtc ?? now),
++                cancellationToken);
++    }
++
+     private static bool CanDecide(ApprovalStep step, ResolvedCompanyMembershipContext membership)
+     {
+         if (step.ApproverType == ApprovalStepApproverType.User)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 63b80f8..3d98bc8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -33,6 +33,8 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId)
+             .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
+             .ThenByDescending(x => x.Priority)
+             .ThenByDescending(x => x.CreatedUtc)
+             .Take(100)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4083f2f..b25fe38 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -95,9 +95,6 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyNotification>()
+             .HasQueryFilter(notification =>
+                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+-        modelBuilder.Entity<CompanyNotification>()
+-            .HasQueryFilter(notification =>
+-                CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+new file mode 100644
+index 0000000..c65f7db
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+@@ -0,0 +1,82 @@
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class NotificationInboxTests
++{
++    [Fact]
++    public void Notification_state_transitions_track_read_and_actioned_timestamps()
++    {
++        var notification = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
++
++        Assert.Equal(CompanyNotificationStatus.Unread, notification.Status);
++        Assert.Null(notification.ReadUtc);
++        Assert.Null(notification.ActionedUtc);
++
++        notification.MarkRead();
++
++        Assert.Equal(CompanyNotificationStatus.Read, notification.Status);
++        Assert.NotNull(notification.ReadUtc);
++        Assert.Null(notification.ActionedUtc);
++
++        notification.MarkUnread();
++
++        Assert.Equal(CompanyNotificationStatus.Unread, notification.Status);
++        Assert.Null(notification.ReadUtc);
++        Assert.Null(notification.ActionedUtc);
++
++        notification.MarkActioned();
++
++        Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);
++        Assert.NotNull(notification.ReadUtc);
++        Assert.NotNull(notification.ActionedUtc);
++    }
++
++    [Fact]
++    public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()
++    {
++        var approval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
++        var escalation = CreateNotification(CompanyNotificationType.Escalation, CompanyNotificationPriority.High);
++        var failure = CreateNotification(CompanyNotificationType.WorkflowFailure, CompanyNotificationPriority.Critical);
++        var briefing = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal);
++
++        var ordered = new[] { briefing, escalation, approval, failure }
++            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
++            .ThenByDescending(x => x.Priority)
++            .ThenByDescending(x => x.CreatedUtc)
++            .ToList();
++
++        Assert.Same(approval, ordered[0]);
++        Assert.Equal([CompanyNotificationType.WorkflowFailure, CompanyNotificationType.Escalation], ordered.Skip(1).Take(2).Select(x => x.Type));
++        Assert.Same(briefing, ordered[3]);
++    }
++
++    [Fact]
++    public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()
++    {
++        var userId = Guid.NewGuid();
++        var notification = new CompanyNotification(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            userId,
++            CompanyNotificationType.WorkflowFailure,
++            CompanyNotificationPriority.Critical,
++            "Workflow failed",
++            "A workflow step failed.",
++            "workflow_exception",
++            Guid.NewGuid(),
++            "/workflows",
++            "{}",
++            $"workflow-exception:{Guid.NewGuid():N}:{userId:N}");
++
++        Assert.Contains(userId.ToString("N"), notification.DedupeKey);
++    }
++
++    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>
++        new(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            type,
++            priority,
++            type.ToStorageValue(),
++            "Notification body.",
++            type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : "approval_request",
++            Guid.NewGuid(),
++            "/inbox",
++            "{}",
++            $"{type.ToStorageValue()}:{Guid.NewGuid():N}");
++}
+END_OF_PATCH

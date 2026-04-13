@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.5",
+  "promptPath": ".ai-design/prompts/TASK-12.2.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:20:39.044Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-20-39-044Z_TASK-12.2.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-20-39-044Z_TASK-12.2.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:24:18.724Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\")\n                         .IsRequired()\n                         .ValueGeneratedOnAdd()\n@@ -66,6 +73,21 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                         .HasMaxLength(64)\n                         .HasColumnType(\"nvarchar(64)\");\n \n+                    b.Property<Guid?>(\"RelatedAgentId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedApprovalRequestId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedTaskId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedToolExecutionAttemptId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedWorkflowInstanceId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n                     b.Property<string>(\"RationaleSummary\")\n                         .HasMaxLength(512)\n                         .HasColumnType(\"nvarchar(512)\");\n@@ -82,10 +104,22 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n \n                     b.HasKey(\"Id\");\n \n+                    b.HasIndex(\"CompanyId\", \"ActorType\", \"ActorId\");\n+\n+                    b.HasIndex(\"CompanyId\", \"CorrelationId\");\n+\n                     b.HasIndex(\"CompanyId\", \"OccurredUtc\");\n \n+                    b.HasIndex(\"CompanyId\", \"RelatedAgentId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedApprovalRequestId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedTaskId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedToolExecutionAttemptId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedWorkflowInstanceId\", \"OccurredUtc\");\n+\n                     b.HasIndex(\"CompanyId\", \"TargetType\", \"TargetId\", \"OccurredUtc\");\n \n                     b.ToTable(\"audit_events\", (string)null);\nEND_OF_PATCH\n",
+  "stderrTail": "         .IsRequired()\n                         .ValueGeneratedOnAdd()\n@@ -66,6 +73,21 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                         .HasMaxLength(64)\n                         .HasColumnType(\"nvarchar(64)\");\n \n+                    b.Property<Guid?>(\"RelatedAgentId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedApprovalRequestId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedTaskId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedToolExecutionAttemptId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n+                    b.Property<Guid?>(\"RelatedWorkflowInstanceId\")\n+                        .HasColumnType(\"uniqueidentifier\");\n+\n                     b.Property<string>(\"RationaleSummary\")\n                         .HasMaxLength(512)\n                         .HasColumnType(\"nvarchar(512)\");\n@@ -82,10 +104,22 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n \n                     b.HasKey(\"Id\");\n \n+                    b.HasIndex(\"CompanyId\", \"ActorType\", \"ActorId\");\n+\n+                    b.HasIndex(\"CompanyId\", \"CorrelationId\");\n+\n                     b.HasIndex(\"CompanyId\", \"OccurredUtc\");\n \n+                    b.HasIndex(\"CompanyId\", \"RelatedAgentId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedApprovalRequestId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedTaskId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedToolExecutionAttemptId\", \"OccurredUtc\");\n+\n+                    b.HasIndex(\"CompanyId\", \"RelatedWorkflowInstanceId\", \"OccurredUtc\");\n+\n                     b.HasIndex(\"CompanyId\", \"TargetType\", \"TargetId\", \"OccurredUtc\");\n \n                     b.ToTable(\"audit_events\", (string)null);\nEND_OF_PATCH\ntokens used\n76,861\n",
+  "verbosityMode": "summary"
+}

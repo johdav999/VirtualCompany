@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Http;
+using System.Net.Sockets;
+using System.Text.Json;
 using VirtualCompany.Web;
 using VirtualCompany.Web.Services;
 
@@ -47,6 +49,31 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new InboxApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new AuditApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new TaskApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new DirectChatApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 
 var app = builder.Build();
 
@@ -61,9 +88,9 @@ app.Run();
 
 static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, HttpContext? httpContext)
 {
-    if (Uri.TryCreate(configuredValue, UriKind.Absolute, out var configuredUri))
+    if (TryResolveReachableApiBaseAddress(configuredValue, httpContext, out var resolvedUri))
     {
-        return configuredUri;
+        return resolvedUri;
     }
 
     var hostUri = ResolveHostUri(httpContext);
@@ -78,6 +105,28 @@ static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, H
     }
 
     return hostUri;
+}
+
+static bool TryResolveReachableApiBaseAddress(string? configuredValue, HttpContext? httpContext, out Uri resolvedUri)
+{
+    var candidates = GetApiBaseAddressCandidates(configuredValue, httpContext);
+    foreach (var candidate in candidates)
+    {
+        if (IsReachable(candidate))
+        {
+            resolvedUri = candidate;
+            return true;
+        }
+    }
+
+    if (Uri.TryCreate(configuredValue, UriKind.Absolute, out var configuredUri))
+    {
+        resolvedUri = configuredUri;
+        return true;
+    }
+
+    resolvedUri = default!;
+    return false;
 }
 
 static bool ShouldUseOfflineMode(string? configuredValue, HttpContext? httpContext)
@@ -130,6 +179,106 @@ static Uri ResolveHostUri(HttpContext? httpContext)
     }
 
     return new Uri("http://localhost/");
+}
+
+static IReadOnlyList<Uri> GetApiBaseAddressCandidates(string? configuredValue, HttpContext? httpContext)
+{
+    var results = new List<Uri>();
+    AddCandidate(results, configuredValue);
+    AddCandidate(results, Environment.GetEnvironmentVariable("VC_API_BASE_URL"));
+    AddCandidate(results, Environment.GetEnvironmentVariable("ApiBaseUrl"));
+
+    foreach (var candidate in ReadApiLaunchProfileUrls())
+    {
+        AddCandidate(results, candidate);
+    }
+
+    var hostUri = ResolveHostUri(httpContext);
+    if (string.Equals(hostUri.Host, "localhost", StringComparison.OrdinalIgnoreCase) || hostUri.IsLoopback)
+    {
+        AddCandidate(results, "http://localhost:5301/");
+        AddCandidate(results, "https://localhost:7120/");
+        AddCandidate(results, "http://127.0.0.1:5123/");
+    }
+
+    return results;
+}
+
+static void AddCandidate(List<Uri> results, string? value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+    {
+        return;
+    }
+
+    if (results.Any(existing => Uri.Compare(existing, uri, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0))
+    {
+        return;
+    }
+
+    results.Add(uri);
+}
+
+static IReadOnlyList<string> ReadApiLaunchProfileUrls()
+{
+    var urls = new List<string>();
+    var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "VirtualCompany.Api", "Properties", "launchSettings.json");
+    if (!File.Exists(path))
+    {
+        return urls;
+    }
+
+    try
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        if (!document.RootElement.TryGetProperty("profiles", out var profiles))
+        {
+            return urls;
+        }
+
+        foreach (var profile in profiles.EnumerateObject())
+        {
+            if (!profile.Value.TryGetProperty("applicationUrl", out var applicationUrl))
+            {
+                continue;
+            }
+
+            var value = applicationUrl.GetString();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            foreach (var url in value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                urls.Add(url.EndsWith("/", StringComparison.Ordinal) ? url : $"{url}/");
+            }
+        }
+    }
+    catch
+    {
+        return urls;
+    }
+
+    return urls;
+}
+
+static bool IsReachable(Uri uri)
+{
+    try
+    {
+        var port = uri.IsDefaultPort
+            ? string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ? 443 : 80
+            : uri.Port;
+
+        using var client = new TcpClient();
+        var connectTask = client.ConnectAsync(uri.Host, port);
+        return connectTask.Wait(TimeSpan.FromMilliseconds(250)) && client.Connected;
+    }
+    catch
+    {
+        return false;
+    }
 }
 
 static class HttpClientDevelopmentAuthExtensions

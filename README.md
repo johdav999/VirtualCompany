@@ -128,6 +128,14 @@ Health endpoints:
 
 Request correlation:
 
+
+## Executive Briefings
+
+TASK-ST-505 adds a deterministic v1 briefing pipeline. The `BriefingScheduler` hosted service scans tenant companies and generates one daily briefing and one weekly executive summary per company-period, using company timezone windows and an idempotent `(company_id, briefing_type, period_start_at, period_end_at)` key.
+
+Briefings aggregate pending approvals, task status highlights, open workflow exceptions, and recent agent tool execution activity. Generated output is stored in `company_briefings`, projected to the executive briefing conversation when an active user exists, and fan-out notification rows are written to `company_notifications`.
+
+Users can read and update in-app/mobile delivery preferences at `api/companies/{companyId}/briefings/preferences`. In-app delivery defaults on, mobile defaults off, and daily/weekly cadence preferences default on. Push provider and email dispatch are intentionally out of scope for this slice.
 - The API accepts `X-Correlation-ID` on incoming requests.
 - When absent, the API generates a correlation ID and returns it in the response header.
 - Technical logs and safe error responses include the same correlation ID for support workflows.

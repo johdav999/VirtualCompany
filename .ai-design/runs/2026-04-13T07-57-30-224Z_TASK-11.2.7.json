@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.2.7",
+  "promptPath": ".ai-design/prompts/TASK-11.2.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T07:57:30.224Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T07-57-30-224Z_TASK-11.2.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T07-57-30-224Z_TASK-11.2.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T08:00:29.546Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "        columns: new[] { \"company_id\", \"correlation_id\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_audit_events_CompanyId_CorrelationId\",\n+            table: \"audit_events\",\n+            columns: new[] { \"CompanyId\", \"CorrelationId\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_context_retrievals_CompanyId_CorrelationId\",\n+            table: \"context_retrievals\",\n+            columns: new[] { \"CompanyId\", \"CorrelationId\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropIndex(\n+            name: \"IX_context_retrievals_CompanyId_CorrelationId\",\n+            table: \"context_retrievals\");\n+\n+        migrationBuilder.DropIndex(\n+            name: \"IX_audit_events_CompanyId_CorrelationId\",\n+            table: \"audit_events\");\n+\n+        migrationBuilder.DropIndex(\n+            name: \"IX_tasks_company_id_correlation_id\",\n+            table: \"tasks\");\n+\n+        migrationBuilder.DropColumn(\n+            name: \"correlation_id\",\n+            table: \"tasks\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 8d3ef44..0cfc59a 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -99,6 +99,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);\n         Assert.Equal(WorkTaskStatus.Completed, task.Status);\n+        Assert.Equal(\"orch-test-correlation\", task.CorrelationId);\n         Assert.Equal(\"orch-test-correlation\", task.OutputPayload[\"correlationId\"]!.GetValue<string>());\n         Assert.Equal(seed.AgentId.ToString(\"N\"), task.OutputPayload[\"agentId\"]!.GetValue<string>());\n         Assert.NotNull(task.RationaleSummary);\nEND_OF_PATCH\n",
+  "stderrTail": "[] { \"company_id\", \"correlation_id\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_audit_events_CompanyId_CorrelationId\",\n+            table: \"audit_events\",\n+            columns: new[] { \"CompanyId\", \"CorrelationId\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_context_retrievals_CompanyId_CorrelationId\",\n+            table: \"context_retrievals\",\n+            columns: new[] { \"CompanyId\", \"CorrelationId\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropIndex(\n+            name: \"IX_context_retrievals_CompanyId_CorrelationId\",\n+            table: \"context_retrievals\");\n+\n+        migrationBuilder.DropIndex(\n+            name: \"IX_audit_events_CompanyId_CorrelationId\",\n+            table: \"audit_events\");\n+\n+        migrationBuilder.DropIndex(\n+            name: \"IX_tasks_company_id_correlation_id\",\n+            table: \"tasks\");\n+\n+        migrationBuilder.DropColumn(\n+            name: \"correlation_id\",\n+            table: \"tasks\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 8d3ef44..0cfc59a 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -99,6 +99,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);\n         Assert.Equal(WorkTaskStatus.Completed, task.Status);\n+        Assert.Equal(\"orch-test-correlation\", task.CorrelationId);\n         Assert.Equal(\"orch-test-correlation\", task.OutputPayload[\"correlationId\"]!.GetValue<string>());\n         Assert.Equal(seed.AgentId.ToString(\"N\"), task.OutputPayload[\"agentId\"]!.GetValue<string>());\n         Assert.NotNull(task.RationaleSummary);\nEND_OF_PATCH\ntokens used\n104,856\n",
+  "verbosityMode": "summary"
+}

@@ -1,7 +1,10 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Entities;
@@ -16,18 +19,24 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAuditEventWriter _auditEventWriter;
-    private readonly ICompanyToolExecutor _companyToolExecutor;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly IExecutiveCockpitDashboardCache _dashboardCache;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
 
     public CompanyApprovalRequestService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAuditEventWriter auditEventWriter,
-        ICompanyToolExecutor companyToolExecutor)
+        IServiceProvider serviceProvider,
+        IExecutiveCockpitDashboardCache dashboardCache,
+        ICompanyOutboxEnqueuer outboxEnqueuer)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
-        _companyToolExecutor = companyToolExecutor;
+        _serviceProvider = serviceProvider;
+        _dashboardCache = dashboardCache;
+        _outboxEnqueuer = outboxEnqueuer;
     }
 
     private const string DefaultRationaleSummary = "This action exceeded a configured approval threshold.";
@@ -88,7 +97,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                 AuditEventActions.ApprovalCreated,
                 AuditTargetTypes.ApprovalRequest,
                 approval.Id.ToString("N"),
-                AuditEventOutcomes.Pending,
+                AuditEventOutcomes.Requested,
                 DataSources: ["approvals", "http_request"],
                 RationaleSummary: $"Approval requested for {approval.TargetEntityType} target.",
                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
@@ -100,7 +109,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                 }),
             cancellationToken);
 
+        EnqueueApprovalNotification(approval);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return await ToDtoAsync(approval, cancellationToken);
     }
@@ -157,6 +168,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         var finalized = approval.Status != ApprovalRequestStatus.Pending;
         if (finalized)
         {
+            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, membership.UserId, cancellationToken);
             await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
             if (linkedEntityTransition is not null)
             {
@@ -166,9 +178,11 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         else
         {
             await WriteChainAdvancedAuditAsync(approval, decidedStep, membership.UserId, cancellationToken);
+            EnqueueApprovalNotification(approval);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return new ApprovalDecisionResultDto(
             await ToDtoAsync(approval, cancellationToken),
@@ -291,21 +305,50 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
 
             if (approval.Status == ApprovalRequestStatus.Approved)
             {
-                var result = await _companyToolExecutor.ExecuteAsync(
+                var policyDecision = BuildApprovedApprovalPolicyDecision(approval);
+                var companyToolExecutor = _serviceProvider.GetRequiredService<ICompanyToolExecutor>();
+                var result = await companyToolExecutor.ExecuteAsync(
                     new ToolExecutionRequest(
                         approval.CompanyId,
                         attempt.AgentId,
                         attempt.ToolName,
-                        attempt.ActionType.ToStorageValue(),
+                        attempt.ActionType,
                         attempt.Scope,
-                        CloneNodes(attempt.RequestPayload)),
+                        CloneNodes(attempt.RequestPayload),
+                        attempt.TaskId,
+                        attempt.WorkflowInstanceId,
+                        attempt.CorrelationId,
+                        attempt.Id),
                     cancellationToken);
-                attempt.MarkExecuted(approval.PolicyDecision, result.Payload);
+                if (string.Equals(result.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+                {
+                    attempt.MarkDenied(policyDecision, result.ToStructuredPayload());
+                    return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                }
+
+                attempt.MarkExecuted(policyDecision, result.ToStructuredPayload());
                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
             }
         }
 
         return null;
+    }
+
+    private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, Guid actionedByUserId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        await _dbContext.CompanyNotifications
+            .Where(x => x.CompanyId == companyId &&
+                        x.RelatedEntityType == AuditTargetTypes.ApprovalRequest &&
+                        x.RelatedEntityId == approvalId &&
+                        x.Status != CompanyNotificationStatus.Actioned)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(x => x.Status, CompanyNotificationStatus.Actioned)
+                    .SetProperty(x => x.ActionedUtc, now)
+                    .SetProperty(x => x.ActionedByUserId, (Guid?)actionedByUserId)
+                    .SetProperty(x => x.ReadUtc, x => x.ReadUtc ?? now),
+                cancellationToken);
     }
 
     private static bool CanDecide(ApprovalStep step, ResolvedCompanyMembershipContext membership)
@@ -326,6 +369,43 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         }
 
         return false;
+    }
+
+    private void EnqueueApprovalNotification(ApprovalRequest approval)
+    {
+        var current = approval.CurrentActionableStep;
+        if (current is null)
+        {
+            return;
+        }
+
+        var recipientUserId = current.ApproverType == ApprovalStepApproverType.User && Guid.TryParse(current.ApproverRef, out var userId)
+            ? userId
+            : (Guid?)null;
+        var recipientRole = current.ApproverType == ApprovalStepApproverType.Role
+            ? current.ApproverRef
+            : null;
+
+        _outboxEnqueuer.Enqueue(
+            approval.CompanyId,
+            CompanyOutboxTopics.NotificationDeliveryRequested,
+            new NotificationDeliveryRequestedMessage(
+                approval.CompanyId,
+                CompanyNotificationType.ApprovalRequested.ToStorageValue(),
+                CompanyNotificationPriority.High.ToStorageValue(),
+                $"{approval.ApprovalType} approval requested",
+                $"Review {approval.TargetEntityType} {approval.TargetEntityId:N}.",
+                AuditTargetTypes.ApprovalRequest,
+                approval.Id,
+                $"/inbox?companyId={approval.CompanyId}&approvalId={approval.Id}",
+                recipientUserId,
+                recipientRole,
+                null,
+                null,
+                $"approval-requested:{approval.Id:N}:step:{current.Id:N}",
+                null),
+            idempotencyKey: $"notification:approval-requested:{approval.Id:N}:step:{current.Id:N}",
+            causationId: approval.Id.ToString("N"));
     }
 
     private static void ValidateDecision(ApprovalDecisionCommand command)
@@ -478,7 +558,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                 rejected ? AuditEventActions.ApprovalStepRejected : AuditEventActions.ApprovalStepApproved,
                 AuditTargetTypes.ApprovalRequest,
                 approval.Id.ToString("N"),
-                rejected ? AuditEventOutcomes.Denied : AuditEventOutcomes.Succeeded,
+                rejected ? AuditEventOutcomes.Rejected : AuditEventOutcomes.Approved,
                 DataSources: ["approvals", "http_request"],
                 RationaleSummary: $"Approval step {step.SequenceNo} {(rejected ? "rejected" : "approved")}.",
                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
@@ -538,7 +618,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                 AuditEventActions.ApprovalCompleted,
                 AuditTargetTypes.ApprovalRequest,
                 approval.Id.ToString("N"),
-                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
+                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
                 DataSources: ["approvals", "http_request"],
                 RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}",
                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
@@ -777,6 +857,40 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
             _ => entityType
         };
+
+    private static Dictionary<string, JsonNode?> BuildApprovedApprovalPolicyDecision(ApprovalRequest approval)
+    {
+        var policyDecision = CloneNodes(approval.PolicyDecision);
+        var approvalStatus = approval.Status.ToStorageValue();
+
+        policyDecision["outcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Allow);
+        policyDecision["approvalRequired"] = JsonValue.Create(false);
+        policyDecision["approvalStatus"] = JsonValue.Create(approvalStatus);
+
+        JsonObject metadata;
+        if (policyDecision.TryGetValue("metadata", out var metadataNode) && metadataNode is JsonObject existingMetadata)
+        {
+            metadata = existingMetadata;
+        }
+        else
+        {
+            metadata = [];
+            policyDecision["metadata"] = metadata;
+        }
+
+        metadata["approvalRequestId"] = JsonValue.Create(approval.Id);
+        metadata["approvalStatus"] = JsonValue.Create(approvalStatus);
+        metadata["executionBlocked"] = JsonValue.Create(false);
+        metadata["blockedPendingApproval"] = JsonValue.Create(false);
+        metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Executed.ToStorageValue());
+
+        if (!string.IsNullOrWhiteSpace(approval.DecisionSummary))
+        {
+            metadata["approvalDecisionSummary"] = JsonValue.Create(approval.DecisionSummary);
+        }
+
+        return policyDecision;
+    }
 
     private static Dictionary<string, JsonNode?> BuildBlockedApprovalPolicyDecision(ApprovalRequest approval)
     {

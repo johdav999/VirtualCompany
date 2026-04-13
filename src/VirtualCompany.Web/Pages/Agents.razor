@@ -349,8 +349,12 @@ else
                                             @if (CanManageProfiles)
                                             {
                                                 <div class="mt-2">
-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open configuration editor</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Configure</button>
                                                 </div>
+                                            }
+                                            @if (IsDirectChatEligible(agent.Status))
+                                            {
+                                                <div class="mt-2"><a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a></div>
                                             }
                                         </th>
                                         <td>@agent.RoleName</td>
@@ -686,6 +690,14 @@ else
 
     private static string FormatRosterActivity(DateTime? lastActivityUtc) =>
         lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+    private static bool IsDirectChatEligible(string? status) =>
+        !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildChatUri(Guid companyId, Guid agentId)
+    {
+        return $"/agents/{agentId}/chat?companyId={companyId}";
+    }
 
 
     private string BuildAgentsUri(Guid companyId, string? department, string? status, Guid? agentId)

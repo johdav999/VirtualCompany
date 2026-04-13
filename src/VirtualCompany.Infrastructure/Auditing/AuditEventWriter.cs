@@ -30,7 +30,20 @@ public sealed class AuditEventWriter : IAuditEventWriter
             auditEvent.DataSources,
             auditEvent.Metadata,
             auditEvent.CorrelationId,
-            auditEvent.OccurredUtc));
+            auditEvent.OccurredUtc,
+            BuildDataSourcesUsed(auditEvent)));
         return Task.CompletedTask;
+    }
+
+    private static IReadOnlyCollection<AuditDataSourceUsed> BuildDataSourcesUsed(AuditEventWriteRequest auditEvent)
+    {
+        if (auditEvent.DataSourcesUsed is { Count: > 0 })
+        {
+            return auditEvent.DataSourcesUsed;
+        }
+
+        return auditEvent.DataSources?
+            .Select(source => new AuditDataSourceUsed(source, DisplayName: source))
+            .ToArray() ?? [];
     }
 }

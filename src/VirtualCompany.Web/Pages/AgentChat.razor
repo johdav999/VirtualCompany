@@ -1,0 +1,240 @@
+@page "/agents/{AgentId:guid}/chat"
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Components
+@using VirtualCompany.Web.Services
+@inject OnboardingApiClient OnboardingApiClient
+@inject AgentApiClient AgentApiClient
+@inject DirectChatApiClient DirectChatApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Agent Chat</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Agent chat</h1>
+        <p class="text-body-secondary mb-0">Opening direct conversation...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Select a company</h1>
+            <p class="text-body-secondary mb-0">Direct chat requires an explicit company context.</p>
+        </div>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Agent chat</h1>
+            <div class="alert alert-danger mb-0">@errorMessage</div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <div class="agent-roster-header">
+                <div>
+                    <span class="dashboard-kicker">Direct chat</span>
+                    <h1 class="mb-2 mt-2">@conversation?.AgentDisplayName</h1>
+                    <p class="text-body-secondary mb-0">@conversation?.AgentRoleName</p>
+                </div>
+                <div class="dashboard-actions">
+                    <a class="btn btn-outline-secondary" href="@($"/agents/{AgentId}?companyId={CompanyId}")">Profile</a>
+                    <button class="btn btn-outline-primary" type="button" @onclick="CreateTaskAsync" disabled="@(isCreatingTask || conversation is null)">Create task</button>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(successMessage))
+            {
+                <div class="alert alert-success mt-3">@successMessage</div>
+            }
+
+            <div class="activity-list mt-4">
+                @if (messages.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0">Send the first message to start the direct conversation.</p>
+                }
+                else
+                {
+                    @foreach (var message in messages)
+                    {
+                        <article class="activity-item">
+                            <div class="agent-template-header">
+                                <strong>@GetSenderLabel(message)</strong>
+                                <span class="text-body-secondary small">@message.CreatedAt.ToLocalTime().ToString("g")</span>
+                            </div>
+                            <p class="mb-0 mt-2">@message.Body</p>
+                            @if (!string.IsNullOrWhiteSpace(message.RationaleSummary))
+                            {
+                                <p class="text-body-secondary small mb-0 mt-2">Rationale: @message.RationaleSummary</p>
+                            }
+                            <div class="mt-2">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => SelectTaskSource(message.Id))">Use for task</button>
+                            </div>
+                        </article>
+                    }
+                }
+            </div>
+
+            <EditForm Model="@composer" OnValidSubmit="@SendAsync" class="mt-4">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                <label class="form-label" for="chat-body">Message</label>
+                <InputTextArea id="chat-body" class="form-control" rows="4" @bind-Value="composer.Body" disabled="@isSending" />
+                <div class="dashboard-actions mt-3">
+                    <button class="btn btn-primary" type="submit" disabled="@isSending">Send</button>
+                    @if (selectedTaskSourceMessageId is Guid selectedMessage)
+                    {
+                        <span class="text-body-secondary">Task source selected: @selectedMessage</span>
+                    }
+                </div>
+            </EditForm>
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public Guid AgentId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    private CurrentUserContextViewModel? currentUser;
+    private DirectConversationViewModel? conversation;
+    private readonly List<ChatMessageViewModel> messages = [];
+    private ChatComposerModel composer = new();
+    private bool isLoading = true;
+    private bool isSending;
+    private bool isCreatingTask;
+    private string? errorMessage;
+    private string? successMessage;
+    private Guid? selectedTaskSourceMessageId;
+
+    private CompanyMembershipViewModel? ActiveMembership =>
+        CompanyId is Guid companyId
+            ? currentUser?.Memberships.FirstOrDefault(x =>
+                x.CompanyId == companyId &&
+                string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            : null;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        successMessage = null;
+        messages.Clear();
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo($"/agents/{AgentId}/chat?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid selectedCompanyId && ActiveMembership is null)
+            {
+                errorMessage = "Your current account does not have access to the selected company.";
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                conversation = await DirectChatApiClient.OpenDirectConversationAsync(companyId, AgentId);
+                var page = await DirectChatApiClient.GetMessagesAsync(companyId, conversation.Id);
+                messages.AddRange(page.Items);
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        if (CompanyId is not Guid companyId || conversation is null)
+        {
+            return;
+        }
+
+        isSending = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            var result = await DirectChatApiClient.SendMessageAsync(companyId, conversation.Id, composer.Body);
+            conversation = result.Conversation;
+            messages.Add(result.HumanMessage);
+            messages.Add(result.AgentMessage);
+            composer = new ChatComposerModel();
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSending = false;
+        }
+    }
+
+    private async Task CreateTaskAsync()
+    {
+        if (CompanyId is not Guid companyId || conversation is null)
+        {
+            return;
+        }
+
+        isCreatingTask = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            var sourceMessage = selectedTaskSourceMessageId ?? messages.LastOrDefault()?.Id;
+            var result = await DirectChatApiClient.CreateTaskFromChatAsync(companyId, conversation.Id, sourceMessage, conversation.Subject);
+            successMessage = $"Task {result.TaskId} was created from this chat.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isCreatingTask = false;
+        }
+    }
+
+    private void SelectTaskSource(Guid messageId)
+    {
+        selectedTaskSourceMessageId = messageId;
+        successMessage = "Selected this message as the task source.";
+    }
+
+    private string GetSenderLabel(ChatMessageViewModel message) =>
+        string.Equals(message.SenderType, "agent", StringComparison.OrdinalIgnoreCase)
+            ? conversation?.AgentDisplayName ?? "Agent"
+            : "You";
+
+    private sealed class ChatComposerModel
+    {
+        [Required, StringLength(16000)]
+        public string Body { get; set; } = string.Empty;
+    }
+}

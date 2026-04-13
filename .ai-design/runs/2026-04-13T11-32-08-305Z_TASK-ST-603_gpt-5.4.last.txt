@@ -1,0 +1,1575 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 8f6e2c1..d99c5d8 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -19,9 +19,35 @@ public enum CompanyNotificationChannel
+ 
+ public enum CompanyNotificationStatus
+ {
+-    Pending = 1,
+-    Delivered = 2,
+-    Suppressed = 3
++    Unread = 1,
++    Read = 2,
++    Actioned = 3,
++    Suppressed = 4
++}
++
++public enum CompanyNotificationType
++{
++    ApprovalRequested = 1,
++    Escalation = 2,
++    WorkflowFailure = 3,
++    BriefingAvailable = 4
++}
++
++public enum CompanyNotificationPriority
++{
++    Low = 1,
++    Normal = 2,
++    High = 3,
++    Critical = 4
++}
++
++public static class CompanyNotificationTypeValues
++{
++    public static string ToStorageValue(this CompanyNotificationType type) =>
++        type switch
++        {
++            CompanyNotificationType.ApprovalRequested => "approval_requested",
++            CompanyNotificationType.Escalation => "escalation",
++            CompanyNotificationType.WorkflowFailure => "workflow_failure",
++            CompanyNotificationType.BriefingAvailable => "briefing_available",
++            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported notification type.")
++        };
+ }
+ 
+ public static class CompanyBriefingTypeValues
+@@ -101,4 +127,42 @@ public static class CompanyNotificationChannelValues
+     public static string ToStorageValue(this CompanyNotificationChannel channel) =>
+         channel == CompanyNotificationChannel.InApp ? "in_app" :
+         channel == CompanyNotificationChannel.Mobile ? "mobile" :
+         throw new ArgumentOutOfRangeException(nameof(channel), channel, "Unsupported notification channel.");
++
++    public static CompanyNotificationChannel Parse(string value) =>
++        value.Trim().ToLowerInvariant() switch
++        {
++            "in_app" => CompanyNotificationChannel.InApp,
++            "mobile" => CompanyNotificationChannel.Mobile,
++            _ when Enum.TryParse<CompanyNotificationChannel>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported notification channel value.")
++        };
++}
++
++public static class CompanyNotificationStatusValues
++{
++    public static string ToStorageValue(this CompanyNotificationStatus status) =>
++        status switch
++        {
++            CompanyNotificationStatus.Unread => "unread",
++            CompanyNotificationStatus.Read => "read",
++            CompanyNotificationStatus.Actioned => "actioned",
++            CompanyNotificationStatus.Suppressed => "suppressed",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported notification status.")
++        };
++
++    public static CompanyNotificationStatus Parse(string value) =>
++        value.Trim().ToLowerInvariant() switch
++        {
++            "pending" or "delivered" or "unread" => CompanyNotificationStatus.Unread,
++            "read" => CompanyNotificationStatus.Read,
++            "actioned" => CompanyNotificationStatus.Actioned,
++            "suppressed" => CompanyNotificationStatus.Suppressed,
++            _ when Enum.TryParse<CompanyNotificationStatus>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported notification status value.")
++        };
++}
++
++public static class CompanyNotificationPriorityValues
++{
++    public static string ToStorageValue(this CompanyNotificationPriority priority) =>
++        priority.ToString().ToLowerInvariant();
++
++    public static CompanyNotificationPriority Parse(string value) =>
++        Enum.TryParse<CompanyNotificationPriority>(value.Trim(), ignoreCase: true, out var parsed) ? parsed : CompanyNotificationPriority.Normal;
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 80932f4..ad1b4b9 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -168,30 +168,70 @@ public sealed class CompanyNotification : ICompanyOwnedEntity
+     private const int BodyMaxLength = 4000;
+ 
+     private CompanyNotification()
+     {
+     }
+ 
+-    public CompanyNotification(Guid id, Guid companyId, Guid userId, Guid briefingId, CompanyNotificationChannel channel, string title, string body)
++    public CompanyNotification(
++        Guid id,
++        Guid companyId,
++        Guid userId,
++        CompanyNotificationType type,
++        CompanyNotificationPriority priority,
++        string title,
++        string body,
++        string relatedEntityType,
++        Guid? relatedEntityId,
++        string? actionUrl,
++        string? metadataJson,
++        string dedupeKey,
++        Guid? briefingId = null,
++        CompanyNotificationChannel channel = CompanyNotificationChannel.InApp)
+     {
+-        if (companyId == Guid.Empty || userId == Guid.Empty || briefingId == Guid.Empty)
++        if (companyId == Guid.Empty || userId == Guid.Empty)
+         {
+-            throw new ArgumentException("Company, user, and briefing ids are required.");
++            throw new ArgumentException("Company and user ids are required.");
+         }
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+         UserId = userId;
+         BriefingId = briefingId;
+         Channel = channel;
++        Type = type;
++        Priority = priority;
+         Title = string.IsNullOrWhiteSpace(title) ? "Executive briefing" : title.Trim()[..Math.Min(title.Trim().Length, TitleMaxLength)];
+         Body = string.IsNullOrWhiteSpace(body) ? string.Empty : body.Trim()[..Math.Min(body.Trim().Length, BodyMaxLength)];
+-        Status = CompanyNotificationStatus.Pending;
++        RelatedEntityType = string.IsNullOrWhiteSpace(relatedEntityType) ? type.ToStorageValue() : relatedEntityType.Trim()[..Math.Min(relatedEntityType.Trim().Length, 100)];
++        RelatedEntityId = relatedEntityId;
++        ActionUrl = string.IsNullOrWhiteSpace(actionUrl) ? null : actionUrl.Trim()[..Math.Min(actionUrl.Trim().Length, 2048)];
++        MetadataJson = string.IsNullOrWhiteSpace(metadataJson) ? "{}" : metadataJson.Trim();
++        DedupeKey = string.IsNullOrWhiteSpace(dedupeKey) ? $"{companyId:N}:{userId:N}:{type.ToStorageValue()}:{relatedEntityType}:{relatedEntityId:N}" : dedupeKey.Trim()[..Math.Min(dedupeKey.Trim().Length, 300)];
++        Status = CompanyNotificationStatus.Unread;
+         CreatedUtc = DateTime.UtcNow;
+     }
+ 
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+     public Guid UserId { get; private set; }
+-    public Guid BriefingId { get; private set; }
++    public Guid? BriefingId { get; private set; }
+     public CompanyNotificationChannel Channel { get; private set; }
++    public CompanyNotificationType Type { get; private set; }
++    public CompanyNotificationPriority Priority { get; private set; }
+     public string Title { get; private set; } = null!;
+     public string Body { get; private set; } = null!;
++    public string RelatedEntityType { get; private set; } = null!;
++    public Guid? RelatedEntityId { get; private set; }
++    public string? ActionUrl { get; private set; }
++    public string MetadataJson { get; private set; } = "{}";
++    public string DedupeKey { get; private set; } = null!;
+     public CompanyNotificationStatus Status { get; private set; }
++    public DateTime? ReadUtc { get; private set; }
++    public DateTime? ActionedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public User User { get; private set; } = null!;
+-    public CompanyBriefing Briefing { get; private set; } = null!;
++    public CompanyBriefing? Briefing { get; private set; }
++
++    public void MarkRead()
++    {
++        Status = CompanyNotificationStatus.Read;
++        ReadUtc ??= DateTime.UtcNow;
++    }
++
++    public void MarkUnread()
++    {
++        Status = CompanyNotificationStatus.Unread;
++        ReadUtc = null;
++    }
++
++    public void MarkActioned()
++    {
++        Status = CompanyNotificationStatus.Actioned;
++        ReadUtc ??= DateTime.UtcNow;
++        ActionedUtc = DateTime.UtcNow;
++    }
+ }
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index f9b1fd0..743d0f6 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -10,6 +10,7 @@ public static class CompanyOutboxTopics
+     public const string InvitationRevoked = "company.invitation.revoked";
+     public const string InvitationAccepted = "company.invitation.accepted";
+     public const string MembershipRoleChanged = "company.membership.role_changed";
++    public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+@@ -24,6 +25,22 @@ public sealed record CompanyInvitationDeliveryRequestedMessage(
+     Guid InvitedByUserId,
+     string? CorrelationId);
+ 
++public sealed record NotificationDeliveryRequestedMessage(
++    Guid CompanyId,
++    string NotificationType,
++    string Priority,
++    string Title,
++    string Body,
++    string RelatedEntityType,
++    Guid? RelatedEntityId,
++    string? ActionUrl,
++    Guid? RecipientUserId,
++    string? RecipientRole,
++    Guid? BriefingId,
++    string? MetadataJson,
++    string DedupeKey,
++    string? CorrelationId);
++
+ public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
+ 
+ public interface ICompanyOutboxEnqueuer
+@@ -47,6 +64,11 @@ public interface ICompanyInvitationDeliveryDispatcher
+     Task DispatchAsync(CompanyInvitationDeliveryRequestedMessage message, CancellationToken cancellationToken);
+ }
+ 
++public interface ICompanyNotificationDispatcher
++{
++    Task DispatchAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken);
++}
++
+ public interface ICompanyInvitationSender
+ {
+     Task<CompanyInvitationSendResult> SendAsync(CompanyInvitationDeliveryRequestedMessage invitation, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+new file mode 100644
+index 0000000..28fb6d7
+--- /dev/null
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -0,0 +1,54 @@
++using VirtualCompany.Application.Approvals;
++
++namespace VirtualCompany.Application.Notifications;
++
++public sealed record NotificationInboxDto(
++    IReadOnlyList<NotificationListItemDto> Notifications,
++    IReadOnlyList<ApprovalInboxItemDto> PendingApprovals,
++    int UnreadCount,
++    int PendingApprovalCount);
++
++public sealed record NotificationListItemDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid RecipientUserId,
++    string Type,
++    string Priority,
++    string Title,
++    string Body,
++    string RelatedEntityType,
++    Guid? RelatedEntityId,
++    string? ActionUrl,
++    string Status,
++    DateTime CreatedAt,
++    DateTime? ReadAt,
++    DateTime? ActionedAt);
++
++public sealed record ApprovalInboxItemDto(
++    Guid Id,
++    string ApprovalType,
++    string TargetEntityType,
++    Guid TargetEntityId,
++    string Status,
++    string RationaleSummary,
++    string AffectedDataSummary,
++    string? ThresholdSummary,
++    ApprovalStepDto? CurrentStep,
++    DateTime CreatedAt);
++
++public sealed record SetNotificationStatusCommand(string Status);
++
++public interface INotificationInboxService
++{
++    Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index d3a50a9..271c29f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -102,6 +102,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyNotification>()
+             .HasQueryFilter(notification =>
+                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyNotification>()
++            .HasQueryFilter(notification =>
++                CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0d5b501..7f72a70 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1362,9 +1362,9 @@ internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguratio
+         builder.Property(x => x.Id).HasColumnName("id");
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+-        builder.Property(x => x.BriefingId).HasColumnName("briefing_id").IsRequired();
++        builder.Property(x => x.BriefingId).HasColumnName("briefing_id");
+         builder.Property(x => x.Channel)
+             .HasColumnName("channel")
+-            .HasConversion(value => value.ToStorageValue(), value => value == "mobile" ? CompanyNotificationChannel.Mobile : CompanyNotificationChannel.InApp)
++            .HasConversion(value => value.ToStorageValue(), value => CompanyNotificationChannelValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+@@ -1372,24 +1372,38 @@ internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguratio
+         builder.Property(x => x.Status)
+             .HasColumnName("status")
+             .HasConversion(
+-                value => value == CompanyNotificationStatus.Delivered ? "delivered" : value == CompanyNotificationStatus.Suppressed ? "suppressed" : "pending",
+-                value => value == "delivered" ? CompanyNotificationStatus.Delivered : value == "suppressed" ? CompanyNotificationStatus.Suppressed : CompanyNotificationStatus.Pending)
++                value => value.ToStorageValue(),
++                value => CompanyNotificationStatusValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
++        builder.Property(x => x.Type)
++            .HasColumnName("notification_type")
++            .HasConversion(value => value.ToStorageValue(), value => value switch
++            {
++                "approval_requested" => CompanyNotificationType.ApprovalRequested,
++                "escalation" => CompanyNotificationType.Escalation,
++                "workflow_failure" => CompanyNotificationType.WorkflowFailure,
++                "briefing_available" => CompanyNotificationType.BriefingAvailable,
++                _ => CompanyNotificationType.BriefingAvailable
++            })
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.Priority).HasColumnName("priority").HasConversion(value => value.ToStorageValue(), value => CompanyNotificationPriorityValues.Parse(value)).HasMaxLength(32).IsRequired();
++        builder.Property(x => x.RelatedEntityType).HasColumnName("related_entity_type").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.RelatedEntityId).HasColumnName("related_entity_id");
++        builder.Property(x => x.ActionUrl).HasColumnName("action_url").HasMaxLength(2048);
++        builder.Property(x => x.MetadataJson).HasColumnName("metadata_json").HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
++        builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.ReadUtc).HasColumnName("read_at");
++        builder.Property(x => x.ActionedUtc).HasColumnName("actioned_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Type, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Priority, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.DedupeKey }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.BriefingId });
+-        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.BriefingId, x.Channel }).IsUnique();
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+-        builder.HasOne(x => x.Briefing).WithMany().HasForeignKey(x => x.BriefingId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Briefing).WithMany().HasForeignKey(x => x.BriefingId).OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+new file mode 100644
+index 0000000..a1d4f2a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -0,0 +1,234 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Notifications;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyNotificationService : INotificationInboxService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IApprovalRequestService _approvalRequestService;
++
++    public CompanyNotificationService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IApprovalRequestService approvalRequestService)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _approvalRequestService = approvalRequestService;
++    }
++
++    public async Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++
++        var notifications = await _dbContext.CompanyNotifications
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId)
++            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
++            .ThenByDescending(x => x.Priority)
++            .ThenByDescending(x => x.CreatedUtc)
++            .Take(100)
++            .ToListAsync(cancellationToken);
++
++        var approvals = (await _approvalRequestService.ListAsync(companyId, "pending", cancellationToken))
++            .Where(x => IsEligibleApprover(x, membership))
++            .OrderByDescending(x => x.CreatedAt)
++            .Take(50)
++            .Select(x => new ApprovalInboxItemDto(
++                x.Id,
++                x.ApprovalType,
++                x.TargetEntityType,
++                x.TargetEntityId,
++                x.Status,
++                x.RationaleSummary,
++                x.AffectedDataSummary,
++                x.ThresholdSummary,
++                x.CurrentStep,
++                x.CreatedAt))
++            .ToList();
++
++        return new NotificationInboxDto(
++            notifications.Select(ToDto).ToList(),
++            approvals,
++            notifications.Count(x => x.Status == CompanyNotificationStatus.Unread),
++            approvals.Count);
++    }
++
++    public async Task<NotificationListItemDto> SetStatusAsync(
++        Guid companyId,
++        Guid notificationId,
++        SetNotificationStatusCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var notification = await _dbContext.CompanyNotifications
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.Id == notificationId, cancellationToken)
++            ?? throw new KeyNotFoundException("Notification not found.");
++
++        switch (command.Status.Trim().ToLowerInvariant())
++        {
++            case "unread":
++                notification.MarkUnread();
++                break;
++            case "read":
++                notification.MarkRead();
++                break;
++            case "actioned":
++                notification.MarkActioned();
++                break;
++            default:
++                throw new ArgumentOutOfRangeException(nameof(command), command.Status, "Notification status must be unread, read, or actioned.");
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(notification);
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
++        ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++
++    private static bool IsEligibleApprover(ApprovalRequestDto approval, ResolvedCompanyMembershipContext membership)
++    {
++        var current = approval.CurrentStep;
++        if (current is null)
++        {
++            return false;
++        }
++
++        if (string.Equals(current.ApproverType, "user", StringComparison.OrdinalIgnoreCase))
++        {
++            return Guid.TryParse(current.ApproverRef, out var userId) && userId == membership.UserId;
++        }
++
++        if (!string.Equals(current.ApproverType, "role", StringComparison.OrdinalIgnoreCase))
++        {
++            return false;
++        }
++
++        return membership.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin ||
++               CompanyMembershipRoles.TryParse(current.ApproverRef, out var role) && role == membership.MembershipRole;
++    }
++
++    private static NotificationListItemDto ToDto(CompanyNotification notification) =>
++        new(
++            notification.Id,
++            notification.CompanyId,
++            notification.UserId,
++            notification.Type.ToStorageValue(),
++            notification.Priority.ToStorageValue(),
++            notification.Title,
++            notification.Body,
++            notification.RelatedEntityType,
++            notification.RelatedEntityId,
++            notification.ActionUrl,
++            notification.Status.ToStorageValue(),
++            notification.CreatedUtc,
++            notification.ReadUtc,
++            notification.ActionedUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index ddd46f0..33f64a6 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -134,6 +134,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
++    private readonly ICompanyNotificationDispatcher _notificationDispatcher;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+@@ -148,6 +149,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     public CompanyOutboxProcessor(
+         VirtualCompanyDbContext dbContext,
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
++        ICompanyNotificationDispatcher notificationDispatcher,
+         IOptions<CompanyOutboxDispatcherOptions> options,
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+@@ -158,6 +160,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     {
+         _dbContext = dbContext;
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
++        _notificationDispatcher = notificationDispatcher;
+         _options = options;
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+@@ -317,6 +320,12 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 break;
+             }
++            case CompanyOutboxTopics.NotificationDeliveryRequested:
++            {
++                var payload = Deserialize<NotificationDeliveryRequestedMessage>(message);
++                await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
++                break;
++            }
+             case CompanyOutboxTopics.InvitationCreated:
+             case CompanyOutboxTopics.InvitationResent:
+             case CompanyOutboxTopics.InvitationRevoked:
+@@ -435,6 +444,89 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
+     }
+ }
+ 
++internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispatcher
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ILogger<CompanyNotificationDispatcher> _logger;
++
++    public CompanyNotificationDispatcher(
++        VirtualCompanyDbContext dbContext,
++        ILogger<CompanyNotificationDispatcher> logger)
++    {
++        _dbContext = dbContext;
++        _logger = logger;
++    }
++
++    public async Task DispatchAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken)
++    {
++        var notificationType = ParseNotificationType(message.NotificationType);
++        var priority = CompanyNotificationPriorityValues.Parse(message.Priority);
++        var recipients = await ResolveRecipientsAsync(message, cancellationToken);
++
++        foreach (var userId in recipients)
++        {
++            var dedupeKey = $"{message.DedupeKey}:{userId:N}";
++            var exists = await _dbContext.CompanyNotifications
++                .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == userId && x.DedupeKey == dedupeKey, cancellationToken);
++            if (exists)
++            {
++                continue;
++            }
++
++            _dbContext.CompanyNotifications.Add(new CompanyNotification(
++                Guid.NewGuid(),
++                message.CompanyId,
++                userId,
++                notificationType,
++                priority,
++                message.Title,
++                message.Body,
++                message.RelatedEntityType,
++                message.RelatedEntityId,
++                message.ActionUrl,
++                message.MetadataJson,
++                dedupeKey,
++                message.BriefingId));
++        }
++
++        _logger.LogInformation(
++            "Created {NotificationCount} in-app notification(s) for {NotificationType} in company {CompanyId}.",
++            recipients.Count,
++            message.NotificationType,
++            message.CompanyId);
++    }
++
++    private async Task<IReadOnlyList<Guid>> ResolveRecipientsAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken)
++    {
++        if (message.RecipientUserId is Guid recipientUserId && recipientUserId != Guid.Empty)
++        {
++            var isActive = await _dbContext.CompanyMemberships
++                .IgnoreQueryFilters()
++                .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == recipientUserId && x.Status == CompanyMembershipStatus.Active, cancellationToken);
++            return isActive ? [recipientUserId] : [];
++        }
++
++        var query = _dbContext.CompanyMemberships
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == message.CompanyId && x.Status == CompanyMembershipStatus.Active && x.UserId.HasValue);
++
++        if (CompanyMembershipRoles.TryParse(message.RecipientRole, out var role))
++        {
++            query = query.Where(x => x.Role == role || x.Role == CompanyMembershipRole.Owner || x.Role == CompanyMembershipRole.Admin);
++        }
++        else
++        {
++            query = query.Where(x => x.Role == CompanyMembershipRole.Owner || x.Role == CompanyMembershipRole.Admin);
++        }
++
++        return await query.Select(x => x.UserId!.Value).Distinct().ToListAsync(cancellationToken);
++    }
++
++    private static CompanyNotificationType ParseNotificationType(string value) =>
++        value.Trim().ToLowerInvariant() switch
++        {
++            "approval_requested" => CompanyNotificationType.ApprovalRequested,
++            "escalation" => CompanyNotificationType.Escalation,
++            "workflow_failure" => CompanyNotificationType.WorkflowFailure,
++            "briefing_available" => CompanyNotificationType.BriefingAvailable,
++            _ => throw new CompanyOutboxPermanentException($"Unsupported notification type '{value}'.")
++        };
++}
++
+ internal sealed class LoggingCompanyInvitationSender : ICompanyInvitationSender
+ {
+     private readonly ILogger<LoggingCompanyInvitationSender> _logger;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 782acdb..238d2df 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+@@ -21,6 +22,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly IServiceProvider _serviceProvider;
+     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public CompanyApprovalRequestService(
+         VirtualCompanyDbContext dbContext,
+@@ -28,7 +30,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         IAuditEventWriter auditEventWriter,
+         IServiceProvider serviceProvider,
+-        IExecutiveCockpitDashboardCache dashboardCache)
++        IExecutiveCockpitDashboardCache dashboardCache,
++        ICompanyOutboxEnqueuer outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -36,6 +39,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         _serviceProvider = serviceProvider;
+         _dashboardCache = dashboardCache;
++        _outboxEnqueuer = outboxEnqueuer;
+     }
+@@ -94,6 +98,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 } ),
+             cancellationToken);
+ 
++        EnqueueApprovalNotification(approval);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+@@ -161,6 +166,14 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             }
+         }
+ 
++        if (finalized)
++        {
++            await _dbContext.CompanyNotifications
++                .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId && x.RelatedEntityType == AuditTargetTypes.ApprovalRequest && x.RelatedEntityId == approval.Id)
++                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Status, CompanyNotificationStatus.Actioned).SetProperty(x => x.ActionedUtc, DateTime.UtcNow).SetProperty(x => x.ReadUtc, DateTime.UtcNow),
++                    cancellationToken);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+@@ -288,6 +301,40 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         return false;
+     }
++
++    private void EnqueueApprovalNotification(ApprovalRequest approval)
++    {
++        var current = approval.CurrentActionableStep;
++        if (current is null)
++        {
++            return;
++        }
++
++        var recipientUserId = current.ApproverType == ApprovalStepApproverType.User && Guid.TryParse(current.ApproverRef, out var userId)
++            ? userId
++            : (Guid?)null;
++        var recipientRole = current.ApproverType == ApprovalStepApproverType.Role
++            ? current.ApproverRef
++            : null;
++
++        _outboxEnqueuer.Enqueue(
++            approval.CompanyId,
++            CompanyOutboxTopics.NotificationDeliveryRequested,
++            new NotificationDeliveryRequestedMessage(
++                approval.CompanyId,
++                CompanyNotificationType.ApprovalRequested.ToStorageValue(),
++                CompanyNotificationPriority.High.ToStorageValue(),
++                $"{approval.ApprovalType} approval requested",
++                $"Review {approval.TargetEntityType} {approval.TargetEntityId:N}.",
++                AuditTargetTypes.ApprovalRequest,
++                approval.Id,
++                $"/inbox?companyId={approval.CompanyId}&approvalId={approval.Id}",
++                recipientUserId,
++                recipientRole,
++                null,
++                null,
++                $"approval-requested:{approval.Id:N}:step:{current.Id:N}",
++                null),
++            idempotencyKey: $"notification:approval-requested:{approval.Id:N}:step:{current.Id:N}");
++    }
+ 
+     private static void ValidateDecision(ApprovalDecisionCommand command)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index ca21c37..f6ad330 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Briefings;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -23,6 +25,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+     private readonly IExecutiveDashboardAggregateCache _aggregateCache;
+     private readonly ILogger<CompanyBriefingService> _logger;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public CompanyBriefingService(
+         VirtualCompanyDbContext dbContext,
+@@ -30,13 +33,15 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         IExecutiveDashboardAggregateCache aggregateCache,
++        ICompanyOutboxEnqueuer outboxEnqueuer,
+         ILogger<CompanyBriefingService> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+         _aggregateCache = aggregateCache;
++        _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
+     }
+@@ -339,7 +344,25 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+             if (preference?.InAppEnabled ?? true)
+             {
+-                _dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), briefing.CompanyId, userId, briefing.Id, CompanyNotificationChannel.InApp, briefing.Title, briefing.SummaryBody));
++                _outboxEnqueuer.Enqueue(
++                    briefing.CompanyId,
++                    CompanyOutboxTopics.NotificationDeliveryRequested,
++                    new NotificationDeliveryRequestedMessage(
++                        briefing.CompanyId,
++                        CompanyNotificationType.BriefingAvailable.ToStorageValue(),
++                        CompanyNotificationPriority.Normal.ToStorageValue(),
++                        briefing.Title,
++                        briefing.SummaryBody,
++                        "company_briefing",
++                        briefing.Id,
++                        $"/dashboard?companyId={briefing.CompanyId}",
++                        userId,
++                        null,
++                        briefing.Id,
++                        null,
++                        $"briefing-available:{briefing.Id:N}:{userId:N}",
++                        null),
++                    idempotencyKey: $"notification:briefing-available:{briefing.Id:N}:{userId:N}",
++                    causationId: briefing.Id.ToString("N"));
+                 created++;
+             }
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs
+index 9792a4b..41ded69 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs
+@@ -1,5 +1,7 @@
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.ExecutionExceptions;
+-using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -13,13 +15,16 @@ public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IEx
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public ExecutionExceptionService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICompanyOutboxEnqueuer outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _auditEventWriter = auditEventWriter;
++        _outboxEnqueuer = outboxEnqueuer;
+     }
+@@ -89,6 +94,30 @@ public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IEx
+                 } ),
+             cancellationToken);
+ 
++        _outboxEnqueuer.Enqueue(
++            request.CompanyId,
++            CompanyOutboxTopics.NotificationDeliveryRequested,
++            new NotificationDeliveryRequestedMessage(
++                request.CompanyId,
++                CompanyNotificationType.Escalation.ToStorageValue(),
++                severity == ExecutionExceptionSeverity.Critical ? CompanyNotificationPriority.Critical.ToStorageValue() : CompanyNotificationPriority.High.ToStorageValue(),
++                record.Title,
++                record.Summary,
++                AuditTargetTypes.ExecutionException,
++                record.Id,
++                $"/dashboard?companyId={request.CompanyId}",
++                null,
++                CompanyMembershipRole.Owner.ToStorageValue(),
++                null,
++                null,
++                $"execution-exception:{record.Id:N}",
++                null),
++            idempotencyKey: $"notification:execution-exception:{record.Id:N}",
++            causationId: record.Id.ToString("N"));
++
+         return record.Id;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0f49ec1..fa17920 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -1,6 +1,7 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Workflows;
+@@ -27,13 +28,16 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ILogger<CompanyWorkflowService> _logger;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public CompanyWorkflowService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         IAuditEventWriter auditEventWriter,
++        ICompanyOutboxEnqueuer outboxEnqueuer,
+         ILogger<CompanyWorkflowService> logger)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _auditEventWriter = auditEventWriter;
++        _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
+     }
+@@ -843,6 +847,30 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+                 } ),
+             cancellationToken);
++
++        _outboxEnqueuer.Enqueue(
++            instance.CompanyId,
++            CompanyOutboxTopics.NotificationDeliveryRequested,
++            new NotificationDeliveryRequestedMessage(
++                instance.CompanyId,
++                state == WorkflowInstanceStatus.Failed
++                    ? CompanyNotificationType.WorkflowFailure.ToStorageValue()
++                    : CompanyNotificationType.Escalation.ToStorageValue(),
++                CompanyNotificationPriority.High.ToStorageValue(),
++                workflowException.Title,
++                workflowException.Details,
++                AuditTargetTypes.WorkflowException,
++                workflowException.Id,
++                $"/workflows?companyId={instance.CompanyId}",
++                null,
++                CompanyMembershipRole.Owner.ToStorageValue(),
++                null,
++                null,
++                $"workflow-exception:{workflowException.Id:N}",
++                null),
++            idempotencyKey: $"notification:workflow-exception:{workflowException.Id:N}",
++            causationId: workflowException.Id.ToString("N"));
+     }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 841eb13..b4578a1 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -17,6 +17,7 @@ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Infrastructure.Auditing;
+@@ -162,6 +163,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyOutboxProcessor, CompanyOutboxProcessor>();
+         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
++        services.AddScoped<ICompanyNotificationDispatcher, CompanyNotificationDispatcher>();
+         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
+@@ -222,6 +224,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
++        services.AddScoped<INotificationInboxService, CompanyNotificationService>();
+         services.AddScoped<CompanyWorkflowService>();
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+new file mode 100644
+index 0000000..28191d9
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -0,0 +1,65 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Notifications;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/inbox")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class NotificationsController : ControllerBase
++{
++    private readonly INotificationInboxService _notificationInboxService;
++
++    public NotificationsController(INotificationInboxService notificationInboxService)
++    {
++        _notificationInboxService = notificationInboxService;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<NotificationInboxDto>> GetInboxAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _notificationInboxService.GetInboxAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPatch("notifications/{notificationId:guid}/status")]
++    public async Task<ActionResult<NotificationListItemDto>> SetStatusAsync(
++        Guid companyId,
++        Guid notificationId,
++        [FromBody] SetNotificationStatusCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _notificationInboxService.SetStatusAsync(companyId, notificationId, command, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(command.Status)] = [ex.Message]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs
+new file mode 100644
+index 0000000..7c704bb
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs
+@@ -0,0 +1,104 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413210000_AddNotificationInbox")]
++public partial class AddNotificationInbox : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++        var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++        var string2048Type = isPostgres ? "character varying(2048)" : "nvarchar(2048)";
++        var string300Type = isPostgres ? "character varying(300)" : "nvarchar(300)";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++
++        migrationBuilder.DropIndex(name: "IX_company_notifications_company_id_user_id_briefing_id_channel", table: "company_notifications");
++        migrationBuilder.AlterColumn<Guid>(name: "briefing_id", table: "company_notifications", type: guidType, nullable: true, oldClrType: typeof(Guid), oldType: guidType);
++        migrationBuilder.AddColumn<string>(name: "notification_type", table: "company_notifications", type: string64Type, maxLength: 64, nullable: false, defaultValue: "briefing_available");
++        migrationBuilder.AddColumn<string>(name: "priority", table: "company_notifications", type: string32Type, maxLength: 32, nullable: false, defaultValue: "normal");
++        migrationBuilder.AddColumn<string>(name: "related_entity_type", table: "company_notifications", type: string100Type, maxLength: 100, nullable: false, defaultValue: "company_briefing");
++        migrationBuilder.AddColumn<Guid>(name: "related_entity_id", table: "company_notifications", type: guidType, nullable: true);
++        migrationBuilder.AddColumn<string>(name: "action_url", table: "company_notifications", type: string2048Type, maxLength: 2048, nullable: true);
++        migrationBuilder.AddColumn<string>(name: "metadata_json", table: "company_notifications", type: jsonType, nullable: false, defaultValueSql: jsonDefault);
++        migrationBuilder.AddColumn<string>(name: "dedupe_key", table: "company_notifications", type: string300Type, maxLength: 300, nullable: false, defaultValue: "");
++        migrationBuilder.AddColumn<DateTime>(name: "read_at", table: "company_notifications", type: dateTimeType, nullable: true);
++        migrationBuilder.AddColumn<DateTime>(name: "actioned_at", table: "company_notifications", type: dateTimeType, nullable: true);
++
++        migrationBuilder.Sql(isPostgres
++            ? """
++              UPDATE company_notifications
++              SET status = 'unread',
++                  related_entity_id = briefing_id,
++                  dedupe_key = 'briefing-available:' || briefing_id::text || ':' || user_id::text
++              WHERE dedupe_key = '';
++              """
++            : """
++              UPDATE [company_notifications]
++              SET [status] = N'unread',
++                  [related_entity_id] = [briefing_id],
++                  [dedupe_key] = CONCAT(N'briefing-available:', CONVERT(nvarchar(36), [briefing_id]), N':', CONVERT(nvarchar(36), [user_id]))
++              WHERE [dedupe_key] = N'';
++              """);
++
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_status_created_at", "company_notifications", new[] { "company_id", "user_id", "status", "created_at" });
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_notification_type_created_at", "company_notifications", new[] { "company_id", "user_id", "notification_type", "created_at" });
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_priority_status_created_at", "company_notifications", new[] { "company_id", "user_id", "priority", "status", "created_at" });
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_dedupe_key", "company_notifications", new[] { "company_id", "user_id", "dedupe_key" }, unique: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++
++        migrationBuilder.DropIndex(name: "IX_company_notifications_company_id_user_id_status_created_at", table: "company_notifications");
++        migrationBuilder.DropIndex(name: "IX_company_notifications_company_id_user_id_notification_type_created_at", table: "company_notifications");
++        migrationBuilder.DropIndex(name: "IX_company_notifications_company_id_user_id_priority_status_created_at", table: "company_notifications");
++        migrationBuilder.DropIndex(name: "IX_company_notifications_company_id_user_id_dedupe_key", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "notification_type", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "priority", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "related_entity_type", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "related_entity_id", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "action_url", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "metadata_json", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "dedupe_key", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "read_at", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "actioned_at", table: "company_notifications");
++        migrationBuilder.AlterColumn<Guid>(name: "briefing_id", table: "company_notifications", type: guidType, nullable: false, oldClrType: typeof(Guid), oldType: guidType, oldNullable: true);
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_briefing_id_channel", "company_notifications", new[] { "company_id", "user_id", "briefing_id", "channel" }, unique: true);
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index d1a0e8c..2fc2b57 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -45,6 +45,11 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new InboxApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ builder.Services.AddScoped(sp => new AuditApiClient(
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+new file mode 100644
+index 0000000..2aacdd0
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -0,0 +1,126 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class InboxApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public InboxApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<InboxViewModel> GetInboxAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineInbox(companyId));
++        }
++
++        return GetAsync<InboxViewModel>($"api/companies/{companyId}/inbox", cancellationToken);
++    }
++
++    public Task<NotificationListItemViewModel> SetStatusAsync(Guid companyId, Guid notificationId, string status, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var notification = OfflineInbox(companyId).Notifications.Single(x => x.Id == notificationId);
++            notification.Status = status;
++            return Task.FromResult(notification);
++        }
++
++        return SendAsync<NotificationListItemViewModel>(
++            HttpMethod.Patch,
++            $"api/companies/{companyId}/inbox/notifications/{notificationId}/status",
++            new SetNotificationStatusRequest { Status = status },
++            cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri) { Content = JsonContent.Create(payload) };
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static InboxViewModel OfflineInbox(Guid companyId) =>
++        new()
++        {
++            Notifications =
++            [
++                new() { Id = Guid.Parse("f2216d20-d3e4-4e73-9a88-36e8f3e90c95"), CompanyId = companyId, RecipientUserId = Guid.NewGuid(), Type = "approval_requested", Priority = "high", Title = "Threshold approval requested", Body = "Review task 9bc83a53771648cd8150f9b4b4926e39.", RelatedEntityType = "approval_request", RelatedEntityId = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"), Status = "unread", CreatedAt = DateTime.UtcNow }
++            ],
++            PendingApprovals =
++            [
++                new() { Id = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"), ApprovalType = "threshold", TargetEntityType = "task", TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"), Status = "pending", RationaleSummary = "This action exceeded a configured approval threshold.", AffectedDataSummary = "Task: Vendor payment run for April", ThresholdSummary = "Threshold: amount 25000 (configured 10000)", CreatedAt = DateTime.UtcNow }
++            ],
++            UnreadCount = 1,
++            PendingApprovalCount = 1
++        };
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class InboxViewModel
++{
++    public List<NotificationListItemViewModel> Notifications { get; set; } = [];
++    public List<ApprovalInboxItemViewModel> PendingApprovals { get; set; } = [];
++    public int UnreadCount { get; set; }
++    public int PendingApprovalCount { get; set; }
++}
++
++public sealed class NotificationListItemViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public Guid RecipientUserId { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Body { get; set; } = string.Empty;
++    public string RelatedEntityType { get; set; } = string.Empty;
++    public Guid? RelatedEntityId { get; set; }
++    public string? ActionUrl { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public DateTime CreatedAt { get; set; }
++    public DateTime? ReadAt { get; set; }
++    public DateTime? ActionedAt { get; set; }
++}
++
++public sealed class ApprovalInboxItemViewModel
++{
++    public Guid Id { get; set; }
++    public string ApprovalType { get; set; } = string.Empty;
++    public string TargetEntityType { get; set; } = string.Empty;
++    public Guid TargetEntityId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string RationaleSummary { get; set; } = string.Empty;
++    public string AffectedDataSummary { get; set; } = string.Empty;
++    public string? ThresholdSummary { get; set; }
++    public ApprovalStepViewModel? CurrentStep { get; set; }
++    public DateTime CreatedAt { get; set; }
++}
++
++public sealed class SetNotificationStatusRequest
++{
++    public string Status { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 5bd7507..705fb54 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -31,6 +31,11 @@
+                 <span class="bi bi-diagram-3" aria-hidden="true"></span> Workflows
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="inbox">
++                <span class="bi bi-bell" aria-hidden="true"></span> Inbox
++            </NavLink>
++        </div>
+         <div class="nav-item px-3">
+             <NavLink class="nav-link" href="approvals">
+diff --git a/src/VirtualCompany.Web/Pages/Inbox.razor b/src/VirtualCompany.Web/Pages/Inbox.razor
+new file mode 100644
+index 0000000..96ee27b
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Inbox.razor
+@@ -0,0 +1,236 @@
++@page "/inbox"
++@inject InboxApiClient InboxApiClient
++@inject ApprovalApiClient ApprovalApiClient
++@inject OnboardingApiClient OnboardingApiClient
++@inject NavigationManager Navigation
++@using Microsoft.AspNetCore.Components
++
++<PageTitle>Inbox</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Inbox</h1>
++        <p class="text-body-secondary mb-0">Loading notifications...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <h1>Choose a company inbox</h1>
++                <p class="lead mb-3">Notifications and approvals are scoped to a company workspace.</p>
++
++                @if (ActiveMemberships.Count > 0)
++                {
++                    <div class="template-grid mt-4">
++                        @foreach (var membership in ActiveMemberships)
++                        {
++                            <a class="template-card text-decoration-none text-reset" href="@($"/inbox?companyId={membership.CompanyId}")">
++                                <strong>@membership.CompanyName</strong>
++                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
++                            </a>
++                        }
++                    </div>
++                }
++                else
++                {
++                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
++                }
++            </div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Inbox</span>
++                <h1>@(companyAccess?.CompanyName ?? "Notifications")</h1>
++                <p class="text-body-secondary mb-0">@UnreadSummary</p>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++
++                <div class="mt-4">
++                    <h2 class="h5">Pending approvals</h2>
++                    @if (inbox.PendingApprovals.Count == 0)
++                    {
++                        <p class="text-body-secondary mb-0">No approvals are waiting for you.</p>
++                    }
++                    else
++                    {
++                        <div class="list-group">
++                            @foreach (var approval in inbox.PendingApprovals)
++                            {
++                                <div class="list-group-item">
++                                    <div class="d-flex w-100 justify-content-between gap-3">
++                                        <div>
++                                            <strong>@approval.ApprovalType approval</strong>
++                                            <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
++                                            <div class="small mt-2">@approval.AffectedDataSummary</div>
++                                            @if (!string.IsNullOrWhiteSpace(approval.ThresholdSummary))
++                                            {
++                                                <div class="small mt-1">@approval.ThresholdSummary</div>
++                                            }
++                                        </div>
++                                        <span class="badge text-bg-warning align-self-start">@approval.Status</span>
++                                    </div>
++                                    @if (approval.CurrentStep is not null)
++                                    {
++                                        <div class="mt-3">
++                                            <textarea class="form-control mb-2" rows="2" placeholder="Decision comment" @bind="approvalComments[approval.Id]"></textarea>
++                                            <div class="dashboard-actions">
++                                                <button class="btn btn-primary" @onclick='() => DecideAsync(approval, "approve")' disabled="@isDeciding">Approve</button>
++                                                <button class="btn btn-outline-secondary" @onclick='() => DecideAsync(approval, "reject")' disabled="@isDeciding">Reject</button>
++                                                <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}&approvalId={approval.Id}")">Open detail</a>
++                                            </div>
++                                        </div>
++                                    }
++                                </div>
++                            }
++                        </div>
++                    }
++                </div>
++
++                <div class="mt-4">
++                    <h2 class="h5">Notifications</h2>
++                    @if (inbox.Notifications.Count == 0)
++                    {
++                        <p class="text-body-secondary mb-0">No notifications.</p>
++                    }
++                    else
++                    {
++                        <div class="list-group">
++                            @foreach (var notification in inbox.Notifications)
++                            {
++                                <div class="@NotificationClass(notification)">
++                                    <div class="d-flex w-100 justify-content-between gap-3">
++                                        <div>
++                                            <strong>@notification.Title</strong>
++                                            <div class="text-body-secondary small mt-1">@notification.Body</div>
++                                            <div class="small mt-2">@notification.CreatedAt.ToLocalTime().ToString("g")</div>
++                                        </div>
++                                        <div class="text-end">
++                                            <span class="@PriorityBadgeClass(notification.Priority)">@notification.Priority</span>
++                                            <span class="badge text-bg-light ms-1">@notification.Status</span>
++                                        </div>
++                                    </div>
++                                    <div class="dashboard-actions mt-3">
++                                        @if (IsUnread(notification))
++                                        {
++                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "read")'>Mark read</button>
++                                        }
++                                        else if (!IsActioned(notification))
++                                        {
++                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "unread")'>Mark unread</button>
++                                        }
++                                        @if (!IsActioned(notification))
++                                        {
++                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "actioned")'>Mark actioned</button>
++                                        }
++                                        @if (!string.IsNullOrWhiteSpace(notification.ActionUrl))
++                                        {
++                                            <a class="btn btn-outline-secondary btn-sm" href="@notification.ActionUrl">Open</a>
++                                        }
++                                    </div>
++                                </div>
++                            }
++                        </div>
++                    }
++                </div>
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "approvalId")]
++    public Guid? ApprovalId { get; set; }
++
++    private bool isLoading = true;
++    private bool isDeciding;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private InboxViewModel inbox = new();
++    private string? errorMessage;
++    private readonly Dictionary<Guid, string?> approvalComments = [];
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    private string UnreadSummary =>
++        $"{inbox.UnreadCount} unread notification(s), {inbox.PendingApprovalCount} approval(s) waiting for you.";
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is not Guid companyId)
++            {
++                if (currentUser?.ActiveCompany is not null)
++                {
++                    Navigation.NavigateTo($"/inbox?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                }
++
++                return;
++            }
++
++            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++            inbox = await InboxApiClient.GetInboxAsync(companyId);
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            inbox = new InboxViewModel();
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task DecideAsync(ApprovalInboxItemViewModel approval, string decision)
++    {
++        if (CompanyId is not Guid companyId || approval.CurrentStep is null)
++        {
++            return;
++        }
++
++        isDeciding = true;
++        errorMessage = null;
++        try
++        {
++            approvalComments.TryGetValue(approval.Id, out var comment);
++            await ApprovalApiClient.DecideAsync(
++                companyId,
++                approval.Id,
++                new ApprovalDecisionRequest
++                {
++                    ApprovalId = approval.Id,
++                    StepId = approval.CurrentStep.Id,
++                    Decision = decision,
++                    Comment = comment
++                });
++            inbox = await InboxApiClient.GetInboxAsync(companyId);
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isDeciding = false;
++        }
++    }
++
++    private async Task SetNotificationStatusAsync(NotificationListItemViewModel notification, string status)
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        var updated = await InboxApiClient.SetStatusAsync(companyId, notification.Id, status);
++        var index = inbox.Notifications.FindIndex(x => x.Id == updated.Id);
++        if (index >= 0)
++        {
++            inbox.Notifications[index] = updated;
++        }
++    }
++
++    private static bool IsUnread(NotificationListItemViewModel notification) =>
++        string.Equals(notification.Status, "unread", StringComparison.OrdinalIgnoreCase);
++
++    private static bool IsActioned(NotificationListItemViewModel notification) =>
++        string.Equals(notification.Status, "actioned", StringComparison.OrdinalIgnoreCase);
++
++    private static string NotificationClass(NotificationListItemViewModel notification) =>
++        IsUnread(notification) ? "list-group-item border-start border-4 border-primary" : "list-group-item";
++
++    private static string PriorityBadgeClass(string priority) =>
++        priority.ToLowerInvariant() switch
++        {
++            "critical" => "badge text-bg-danger",
++            "high" => "badge text-bg-warning",
++            _ => "badge text-bg-light"
++        };
++}
+END_OF_PATCH

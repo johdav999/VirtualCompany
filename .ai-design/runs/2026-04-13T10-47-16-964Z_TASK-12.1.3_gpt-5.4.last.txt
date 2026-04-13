@@ -1,0 +1,559 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 3f5e62a..d7e9c46 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -8,20 +9,29 @@ namespace VirtualCompany.Infrastructure.Companies;
+ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDashboardService
+ {
+     private static readonly TimeSpan CacheFreshness = TimeSpan.FromSeconds(60);
++    private const int PendingApprovalPreviewLimit = 5;
++    private const int AlertLimit = 5;
++    private const int PerSourceActivityLimit = 8;
++    private const int RecentActivityLimit = 10;
++
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IExecutiveCockpitDashboardCache _cache;
+     private readonly TimeProvider _timeProvider;
++    private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
+ 
+     public CompanyExecutiveCockpitDashboardService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IExecutiveCockpitDashboardCache cache,
+-        TimeProvider timeProvider)
++        TimeProvider timeProvider,
++        ILogger<CompanyExecutiveCockpitDashboardService> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _cache = cache;
+         _timeProvider = timeProvider;
++        _logger = logger;
+     }
+ 
+     public async Task<ExecutiveCockpitDashboardDto> GetAsync(
+@@ -43,12 +53,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         var cached = await _cache.TryGetAsync(query.CompanyId, cancellationToken);
+         if (cached is not null && cached.CachedAtUtc >= nowUtc.Subtract(CacheFreshness))
+         {
++            _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+             return cached.Dashboard with
+             {
+                 CacheTimestampUtc = cached.CachedAtUtc
+             };
+         }
+ 
++        _logger.LogDebug("Building executive cockpit dashboard for company {CompanyId}.", query.CompanyId);
+         var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
+         await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, nowUtc, dashboard), cancellationToken);
+         return dashboard;
+@@ -93,7 +105,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 x.Status,
+                 x.CreatedUtc
+             })
+-            .ToListAsync(cancellationToken);
++            .Take(PendingApprovalPreviewLimit)
++            .ToListAsync(cancellationToken);
+ 
+         var pendingApprovalCount = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+@@ -131,7 +143,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 x.Id,
+                 x.OccurredUtc,
+                 $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}&exceptionId={x.Id}"))
+-            .ToListAsync(cancellationToken);
++            .Take(AlertLimit)
++            .ToListAsync(cancellationToken);
+ 
+         var taskAlerts = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+@@ -140,7 +152,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 x.CompanyId == companyId &&
+                 (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed))
+             .OrderByDescending(x => x.UpdatedUtc)
+-            .Take(Math.Max(0, 5 - workflowAlerts.Count))
++            .Take(Math.Max(0, AlertLimit - workflowAlerts.Count))
+             .Select(x => new ExecutiveCockpitAlertDto(
+                 x.Id,
+                 x.Status == WorkTaskStatus.Failed ? "high" : "medium",
+@@ -154,104 +166,104 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         var alerts = workflowAlerts.Concat(taskAlerts)
+             .OrderByDescending(x => x.OccurredUtc)
+-            .Take(5)
++            .Take(AlertLimit)
+             .ToList();
+ 
+-        var agents = await _dbContext.Agents
++        var agentRows = await _dbContext.Agents
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+-            .Select(x => new { x.Id, x.Department, x.Status })
++            .Select(x => new AgentDashboardRow(x.Id, x.Department, x.Status))
+             .ToListAsync(cancellationToken);
+ 
+-        var agentDepartmentById = agents.ToDictionary(
++        var agentDepartmentById = agentRows.ToDictionary(
+             x => x.Id,
+             x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department.Trim());
+ 
+-        var tasks = await _dbContext.WorkTasks
++        var taskAggregatesByAgentId = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
+-            .Select(x => new { x.AssignedAgentId, x.Status, x.CompletedUtc })
++            .Where(x => x.CompanyId == companyId && x.AssignedAgentId.HasValue)
++            .GroupBy(x => x.AssignedAgentId!.Value)
++            .Select(group => new AgentTaskDashboardAggregate(
++                group.Key,
++                group.Count(x => x.Status != WorkTaskStatus.Completed && x.Status != WorkTaskStatus.Failed),
++                group.Count(x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= nowUtc.AddDays(-7))))
+             .ToListAsync(cancellationToken);
+ 
+-        var approvalDepartments = await _dbContext.ApprovalRequests
++        var pendingApprovalAggregatesByAgentId = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
+-            .Select(x => x.AgentId)
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentApprovalDashboardAggregate(group.Key, group.Count()))
+             .ToListAsync(cancellationToken);
+ 
+         var workflowDepartments = await _dbContext.WorkflowDefinitions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.Active)
+-            .Select(x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department!)
++            .Select(x => x.Department ?? "Unassigned")
+             .ToListAsync(cancellationToken);
+ 
+-        var departments = agents.Select(x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department.Trim())
++        var workflowCountByDepartment = workflowDepartments
++            .GroupBy(NormalizeDepartment, StringComparer.OrdinalIgnoreCase)
++            .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
++
++        var departments = agentRows.Select(x => NormalizeDepartment(x.Department))
+             .Concat(workflowDepartments)
+             .DefaultIfEmpty("Company")
+-            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .Select(NormalizeDepartment)
++            .Distinct(StringComparer.OrdinalIgnoreCase)
+             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+ 
++        var taskAggregatesByAgent = taskAggregatesByAgentId.ToDictionary(x => x.AgentId);
++        var approvalAggregatesByAgent = pendingApprovalAggregatesByAgentId.ToDictionary(x => x.AgentId);
++
+         var departmentKpis = departments
+             .Select(department =>
+             {
+                 var departmentAgentIds = agentDepartmentById
+                     .Where(x => string.Equals(x.Value, department, StringComparison.OrdinalIgnoreCase))
+                     .Select(x => x.Key)
+-                    .ToHashSet();
+-
+-                var departmentTasks = tasks
+-                    .Where(x => x.AssignedAgentId.HasValue && departmentAgentIds.Contains(x.AssignedAgentId.Value))
+                     .ToList();
+ 
++                var openTasks = 0;
++                var completedTasksLast7Days = 0;
++                var pendingApprovalsForDepartment = 0;
++                foreach (var agentId in departmentAgentIds)
++                {
++                    if (taskAggregatesByAgent.TryGetValue(agentId, out var taskAggregate))
++                    {
++                        openTasks += taskAggregate.OpenTasks;
++                        completedTasksLast7Days += taskAggregate.CompletedTasksLast7Days;
++                    }
++
++                    if (approvalAggregatesByAgent.TryGetValue(agentId, out var approvalAggregate))
++                    {
++                        pendingApprovalsForDepartment += approvalAggregate.PendingApprovals;
++                    }
++                }
++
+                 return new ExecutiveCockpitDepartmentKpiDto(
+                     department,
+-                    agents.Count(x => string.Equals(x.Department, department, StringComparison.OrdinalIgnoreCase) && x.Status == AgentStatus.Active),
+-                    departmentTasks.Count(x => x.Status is not WorkTaskStatus.Completed and not WorkTaskStatus.Failed),
+-                    departmentTasks.Count(x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= nowUtc.AddDays(-7)),
+-                    approvalDepartments.Count(agentId => agentId != Guid.Empty && departmentAgentIds.Contains(agentId)),
+-                    workflowDepartments.Count(x => string.Equals(x, department, StringComparison.OrdinalIgnoreCase)),
++                    agentRows.Count(x => string.Equals(NormalizeDepartment(x.Department), department, StringComparison.OrdinalIgnoreCase) && x.Status == AgentStatus.Active),
++                    openTasks,
++                    completedTasksLast7Days,
++                    pendingApprovalsForDepartment,
++                    workflowCountByDepartment.GetValueOrDefault(department),
+                     $"/agents?companyId={companyId}&department={Uri.EscapeDataString(department)}");
+             })
+             .ToList();
+ 
+         var recentActivity = await BuildRecentActivityAsync(companyId, cancellationToken);
+ 
+-        var noWorkflows = !await _dbContext.WorkflowDefinitions
+-                .IgnoreQueryFilters()
+-                .AsNoTracking()
+-                .AnyAsync(x => x.CompanyId == companyId, cancellationToken) &&
++        var noWorkflows = workflowDepartments.Count == 0 &&
+             !await _dbContext.WorkflowInstances
+                 .IgnoreQueryFilters()
+                 .AsNoTracking()
+                 .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
+-        var noKnowledge = !await _dbContext.CompanyKnowledgeDocuments
++        var noKnowledge = !await _dbContext.CompanyKnowledgeDocuments
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+ 
+         var emptyStates = new ExecutiveCockpitEmptyStateFlagsDto(
+-            agents.Count == 0,
++            agentRows.Count == 0,
+             noWorkflows,
+             noKnowledge,
+             recentActivity.Count == 0,
+@@ -280,19 +292,23 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             .Where(x => x.CompanyId == companyId)
+             .OrderByDescending(x => x.OccurredUtc)
+-            .Take(8)
++            .Take(PerSourceActivityLimit)
+             .Select(x => new ExecutiveCockpitActivityItemDto(
+                 x.Id,
+                 "audit",
+@@ -308,7 +324,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             .Where(x => x.CompanyId == companyId)
+             .OrderByDescending(x => x.UpdatedUtc)
+-            .Take(8)
++            .Take(PerSourceActivityLimit)
+             .Select(x => new ExecutiveCockpitActivityItemDto(
+                 x.Id,
+                 "task",
+@@ -318,27 +334,32 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+                 $"/tasks?companyId={companyId}&taskId={x.Id}"))
+             .ToListAsync(cancellationToken);
+ 
+-        var workflowItems = await _dbContext.WorkflowInstances
++        var workflowItems = await (
++            from instance in _dbContext.WorkflowInstances.IgnoreQueryFilters().AsNoTracking()
++            join definition in _dbContext.WorkflowDefinitions.IgnoreQueryFilters().AsNoTracking()
++                on instance.DefinitionId equals definition.Id
++            where instance.CompanyId == companyId && definition.CompanyId == companyId
++            orderby instance.UpdatedUtc descending
++            select new ExecutiveCockpitActivityItemDto(
++                instance.Id,
++                "workflow",
++                definition.Name,
++                $"Workflow {instance.State.ToStorageValue()}.",
++                instance.UpdatedUtc,
++                $"/workflows?companyId={companyId}&workflowInstanceId={instance.Id}&state={Uri.EscapeDataString(instance.State.ToStorageValue())}"))
++            .Take(PerSourceActivityLimit)
++            .ToListAsync(cancellationToken);
++
++        return auditItems
++            .Concat(taskItems)
++            .Concat(workflowItems)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(RecentActivityLimit)
++            .ToList();
++    }
++
++    private static string NormalizeDepartment(string? department) =>
++        string.IsNullOrWhiteSpace(department) ? "Unassigned" : department.Trim();
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static string FirstParagraph(string value, int maxLength)
++    {
++        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
++        return paragraph.Length <= maxLength ? paragraph : paragraph[..maxLength].TrimEnd() + "...";
++    }
++
++    private static string? BuildAuditRoute(Guid companyId, string targetType, string targetId)
++    {
++        if (!Guid.TryParse(targetId, out var id))
++        {
++            return null;
++        }
++
++        return targetType.Trim().ToLowerInvariant() switch
++        {
++            "agent" => $"/agents/{id}?companyId={companyId}",
++            "approval_request" => $"/approvals?companyId={companyId}&approvalId={id}",
++            "work_task" => $"/tasks?companyId={companyId}&taskId={id}",
++            "workflow_instance" => $"/workflows?companyId={companyId}&workflowInstanceId={id}",
++            "workflow_exception" => $"/workflows?companyId={companyId}&exceptionId={id}",
++            _ => null
++        };
++    }
++
++    private sealed record AgentDashboardRow(Guid Id, string? Department, AgentStatus Status);
++    private sealed record AgentTaskDashboardAggregate(Guid AgentId, int OpenTasks, int CompletedTasksLast7Days);
++    private sealed record AgentApprovalDashboardAggregate(Guid AgentId, int PendingApprovals);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+index a0f1c32..2b8b4c1 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -81,6 +81,6 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+             cancellationToken);
+     }
+ 
+-    private static string BuildCacheKey(Guid companyId) =>
++    public static string BuildCacheKey(Guid companyId) =>
+         $"vc:executive-cockpit:{CacheKeyVersion}:{companyId:N}";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 9e4dc53..2be5c0a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -614,6 +614,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
+         builder.HasIndex(x => new { x.CompanyId, x.Department });
+         builder.HasIndex(x => new { x.CompanyId, x.DisplayName });
++        builder.HasIndex(x => new { x.CompanyId, x.Department, x.Status });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -952,8 +953,11 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
+         builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId, x.Status, x.CompletedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++        builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.AssignedAgent).WithMany(x => x.Tasks).HasForeignKey(x => x.AssignedAgentId).OnDelete(DeleteBehavior.SetNull);
+@@ -1252,6 +1256,7 @@ internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration<
+         builder.HasIndex(x => new { x.CompanyId, x.Code, x.Version }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.Code });
+         builder.HasIndex(x => new { x.CompanyId, x.Active });
++        builder.HasIndex(x => new { x.CompanyId, x.Active, x.Department });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -1347,8 +1352,10 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<Wo
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.StartedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.State });
++        builder.HasIndex(x => new { x.CompanyId, x.State, x.UpdatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.DefinitionId, x.TriggerSource, x.TriggerRef })
+             .HasFilter("trigger_ref IS NOT NULL")
+             .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Definition).WithMany(x => x.Instances).HasForeignKey(x => x.DefinitionId).OnDelete(DeleteBehavior.Restrict);
+@@ -1465,6 +1472,7 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<App
+             .OnDelete(DeleteBehavior.Cascade);
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.TargetEntityType, x.TargetEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.AgentId, x.CreatedUtc });
+         builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique().HasFilter("[ToolExecutionAttemptId] IS NOT NULL");
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413173000_AddExecutiveCockpitDashboardIndexes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413173000_AddExecutiveCockpitDashboardIndexes.cs
+new file mode 100644
+index 0000000..48a98fb
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413173000_AddExecutiveCockpitDashboardIndexes.cs
+@@ -0,0 +1,104 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413173000_AddExecutiveCockpitDashboardIndexes")]
++public partial class AddExecutiveCockpitDashboardIndexes : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateIndex(
++            name: "IX_agents_company_id_department_status",
++            table: "agents",
++            columns: new[] { "company_id", "department", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_approval_requests_company_id_status_agent_id_CreatedUtc",
++            table: "approval_requests",
++            columns: new[] { "CompanyId", "Status", "AgentId", "CreatedUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tasks_company_id_assigned_agent_id_status_completed_at",
++            table: "tasks",
++            columns: new[] { "company_id", "assigned_agent_id", "status", "completed_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tasks_company_id_status_updated_at",
++            table: "tasks",
++            columns: new[] { "company_id", "status", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tasks_company_id_updated_at",
++            table: "tasks",
++            columns: new[] { "company_id", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_definitions_company_id_active_department",
++            table: "workflow_definitions",
++            columns: new[] { "company_id", "active", "department" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_state_updated_at",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "state", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_workflow_instances_company_id_updated_at",
++            table: "workflow_instances",
++            columns: new[] { "company_id", "updated_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_updated_at",
++            table: "workflow_instances");
++
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_instances_company_id_state_updated_at",
++            table: "workflow_instances");
++
++        migrationBuilder.DropIndex(
++            name: "IX_workflow_definitions_company_id_active_department",
++            table: "workflow_definitions");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tasks_company_id_updated_at",
++            table: "tasks");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tasks_company_id_status_updated_at",
++            table: "tasks");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tasks_company_id_assigned_agent_id_status_completed_at",
++            table: "tasks");
++
++        migrationBuilder.DropIndex(
++            name: "IX_approval_requests_company_id_status_agent_id_CreatedUtc",
++            table: "approval_requests");
++
++        migrationBuilder.DropIndex(
++            name: "IX_agents_company_id_department_status",
++            table: "agents");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index b4eb784..eac4d2a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -216,6 +216,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("CompanyId", "Department");
+ 
++                    b.HasIndex("CompanyId", "Department", "Status");
++
+                     b.HasIndex("CompanyId", "DisplayName");
+ 
+                     b.HasIndex("CompanyId", "Status");
+@@ -950,12 +952,18 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("CompanyId", "AssignedAgentId");
+ 
++                    b.HasIndex("CompanyId", "AssignedAgentId", "Status", "CompletedUtc");
++
+                     b.HasIndex("CompanyId", "CorrelationId");
+ 
+                     b.HasIndex("CompanyId", "DueUtc");
+ 
+                     b.HasIndex("CompanyId", "ParentTaskId");
+ 
++                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
++
++                    b.HasIndex("CompanyId", "UpdatedUtc");
++
+                     b.HasIndex("CompanyId", "WorkflowInstanceId");
+ 
+                     b.HasOne("VirtualCompany.Domain.Entities.Agent", "AssignedAgent")
+@@ -1253,6 +1261,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("CompanyId", "Active");
+ 
++                    b.HasIndex("CompanyId", "Active", "Department");
++
+                     b.HasIndex("CompanyId", "Code");
+ 
+                     b.HasIndex("CompanyId", "Code", "Version")
+@@ -1348,6 +1358,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("CompanyId", "State");
+ 
++                    b.HasIndex("CompanyId", "State", "UpdatedUtc");
++
++                    b.HasIndex("CompanyId", "UpdatedUtc");
++
+                     b.HasIndex("CompanyId", "DefinitionId", "TriggerSource", "TriggerRef")
+                         .IsUnique()
+                         .HasFilter("trigger_ref IS NOT NULL");
+@@ -1465,6 +1479,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasIndex("CompanyId", "Status", "CreatedUtc");
+ 
++                    b.HasIndex("CompanyId", "Status", "AgentId", "CreatedUtc");
++
+                     b.HasIndex("CompanyId", "TargetEntityType", "TargetEntityId");
+ 
+                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 7a9d1b9..0b7fd8a 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Companies;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -69,6 +70,16 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public void Dashboard_cache_keys_are_tenant_scoped()
++    {
++        var companyA = Guid.NewGuid();
++        var companyB = Guid.NewGuid();
++
++        Assert.Contains(companyA.ToString("N"), ExecutiveCockpitDashboardCache.BuildCacheKey(companyA));
++        Assert.NotEqual(ExecutiveCockpitDashboardCache.BuildCacheKey(companyA), ExecutiveCockpitDashboardCache.BuildCacheKey(companyB));
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+END_OF_PATCH

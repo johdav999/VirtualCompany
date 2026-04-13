@@ -1,10 +1,13 @@
 using System;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [DbContext(typeof(VirtualCompanyDbContext))]
+    [Migration("20260412120000_AddTaskLifecycle")]
     public partial class AddTaskLifecycle : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

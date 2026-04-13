@@ -1,0 +1,287 @@
+@page "/audit"
+@inject AuditApiClient AuditApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Audit History</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Audit history</h1>
+        <p class="text-body-secondary mb-0">Loading audit events...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <h1>Choose a company audit trail</h1>
+                <p class="lead mb-3">Audit events are scoped to a company workspace.</p>
+
+                @if (ActiveMemberships.Count > 0)
+                {
+                    <div class="template-grid mt-4">
+                        @foreach (var membership in ActiveMemberships)
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@($"/audit?companyId={membership.CompanyId}")">
+                                <strong>@membership.CompanyName</strong>
+                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Audit trail</span>
+                <h1>@(companyAccess?.CompanyName ?? "Audit history")</h1>
+                <p class="text-body-secondary mb-0">Review tenant-scoped agent actions, approvals, tool execution links, and concise rationale summaries.</p>
+
+                <form class="agent-filter-bar mt-4" method="get">
+                    <input type="hidden" name="companyId" value="@CompanyId" />
+                    <div>
+                        <label class="form-label" for="audit-agent-filter">Agent id</label>
+                        <input id="audit-agent-filter" class="form-control" name="agentId" value="@AgentId" placeholder="Agent GUID" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="audit-task-filter">Task id</label>
+                        <input id="audit-task-filter" class="form-control" name="taskId" value="@TaskId" placeholder="Task GUID" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="audit-workflow-filter">Workflow id</label>
+                        <input id="audit-workflow-filter" class="form-control" name="workflowInstanceId" value="@WorkflowInstanceId" placeholder="Workflow GUID" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="audit-from-filter">From</label>
+                        <input id="audit-from-filter" class="form-control" type="date" name="from" value="@From" />
+                    </div>
+                    <div>
+                        <label class="form-label" for="audit-to-filter">To</label>
+                        <input id="audit-to-filter" class="form-control" type="date" name="to" value="@To" />
+                    </div>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="submit">Apply filters</button>
+                        <a class="btn btn-outline-secondary" href="@($"/audit?companyId={CompanyId}")">Clear</a>
+                    </div>
+                </form>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+
+                @if (validationMessages.Count > 0)
+                {
+                    <div class="alert alert-warning mt-4 mb-0">
+                        @foreach (var message in validationMessages)
+                        {
+                            <div>@message</div>
+                        }
+                    </div>
+                }
+
+                @if (history?.Items.Count is null or 0)
+                {
+                    <p class="text-body-secondary mt-4 mb-0">No audit events match the current filters.</p>
+                }
+                else
+                {
+                    <div class="table-responsive mt-4">
+                        <table class="table align-middle">
+                            <thead>
+                                <tr>
+                                    <th>When</th>
+                                    <th>Actor</th>
+                                    <th>Action</th>
+                                    <th>Target</th>
+                                    <th>Outcome</th>
+                                    <th>Summary</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in history.Items)
+                                {
+                                    <tr>
+                                        <td>@item.OccurredAt.ToLocalTime().ToString("g")</td>
+                                        <td>@DisplayActor(item)</td>
+                                        <td>@item.Action</td>
+                                        <td>@DisplayTarget(item)</td>
+                                        <td><span class="badge text-bg-light">@item.Outcome</span></td>
+                                        <td>@DisplaySummary(item)</td>
+                                        <td><a class="btn btn-sm btn-outline-primary" href="@DetailUrl(item.Id)">Open</a></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "agentId")]
+    public string? AgentId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "taskId")]
+    public string? TaskId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "workflowInstanceId")]
+    public string? WorkflowInstanceId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "from")]
+    public string? From { get; set; }
+
+    [SupplyParameterFromQuery(Name = "to")]
+    public string? To { get; set; }
+
+    private bool isLoading = true;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private AuditHistoryResultViewModel? history;
+    private string? errorMessage;
+    private readonly List<string> validationMessages = [];
+
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .Where(x => CanReviewAudit(x.MembershipRole))
+            .ToList()
+        ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        validationMessages.Clear();
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is not Guid companyId)
+            {
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/audit?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                }
+
+                return;
+            }
+
+            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+            var filter = BuildFilter();
+            if (validationMessages.Count == 0)
+            {
+                history = await AuditApiClient.ListAsync(companyId, filter);
+            }
+            else
+            {
+                history = null;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            history = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private AuditHistoryFilterViewModel BuildFilter()
+    {
+        var fromUtc = ParseDate(From, "From");
+        var toUtc = ParseDate(To, "To")?.Date.AddDays(1).AddTicks(-1);
+        if (fromUtc is DateTime from && toUtc is DateTime to && from > to)
+        {
+            validationMessages.Add("From must be on or before To.");
+        }
+
+        return new()
+        {
+            AgentId = ParseGuid(AgentId, "Agent id"),
+            TaskId = ParseGuid(TaskId, "Task id"),
+            WorkflowInstanceId = ParseGuid(WorkflowInstanceId, "Workflow id"),
+            FromUtc = fromUtc,
+            ToUtc = toUtc,
+            Take = 50
+        };
+    }
+
+    private Guid? ParseGuid(string? value, string label)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (Guid.TryParse(value, out var parsed))
+        {
+            return parsed;
+        }
+
+        validationMessages.Add($"{label} must be a valid GUID.");
+        return null;
+    }
+
+    private DateTime? ParseDate(string? value, string label)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (DateTime.TryParse(value, out var parsed))
+        {
+            return DateTime.SpecifyKind(parsed.Date, DateTimeKind.Utc);
+        }
+
+        validationMessages.Add($"{label} must be a valid date.");
+        return null;
+    }
+
+    private string DetailUrl(Guid auditEventId) =>
+        $"/audit/{auditEventId}?companyId={CompanyId}";
+
+    private static string DisplayActor(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.ActorLabel)
+            ? $"{item.ActorType}{(item.ActorId is Guid actorId ? $": {actorId}" : string.Empty)}"
+            : $"{item.ActorLabel} ({item.ActorType})";
+
+    private static string DisplayTarget(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.TargetLabel)
+            ? $"{item.TargetType}: {item.TargetId}"
+            : $"{item.TargetLabel} ({item.TargetType})";
+
+    private static string DisplaySummary(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.Explanation?.Summary)
+            ? "Action completed using configured policy and available company data."
+            : item.Explanation.Summary;
+
+    private static bool CanReviewAudit(string role) =>
+        role is "owner" or "admin" or "manager";
+}

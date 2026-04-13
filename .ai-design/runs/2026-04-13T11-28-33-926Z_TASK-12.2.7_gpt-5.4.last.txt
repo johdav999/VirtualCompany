@@ -1,0 +1,502 @@
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 0f0f0f0..1111111 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -2,10 +2,12 @@ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Documents;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Documents;
+ 
+ namespace VirtualCompany.Infrastructure.Auditing;
+ 
+@@ -15,13 +17,24 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+     private const int MaxTake = 200;
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly IKnowledgeAccessPolicyEvaluator _knowledgeAccessPolicyEvaluator;
+ 
+     public CompanyAuditQueryService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyContextAccessor companyContextAccessor)
++        : this(dbContext, companyContextAccessor, new KnowledgeAccessPolicyEvaluator())
++    {
++    }
++
++    public CompanyAuditQueryService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor companyContextAccessor,
++        IKnowledgeAccessPolicyEvaluator knowledgeAccessPolicyEvaluator)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
++        _knowledgeAccessPolicyEvaluator = knowledgeAccessPolicyEvaluator;
+     }
+ 
+     public async Task<AuditHistoryResult> ListAsync(
+@@ -29,7 +42,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         AuditHistoryFilter filter,
+         CancellationToken cancellationToken)
+     {
+-        EnsureTenant(companyId);
++        EnsureAuditReviewAccess(companyId);
+ 
+         filter ??= new AuditHistoryFilter();
+         if (filter.FromUtc is DateTime fromUtc && filter.ToUtc is DateTime toUtc && fromUtc > toUtc)
+@@ -97,7 +110,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         Guid auditEventId,
+         CancellationToken cancellationToken)
+     {
+-        EnsureTenant(companyId);
++        EnsureAuditReviewAccess(companyId);
+ 
+         var auditEvent = await _dbContext.AuditEvents
+             .AsNoTracking()
+@@ -135,6 +148,25 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         }
+     }
+ 
++    private void EnsureAuditReviewAccess(Guid companyId)
++    {
++        EnsureTenant(companyId);
++
++        var membership = _companyContextAccessor.Membership;
++        if (membership is null ||
++            membership.CompanyId != companyId ||
++            membership.Status != CompanyMembershipStatus.Active ||
++            !CanReviewAudit(membership.MembershipRole))
++        {
++            throw new UnauthorizedAccessException("Audit history requires company audit review access.");
++        }
++    }
++
++    private static bool CanReviewAudit(CompanyMembershipRole role) =>
++        role is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager;
++
+     private async Task<RelatedReferenceSet> LoadRelatedReferencesAsync(
+         Guid companyId,
+         IReadOnlyCollection<AuditEvent> auditEvents,
+@@ -254,18 +286,30 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+                 .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
+                 .ToDictionaryAsync(
+                     x => x.Id,
+                     x => $"{x.Definition.Name} ({x.State.ToStorageValue()})",
+                     cancellationToken);
+ 
+-        var documents = documentIds.Count == 0
+-            ? new Dictionary<Guid, string>()
+-            : await _dbContext.CompanyKnowledgeDocuments
++        var documentRows = documentIds.Count == 0
++            ? []
++            : await _dbContext.CompanyKnowledgeDocuments
+                 .AsNoTracking()
+                 .Where(x => x.CompanyId == companyId && documentIds.Contains(x.Id))
+-                .ToDictionaryAsync(x => x.Id, x => x.Title, cancellationToken);
++                .ToListAsync(cancellationToken);
++
++        var documents = documentRows
++            .Where(x => CanAccessKnowledgeDocument(companyId, x))
++            .ToDictionary(x => x.Id, x => x.Title);
+ 
+-        var knowledgeChunks = knowledgeChunkIds.Count == 0
+-            ? new Dictionary<Guid, string>()
+-            : await _dbContext.CompanyKnowledgeChunks
++        var knowledgeChunkRows = knowledgeChunkIds.Count == 0
++            ? []
++            : await _dbContext.CompanyKnowledgeChunks
+                 .AsNoTracking()
+                 .Include(x => x.Document)
+                 .Where(x => x.CompanyId == companyId && knowledgeChunkIds.Contains(x.Id))
+-                .ToDictionaryAsync(x => x.Id, x => $"{x.Document.Title} - chunk {x.ChunkIndex + 1}", cancellationToken);
++                .ToListAsync(cancellationToken);
++
++        var knowledgeChunks = knowledgeChunkRows
++            .Where(x => CanAccessKnowledgeDocument(companyId, x.Document))
++            .ToDictionary(x => x.Id, x => $"{x.Document.Title} - chunk {x.ChunkIndex + 1}");
+ 
+         var memories = memoryIds.Count == 0
+             ? new Dictionary<Guid, string>()
+@@ -401,6 +445,20 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             .Select(x => new AuditToolExecutionReferenceDto(
+                 x.Id,
+                 x.AgentId,
+@@ -424,6 +482,20 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             .ToList();
+     }
+ 
++    private CompanyKnowledgeAccessContext BuildKnowledgeAccessContext(Guid companyId)
++    {
++        var membership = _companyContextAccessor.Membership;
++        return new CompanyKnowledgeAccessContext(
++            companyId,
++            membership?.MembershipId,
++            membership?.UserId,
++            membership?.MembershipRole.ToStorageValue());
++    }
++
++    private bool CanAccessKnowledgeDocument(Guid companyId, CompanyKnowledgeDocument document) =>
++        _knowledgeAccessPolicyEvaluator.CanAccess(BuildKnowledgeAccessContext(companyId), document);
++
+     private static AuditHistoryListItem MapListItem(AuditEvent auditEvent, RelatedReferenceSet related) =>
+         new(
+             auditEvent.Id,
+diff --git a/src/VirtualCompany.Web/Services/AuditApiClient.cs b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+index 2222222..3333333 100644
+--- a/src/VirtualCompany.Web/Services/AuditApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+@@ -1,3 +1,4 @@
++using System.Net;
+ using System.Net.Http.Json;
+ using System.Text.Json;
+ using System.Web;
+@@ -91,6 +92,11 @@ public sealed class AuditApiClient
+ 
+     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+     {
++        if (response.StatusCode == HttpStatusCode.Forbidden)
++        {
++            return new OnboardingApiException("You do not have permission to view audit history for this company.");
++        }
++
+         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+         return problem?.Errors is { Count: > 0 }
+             ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
+diff --git a/src/VirtualCompany.Web/Pages/Audit.razor b/src/VirtualCompany.Web/Pages/Audit.razor
+index 4444444..5555555 100644
+--- a/src/VirtualCompany.Web/Pages/Audit.razor
++++ b/src/VirtualCompany.Web/Pages/Audit.razor
+@@ -151,7 +151,7 @@ else
+     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+         currentUser?.Memberships
+             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+-            .ToList()
++            .Where(x => CanReviewAudit(x.MembershipRole))
+         ?? [];
+ 
+     protected override async Task OnParametersSetAsync()
+@@ -262,4 +262,7 @@ else
+         string.IsNullOrWhiteSpace(item.Explanation?.Summary)
+             ? "Action completed using configured policy and available company data."
+             : item.Explanation.Summary;
++
++    private static bool CanReviewAudit(string role) =>
++        role is "owner" or "admin" or "manager";
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index 6666666..7777777 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -137,6 +137,25 @@ public sealed class AuditQueryServiceTests
+             CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task ListAsync_rejects_active_membership_without_audit_review_role()
++    {
++        var companyId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            Guid.NewGuid(),
++            AuditTargetTypes.WorkTask,
++            Guid.NewGuid(),
++            DateTime.UtcNow));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid(), CompanyMembershipRole.Employee));
++
++        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.ListAsync(companyId, new AuditHistoryFilter(), CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task GetAsync_does_not_return_cross_tenant_audit_events()
+     {
+@@ -533,6 +552,60 @@ public sealed class AuditQueryServiceTests
+         Assert.Equal("Document: Document (deleted or inaccessible)", missing.Label);
+         Assert.Equal("Section excerpt", missing.SecondaryText);
+         Assert.DoesNotContain("chunk:47", missing.Label, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public async Task GetAsync_redacts_restricted_document_sources_when_reviewer_cannot_access_linked_knowledge()
++    {
++        var companyId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var chunkId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        var document = new CompanyKnowledgeDocument(
++            documentId,
++            companyId,
++            "Employee-only HR Plan",
++            CompanyKnowledgeDocumentType.Policy,
++            "tenant/acme/hr-plan.pdf",
++            "s3://tenant/acme/hr-plan.pdf",
++            "hr-plan.pdf",
++            "application/pdf",
++            ".pdf",
++            1200,
++            accessScope: new CompanyKnowledgeDocumentAccessScope(
++                companyId,
++                CompanyKnowledgeDocumentAccessScope.CompanyVisibility,
++                new Dictionary<string, JsonNode?>
++                {
++                    ["allowed_roles"] = new JsonArray("employee")
++                }));
++        dbContext.CompanyKnowledgeDocuments.Add(document);
++        dbContext.CompanyKnowledgeChunks.Add(new CompanyKnowledgeChunk(
++            chunkId,
++            companyId,
++            documentId,
++            1,
++            0,
++            "Restricted employee-only content.",
++            "embedding",
++            "test",
++            "test-model",
++            null,
++            1,
++            sourceReference: "chunk:1"));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            companyId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++            AuditTargetTypes.WorkTask,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded,
++            "Completed using available company data.",
++            dataSourcesUsed: [new AuditDataSourceUsed(GroundedContextSourceTypes.KnowledgeChunk, chunkId.ToString(), Reference: "s3://tenant/acme/hr-plan.pdf")]));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid(), CompanyMembershipRole.Manager));
++
++        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);
++
++        Assert.DoesNotContain(detail.SourceReferences, source => source.Label.Contains("Employee-only HR Plan", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(detail.Explanation.DataSources, source => source.Contains("Employee-only HR Plan", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Document: Document (deleted or inaccessible)");
++    }
++
+     private static AuditEvent CreateAuditEvent(
+         Guid id,
+         Guid companyId,
+@@ -564,21 +637,40 @@ public sealed class AuditQueryServiceTests
+ 
+     private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
+     {
+-        public TestCompanyContextAccessor(Guid? companyId, Guid? userId)
++        public TestCompanyContextAccessor(
++            Guid? companyId,
++            Guid? userId,
++            CompanyMembershipRole membershipRole = CompanyMembershipRole.Manager,
++            CompanyMembershipStatus status = CompanyMembershipStatus.Active)
+         {
+             CompanyId = companyId;
+             UserId = userId;
++            Membership = companyId.HasValue && userId.HasValue
++                ? new ResolvedCompanyMembershipContext(
++                    Guid.NewGuid(),
++                    companyId.Value,
++                    userId.Value,
++                    "Test Company",
++                    membershipRole,
++                    status)
++                : null;
+         }
+ 
+         public Guid? CompanyId { get; private set; }
+         public Guid? UserId { get; }
+         public bool IsResolved => CompanyId.HasValue;
+-        public ResolvedCompanyMembershipContext? Membership => null;
++        public ResolvedCompanyMembershipContext? Membership { get; private set; }
+         public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
+-        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
++
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
++        {
++            Membership = companyContext;
++            CompanyId = companyContext?.CompanyId;
++        }
+     }
+ 
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] values) =>
+         values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuditAuthorizationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AuditAuthorizationIntegrationTests.cs
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AuditAuthorizationIntegrationTests.cs
+@@ -0,0 +1,145 @@
++using System.Net;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AuditAuthorizationIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AuditAuthorizationIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Audit_list_and_detail_allow_manager_in_current_company()
++    {
++        var seed = await SeedAuditMembershipAsync("audit-manager", "audit.manager@example.com", CompanyMembershipRole.Manager);
++        using var client = CreateAuthenticatedClient("audit-manager", "audit.manager@example.com", "Audit Manager");
++
++        var listResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/audit");
++        var detailResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/audit/{seed.AuditEventId}");
++
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
++    }
++
++    [Theory]
++    [InlineData(CompanyMembershipRole.Employee)]
++    [InlineData(CompanyMembershipRole.FinanceApprover)]
++    [InlineData(CompanyMembershipRole.SupportSupervisor)]
++    public async Task Audit_list_and_detail_forbid_members_without_audit_review_role(CompanyMembershipRole role)
++    {
++        var subject = $"audit-{role.ToStorageValue()}";
++        var seed = await SeedAuditMembershipAsync(subject, $"{subject}@example.com", role);
++        using var client = CreateAuthenticatedClient(subject, $"{subject}@example.com", role.ToDisplayName());
++
++        var listResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/audit");
++        var detailResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/audit/{seed.AuditEventId}");
++
++        Assert.Equal(HttpStatusCode.Forbidden, listResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.Forbidden, detailResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Audit_detail_returns_not_found_for_cross_tenant_event_id_even_for_authorized_reviewer()
++    {
++        var reviewerSubject = "audit-owner";
++        var reviewerEmail = "audit.owner@example.com";
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var otherAuditEventId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, reviewerEmail, "Audit Owner", "dev-header", reviewerSubject));
++            dbContext.Companies.AddRange(new Company(companyId, "Company A"), new Company(otherCompanyId, "Company B"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.AuditEvents.Add(new AuditEvent(
++                otherAuditEventId,
++                otherCompanyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.WorkflowInstanceStarted,
++                AuditTargetTypes.WorkflowInstance,
++                Guid.NewGuid().ToString(),
++                AuditEventOutcomes.Succeeded,
++                "Other tenant event."));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(reviewerSubject, reviewerEmail, "Audit Owner");
++
++        var response = await client.GetAsync($"/api/companies/{companyId}/audit/{otherAuditEventId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Audit_list_forbids_company_without_membership()
++    {
++        var seed = await SeedAuditMembershipAsync("audit-admin", "audit.admin@example.com", CompanyMembershipRole.Admin);
++        var noMembershipCompanyId = Guid.NewGuid();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(noMembershipCompanyId, "Company No Membership"));
++            dbContext.AuditEvents.Add(new AuditEvent(
++                Guid.NewGuid(),
++                noMembershipCompanyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.WorkflowInstanceStarted,
++                AuditTargetTypes.WorkflowInstance,
++                Guid.NewGuid().ToString(),
++                AuditEventOutcomes.Succeeded,
++                "Unrelated company event."));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("audit-admin", "audit.admin@example.com", "Audit Admin");
++
++        var response = await client.GetAsync($"/api/companies/{noMembershipCompanyId}/audit");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++        Assert.NotEqual(seed.CompanyId, noMembershipCompanyId);
++    }
++
++    private async Task<AuditSeed> SeedAuditMembershipAsync(string subject, string email, CompanyMembershipRole role)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, role.ToDisplayName(), "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, "Audit Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                role,
++                CompanyMembershipStatus.Active));
++            dbContext.AuditEvents.Add(new AuditEvent(
++                auditEventId,
++                companyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.WorkflowInstanceStarted,
++                AuditTargetTypes.WorkflowInstance,
++                Guid.NewGuid().ToString(),
++                AuditEventOutcomes.Succeeded,
++                "Tenant-scoped audit event."));
++            return Task.CompletedTask;
++        });
++
++        return new AuditSeed(companyId, auditEventId);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record AuditSeed(Guid CompanyId, Guid AuditEventId);
++}
+END_OF_PATCH

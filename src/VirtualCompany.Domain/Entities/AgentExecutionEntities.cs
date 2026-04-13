@@ -19,7 +19,12 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         string toolName,
         ToolActionType actionType,
         string? scope,
-        IDictionary<string, JsonNode?>? requestPayload = null)
+        IDictionary<string, JsonNode?>? requestPayload = null,
+        Guid? taskId = null,
+        Guid? workflowInstanceId = null,
+        string? correlationId = null,
+        DateTime? startedAtUtc = null,
+        DateTime? completedAtUtc = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -31,6 +36,16 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
             throw new ArgumentException("AgentId is required.", nameof(agentId));
         }
 
+        if (taskId == Guid.Empty)
+        {
+            throw new ArgumentException("TaskId cannot be empty.", nameof(taskId));
+        }
+
+        if (workflowInstanceId == Guid.Empty)
+        {
+            throw new ArgumentException("WorkflowInstanceId cannot be empty.", nameof(workflowInstanceId));
+        }
+
         ToolActionTypeValues.EnsureSupported(actionType, nameof(actionType));
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -39,11 +54,16 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
         ActionType = actionType;
         Scope = NormalizeOptional(scope, nameof(scope), ScopeMaxLength);
-        Status = ToolExecutionStatus.Denied;
+        TaskId = taskId;
+        WorkflowInstanceId = workflowInstanceId;
+        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        Status = ToolExecutionStatus.Started;
         RequestPayload = CloneNodes(requestPayload);
         PolicyDecision = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
         ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
-        CreatedUtc = DateTime.UtcNow;
+        StartedUtc = startedAtUtc ?? DateTime.UtcNow;
+        CompletedUtc = completedAtUtc;
+        CreatedUtc = StartedUtc;
         UpdatedUtc = CreatedUtc;
     }
 
@@ -53,26 +73,36 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
     public string ToolName { get; private set; } = null!;
     public ToolActionType ActionType { get; private set; }
     public string? Scope { get; private set; }
+    public Guid? TaskId { get; private set; }
+    public Guid? WorkflowInstanceId { get; private set; }
+    public string? CorrelationId { get; private set; }
     public ToolExecutionStatus Status { get; private set; }
     public Guid? ApprovalRequestId { get; private set; }
     public Dictionary<string, JsonNode?> RequestPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> ResultPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public DateTime StartedUtc { get; private set; }
+    public DateTime? CompletedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? ExecutedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 
-    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision)
+    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null)
     {
         Status = ToolExecutionStatus.Denied;
         PolicyDecision = CloneNodes(policyDecision);
-        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        ResultPayload = CloneNodes(resultPayload);
         ApprovalRequestId = null;
-        UpdatedUtc = DateTime.UtcNow;
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        UpdatedUtc = CompletedUtc.Value;
     }
 
-    public void MarkAwaitingApproval(Guid approvalRequestId, IDictionary<string, JsonNode?>? policyDecision)
+    public void MarkAwaitingApproval(
+        Guid approvalRequestId,
+        IDictionary<string, JsonNode?>? policyDecision,
+        IDictionary<string, JsonNode?>? resultPayload = null,
+        DateTime? completedAtUtc = null)
     {
         if (approvalRequestId == Guid.Empty)
         {
@@ -82,19 +112,35 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         Status = ToolExecutionStatus.AwaitingApproval;
         ApprovalRequestId = approvalRequestId;
         PolicyDecision = CloneNodes(policyDecision);
-        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
-        UpdatedUtc = DateTime.UtcNow;
+        ResultPayload = CloneNodes(resultPayload);
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        UpdatedUtc = CompletedUtc.Value;
     }
 
     public void MarkExecuted(
         IDictionary<string, JsonNode?>? policyDecision,
-        IDictionary<string, JsonNode?>? resultPayload)
+        IDictionary<string, JsonNode?>? resultPayload,
+        DateTime? completedAtUtc = null)
     {
         Status = ToolExecutionStatus.Executed;
         PolicyDecision = CloneNodes(policyDecision);
         ResultPayload = CloneNodes(resultPayload);
-        ExecutedUtc = DateTime.UtcNow;
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        ExecutedUtc = CompletedUtc;
         UpdatedUtc = ExecutedUtc.Value;
+    }
+
+    public void MarkFailed(
+        IDictionary<string, JsonNode?>? policyDecision,
+        IDictionary<string, JsonNode?>? resultPayload,
+        DateTime? completedAtUtc = null)
+    {
+        Status = ToolExecutionStatus.Failed;
+        PolicyDecision = CloneNodes(policyDecision);
+        ResultPayload = CloneNodes(resultPayload);
+        ApprovalRequestId = null;
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        UpdatedUtc = CompletedUtc.Value;
     }
 
     private static string NormalizeRequired(string value, string name, int maxLength)

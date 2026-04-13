@@ -165,6 +165,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+    private readonly ICompanyNotificationDispatcher _notificationDispatcher;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly ILogger<CompanyOutboxProcessor> _logger;
@@ -176,6 +177,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+        ICompanyNotificationDispatcher notificationDispatcher,
         IOptions<CompanyOutboxDispatcherOptions> options,
         IBackgroundJobExecutor backgroundJobExecutor,
         IBackgroundExecutionRecorder backgroundExecutionRecorder,
@@ -186,6 +188,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+        _notificationDispatcher = notificationDispatcher;
         _options = options;
         _backgroundJobExecutor = backgroundJobExecutor;
         _backgroundExecutionRecorder = backgroundExecutionRecorder;
@@ -305,9 +308,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         var candidateIds = await _dbContext.CompanyOutboxMessages
             .AsNoTracking()
             .Where(x => x.ProcessedUtc == null &&
-                        x.Status != CompanyOutboxMessageStatus.InProgress &&
                         x.AvailableUtc <= utcNow &&
-                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
+                        ((x.Status != CompanyOutboxMessageStatus.InProgress &&
+                          (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc)) ||
+                         (x.Status == CompanyOutboxMessageStatus.InProgress &&
+                          x.ClaimedUtc != null && x.ClaimedUtc <= claimStaleBeforeUtc)))
             .OrderBy(x => x.AvailableUtc)
             .ThenBy(x => x.CreatedUtc)
             .Take(BatchSize)
@@ -324,9 +329,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         await _dbContext.CompanyOutboxMessages
             .Where(x => candidateIds.Contains(x.Id) &&
                         x.ProcessedUtc == null &&
-                        x.Status != CompanyOutboxMessageStatus.InProgress &&
                         x.AvailableUtc <= utcNow &&
-                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
+                        ((x.Status != CompanyOutboxMessageStatus.InProgress &&
+                          (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc)) ||
+                         (x.Status == CompanyOutboxMessageStatus.InProgress &&
+                          x.ClaimedUtc != null && x.ClaimedUtc <= claimStaleBeforeUtc)))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.ClaimToken, claimToken)
                 .SetProperty(x => x.ClaimedUtc, (DateTime?)utcNow)
@@ -353,6 +360,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.InvitationDeliveryRequested:
             {
                 var payload = Deserialize<CompanyInvitationDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Company invitation outbox payload tenant does not match the outbox message tenant.");
+                }
+
                 var correlationId = string.IsNullOrWhiteSpace(payload.CorrelationId)
                     ? message.CorrelationId
                     : payload.CorrelationId;
@@ -360,6 +372,18 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _invitationDeliveryDispatcher.DispatchAsync(
                     payload with { CorrelationId = correlationId },
                     cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.NotificationDeliveryRequested:
+            {
+                var payload = Deserialize<NotificationDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Notification outbox payload tenant does not match the outbox message tenant.");
+                }
+
+                await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.InvitationCreated:
@@ -483,6 +507,140 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
             throw;
         }
     }
+}
+
+internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispatcher
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ILogger<CompanyNotificationDispatcher> _logger;
+
+    public CompanyNotificationDispatcher(
+        VirtualCompanyDbContext dbContext,
+        ILogger<CompanyNotificationDispatcher> logger)
+    {
+        _dbContext = dbContext;
+        _logger = logger;
+    }
+
+    public async Task DispatchAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken)
+    {
+        if (message.CompanyId == Guid.Empty)
+        {
+            throw new CompanyOutboxPermanentException("Notification payload is missing tenant context.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.DedupeKey))
+        {
+            throw new CompanyOutboxPermanentException("Notification payload is missing a deduplication key.");
+        }
+
+        var notificationType = ParseNotificationType(message.NotificationType);
+        var priority = CompanyNotificationPriorityValues.Parse(message.Priority);
+        var recipients = await ResolveRecipientsAsync(message, cancellationToken);
+        var createdCount = 0;
+        var pendingDedupeKeys = new List<string>();
+
+        foreach (var userId in recipients)
+        {
+            var dedupeKey = $"{message.DedupeKey}:{userId:N}";
+            var exists = await _dbContext.CompanyNotifications
+                .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == userId && x.DedupeKey == dedupeKey, cancellationToken);
+            if (exists)
+            {
+                continue;
+            }
+
+            pendingDedupeKeys.Add(dedupeKey);
+            createdCount++;
+            _dbContext.CompanyNotifications.Add(new CompanyNotification(
+                Guid.NewGuid(),
+                message.CompanyId,
+                userId,
+                notificationType,
+                priority,
+                message.Title,
+                message.Body,
+                message.RelatedEntityType,
+                message.RelatedEntityId,
+                message.ActionUrl,
+                message.MetadataJson,
+                dedupeKey,
+                message.BriefingId));
+        }
+
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+        {
+            if (!await AllPendingNotificationsAlreadyExistAsync(message.CompanyId, pendingDedupeKeys, cancellationToken))
+            {
+                throw;
+            }
+
+            DetachPendingNotifications();
+            _logger.LogInformation(
+                ex,
+                "Treated duplicate notification delivery for {NotificationType} in company {CompanyId} as idempotent success.",
+                message.NotificationType,
+                message.CompanyId);
+        }
+
+        _logger.LogInformation(
+            "Created {NotificationCount} in-app notification(s) for {NotificationType} in company {CompanyId}.",
+            createdCount,
+            message.NotificationType,
+            message.CompanyId);
+
+        void DetachPendingNotifications()
+        {
+            foreach (var entry in _dbContext.ChangeTracker.Entries<CompanyNotification>().Where(x => x.State == EntityState.Added).ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+        }
+    }
+
+    private async Task<bool> AllPendingNotificationsAlreadyExistAsync(Guid companyId, IReadOnlyCollection<string> dedupeKeys, CancellationToken cancellationToken) =>
+        dedupeKeys.Count == 0 || await _dbContext.CompanyNotifications.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId && dedupeKeys.Contains(x.DedupeKey), cancellationToken) == dedupeKeys.Distinct(StringComparer.Ordinal).Count();
+
+    private async Task<IReadOnlyList<Guid>> ResolveRecipientsAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken)
+    {
+        if (message.RecipientUserId is Guid recipientUserId && recipientUserId != Guid.Empty)
+        {
+            var isActive = await _dbContext.CompanyMemberships
+                .IgnoreQueryFilters()
+                .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == recipientUserId && x.Status == CompanyMembershipStatus.Active, cancellationToken);
+            return isActive ? [recipientUserId] : [];
+        }
+
+        var query = _dbContext.CompanyMemberships
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == message.CompanyId && x.Status == CompanyMembershipStatus.Active && x.UserId.HasValue);
+
+        if (CompanyMembershipRoles.TryParse(message.RecipientRole, out var role))
+        {
+            query = query.Where(x => x.Role == role || x.Role == CompanyMembershipRole.Owner || x.Role == CompanyMembershipRole.Admin);
+        }
+        else
+        {
+            query = query.Where(x => x.Role == CompanyMembershipRole.Owner || x.Role == CompanyMembershipRole.Admin);
+        }
+
+        return await query.Select(x => x.UserId!.Value).Distinct().ToListAsync(cancellationToken);
+    }
+
+    private static CompanyNotificationType ParseNotificationType(string value) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "approval_requested" => CompanyNotificationType.ApprovalRequested,
+            "escalation" => CompanyNotificationType.Escalation,
+            "workflow_failure" => CompanyNotificationType.WorkflowFailure,
+            "briefing_available" => CompanyNotificationType.BriefingAvailable,
+            _ => throw new CompanyOutboxPermanentException($"Unsupported notification type '{value}'.")
+        };
 }
 
 internal sealed class LoggingCompanyInvitationSender : ICompanyInvitationSender

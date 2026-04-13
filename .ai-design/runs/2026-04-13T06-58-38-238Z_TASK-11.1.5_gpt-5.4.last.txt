@@ -1,0 +1,410 @@
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 0f4a3f4..5c4c1c8 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -22,6 +22,8 @@ public sealed record OpenDirectAgentConversationCommand(Guid AgentId);
+ 
+ public sealed record GetConversationMessagesQuery(int? Skip, int? Take);
+ 
++public sealed record GetDirectConversationsQuery(int? Skip, int? Take);
++
+ public sealed record SendDirectAgentMessageCommand(string Body);
+ 
+ public sealed record CreateTaskFromChatCommand(
+@@ -53,6 +55,12 @@ public sealed record DirectConversationDto(
+     DateTime CreatedAt,
+     DateTime UpdatedAt);
+ 
++public sealed record DirectConversationPageDto(
++    IReadOnlyList<DirectConversationDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
++
+ public sealed record ChatMessageDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -119,6 +127,7 @@ public interface ICompanyDirectChatService
+ {
+     Task<DirectConversationDto> GetOrCreateDirectAgentConversationAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+     Task<ChatMessagePageDto> GetMessagesAsync(Guid companyId, Guid conversationId, GetConversationMessagesQuery query, CancellationToken cancellationToken);
++    Task<DirectConversationPageDto> GetDirectConversationsAsync(Guid companyId, GetDirectConversationsQuery query, CancellationToken cancellationToken);
+     Task<SendDirectAgentMessageResultDto> SendMessageAsync(Guid companyId, Guid conversationId, SendDirectAgentMessageCommand command, CancellationToken cancellationToken);
+     Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(Guid companyId, Guid conversationId, CreateTaskFromChatCommand command, CancellationToken cancellationToken);
+     Task<LinkConversationToTaskResultDto> LinkConversationToTaskAsync(Guid companyId, Guid conversationId, LinkConversationToTaskCommand command, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Api/Controllers/DirectChatController.cs b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+index 3f3a6cb..f6a09d2 100644
+--- a/src/VirtualCompany.Api/Controllers/DirectChatController.cs
++++ b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+@@ -42,6 +42,26 @@ public sealed class DirectChatController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("conversations/direct")]
++    public async Task<ActionResult<DirectConversationPageDto>> GetDirectConversationsAsync(
++        Guid companyId,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.GetDirectConversationsAsync(companyId, new GetDirectConversationsQuery(skip, take), cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("conversations/{conversationId:guid}/messages")]
+     public async Task<ActionResult<ChatMessagePageDto>> GetMessagesAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index d2db7cc..65ad5cb 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -84,15 +84,21 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         GetConversationMessagesQuery query,
+         CancellationToken cancellationToken)
+     {
+-        await RequireMembershipAsync(companyId, cancellationToken);
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
+ 
+         var skip = Math.Max(0, query.Skip ?? 0);
+         var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
+         var messagesQuery = _dbContext.Messages
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId);
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.Conversation.CompanyId == companyId &&
++                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.Conversation.CreatedByUserId == membership.UserId);
+ 
+         var totalCount = await messagesQuery.CountAsync(cancellationToken);
+-        var messages = await messagesQuery
++        var messages = (await messagesQuery
+             .OrderByDescending(x => x.CreatedUtc)
++            .ThenByDescending(x => x.Id)
+             .Skip(skip)
+             .Take(take)
+-            .OrderBy(x => x.CreatedUtc)
+-            .ToListAsync(cancellationToken);
++            .ToListAsync(cancellationToken)).AsEnumerable()
++            .Reverse()
++            .ToList();
+ 
+         return new ChatMessagePageDto(
+             messages.Select(ToMessageDto).ToList(),
+@@ -100,6 +106,36 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             skip,
+             take);
+     }
++
++    public async Task<DirectConversationPageDto> GetDirectConversationsAsync(
++        Guid companyId,
++        GetDirectConversationsQuery query,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var skip = Math.Max(0, query.Skip ?? 0);
++        var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
++
++        var conversationsQuery = _dbContext.Conversations
++            .AsNoTracking()
++            .Include(x => x.Agent)
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.CreatedByUserId == membership.UserId &&
++                x.AgentId != null);
++
++        var totalCount = await conversationsQuery.CountAsync(cancellationToken);
++        var conversations = await conversationsQuery
++            .OrderByDescending(x => x.UpdatedUtc)
++            .ThenByDescending(x => x.Id)
++            .Skip(skip)
++            .Take(take)
++            .ToListAsync(cancellationToken);
++
++        return new DirectConversationPageDto(
++            conversations.Select(x => ToConversationDto(x, x.Agent!)).ToList(),
++            totalCount,
++            skip,
++            take);
++    }
+ 
+     public async Task<SendDirectAgentMessageResultDto> SendMessageAsync(
+         Guid companyId,
+@@ -191,7 +227,12 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             sourceMessage = await _dbContext.Messages
+                 .AsNoTracking()
+                 .SingleOrDefaultAsync(x =>
++                    x.Id == sourceMessageId &&
+                     x.CompanyId == companyId &&
++                    x.Conversation.CompanyId == companyId &&
++                    x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
++                    x.Conversation.CreatedByUserId == conversation.CreatedByUserId &&
+                     x.ConversationId == conversationId &&
+-                    x.Id == sourceMessageId,
+                     cancellationToken);
+ 
+             if (sourceMessage is null)
+@@ -205,11 +246,15 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         var recentMessages = await _dbContext.Messages
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId)
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.Conversation.CompanyId == companyId &&
++                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.Conversation.CreatedByUserId == conversation.CreatedByUserId)
+             .OrderByDescending(x => x.CreatedUtc)
++            .ThenByDescending(x => x.Id)
+             .Take(8)
+-            .OrderBy(x => x.CreatedUtc)
+             .ToListAsync(cancellationToken);
++        recentMessages.Reverse();
+ 
+         var title = NormalizeTaskTitle(command.Title, sourceMessage?.Body, conversation.Subject);
+         var description = NormalizeTaskDescription(command.Description, recentMessages);
+@@ -434,9 +479,13 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         var sourceMessage = await _dbContext.Messages
+             .AsNoTracking()
+             .SingleOrDefaultAsync(x =>
++                x.Id == sourceMessageId.Value &&
+                 x.CompanyId == companyId &&
++                x.Conversation.CompanyId == companyId &&
++                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
+                 x.ConversationId == conversationId &&
+-                x.Id == sourceMessageId.Value,
++                x.ConversationId == conversationId &&
++                x.Conversation.CompanyId == companyId,
+                 cancellationToken);
+ 
+         return sourceMessage ?? throw new KeyNotFoundException("Source message not found.");
+@@ -605,11 +654,16 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+         var history = await _dbContext.Messages
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == request.CompanyId && x.ConversationId == request.ConversationId)
++            .Where(x =>
++                x.CompanyId == request.CompanyId &&
++                x.ConversationId == request.ConversationId &&
++                x.Conversation.CompanyId == request.CompanyId &&
++                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
++                x.Conversation.CreatedByUserId == request.UserId)
+             .OrderByDescending(x => x.CreatedUtc)
++            .ThenByDescending(x => x.Id)
+             .Take(12)
+-            .OrderBy(x => x.CreatedUtc)
+             .ToListAsync(cancellationToken);
++        history.Reverse();
+ 
+         GroundedPromptContextDto? groundedContext = null;
+         try
+diff --git a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+index 56b1b9f..f4f2d50 100644
+--- a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
++++ b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+@@ -22,6 +22,11 @@ public sealed class DirectChatApiClient
+             ? throw new OnboardingApiException("Direct chat requires the backend API.")
+             : SendAsync<DirectConversationViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/conversations/direct", new { agentId }, cancellationToken);
+ 
++    public Task<DirectConversationPageViewModel> GetDirectConversationsAsync(Guid companyId, int skip = 0, int take = 50, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : GetAsync<DirectConversationPageViewModel>($"api/companies/{companyId}/conversations/direct?skip={skip}&take={take}", cancellationToken);
++
+     public Task<ChatMessagePageViewModel> GetMessagesAsync(Guid companyId, Guid conversationId, int skip = 0, int take = 50, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? throw new OnboardingApiException("Direct chat requires the backend API.")
+@@ -151,6 +156,14 @@ public sealed class DirectConversationViewModel
+     public DateTime UpdatedAt { get; set; }
+ }
+ 
++public sealed class DirectConversationPageViewModel
++{
++    public List<DirectConversationViewModel> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++}
++
+ public sealed class ChatMessageViewModel
+ {
+     public Guid Id { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+index 76513c9..2ea69f1 100644
+--- a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -318,6 +318,46 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
+     }
+ 
+     [Fact]
++    public async Task Getting_direct_agent_conversations_returns_tenant_scoped_paginated_list()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var firstOpenResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var firstConversation = await firstOpenResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(firstConversation);
++
++        await Task.Delay(20);
++        var secondOpenResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.SecondAgentId}/conversations/direct",
++            new { AgentId = seed.SecondAgentId });
++        var secondConversation = await secondOpenResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(secondConversation);
++
++        using var otherTenantClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, "Other Chat User");
++        var otherOpenResponse = await otherTenantClient.PostAsJsonAsync(
++            $"/api/companies/{seed.OtherCompanyId}/agents/{seed.OtherCompanyAgentId}/conversations/direct",
++            new { AgentId = seed.OtherCompanyAgentId });
++        Assert.Equal(HttpStatusCode.OK, otherOpenResponse.StatusCode);
++
++        var listResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/direct?skip=0&take=1");
++
++        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
++
++        var page = await listResponse.Content.ReadFromJsonAsync<DirectConversationPageResponse>();
++        Assert.NotNull(page);
++        Assert.Equal(2, page!.TotalCount);
++        Assert.Equal(0, page.Skip);
++        Assert.Equal(1, page.Take);
++        Assert.Single(page.Items);
++        Assert.Equal(secondConversation!.Id, page.Items[0].Id);
++        Assert.Equal(seed.CompanyId, page.Items[0].CompanyId);
++        Assert.DoesNotContain(page.Items, x => x.CompanyId == seed.OtherCompanyId);
++    }
++
++    [Fact]
+     public async Task Getting_direct_agent_messages_returns_chronological_page()
+     {
+         var seed = await SeedDirectChatAsync(AgentStatus.Active);
+@@ -376,6 +416,79 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
+     }
+ 
+     [Fact]
++    public async Task Getting_direct_agent_messages_paginates_with_stable_tie_breaker()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var createdUtc = DateTime.UtcNow.AddMinutes(-5);
++        var messageIds = new[]
++        {
++            Guid.Parse("00000000-0000-0000-0000-000000000001"),
++            Guid.Parse("00000000-0000-0000-0000-000000000002"),
++            Guid.Parse("00000000-0000-0000-0000-000000000003"),
++            Guid.Parse("00000000-0000-0000-0000-000000000004")
++        };
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            foreach (var messageId in messageIds)
++            {
++                var message = new Message(
++                    messageId,
++                    seed.CompanyId,
++                    conversation!.Id,
++                    ChatSenderTypes.System,
++                    null,
++                    ChatMessageTypes.Text,
++                    $"Tied message {messageId}");
++                SetCreatedUtc(message, createdUtc);
++                dbContext.Messages.Add(message);
++            }
++
++            return Task.CompletedTask;
++        });
++
++        var firstPageResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages?skip=0&take=2");
++        var secondPageResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation.Id}/messages?skip=2&take=2");
++
++        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
++
++        var firstPage = await firstPageResponse.Content.ReadFromJsonAsync<ChatMessagePageResponse>();
++        var secondPage = await secondPageResponse.Content.ReadFromJsonAsync<ChatMessagePageResponse>();
++        Assert.NotNull(firstPage);
++        Assert.NotNull(secondPage);
++        Assert.Equal(4, firstPage!.TotalCount);
++        Assert.Equal(4, secondPage!.TotalCount);
++        Assert.Equal(2, firstPage.Items.Count);
++        Assert.Equal(2, secondPage.Items.Count);
++        Assert.Equal(new[] { messageIds[2], messageIds[3] }, firstPage.Items.Select(x => x.Id));
++        Assert.Equal(new[] { messageIds[0], messageIds[1] }, secondPage.Items.Select(x => x.Id));
++        Assert.Empty(firstPage.Items.Select(x => x.Id).Intersect(secondPage.Items.Select(x => x.Id)));
++    }
++
++    [Fact]
++    public async Task Getting_direct_agent_messages_clamps_page_size()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var getResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages?take=1000");
++        var page = await getResponse.Content.ReadFromJsonAsync<ChatMessagePageResponse>();
++
++        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
++        Assert.NotNull(page);
++        Assert.Equal(200, page!.Take);
++    }
++
++    [Fact]
+     public async Task System_messages_can_be_persisted_without_sender_id()
+     {
+         var seed = await SeedDirectChatAsync(AgentStatus.Active);
+@@ -417,6 +530,9 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
+         Assert.NotEqual(default, persisted.CreatedUtc);
+     }
+ 
++    private static void SetCreatedUtc(Message message, DateTime createdUtc) =>
++        typeof(Message).GetProperty(nameof(Message.CreatedUtc))!.SetValue(message, createdUtc);
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -591,6 +707,14 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
+         public DateTime UpdatedAt { get; set; }
+     }
+ 
++    private sealed class DirectConversationPageResponse
++    {
++        public List<DirectConversationResponse> Items { get; set; } = [];
++        public int TotalCount { get; set; }
++        public int Skip { get; set; }
++        public int Take { get; set; }
++    }
++
+     private sealed class ChatMessageResponse
+     {
+         public Guid Id { get; set; }
+END_OF_PATCH

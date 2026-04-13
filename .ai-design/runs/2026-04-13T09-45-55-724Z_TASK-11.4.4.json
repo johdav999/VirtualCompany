@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.4.4",
+  "promptPath": ".ai-design/prompts/TASK-11.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T09:45:55.724Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T09-45-55-724Z_TASK-11.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T09-45-55-724Z_TASK-11.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T09:50:15.371Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " \"Operations view.\" }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Delegation chain contains a repeated agent\", body);\n+    }\n+\n+    [Fact]\n+    public async Task Worker_subtask_cannot_create_unplanned_child_subtask()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var parent = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations\", new\n+        {\n+            objective = \"Prepare a bounded answer.\",\n+            coordinatorAgentId = seed.CoordinatorAgentId,\n+            initiatingActorId = seed.UserId,\n+            initiatingActorType = \"user\",\n+            correlationId = \"mw-collaboration-unplanned-child\",\n+            workers = new[]\n+            {\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance view.\" }\n+            }\n+        });\n+        var payload = await parent.Content.ReadFromJsonAsync<MultiAgentCollaborationResponse>();\n+        Assert.NotNull(payload);\n+        var workerTaskId = Assert.Single(payload!.Steps).SubtaskId!.Value;\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/{workerTaskId}/subtasks\", new\n+        {\n+            type = \"manager_worker_collaboration\",\n+            title = \"Unplanned nested collaboration\",\n+            description = \"This should be denied.\",\n+            assignedAgentId = seed.OperationsAgentId\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Worker subtasks cannot create additional subtasks outside an approved manager-worker plan.\", body);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\n",
+  "stderrTail": " }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Delegation chain contains a repeated agent\", body);\n+    }\n+\n+    [Fact]\n+    public async Task Worker_subtask_cannot_create_unplanned_child_subtask()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var parent = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations\", new\n+        {\n+            objective = \"Prepare a bounded answer.\",\n+            coordinatorAgentId = seed.CoordinatorAgentId,\n+            initiatingActorId = seed.UserId,\n+            initiatingActorType = \"user\",\n+            correlationId = \"mw-collaboration-unplanned-child\",\n+            workers = new[]\n+            {\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance view.\" }\n+            }\n+        });\n+        var payload = await parent.Content.ReadFromJsonAsync<MultiAgentCollaborationResponse>();\n+        Assert.NotNull(payload);\n+        var workerTaskId = Assert.Single(payload!.Steps).SubtaskId!.Value;\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/{workerTaskId}/subtasks\", new\n+        {\n+            type = \"manager_worker_collaboration\",\n+            title = \"Unplanned nested collaboration\",\n+            description = \"This should be denied.\",\n+            assignedAgentId = seed.OperationsAgentId\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Worker subtasks cannot create additional subtasks outside an approved manager-worker plan.\", body);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\ntokens used\n79,006\n",
+  "verbosityMode": "summary"
+}

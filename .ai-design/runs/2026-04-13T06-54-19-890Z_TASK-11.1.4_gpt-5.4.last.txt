@@ -1,0 +1,801 @@
+diff --git a/src/VirtualCompany.Domain/Entities/ChatEntities.cs b/src/VirtualCompany.Domain/Entities/ChatEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/ChatEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/ChatEntities.cs
+@@ -58,6 +58,7 @@ public sealed class Conversation : ICompanyOwnedEntity
+     public Agent? Agent { get; private set; }
+     public ICollection<Message> Messages { get; } = new List<Message>();
++    public ICollection<ConversationTaskLink> TaskLinks { get; } = new List<ConversationTaskLink>();
+ 
+     public void Touch() => UpdatedUtc = DateTime.UtcNow;
+@@ -140,6 +141,7 @@ public sealed class Message : ICompanyOwnedEntity
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Conversation Conversation { get; private set; } = null!;
++    public ICollection<ConversationTaskLink> TaskLinks { get; } = new List<ConversationTaskLink>();
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+@@ -153,3 +155,77 @@ public sealed class Message : ICompanyOwnedEntity
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ }
++
++public sealed class ConversationTaskLink : ICompanyOwnedEntity
++{
++    private const int LinkTypeMaxLength = 64;
++
++    private ConversationTaskLink()
++    {
++    }
++
++    public ConversationTaskLink(
++        Guid id,
++        Guid companyId,
++        Guid conversationId,
++        Guid? messageId,
++        Guid taskId,
++        string linkType,
++        Guid createdByUserId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (conversationId == Guid.Empty)
++        {
++            throw new ArgumentException("ConversationId is required.", nameof(conversationId));
++        }
++
++        if (messageId == Guid.Empty)
++        {
++            throw new ArgumentException("MessageId cannot be empty.", nameof(messageId));
++        }
++
++        if (taskId == Guid.Empty)
++        {
++            throw new ArgumentException("TaskId is required.", nameof(taskId));
++        }
++
++        if (createdByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("CreatedByUserId is required.", nameof(createdByUserId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ConversationId = conversationId;
++        MessageId = messageId;
++        TaskId = taskId;
++        LinkType = NormalizeRequired(linkType, nameof(linkType), LinkTypeMaxLength);
++        CreatedByUserId = createdByUserId;
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ConversationId { get; private set; }
++    public Guid? MessageId { get; private set; }
++    public Guid TaskId { get; private set; }
++    public string LinkType { get; private set; } = null!;
++    public Guid CreatedByUserId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Conversation Conversation { get; private set; } = null!;
++    public Message? Message { get; private set; }
++    public WorkTask Task { get; private set; } = null!;
++    public User CreatedByUser { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -100,6 +100,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     public WorkTask? ParentTask { get; private set; }
+     public ICollection<WorkTask> Subtasks { get; } = new List<WorkTask>();
+     public WorkflowInstance? WorkflowInstance { get; private set; }
++    public ICollection<ConversationTaskLink> ConversationLinks { get; } = new List<ConversationTaskLink>();
+ 
+     public void SetDueDate(DateTime? dueUtc)
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -36,6 +36,7 @@ public static class AuditTargetTypes
+     public const string WorkTask = "work_task";
+     public const string LinkedEntity = "linked_entity";
++    public const string ConversationTaskLink = "conversation_task_link";
+     public const string WorkflowException = "workflow_exception";
+     public const string ExecutionException = "execution_exception";
+ }
+@@ -69,4 +70,6 @@ public static class AuditEventActions
+     public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
+     public const string ExecutionExceptionCreated = "execution.exception.created";
++    public const string DirectChatTaskCreated = "direct_chat.task.created";
++    public const string DirectChatTaskLinked = "direct_chat.task.linked";
+ }
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -19,12 +19,26 @@ public sealed record SendDirectAgentMessageCommand(string Body);
+ public sealed record CreateTaskFromChatCommand(
+     Guid? SourceMessageId,
+     string? Title,
+     string? Description,
+-    string? Priority);
++    string? Priority,
++    DateTime? DueAt = null,
++    Guid? AssignedAgentId = null);
++
++public sealed record LinkConversationToTaskCommand(
++    Guid TaskId,
++    Guid? SourceMessageId);
++
++public sealed record GetConversationRelatedTasksQuery(int? Skip, int? Take);
+@@ -54,10 +68,30 @@ public sealed record CreateTaskFromChatResultDto(
+     Guid TaskId,
+     Guid ConversationId,
+-    Guid? SourceMessageId);
++    Guid? SourceMessageId,
++    Guid LinkId);
++
++public sealed record LinkConversationToTaskResultDto(
++    Guid LinkId,
++    Guid TaskId,
++    Guid ConversationId,
++    Guid? SourceMessageId,
++    bool Created);
++
++public sealed record ConversationRelatedTaskDto(
++    Guid TaskId,
++    string Title,
++    string Status,
++    string Priority,
++    Guid? AssignedAgentId,
++    string? AssignedAgentDisplayName,
++    string LinkType,
++    Guid? SourceMessageId,
++    DateTime LinkedAt);
++
++public sealed record ConversationRelatedTaskListDto(
++    IReadOnlyList<ConversationRelatedTaskDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
+@@ -77,6 +111,8 @@ public interface ICompanyDirectChatService
+     Task<ChatMessagePageDto> GetMessagesAsync(Guid companyId, Guid conversationId, GetConversationMessagesQuery query, CancellationToken cancellationToken);
+     Task<SendDirectAgentMessageResultDto> SendMessageAsync(Guid companyId, Guid conversationId, SendDirectAgentMessageCommand command, CancellationToken cancellationToken);
+     Task<CreateTaskFromChatResultDto> CreateTaskFromChatAsync(Guid companyId, Guid conversationId, CreateTaskFromChatCommand command, CancellationToken cancellationToken);
++    Task<LinkConversationToTaskResultDto> LinkConversationToTaskAsync(Guid companyId, Guid conversationId, LinkConversationToTaskCommand command, CancellationToken cancellationToken);
++    Task<ConversationRelatedTaskListDto> GetRelatedTasksAsync(Guid companyId, Guid conversationId, GetConversationRelatedTasksQuery query, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -35,6 +35,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<Conversation> Conversations => Set<Conversation>();
+     public DbSet<Message> Messages => Set<Message>();
++    public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+@@ -77,6 +78,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<Message>()
+             .HasQueryFilter(message =>
+                 CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ConversationTaskLink>()
++            .HasQueryFilter(link =>
++                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -956,6 +956,11 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+             .WithMany(x => x.Tasks)
+             .HasForeignKey(x => x.WorkflowInstanceId)
+             .OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.ConversationLinks)
++            .WithOne(x => x.Task)
++            .HasForeignKey(x => x.TaskId)
++            .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+@@ -996,6 +1001,11 @@ internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conver
+             .WithMany()
+             .HasForeignKey(x => x.AgentId)
+             .OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.TaskLinks)
++            .WithOne(x => x.Conversation)
++            .HasForeignKey(x => x.ConversationId)
++            .OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+@@ -1029,6 +1039,54 @@ internal sealed class MessageConfiguration : IEntityTypeConfiguration<Message>
+             .WithMany(x => x.Messages)
+             .HasForeignKey(x => x.ConversationId)
+             .OnDelete(DeleteBehavior.Cascade);
++        builder.HasMany(x => x.TaskLinks)
++            .WithOne(x => x.Message)
++            .HasForeignKey(x => x.MessageId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class ConversationTaskLinkConfiguration : IEntityTypeConfiguration<ConversationTaskLink>
++{
++    public void Configure(EntityTypeBuilder<ConversationTaskLink> builder)
++    {
++        builder.ToTable("conversation_task_links");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConversationId).HasColumnName("conversation_id").IsRequired();
++        builder.Property(x => x.MessageId).HasColumnName("message_id");
++        builder.Property(x => x.TaskId).HasColumnName("task_id").IsRequired();
++        builder.Property(x => x.LinkType).HasColumnName("link_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConversationId });
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.ConversationId, x.TaskId, x.MessageId }).IsUnique();
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Conversation)
++            .WithMany(x => x.TaskLinks)
++            .HasForeignKey(x => x.ConversationId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Message)
++            .WithMany(x => x.TaskLinks)
++            .HasForeignKey(x => x.MessageId)
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Task)
++            .WithMany(x => x.ConversationLinks)
++            .HasForeignKey(x => x.TaskId)
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.CreatedByUser)
++            .WithMany()
++            .HasForeignKey(x => x.CreatedByUserId)
++            .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -2,6 +2,7 @@ using System.Text;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Chat;
+ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Tasks;
+@@ -20,6 +21,7 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IDirectAgentChatOrchestrator _orchestrator;
+     private readonly ICompanyTaskCommandService _taskCommandService;
++    private readonly IAuditEventWriter _auditEventWriter;
+ 
+     public CompanyDirectChatService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IDirectAgentChatOrchestrator orchestrator,
+-        ICompanyTaskCommandService taskCommandService)
++        ICompanyTaskCommandService taskCommandService,
++        IAuditEventWriter auditEventWriter)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _orchestrator = orchestrator;
+         _taskCommandService = taskCommandService;
++        _auditEventWriter = auditEventWriter;
+     }
+@@ -143,7 +145,7 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         CreateTaskFromChatCommand command,
+         CancellationToken cancellationToken)
+     {
+-        await RequireMembershipAsync(companyId, cancellationToken);
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
+ 
+         if (conversation.AgentId is not Guid agentId)
+@@ -189,12 +191,141 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+                 title,
+                 description,
+                 string.IsNullOrWhiteSpace(command.Priority) ? "normal" : command.Priority,
+-                null,
+-                agentId,
++                command.DueAt,
++                command.AssignedAgentId ?? agentId,
+                 payload,
+                 RationaleSummary: "Created explicitly from a direct agent chat interaction."),
+             cancellationToken);
+ 
+-        return new CreateTaskFromChatResultDto(task.Id, conversation.Id, sourceMessage?.Id);
++        var linkType = sourceMessage is null ? "created_from_conversation" : "created_from_message";
++        var link = await UpsertConversationTaskLinkAsync(
++            companyId,
++            conversation.Id,
++            sourceMessage?.Id,
++            task.Id,
++            linkType,
++            membership.UserId,
++            cancellationToken);
++
++        _dbContext.Messages.Add(new Message(
++            Guid.NewGuid(),
++            companyId,
++            conversation.Id,
++            ChatSenderTypes.System,
++            null,
++            ChatMessageTypes.Text,
++            $"Task '{title}' was created from this conversation."));
++        conversation.Touch();
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.DirectChatTaskCreated,
++                AuditTargetTypes.ConversationTaskLink,
++                link.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                "Created a task from an explicit direct chat action.",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["conversation_id"] = conversation.Id.ToString("N"),
++                    ["message_id"] = sourceMessage?.Id.ToString("N"),
++                    ["task_id"] = task.Id.ToString("N")
++                }),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new CreateTaskFromChatResultDto(task.Id, conversation.Id, sourceMessage?.Id, link.Id);
++    }
++
++    public async Task<LinkConversationToTaskResultDto> LinkConversationToTaskAsync(
++        Guid companyId,
++        Guid conversationId,
++        LinkConversationToTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (command.TaskId == Guid.Empty)
++        {
++            throw new DirectChatValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [nameof(command.TaskId)] = ["TaskId is required."]
++                });
++        }
++
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var conversation = await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
++        var sourceMessage = await GetOptionalSourceMessageAsync(companyId, conversationId, command.SourceMessageId, cancellationToken);
++        var task = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == command.TaskId, cancellationToken);
++
++        if (task is null)
++        {
++            throw new KeyNotFoundException("Task not found.");
++        }
++
++        var existing = await _dbContext.ConversationTaskLinks
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.TaskId == command.TaskId &&
++                x.MessageId == command.SourceMessageId,
++                cancellationToken);
++
++        if (existing is not null)
++        {
++            return new LinkConversationToTaskResultDto(existing.Id, command.TaskId, conversationId, command.SourceMessageId, false);
++        }
++
++        var linkType = sourceMessage is null ? "linked_from_conversation" : "linked_from_message";
++        var link = await UpsertConversationTaskLinkAsync(
++            companyId,
++            conversation.Id,
++            sourceMessage?.Id,
++            task.Id,
++            linkType,
++            membership.UserId,
++            cancellationToken);
++
++        _dbContext.Messages.Add(new Message(
++            Guid.NewGuid(),
++            companyId,
++            conversation.Id,
++            ChatSenderTypes.System,
++            null,
++            ChatMessageTypes.Text,
++            $"Linked this conversation to task '{task.Title}'."));
++        conversation.Touch();
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.User,
++                membership.UserId,
++                AuditEventActions.DirectChatTaskLinked,
++                AuditTargetTypes.ConversationTaskLink,
++                link.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                "Linked a task from an explicit direct chat action.",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["conversation_id"] = conversation.Id.ToString("N"),
++                    ["message_id"] = sourceMessage?.Id.ToString("N"),
++                    ["task_id"] = task.Id.ToString("N")
++                }),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new LinkConversationToTaskResultDto(link.Id, task.Id, conversation.Id, sourceMessage?.Id, true);
++    }
++
++    public async Task<ConversationRelatedTaskListDto> GetRelatedTasksAsync(
++        Guid companyId,
++        Guid conversationId,
++        GetConversationRelatedTasksQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        await GetAccessibleConversationAsync(companyId, conversationId, cancellationToken);
++
++        var skip = Math.Max(0, query.Skip ?? 0);
++        var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
++        var linksQuery = _dbContext.ConversationTaskLinks
++            .AsNoTracking()
++            .Include(x => x.Task)
++            .ThenInclude(x => x.AssignedAgent)
++            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId);
++
++        var totalCount = await linksQuery.CountAsync(cancellationToken);
++        var links = await linksQuery
++            .OrderByDescending(x => x.CreatedUtc)
++            .Skip(skip)
++            .Take(take)
++            .ToListAsync(cancellationToken);
++
++        return new ConversationRelatedTaskListDto(
++            links.Select(x => new ConversationRelatedTaskDto(
++                x.TaskId,
++                x.Task.Title,
++                x.Task.Status.ToStorageValue(),
++                x.Task.Priority.ToStorageValue(),
++                x.Task.AssignedAgentId,
++                x.Task.AssignedAgent?.DisplayName,
++                x.LinkType,
++                x.MessageId,
++                x.CreatedUtc)).ToList(),
++            totalCount,
++            skip,
++            take);
+     }
+@@ -203,6 +334,50 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         Guid companyId,
+         Guid conversationId,
+         CancellationToken cancellationToken)
+@@ -217,6 +392,51 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         return conversation ?? throw new KeyNotFoundException("Conversation not found.");
+     }
++
++    private async Task<Message?> GetOptionalSourceMessageAsync(
++        Guid companyId,
++        Guid conversationId,
++        Guid? sourceMessageId,
++        CancellationToken cancellationToken)
++    {
++        if (sourceMessageId is null)
++        {
++            return null;
++        }
++
++        var sourceMessage = await _dbContext.Messages
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.Id == sourceMessageId,
++                cancellationToken);
++
++        return sourceMessage ?? throw new KeyNotFoundException("Source message not found.");
++    }
++
++    private async Task<ConversationTaskLink> UpsertConversationTaskLinkAsync(
++        Guid companyId,
++        Guid conversationId,
++        Guid? messageId,
++        Guid taskId,
++        string linkType,
++        Guid createdByUserId,
++        CancellationToken cancellationToken)
++    {
++        var existing = await _dbContext.ConversationTaskLinks
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.ConversationId == conversationId &&
++                x.TaskId == taskId &&
++                x.MessageId == messageId,
++                cancellationToken);
++
++        if (existing is not null)
++        {
++            return existing;
++        }
++
++        var link = new ConversationTaskLink(Guid.NewGuid(), companyId, conversationId, messageId, taskId, linkType, createdByUserId);
++        _dbContext.ConversationTaskLinks.Add(link);
++        return link;
++    }
+ 
+     private async Task<Agent> GetChatAgentAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Api/Controllers/DirectChatController.cs b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/DirectChatController.cs
++++ b/src/VirtualCompany.Api/Controllers/DirectChatController.cs
+@@ -104,6 +104,68 @@ public sealed class DirectChatController : ControllerBase
+         }
+     }
++
++    [HttpPost("conversations/{conversationId:guid}/task-links")]
++    public async Task<ActionResult<LinkConversationToTaskResultDto>> LinkConversationToTaskAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromBody] LinkConversationToTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.LinkConversationToTaskAsync(companyId, conversationId, command, cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (TaskValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("conversations/{conversationId:guid}/tasks")]
++    public async Task<ActionResult<ConversationRelatedTaskListDto>> GetConversationTasksAsync(
++        Guid companyId,
++        Guid conversationId,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _directChatService.GetRelatedTasksAsync(companyId, conversationId, new GetConversationRelatedTasksQuery(skip, take), cancellationToken));
++        }
++        catch (DirectChatValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
+ 
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413123000_AddConversationTaskLinks.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413123000_AddConversationTaskLinks.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413123000_AddConversationTaskLinks.cs
+@@ -0,0 +1,126 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413123000_AddConversationTaskLinks")]
++public partial class AddConversationTaskLinks : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var linkTypeColumn = isPostgres ? "character varying(64)" : "nvarchar(64)";
++
++        migrationBuilder.CreateTable(
++            name: "conversation_task_links",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                conversation_id = table.Column<Guid>(type: guidType, nullable: false),
++                message_id = table.Column<Guid>(type: guidType, nullable: true),
++                task_id = table.Column<Guid>(type: guidType, nullable: false),
++                link_type = table.Column<string>(type: linkTypeColumn, maxLength: 64, nullable: false),
++                created_by_user_id = table.Column<Guid>(type: guidType, nullable: false),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_conversation_task_links", x => x.id);
++                table.ForeignKey(
++                    name: "FK_conversation_task_links_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_conversation_task_links_conversations_conversation_id",
++                    column: x => x.conversation_id,
++                    principalTable: "conversations",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_conversation_task_links_messages_message_id",
++                    column: x => x.message_id,
++                    principalTable: "messages",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_conversation_task_links_tasks_task_id",
++                    column: x => x.task_id,
++                    principalTable: "tasks",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_conversation_task_links_users_created_by_user_id",
++                    column: x => x.created_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_company_id_conversation_id",
++            table: "conversation_task_links",
++            columns: new[] { "company_id", "conversation_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_company_id_conversation_id_task_id_message_id",
++            table: "conversation_task_links",
++            columns: new[] { "company_id", "conversation_id", "task_id", "message_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_company_id_task_id",
++            table: "conversation_task_links",
++            columns: new[] { "company_id", "task_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_conversation_id",
++            table: "conversation_task_links",
++            column: "conversation_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_created_by_user_id",
++            table: "conversation_task_links",
++            column: "created_by_user_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_message_id",
++            table: "conversation_task_links",
++            column: "message_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversation_task_links_task_id",
++            table: "conversation_task_links",
++            column: "task_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "conversation_task_links");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
++++ b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+@@ -42,6 +42,23 @@ public sealed class DirectChatApiClient
+                 new CreateTaskFromChatRequest { SourceMessageId = sourceMessageId, Title = title },
+                 cancellationToken);
++
++    public Task<LinkConversationToTaskResultViewModel> LinkConversationToTaskAsync(Guid companyId, Guid conversationId, Guid taskId, Guid? sourceMessageId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : SendAsync<LinkConversationToTaskResultViewModel>(
++                HttpMethod.Post,
++                $"api/companies/{companyId}/conversations/{conversationId}/task-links",
++                new LinkConversationToTaskRequest { TaskId = taskId, SourceMessageId = sourceMessageId },
++                cancellationToken);
++
++    public Task<ConversationRelatedTaskListViewModel> GetRelatedTasksAsync(Guid companyId, Guid conversationId, int skip = 0, int take = 25, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? throw new OnboardingApiException("Direct chat requires the backend API.")
++            : GetAsync<ConversationRelatedTaskListViewModel>($"api/companies/{companyId}/conversations/{conversationId}/tasks?skip={skip}&take={take}", cancellationToken);
+ 
+     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
+@@ -181,3 +198,44 @@ public sealed class CreateTaskFromChatResultViewModel
+     public Guid ConversationId { get; set; }
+     public Guid? SourceMessageId { get; set; }
++    public Guid LinkId { get; set; }
++}
++
++public sealed class LinkConversationToTaskRequest
++{
++    public Guid TaskId { get; set; }
++    public Guid? SourceMessageId { get; set; }
++}
++
++public sealed class LinkConversationToTaskResultViewModel
++{
++    public Guid LinkId { get; set; }
++    public Guid TaskId { get; set; }
++    public Guid ConversationId { get; set; }
++    public Guid? SourceMessageId { get; set; }
++    public bool Created { get; set; }
++}
++
++public sealed class ConversationRelatedTaskViewModel
++{
++    public Guid TaskId { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public Guid? AssignedAgentId { get; set; }
++    public string? AssignedAgentDisplayName { get; set; }
++    public string LinkType { get; set; } = string.Empty;
++    public Guid? SourceMessageId { get; set; }
++    public DateTime LinkedAt { get; set; }
++}
++
++public sealed class ConversationRelatedTaskListViewModel
++{
++    public List<ConversationRelatedTaskViewModel> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
+ }
+END_OF_PATCH

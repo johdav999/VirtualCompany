@@ -86,6 +86,8 @@ using (var scope = app.Services.CreateScope())
             await dbContext.Database.MigrateAsync();
             await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
             await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
+            await EnsureSqlServerDirectChatSchemaAsync(dbContext);
+            await EnsureSqlServerAuditEventSchemaAsync(dbContext);
         }
         else
         {
@@ -171,31 +173,42 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                 """);
         }
 
-        if (!await SqlServerTableExistsAsync(connection, "tool_execution_attempts"))
+        var hasToolExecutions = await SqlServerTableExistsAsync(connection, "tool_executions");
+        var hasLegacyToolExecutionAttempts = await SqlServerTableExistsAsync(connection, "tool_execution_attempts");
+        if (!hasToolExecutions && !hasLegacyToolExecutionAttempts)
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 """
-                CREATE TABLE [tool_execution_attempts] (
-                    [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_tool_execution_attempts] PRIMARY KEY,
-                    [CompanyId] uniqueidentifier NOT NULL,
-                    [AgentId] uniqueidentifier NOT NULL,
-                    [ToolName] nvarchar(100) NOT NULL,
-                    [ActionType] nvarchar(32) NOT NULL,
-                    [Scope] nvarchar(100) NULL,
-                    [Status] nvarchar(32) NOT NULL,
-                    [ApprovalRequestId] uniqueidentifier NULL,
-                    [request_payload_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_execution_attempts_request_payload_json] DEFAULT (N'{{}}'),
-                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_execution_attempts_policy_decision_json] DEFAULT (N'{{}}'),
-                    [result_payload_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_execution_attempts_result_payload_json] DEFAULT (N'{{}}'),
-                    [CreatedUtc] datetime2 NOT NULL,
-                    [UpdatedUtc] datetime2 NOT NULL,
-                    [ExecutedUtc] datetime2 NULL,
-                    CONSTRAINT [FK_tool_execution_attempts_companies_CompanyId] FOREIGN KEY ([CompanyId]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+                CREATE TABLE [tool_executions] (
+                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_tool_executions] PRIMARY KEY,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [agent_id] uniqueidentifier NOT NULL,
+                    [tool_name] nvarchar(100) NOT NULL,
+                    [task_id] uniqueidentifier NULL,
+                    [workflow_instance_id] uniqueidentifier NULL,
+                    [correlation_id] nvarchar(128) NULL,
+                    [action_type] nvarchar(32) NOT NULL,
+                    [scope] nvarchar(100) NULL,
+                    [status] nvarchar(32) NOT NULL,
+                    [approval_request_id] uniqueidentifier NULL,
+                    [request_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_request_json] DEFAULT (N'{}'),
+                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_policy_decision_json] DEFAULT (N'{}'),
+                    [response_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_response_json] DEFAULT (N'{}'),
+                    [started_at] datetime2 NOT NULL,
+                    [completed_at] datetime2 NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    [executed_at] datetime2 NULL,
+                    CONSTRAINT [FK_tool_executions_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
                 );
                 """);
 
-            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_execution_attempts_CompanyId_AgentId_CreatedUtc] ON [tool_execution_attempts] ([CompanyId], [AgentId], [CreatedUtc]);""");
-            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_execution_attempts_CompanyId_Status_CreatedUtc] ON [tool_execution_attempts] ([CompanyId], [Status], [CreatedUtc]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_agent_id_started_at] ON [tool_executions] ([company_id], [agent_id], [started_at]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_status_started_at] ON [tool_executions] ([company_id], [status], [started_at]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_correlation_id] ON [tool_executions] ([company_id], [correlation_id]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_task_id] ON [tool_executions] ([company_id], [task_id]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_workflow_instance_id] ON [tool_executions] ([company_id], [workflow_instance_id]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_tool_executions_company_id_started_at] ON [tool_executions] ([company_id], [started_at]);""");
         }
 
         if (!await SqlServerTableExistsAsync(connection, "approval_requests"))
@@ -508,6 +521,253 @@ static async Task EnsureSqlServerKnowledgeSchemaAsync(VirtualCompanyDbContext db
         await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_knowledge_chunks_CompanyId_IsActive_DocumentId] ON [knowledge_chunks] ([CompanyId], [IsActive], [DocumentId]);""");
         await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_knowledge_chunks_CompanyId_DocumentId_ChunkSetVersion_IsActive] ON [knowledge_chunks] ([CompanyId], [DocumentId], [ChunkSetVersion], [IsActive]);""");
         await dbContext.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX [IX_knowledge_chunks_DocumentId_ChunkSetVersion_ChunkIndex] ON [knowledge_chunks] ([DocumentId], [ChunkSetVersion], [ChunkIndex]);""");
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
+}
+
+static async Task EnsureSqlServerDirectChatSchemaAsync(VirtualCompanyDbContext dbContext)
+{
+    var providerName = dbContext.Database.ProviderName;
+    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (!await SqlServerTableExistsAsync(connection, "conversations"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [conversations] (
+                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_conversations] PRIMARY KEY,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [channel_type] nvarchar(64) NOT NULL,
+                    [subject] nvarchar(200) NULL,
+                    [created_by_user_id] uniqueidentifier NOT NULL,
+                    [agent_id] uniqueidentifier NULL,
+                    [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_conversations_metadata_json] DEFAULT (N'{}'),
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    CONSTRAINT [FK_conversations_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                    CONSTRAINT [FK_conversations_users_created_by_user_id] FOREIGN KEY ([created_by_user_id]) REFERENCES [users] ([Id]),
+                    CONSTRAINT [FK_conversations_agents_agent_id] FOREIGN KEY ([agent_id]) REFERENCES [agents] ([Id])
+                );
+                """);
+
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX [IX_conversations_company_id_channel_type_created_by_user_id_agent_id] ON [conversations] ([company_id], [channel_type], [created_by_user_id], [agent_id]) WHERE [agent_id] IS NOT NULL;""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_conversations_company_id_updated_at] ON [conversations] ([company_id], [updated_at]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_conversations_company_id_agent_id] ON [conversations] ([company_id], [agent_id]);""");
+        }
+
+        if (!await SqlServerTableExistsAsync(connection, "messages"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [messages] (
+                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_messages] PRIMARY KEY,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [conversation_id] uniqueidentifier NOT NULL,
+                    [sender_type] nvarchar(64) NOT NULL,
+                    [sender_id] uniqueidentifier NULL,
+                    [message_type] nvarchar(64) NOT NULL,
+                    [body] nvarchar(max) NOT NULL,
+                    [structured_payload] nvarchar(max) NOT NULL CONSTRAINT [DF_messages_structured_payload] DEFAULT (N'{}'),
+                    [created_at] datetime2 NOT NULL,
+                    CONSTRAINT [FK_messages_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                    CONSTRAINT [FK_messages_conversations_conversation_id] FOREIGN KEY ([conversation_id]) REFERENCES [conversations] ([id]) ON DELETE CASCADE
+                );
+                """);
+
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_messages_company_id_conversation_id] ON [messages] ([company_id], [conversation_id]);""");
+            await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_messages_conversation_id_created_at] ON [messages] ([conversation_id], [created_at]);""");
+        }
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
+}
+
+static async Task EnsureSqlServerAuditEventSchemaAsync(VirtualCompanyDbContext dbContext)
+{
+    var providerName = dbContext.Database.ProviderName;
+    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (!await SqlServerTableExistsAsync(connection, "audit_events"))
+        {
+            return;
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "data_sources_used_json"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [audit_events]
+                ADD [data_sources_used_json] nvarchar(max) NOT NULL
+                    CONSTRAINT [DF_audit_events_data_sources_used_json_startup] DEFAULT (N'[]');
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "RelatedAgentId"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [audit_events] ADD [RelatedAgentId] uniqueidentifier NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "RelatedTaskId"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [audit_events] ADD [RelatedTaskId] uniqueidentifier NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "RelatedWorkflowInstanceId"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [audit_events] ADD [RelatedWorkflowInstanceId] uniqueidentifier NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "RelatedApprovalRequestId"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [audit_events] ADD [RelatedApprovalRequestId] uniqueidentifier NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "audit_events", "RelatedToolExecutionAttemptId"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [audit_events] ADD [RelatedToolExecutionAttemptId] uniqueidentifier NULL;""");
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [audit_events]
+            SET [RelatedAgentId] = COALESCE(
+                [RelatedAgentId],
+                CASE WHEN [ActorType] = N'agent' THEN [ActorId] ELSE NULL END,
+                CASE WHEN [TargetType] = N'agent' THEN TRY_CONVERT(uniqueidentifier, [TargetId]) ELSE NULL END,
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.agentId')))
+            WHERE [RelatedAgentId] IS NULL;
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [audit_events]
+            SET [RelatedTaskId] = COALESCE(
+                [RelatedTaskId],
+                CASE WHEN [TargetType] = N'work_task' THEN TRY_CONVERT(uniqueidentifier, [TargetId]) ELSE NULL END,
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.taskId')),
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.workTaskId')))
+            WHERE [RelatedTaskId] IS NULL;
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [audit_events]
+            SET [RelatedWorkflowInstanceId] = COALESCE(
+                [RelatedWorkflowInstanceId],
+                CASE WHEN [TargetType] = N'workflow_instance' THEN TRY_CONVERT(uniqueidentifier, [TargetId]) ELSE NULL END,
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.workflowInstanceId')))
+            WHERE [RelatedWorkflowInstanceId] IS NULL;
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [audit_events]
+            SET [RelatedApprovalRequestId] = COALESCE(
+                [RelatedApprovalRequestId],
+                CASE WHEN [TargetType] = N'approval_request' THEN TRY_CONVERT(uniqueidentifier, [TargetId]) ELSE NULL END,
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.approvalRequestId')))
+            WHERE [RelatedApprovalRequestId] IS NULL;
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [audit_events]
+            SET [RelatedToolExecutionAttemptId] = COALESCE(
+                [RelatedToolExecutionAttemptId],
+                CASE WHEN [TargetType] = N'agent_tool_execution' THEN TRY_CONVERT(uniqueidentifier, [TargetId]) ELSE NULL END,
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.toolExecutionId')),
+                TRY_CONVERT(uniqueidentifier, JSON_VALUE([metadata_json], '$.toolExecutionAttemptId')))
+            WHERE [RelatedToolExecutionAttemptId] IS NULL;
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_ActorType_ActorId' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_ActorType_ActorId]
+                ON [audit_events] ([CompanyId], [ActorType], [ActorId]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_RelatedAgentId_OccurredUtc' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_RelatedAgentId_OccurredUtc]
+                ON [audit_events] ([CompanyId], [RelatedAgentId], [OccurredUtc]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_RelatedTaskId_OccurredUtc' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_RelatedTaskId_OccurredUtc]
+                ON [audit_events] ([CompanyId], [RelatedTaskId], [OccurredUtc]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_RelatedWorkflowInstanceId_OccurredUtc' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_RelatedWorkflowInstanceId_OccurredUtc]
+                ON [audit_events] ([CompanyId], [RelatedWorkflowInstanceId], [OccurredUtc]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_RelatedApprovalRequestId_OccurredUtc' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_RelatedApprovalRequestId_OccurredUtc]
+                ON [audit_events] ([CompanyId], [RelatedApprovalRequestId], [OccurredUtc]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_CompanyId_RelatedToolExecutionAttemptId_OccurredUtc' AND object_id = OBJECT_ID(N'[audit_events]'))
+            BEGIN
+                CREATE INDEX [IX_audit_events_CompanyId_RelatedToolExecutionAttemptId_OccurredUtc]
+                ON [audit_events] ([CompanyId], [RelatedToolExecutionAttemptId], [OccurredUtc]);
+            END
+            """);
     }
     finally
     {

@@ -1,0 +1,271 @@
+@page "/tasks"
+@rendermode InteractiveServer
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@inject OnboardingApiClient OnboardingApiClient
+@inject TaskApiClient TaskApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Tasks</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Tasks</h1>
+        <p class="text-body-secondary mb-0">Loading tenant-scoped tasks...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="wizard-card">
+            <h1>Select a company</h1>
+            <p class="text-body-secondary">Choose the company where you want to review tasks.</p>
+
+            @if (activeMemberships.Count == 0)
+            {
+                <p class="mb-0">No active company memberships are available yet.</p>
+            }
+            else
+            {
+                <div class="template-grid">
+                    @foreach (var membership in activeMemberships)
+                    {
+                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null)">
+                            <strong>@membership.CompanyName</strong>
+                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Task review</span>
+                <h1>@(companyAccess?.CompanyName ?? "Tasks")</h1>
+                <p class="text-body-secondary mb-0">Open work, blocked execution, and dashboard-linked task details are scoped to this company.</p>
+
+                <form class="agent-filter-bar mt-4" method="get">
+                    <input type="hidden" name="companyId" value="@CompanyId" />
+                    @if (TaskId is Guid taskId)
+                    {
+                        <input type="hidden" name="taskId" value="@taskId" />
+                    }
+                    <div>
+                        <label class="form-label" for="task-status-filter">Status</label>
+                        <select id="task-status-filter" class="form-select" name="status">
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All tasks</option>
+                            @foreach (var status in SupportedStatuses)
+                            {
+                                <option value="@status" selected="@IsSelected(Status, status)">@ToDisplayText(status)</option>
+                            }
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label" for="agent-filter">Assigned agent id</label>
+                        <input id="agent-filter" class="form-control" name="assignedAgentId" value="@AssignedAgentId" />
+                    </div>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="submit">Apply filters</button>
+                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null)">Clear</a>
+                    </div>
+                </form>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+
+                @if (tasks.Count == 0)
+                {
+                    <p class="text-body-secondary mt-4 mb-0">No tasks match the selected filters.</p>
+                }
+                else
+                {
+                    <div class="list-group mt-4">
+                        @foreach (var task in tasks)
+                        {
+                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id)">
+                                <div class="d-flex w-100 justify-content-between gap-3">
+                                    <div>
+                                        <strong>@task.Title</strong>
+                                        <div class="text-body-secondary small mt-1">@task.Type | @task.Priority</div>
+                                        <div class="small mt-2">@FormatAssignment(task.AssignedAgent)</div>
+                                    </div>
+                                    <span class="badge @GetStatusBadge(task.Status) align-self-start">@ToDisplayText(task.Status)</span>
+                                </div>
+                            </a>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                @if (selectedTask is null)
+                {
+                    <h2 class="h5">Task detail</h2>
+                    <p class="text-body-secondary mb-0">Select a task to review its status, assignment, rationale, and workflow context.</p>
+                }
+                else
+                {
+                    <h2 class="h5">@selectedTask.Title</h2>
+                    <dl class="mb-4">
+                        <dt>Status</dt>
+                        <dd><span class="badge @GetStatusBadge(selectedTask.Status)">@ToDisplayText(selectedTask.Status)</span></dd>
+                        <dt>Priority</dt>
+                        <dd>@ToDisplayText(selectedTask.Priority)</dd>
+                        <dt>Assigned agent</dt>
+                        <dd>@FormatAssignment(selectedTask.AssignedAgent)</dd>
+                        <dt>Updated</dt>
+                        <dd>@selectedTask.UpdatedAt.ToLocalTime().ToString("g")</dd>
+                    </dl>
+
+                    @if (!string.IsNullOrWhiteSpace(selectedTask.Description))
+                    {
+                        <h3 class="h6">Description</h3>
+                        <p class="text-body-secondary">@selectedTask.Description</p>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(selectedTask.RationaleSummary))
+                    {
+                        <h3 class="h6">Rationale</h3>
+                        <p class="text-body-secondary">@selectedTask.RationaleSummary</p>
+                    }
+
+                    @if (selectedTask.WorkflowInstanceId is Guid workflowInstanceId)
+                    {
+                        <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={selectedTask.CompanyId}&workflowInstanceId={workflowInstanceId}")">Open workflow</a>
+                    }
+
+                    @if (selectedTask.Subtasks.Count > 0)
+                    {
+                        <h3 class="h6 mt-4">Subtasks</h3>
+                        <ul class="list-unstyled mb-0">
+                            @foreach (var subtask in selectedTask.Subtasks)
+                            {
+                                <li class="mb-2">
+                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id)">@subtask.Title</a>
+                                    <span class="text-body-secondary"> - @ToDisplayText(subtask.Status)</span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    private static readonly IReadOnlyList<string> SupportedStatuses =
+    [
+        "pending",
+        "in_progress",
+        "blocked",
+        "awaiting_approval",
+        "completed",
+        "failed",
+        "cancelled"
+    ];
+
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "taskId")]
+    public Guid? TaskId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? Status { get; set; }
+
+    [SupplyParameterFromQuery(Name = "assignedAgentId")]
+    public Guid? AssignedAgentId { get; set; }
+
+    private bool isLoading = true;
+    private string? errorMessage;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private List<TaskListItemViewModel> tasks = [];
+    private TaskDetailViewModel? selectedTask;
+
+    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        selectedTask = null;
+        tasks = [];
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId), replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                var result = await TaskApiClient.ListAsync(companyId, Status, AssignedAgentId);
+                tasks = result.Items.ToList();
+                selectedTask = TaskId is Guid taskId
+                    ? await TaskApiClient.GetAsync(companyId, taskId)
+                    : null;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            tasks = [];
+            selectedTask = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string GetTaskListItemClass(TaskListItemViewModel task) =>
+        selectedTask?.Id == task.Id
+            ? "list-group-item list-group-item-action active"
+            : "list-group-item list-group-item-action";
+
+    private static bool IsSelected(string? currentValue, string expectedValue) =>
+        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatAssignment(TaskAgentSummaryViewModel? agent) =>
+        agent is null ? "Unassigned" : $"{agent.DisplayName} ({ToDisplayText(agent.Status)})";
+
+    private static string ToDisplayText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+
+    private static string GetStatusBadge(string? status) =>
+        status?.Trim().ToLowerInvariant() switch
+        {
+            "blocked" or "failed" => "text-bg-danger",
+            "awaiting_approval" => "text-bg-warning",
+            "completed" => "text-bg-success",
+            "in_progress" => "text-bg-primary",
+            _ => "text-bg-secondary"
+        };
+
+    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId)
+    {
+        var query = new List<string> { $"companyId={companyId}" };
+        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
+        if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
+        if (taskId is Guid selectedTaskId) query.Add($"taskId={selectedTaskId}");
+        return $"/tasks?{string.Join("&", query)}";
+    }
+}

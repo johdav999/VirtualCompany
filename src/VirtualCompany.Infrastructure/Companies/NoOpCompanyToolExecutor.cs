@@ -1,23 +1,151 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
+// Adapter boundary: policy-enforced orchestration calls this executor, which then invokes typed application contracts.
 public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
 {
-    public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
+    private readonly ICompanyToolRegistry _toolRegistry;
+    private readonly IInternalCompanyToolContract _internalToolContract;
+
+    public NoOpCompanyToolExecutor(
+        ICompanyToolRegistry toolRegistry,
+        IInternalCompanyToolContract internalToolContract)
+    {
+        _toolRegistry = toolRegistry;
+        _internalToolContract = internalToolContract;
+    }
+
+    public async Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        var executionId = request.ExecutionId == Guid.Empty ? Guid.NewGuid() : request.ExecutionId;
+        if (!_toolRegistry.TryGetTool(request.ToolName, out var registration))
+        {
+            return CreateRegistryDeniedResult(request, executionId, "unregistered_tool", "The requested tool is not registered for trusted execution.");
+        }
+
+        if (!registration.Supports(request.ActionType, request.Scope))
+        {
+            return CreateRegistryDeniedResult(request, executionId, "unsupported_tool_action", "The requested tool action is not registered for trusted execution.");
+        }
+
+        var context = new InternalToolExecutionContext(
+            request.CompanyId,
+            request.AgentId,
+            executionId,
+            request.ActionType,
+            request.Scope,
+            request.TaskId,
+            request.WorkflowInstanceId,
+            request.CorrelationId);
+
+        var response = await _internalToolContract.ExecuteAsync(
+            new InternalToolExecutionRequest(request.ToolName, context, request.RequestPayload),
+            cancellationToken);
+
+        var payload = response.ToSafePayload();
+        var metadata = CloneNodes(response.Metadata);
+        metadata["contractSchemaVersion"] = JsonValue.Create(InternalToolExecutionResponse.SchemaVersion);
+        metadata["executionId"] = JsonValue.Create(executionId);
+
+        return response.Success
+            ? ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload, metadata)
+            : ToolExecutionResult.Failed(
+                request.ToolName,
+                request.ActionType,
+                response.Status,
+                string.IsNullOrWhiteSpace(response.ErrorCode) ? "internal_tool_failed" : response.ErrorCode,
+                response.UserSafeSummary,
+                payload,
+                metadata);
+    }
+
+    private static ToolExecutionResult CreateRegistryDeniedResult(
+        ToolExecutionRequest request,
+        Guid executionId,
+        string errorCode,
+        string userSafeSummary)
     {
         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["mode"] = JsonValue.Create("stub"),
+            ["schemaVersion"] = JsonValue.Create(ToolExecutionResult.SchemaVersion),
+            ["status"] = JsonValue.Create(ToolExecutionStatus.Denied.ToStorageValue()),
+            ["success"] = JsonValue.Create(false),
+            ["toolName"] = JsonValue.Create(request.ToolName),
+            ["actionType"] = JsonValue.Create(request.ActionType.ToStorageValue()),
+            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+            ["userSafeSummary"] = JsonValue.Create(userSafeSummary),
+            ["executionId"] = JsonValue.Create(executionId)
+        };
+
+        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["executionBoundary"] = JsonValue.Create("policy_enforced_tool_executor"),
+            ["registryDecision"] = JsonValue.Create("deny"),
+            ["registryReason"] = JsonValue.Create(errorCode),
+            ["modelOutputTrusted"] = JsonValue.Create(false),
+            ["executionId"] = JsonValue.Create(executionId)
+        };
+
+        return ToolExecutionResult.Failed(request.ToolName, request.ActionType, ToolExecutionStatus.Denied.ToStorageValue(), errorCode, userSafeSummary, payload, metadata);
+    }
+
+    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
+        nodes is null || nodes.Count == 0
+            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContract
+{
+    public Task<InternalToolExecutionResponse> ExecuteAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Context.CompanyId == Guid.Empty)
+        {
+            return Task.FromResult(InternalToolExecutionResponse.Failed(
+                "failed",
+                "company_context_required",
+                "Tool execution requires a company context."));
+        }
+
+        if (request.Context.AgentId == Guid.Empty)
+        {
+            return Task.FromResult(InternalToolExecutionResponse.Failed(
+                "failed",
+                "agent_context_required",
+                "Tool execution requires an agent context."));
+        }
+
+        if (request.Context.ExecutionId == Guid.Empty)
+        {
+            return Task.FromResult(InternalToolExecutionResponse.Failed(
+                "failed",
+                "execution_context_required",
+                "Tool execution requires an execution context."));
+        }
+
+        var data = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["mode"] = JsonValue.Create("contract_stub"),
             ["toolName"] = JsonValue.Create(request.ToolName),
             ["actionType"] = JsonValue.Create(request.ActionType),
             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+            ["companyId"] = JsonValue.Create(request.CompanyId),
+            ["agentId"] = JsonValue.Create(request.AgentId),
+            ["executionId"] = JsonValue.Create(request.ExecutionId),
             ["executedAtUtc"] = JsonValue.Create(DateTime.UtcNow)
         };
 
-        return Task.FromResult(new ToolExecutionResult(
-            $"Executed '{request.ToolName}' using the default infrastructure stub.",
-            payload));
+        return Task.FromResult(InternalToolExecutionResponse.Succeeded(
+            "Tool execution completed through the internal contract boundary.",
+            data,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["contractName"] = JsonValue.Create(nameof(NoOpInternalCompanyToolContract))
+            }));
     }
 }

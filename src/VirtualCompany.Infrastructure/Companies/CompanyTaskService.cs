@@ -2,7 +2,9 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Tasks;
+using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -22,15 +24,18 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAgentAssignmentGuard _agentAssignmentGuard;
+    private readonly IExecutiveCockpitDashboardCache _dashboardCache;
 
     public CompanyTaskService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
-        IAgentAssignmentGuard agentAssignmentGuard)
+        IAgentAssignmentGuard agentAssignmentGuard,
+        IExecutiveCockpitDashboardCache dashboardCache)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _agentAssignmentGuard = agentAssignmentGuard;
+        _dashboardCache = dashboardCache;
     }
 
     public async Task<TaskDetailDto> CreateTaskAsync(
@@ -51,9 +56,23 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
                 cancellationToken);
         }
 
-        if (command.ParentTaskId.HasValue)
+        var parentTask = command.ParentTaskId.HasValue
+            ? await GetParentTaskAsync(companyId, command.ParentTaskId.Value, cancellationToken)
+            : null;
+        var workflowInstanceId = command.WorkflowInstanceId ?? parentTask?.WorkflowInstanceId;
+        if (parentTask is not null &&
+            string.Equals(parentTask.Type, MultiAgentCollaborationTaskTypes.WorkerSubtask, StringComparison.OrdinalIgnoreCase))
         {
-            await EnsureParentTaskExistsAsync(companyId, command.ParentTaskId.Value, cancellationToken);
+            throw new TaskValidationException(
+                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [nameof(command.ParentTaskId)] = ["Worker subtasks cannot create additional subtasks outside an approved manager-worker plan."]
+                });
+        }
+
+        if (workflowInstanceId.HasValue)
+        {
+            await EnsureWorkflowInstanceExistsAsync(companyId, workflowInstanceId.Value, cancellationToken);
         }
 
         var task = new WorkTask(
@@ -68,14 +87,16 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             "user",
             membership.UserId,
             command.InputPayload,
-            command.WorkflowInstanceId,
+            workflowInstanceId,
             command.OutputPayload,
             command.RationaleSummary,
-            command.ConfidenceScore);
+            command.ConfidenceScore,
+            command.CorrelationId);
         task.SetDueDate(command.DueAt);
 
         _dbContext.WorkTasks.Add(task);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
     }
@@ -98,7 +119,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             command.WorkflowInstanceId,
             command.OutputPayload,
             command.RationaleSummary,
-            command.ConfidenceScore);
+            command.ConfidenceScore,
+            command.CorrelationId);
 
         return await CreateTaskAsync(companyId, createCommand, cancellationToken);
     }
@@ -128,6 +150,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             command.ConfidenceScore);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
     }
 
@@ -158,6 +181,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
 
         task.AssignTo(command.AssignedAgentId);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
     }
@@ -190,6 +214,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             .AsNoTracking()
             .Include(x => x.AssignedAgent)
             .Include(x => x.ParentTask)
+            .Include(x => x.Subtasks)
+                .ThenInclude(x => x.AssignedAgent)
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken);
 
         return task is null
@@ -260,21 +286,42 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         return membership ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
     }
 
-    private async Task EnsureParentTaskExistsAsync(
+    private async Task<WorkTask> GetParentTaskAsync(
         Guid companyId,
         Guid parentTaskId,
         CancellationToken cancellationToken)
     {
-        var exists = await _dbContext.WorkTasks
+        var parentTask = await _dbContext.WorkTasks
             .AsNoTracking()
-            .AnyAsync(x => x.CompanyId == companyId && x.Id == parentTaskId, cancellationToken);
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == parentTaskId, cancellationToken);
+
+        if (parentTask is not null)
+        {
+            return parentTask;
+        }
+
+        throw new TaskValidationException(
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                [nameof(CreateTaskCommand.ParentTaskId)] = ["ParentTaskId must reference a task in the same company."]
+            });
+    }
+
+    private async Task EnsureWorkflowInstanceExistsAsync(
+        Guid companyId,
+        Guid workflowInstanceId,
+        CancellationToken cancellationToken)
+    {
+        var exists = await _dbContext.WorkflowInstances
+            .AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId && x.Id == workflowInstanceId, cancellationToken);
 
         if (!exists)
         {
             throw new TaskValidationException(
                 new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
                 {
-                    [nameof(CreateTaskCommand.ParentTaskId)] = ["ParentTaskId must reference a task in the same company."]
+                    [nameof(CreateTaskCommand.WorkflowInstanceId)] = ["WorkflowInstanceId must reference a workflow instance in the same company."]
                 });
         }
     }
@@ -307,7 +354,29 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             task.UpdatedUtc,
             task.CompletedUtc,
             task.AssignedAgent is null ? null : ToAgentSummaryDto(task.AssignedAgent),
-            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()));
+            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()),
+            task.CorrelationId,
+            task.Subtasks
+                .OrderBy(x => x.CreatedUtc)
+                .Select(ToSubtaskSummaryDto)
+                .ToList());
+
+    private static TaskSubtaskSummaryDto ToSubtaskSummaryDto(WorkTask task) =>
+        new(
+            task.Id,
+            task.CompanyId,
+            task.Type,
+            task.Title,
+            task.Priority.ToStorageValue(),
+            task.Status.ToStorageValue(),
+            task.DueUtc,
+            task.AssignedAgentId,
+            task.ParentTaskId,
+            task.WorkflowInstanceId,
+            task.CreatedUtc,
+            task.UpdatedUtc,
+            task.CompletedUtc,
+            task.AssignedAgent is null ? null : ToAgentSummaryDto(task.AssignedAgent));
 
     private static TaskListItemDto ToListItemDto(WorkTask task) =>
         new(

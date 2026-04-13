@@ -1,0 +1,706 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+index 5b0e6e0..b3c0f2d 100644
+--- a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -7,7 +7,7 @@ namespace VirtualCompany.Application.Orchestration;
+ 
+ public sealed record SingleAgentOrchestrationRequest(
+     Guid CompanyId,
+-    Guid TaskId,
++    Guid? TaskId,
+     Guid? AgentId = null,
+     Guid? InitiatingActorId = null,
+     string? InitiatingActorType = null,
+@@ -355,6 +355,10 @@ public interface ISingleAgentOrchestrationService
+ {
+     Task<OrchestrationResult> ExecuteAsync(
+         SingleAgentOrchestrationRequest request,
++        CancellationToken cancellationToken);
++
++    Task<OrchestrationResult> ExecuteAsync(
++        OrchestrationRequest request,
+         CancellationToken cancellationToken);
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 4d0c52c..a8f1a61 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -9,6 +9,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Chat;
+ using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -694,126 +695,35 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+ 
+ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+ {
+-    private readonly VirtualCompanyDbContext _dbContext;
+-    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
+-    private readonly IGroundedPromptContextService _groundedPromptContextService;
++    private readonly ISingleAgentOrchestrationService _singleAgentOrchestrationService;
+ 
+     public DirectAgentChatOrchestrator(
+-        VirtualCompanyDbContext dbContext,
+-        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
+-        IGroundedPromptContextService groundedPromptContextService)
++        ISingleAgentOrchestrationService singleAgentOrchestrationService)
+     {
+-        _dbContext = dbContext;
+-        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+-        _groundedPromptContextService = groundedPromptContextService;
++        _singleAgentOrchestrationService = singleAgentOrchestrationService;
+     }
+ 
+     public async Task<DirectAgentChatReply> GenerateReplyAsync(
+         DirectAgentChatOrchestrationRequest request,
+         CancellationToken cancellationToken)
+     {
+-        ArgumentNullException.ThrowIfNull(request);
+-
+-        var profile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
+-            request.CompanyId,
+-            request.AgentId,
+-            cancellationToken);
+-        var history = await _dbContext.Messages
+-            .AsNoTracking()
+-            .Where(x =>
+-                x.CompanyId == request.CompanyId &&
+-                x.ConversationId == request.ConversationId &&
+-                x.Conversation.CompanyId == request.CompanyId &&
+-                x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
+-                x.Conversation.CreatedByUserId == request.UserId)
+-            .OrderByDescending(x => x.CreatedUtc)
+-            .ThenByDescending(x => x.Id)
+-            .Take(12)
+-            .ToListAsync(cancellationToken);
+-        history.Reverse();
+-
+-        GroundedPromptContextDto? groundedContext = null;
+-        try
+-        {
+-            groundedContext = await _groundedPromptContextService.PrepareAsync(
+-                new GroundedPromptContextRequest(
+-                    request.CompanyId,
+-                    request.AgentId,
+-                    request.HumanMessage,
+-                    request.UserId,
+-                    Limits: new RetrievalSourceLimitOptions(3, 3, 3, 2),
+-                    RetrievalPurpose: "direct_agent_chat"),
+-                cancellationToken);
+-        }
+-        catch (GroundedContextRetrievalValidationException)
+-        {
+-            groundedContext = null;
+-        }
+-
+-        var reply = BuildPersonaGroundedReply(profile, groundedContext, history, request.HumanMessage);
+-        var rationale = "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history.";
+-        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["agent_display_name"] = JsonValue.Create(profile.DisplayName),
+-            ["agent_role_name"] = JsonValue.Create(profile.RoleName),
+-            ["rationale_summary"] = JsonValue.Create(rationale)
+-        };
+-        if (!string.IsNullOrWhiteSpace(profile.RoleBrief))
+-        {
+-            payload["agent_role_brief"] = JsonValue.Create(profile.RoleBrief);
+-        }
+-
+-        var personalitySummary = ExtractSummary(profile.Personality);
+-        if (!string.IsNullOrWhiteSpace(personalitySummary))
+-        {
+-            payload["agent_personality_summary"] = JsonValue.Create(personalitySummary);
+-        }
+-        if (profile.DataScopes.Count > 0)
+-        {
+-            payload["agent_data_scope_count"] = JsonValue.Create(profile.DataScopes.Count);
+-        }
+-
+-        // Direct chat persists concise rationale summaries, never hidden internal deliberation.
+-        if (groundedContext is not null)
+-        {
+-            payload["retrieval_id"] = JsonValue.Create(groundedContext.RetrievalId.ToString());
+-            payload["source_reference_count"] = JsonValue.Create(groundedContext.Context.SourceReferences.Count);
+-        }
+-
+-        return new DirectAgentChatReply(reply, rationale, payload);
+-    }
+-
+-    private static string BuildPersonaGroundedReply(
+-        AgentRuntimeProfileDto profile,
+-        GroundedPromptContextDto? context,
+-        IReadOnlyList<Message> history,
+-        string humanMessage)
+-    {
+-        var builder = new StringBuilder();
+-        builder.Append(profile.DisplayName);
+-        builder.Append(" here");
+-        builder.Append(" (");
+-        builder.Append(profile.RoleName);
+-        builder.Append("). ");
+-
+-        if (!string.IsNullOrWhiteSpace(profile.RoleBrief))
+-        {
+-            builder.Append("I am handling this from my role brief: ");
+-            builder.Append(Trim(profile.RoleBrief, 240));
+-            builder.Append(' ');
+-        }
+-
+-        var personalitySummary = ExtractSummary(profile.Personality);
+-        if (!string.IsNullOrWhiteSpace(personalitySummary))
+-        {
+-            builder.Append("My persona is ");
+-            builder.Append(Trim(personalitySummary, 160));
+-            builder.Append(' ');
+-        }
+-
+-        if (context is not null && context.Context.Counts.SourceReferences > 0)
+-        {
+-            builder.Append("I found ");
+-            builder.Append(context.Context.Counts.SourceReferences);
+-            builder.Append(" scoped context reference(s) to keep this tenant-specific. ");
+-        }
+-
+-        if (history.Count > 1)
+-        {
+-            builder.Append("I am using the recent exchange in this direct conversation. ");
+-        }
+-
+-        builder.Append("For your message: ");
+-        builder.Append(Trim(humanMessage, 600));
+-        builder.Append(" My first-pass response is to clarify the desired outcome, identify the next concrete action, and create a task when you want this tracked.");
+-
+-        return builder.ToString();
+-    }
+-
+-    private static string? ExtractSummary(IReadOnlyDictionary<string, JsonNode?> values)
+-    {
+-        if (values.TryGetValue("summary", out var node) && node is JsonValue value && value.TryGetValue<string>(out var summary))
+-        {
+-            return summary;
+-        }
+-
+-        return null;
+-    }
+-
+-    private static string Trim(string value, int maxLength)
+-    {
+-        var normalized = value.ReplaceLineEndings(" ").Trim();
+-        return normalized.Length <= maxLength ? normalized : string.Concat(normalized.AsSpan(0, maxLength - 3), "...");
++        ArgumentNullException.ThrowIfNull(request);
++
++        // Compatibility facade only: direct chat is intentionally routed through the shared single-agent engine.
++        var result = await _singleAgentOrchestrationService.ExecuteAsync(
++            new OrchestrationRequest(
++                request.CompanyId,
++                request.AgentId,
++                ConversationId: request.ConversationId,
++                UserInput: request.HumanMessage,
++                InitiatingActorId: request.UserId,
++                InitiatingActorType: "user",
++                IntentHint: OrchestrationIntentValues.Chat,
++                ActorMetadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["entry_point"] = JsonValue.Create("direct_agent_chat")
++                }),
++            cancellationToken);
++
++        return new DirectAgentChatReply(
++            result.UserFacingOutput,
++            result.RationaleSummary,
++            result.StructuredOutput);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 1a60d98..2348c66 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -45,22 +45,46 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     public async Task<OrchestrationResult> ExecuteAsync(
+         SingleAgentOrchestrationRequest request,
+         CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        Validate(request);
++
++        return await ExecuteCoreAsync(
++            new OrchestrationRequest(
++                request.CompanyId,
++                request.AgentId,
++                request.TaskId,
++                UserInput: null,
++                InitiatingActorId: request.InitiatingActorId,
++                InitiatingActorType: request.InitiatingActorType,
++                CorrelationId: request.CorrelationId,
++                IntentHint: request.Intent),
++            request.ToolInvocations,
++            persistTaskResult: true,
++            cancellationToken);
++    }
++
++    public async Task<OrchestrationResult> ExecuteAsync(
++        OrchestrationRequest request,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        Validate(request);
++
++        return await ExecuteCoreAsync(request, explicitToolInvocations: null, persistTaskResult: request.TaskId.HasValue, cancellationToken);
++    }
++
++    private async Task<OrchestrationResult> ExecuteCoreAsync(
++        OrchestrationRequest request,
++        IReadOnlyList<ToolInvocationRequest>? explicitToolInvocations,
++        bool persistTaskResult,
++        CancellationToken cancellationToken)
+     {
+         ArgumentNullException.ThrowIfNull(request);
+-        Validate(request);
+ 
+         var startedAtUtc = DateTime.UtcNow;
+         var previousCorrelationId = _correlationContextAccessor.CorrelationId;
+         var correlationId = EnsureCorrelationId(request.CorrelationId);
+         _correlationContextAccessor.CorrelationId = correlationId;
+ 
++        // One shared engine path: role/persona differences enter only through persisted agent configuration.
+         try
+         {
+-            var task = await GetTaskAsync(request.CompanyId, request.TaskId, cancellationToken);
+-            var agentId = ResolveAgentId(request, task);
++            var persistedTask = request.TaskId.HasValue
++                ? await GetTaskAsync(request.CompanyId, request.TaskId.Value, cancellationToken)
++                : null;
++            var agentId = ResolveAgentId(request, persistedTask);
+             var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(request.CompanyId, agentId, cancellationToken);
+             var company = await GetCompanyAsync(request.CompanyId, cancellationToken);
++            var task = persistedTask ?? CreateTransientTask(request, agent, company);
+ 
+             if (!agent.CanReceiveAssignments)
+             {
+@@ -76,16 +100,16 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 groundedContext = await _groundedPromptContextService.PrepareAsync(
+                     new GroundedPromptContextRequest(
+                         request.CompanyId,
+                         agent.Id,
+-                        BuildRetrievalQuery(task),
++                        BuildRetrievalQuery(request, task),
+                         request.InitiatingActorId,
+-                        task.Id,
+-                        task.Title,
+-                        task.Description,
+-                        Limits: new RetrievalSourceLimitOptions(5, 5, 5, 3),
++                        persistedTask?.Id,
++                        persistedTask?.Title ?? task.Title,
++                        persistedTask?.Description ?? task.Description,
++                        Limits: ResolveRetrievalLimits(request),
+                         CorrelationId: correlationId,
+-                        RetrievalPurpose: "single_agent_task_execution"),
++                        RetrievalPurpose: ResolveRetrievalPurpose(request)),
+                     cancellationToken);
+             }
+             catch (GroundedContextRetrievalValidationException)
+             {
+@@ -108,9 +132,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 company,
+                 groundedContext,
+                 ResolveAvailableTools(agent),
+-                NormalizeIntent(request.Intent))
++                NormalizeIntent(request.IntentHint, request.ConversationId))
+             {
+                 InitiatingActorId = request.InitiatingActorId,
+                 InitiatingActorType = request.InitiatingActorType
+             };
+ 
+             var prompt = _promptBuilder.Build(new PromptBuildRequest(runtimeContext));
+-            var toolRequests = ResolveToolInvocations(request.ToolInvocations, task.InputPayload);
++            var toolRequests = ResolveToolInvocations(explicitToolInvocations, task.InputPayload);
+             var toolResults = new List<ToolInvocationResult>(toolRequests.Count);
+ 
+             foreach (var toolRequest in toolRequests)
+@@ -158,7 +182,10 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 SourceReferences = sourceReferences,
+                 ToolExecutionReferences = toolExecutionReferences,
+                 FinalResult = finalResult
+             };
+-            await PersistTaskResultAsync(task.Id, result, cancellationToken);
++            if (persistTaskResult)
++            {
++                await PersistTaskResultAsync(task.Id, result, cancellationToken);
++            }
+             await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -173,7 +200,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+ 
+     private static void Validate(SingleAgentOrchestrationRequest request)
+     {
+         var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+         if (request.CompanyId == Guid.Empty)
+         {
+@@ -181,9 +208,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         }
+ 
+-        if (request.TaskId == Guid.Empty)
++        if (!request.TaskId.HasValue || request.TaskId.Value == Guid.Empty)
+         {
+             errors[nameof(request.TaskId)] = ["TaskId is required."];
+         }
+@@ -204,6 +231,33 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         }
+     }
+ 
++    private static void Validate(OrchestrationRequest request)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (request.CompanyId == Guid.Empty)
++        {
++            errors[nameof(request.CompanyId)] = ["CompanyId is required."];
++        }
++
++        if (request.AgentId == Guid.Empty)
++        {
++            errors[nameof(request.AgentId)] = ["AgentId cannot be empty."];
++        }
++
++        if (request.TaskId == Guid.Empty)
++        {
++            errors[nameof(request.TaskId)] = ["TaskId cannot be empty."];
++        }
++
++        if (request.ConversationId == Guid.Empty)
++        {
++            errors[nameof(request.ConversationId)] = ["ConversationId cannot be empty."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new OrchestrationValidationException(errors);
++        }
++    }
++
+     private async Task<TaskDetailDto> GetTaskAsync(Guid companyId, Guid taskId, CancellationToken cancellationToken)
+     {
+         var task = await _dbContext.WorkTasks
+@@ -261,7 +315,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             company.ComplianceRegion);
+     }
+ 
+-    private static Guid ResolveAgentId(SingleAgentOrchestrationRequest request, TaskDetailDto task)
++    private static Guid ResolveAgentId(OrchestrationRequest request, TaskDetailDto? task)
+     {
+-        var agentId = request.AgentId ?? task.AssignedAgentId;
++        var agentId = request.AgentId ?? task?.AssignedAgentId;
+         if (agentId is null)
+         {
+             throw new OrchestrationValidationException(
+@@ -272,7 +326,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 });
+         }
+ 
+-        if (task.AssignedAgentId.HasValue && request.AgentId.HasValue && task.AssignedAgentId.Value != request.AgentId.Value)
++        if (task?.AssignedAgentId is Guid assignedAgentId && request.AgentId.HasValue && assignedAgentId != request.AgentId.Value)
+         {
+             throw new OrchestrationValidationException(
+                 new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+@@ -284,6 +338,35 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+ 
+         return agentId.Value;
+     }
+ 
++    private static TaskDetailDto CreateTransientTask(
++        OrchestrationRequest request,
++        AgentRuntimeProfileDto agent,
++        CompanyRuntimeContext company)
++    {
++        var now = DateTime.UtcNow;
++        var title = string.Equals(NormalizeIntent(request.IntentHint, request.ConversationId), OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase)
++            ? "Direct agent chat"
++            : "Single-agent request";
++
++        return new TaskDetailDto(
++            Guid.NewGuid(),
++            company.CompanyId,
++            string.Equals(NormalizeIntent(request.IntentHint, request.ConversationId), OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase)
++                ? "direct_agent_chat"
++                : "single_agent_request",
++            title,
++            request.UserInput,
++            WorkTaskPriority.Normal.ToStorageValue(),
++            WorkTaskStatus.InProgress.ToStorageValue(),
++            null,
++            agent.Id,
++            null,
++            null,
++            request.InitiatingActorType ?? "user",
++            request.InitiatingActorId,
++            BuildTransientInputPayload(request),
++            [],
++            null,
++            null,
++            now,
++            now,
++            null,
++            new TaskAgentSummaryDto(agent.Id, agent.DisplayName, agent.Status),
++            null);
++    }
++
+     private async Task PersistTaskResultAsync(
+         Guid taskId,
+         OrchestrationResult result,
+@@ -304,10 +387,42 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         task.UpdateStatus(taskStatus, result.TaskArtifact?.OutputPayload ?? result.StructuredOutput, result.RationaleSummary, result.ConfidenceScore);
+     }
+ 
+-    private static string NormalizeIntent(string? intent) =>
++    private static Dictionary<string, JsonNode?> BuildTransientInputPayload(OrchestrationRequest request)
++    {
++        var payload = request.ActorMetadata is null || request.ActorMetadata.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : CloneNodes(request.ActorMetadata);
++
++        if (!string.IsNullOrWhiteSpace(request.UserInput))
++        {
++            payload["userInput"] = JsonValue.Create(request.UserInput.Trim());
++        }
++
++        if (request.ConversationId.HasValue)
++        {
++            payload["conversationId"] = JsonValue.Create(request.ConversationId.Value.ToString("N"));
++        }
++
++        return payload;
++    }
++
++    private static string NormalizeIntent(string? intent, Guid? conversationId = null) =>
+         string.IsNullOrWhiteSpace(intent)
+-            ? OrchestrationIntentValues.ExecuteTask
++            ? conversationId.HasValue ? OrchestrationIntentValues.Chat : OrchestrationIntentValues.ExecuteTask
+             : intent.Trim();
+ 
++    private static RetrievalSourceLimitOptions ResolveRetrievalLimits(OrchestrationRequest request) =>
++        string.Equals(NormalizeIntent(request.IntentHint, request.ConversationId), OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase)
++            ? new RetrievalSourceLimitOptions(3, 3, 3, 2)
++            : new RetrievalSourceLimitOptions(5, 5, 5, 3);
++
++    private static string ResolveRetrievalPurpose(OrchestrationRequest request) =>
++        string.Equals(NormalizeIntent(request.IntentHint, request.ConversationId), OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase)
++            ? "direct_agent_chat"
++            : "single_agent_task_execution";
++
+     private static string EnsureCorrelationId(string? requestedCorrelationId)
+     {
+         if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
+@@ -319,8 +434,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         return Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+     }
+ 
+-    private static string BuildRetrievalQuery(TaskDetailDto task) =>
+-        string.IsNullOrWhiteSpace(task.Description)
++    private static string BuildRetrievalQuery(OrchestrationRequest request, TaskDetailDto task) =>
++        !string.IsNullOrWhiteSpace(request.UserInput)
++            ? request.UserInput.Trim()
++            : string.IsNullOrWhiteSpace(task.Description)
+             ? task.Title
+             : $"{task.Title}\n{task.Description}";
+ 
+@@ -405,6 +523,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         SingleAgentRuntimeContext context,
+         IReadOnlyList<ToolInvocationResult> toolResults)
+     {
++        if (string.Equals(context.Intent, OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase))
++        {
++            return BuildChatUserFacingOutput(context);
++        }
++
+         var builder = new StringBuilder();
+         builder.Append(context.Agent.DisplayName);
+         builder.Append(" completed task '");
+@@ -427,6 +550,46 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         return builder.ToString();
+     }
+ 
++    private static string BuildChatUserFacingOutput(SingleAgentRuntimeContext context)
++    {
++        var builder = new StringBuilder();
++        builder.Append(context.Agent.DisplayName);
++        builder.Append(" here");
++        builder.Append(" (");
++        builder.Append(context.Agent.RoleName);
++        builder.Append("). ");
++
++        if (!string.IsNullOrWhiteSpace(context.Agent.RoleBrief))
++        {
++            builder.Append("I am handling this from my role brief: ");
++            builder.Append(Trim(context.Agent.RoleBrief, 240));
++            builder.Append(' ');
++        }
++
++        var personalitySummary = ExtractSummary(context.Agent.Personality);
++        if (!string.IsNullOrWhiteSpace(personalitySummary))
++        {
++            builder.Append("My persona is ");
++            builder.Append(Trim(personalitySummary, 160));
++            builder.Append(' ');
++        }
++
++        if (context.GroundedContext is not null && context.GroundedContext.Context.Counts.SourceReferences > 0)
++        {
++            builder.Append("I found ");
++            builder.Append(context.GroundedContext.Context.Counts.SourceReferences);
++            builder.Append(" scoped context reference(s) to keep this tenant-specific. ");
++        }
++
++        builder.Append("For your message: ");
++        builder.Append(Trim(context.Task.Description ?? context.Task.Title, 600));
++        builder.Append(" My first-pass response is to clarify the desired outcome, identify the next concrete action, and create a task when you want this tracked.");
++
++        return builder.ToString();
++    }
++
+     private static string BuildRationaleSummary(
+         SingleAgentRuntimeContext context,
+         GroundedPromptContextDto? groundedContext,
+         IReadOnlyList<ToolInvocationResult> toolResults)
+     {
++        if (string.Equals(context.Intent, OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase))
++        {
++            return "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history.";
++        }
++
+         var sourceCount = groundedContext?.Context.Counts.SourceReferences ?? 0;
+         return $"Resolved agent '{context.Agent.DisplayName}', task intent '{context.Intent}', {sourceCount} context reference(s), and {toolResults.Count} structured tool execution result(s).";
+     }
+@@ -453,10 +616,19 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
+             ["agentDisplayName"] = JsonValue.Create(context.Agent.DisplayName),
++            ["agent_role_name"] = JsonValue.Create(context.Agent.RoleName),
+             ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
+             ["intent"] = JsonValue.Create(context.Intent),
++            ["shared_engine"] = JsonValue.Create("single_agent_orchestration"),
+             ["userFacingOutput"] = JsonValue.Create(userFacingOutput),
+             ["rationaleSummary"] = JsonValue.Create(rationale),
++            ["rationale_summary"] = JsonValue.Create(rationale),
+             ["confidenceScore"] = JsonValue.Create(confidence),
+             ["toolExecutions"] = JsonSerializer.SerializeToNode(toolResults.Select(ToToolExecutionSummary).ToList()),
+             ["toolExecutionReferences"] = JsonSerializer.SerializeToNode(toolExecutionReferences),
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(sourceReferences),
+             ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count)
+         };
++
++        AppendChatPayload(context, output);
++        return output;
+     }
+ 
+     private static IReadOnlyList<OrchestrationArtifact> BuildArtifacts(
+@@ -682,6 +854,42 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ["completedAtUtc"] = result.CompletedAtUtc
+         };
+ 
++    private static void AppendChatPayload(SingleAgentRuntimeContext context, Dictionary<string, JsonNode?> output)
++    {
++        output["agent_display_name"] = JsonValue.Create(context.Agent.DisplayName);
++        if (!string.IsNullOrWhiteSpace(context.Agent.RoleBrief))
++        {
++            output["agent_role_brief"] = JsonValue.Create(context.Agent.RoleBrief);
++        }
++
++        var personalitySummary = ExtractSummary(context.Agent.Personality);
++        if (!string.IsNullOrWhiteSpace(personalitySummary))
++        {
++            output["agent_personality_summary"] = JsonValue.Create(personalitySummary);
++        }
++
++        if (context.Agent.DataScopes.Count > 0)
++        {
++            output["agent_data_scope_count"] = JsonValue.Create(context.Agent.DataScopes.Count);
++        }
++
++        if (context.GroundedContext is not null)
++        {
++            output["retrieval_id"] = JsonValue.Create(context.GroundedContext.RetrievalId.ToString());
++            output["source_reference_count"] = JsonValue.Create(context.GroundedContext.Context.SourceReferences.Count);
++        }
++    }
++
++    private static string? ExtractSummary(IReadOnlyDictionary<string, JsonNode?> values) =>
++        values.TryGetValue("summary", out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var summary)
++            ? summary
++            : null;
++
++    private static string Trim(string value, int maxLength)
++    {
++        var normalized = value.ReplaceLineEndings(" ").Trim();
++        return normalized.Length <= maxLength ? normalized : string.Concat(normalized.AsSpan(0, maxLength - 3), "...");
++    }
++
+     private static string? GetString(JsonObject jsonObject, string propertyName) =>
+         jsonObject.TryGetPropertyValue(propertyName, out var node) &&
+         node is JsonValue value &&
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index f02061c..b2f7239 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -177,6 +177,7 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+         services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+index 98f3851..719d1f3 100644
+--- a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -206,6 +206,7 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         Assert.Contains("calm systems thinker", payload.AgentMessage.Body);
+         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey("agent_role_brief"));
+         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey("agent_personality_summary"));
++        Assert.Equal("single_agent_orchestration", payload.AgentMessage.StructuredPayload["shared_engine"]!.GetValue<string>());
+     }
+ 
+     [Fact]
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 6d44a1a..0d208f6 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -6,11 +6,13 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
++using VirtualCompany.Infrastructure.Companies;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -121,6 +123,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicat
+         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+     }
+ 
++    [Fact]
++    public void Single_agent_entry_points_resolve_one_shared_orchestration_engine()
++    {
++        using var scope = _factory.Services.CreateScope();
++
++        var services = scope.ServiceProvider.GetServices<ISingleAgentOrchestrationService>().ToList();
++
++        var service = Assert.Single(services);
++        Assert.IsType<SingleAgentOrchestrationService>(service);
++        Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+END_OF_PATCH

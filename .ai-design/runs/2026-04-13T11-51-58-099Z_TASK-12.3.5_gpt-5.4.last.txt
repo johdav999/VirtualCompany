@@ -1,0 +1,272 @@
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+index 7c04f4d..2b611ef 100644
+--- a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -24,10 +24,33 @@ public sealed record NotificationListItemDto(
+     DateTime? ActionedAt,
+     Guid? ActionedByUserId);
+ 
++public sealed record ListNotificationInboxQuery(
++    bool UnreadOnly = false,
++    string? Type = null,
++    string? Priority = null,
++    int Skip = 0,
++    int Take = 100);
++
++public sealed record CreateNotificationCommand(
++    string Type,
++    string Priority,
++    string Title,
++    string Body,
++    string RelatedEntityType,
++    Guid? RelatedEntityId,
++    string? ActionUrl = null,
++    Guid? RecipientUserId = null,
++    string? MetadataJson = null,
++    string? DedupeKey = null);
++
++public sealed record NotificationUnreadCountDto(int UnreadCount);
++
+ public sealed record ApprovalInboxItemDto(
+     Guid Id,
+     string ApprovalType,
+@@ -54,6 +77,9 @@ public sealed record SetNotificationStatusCommand(string Status);
+ public interface INotificationInboxService
+ {
+     Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<NotificationListItemDto>> ListAsync(Guid companyId, ListNotificationInboxQuery query, CancellationToken cancellationToken);
++    Task<NotificationUnreadCountDto> GetUnreadCountAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<NotificationListItemDto> CreateAsync(Guid companyId, CreateNotificationCommand command, CancellationToken cancellationToken);
+     Task<ApprovalRequestDto> GetApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 4e1ef67..c0a4779 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -28,18 +28,58 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
+     [HttpGet("notifications")]
+-    [HttpGet("/api/notifications")]
+     public async Task<ActionResult<IReadOnlyList<NotificationListItemDto>>> GetNotificationsAsync(
+         [FromRoute] Guid companyId,
++        [FromQuery] ListNotificationInboxQuery query,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            var inbox = await _notificationInboxService.GetInboxAsync(companyId, cancellationToken);
+-            return Ok(inbox.Notifications);
++            return Ok(await _notificationInboxService.ListAsync(companyId, query, cancellationToken));
+         }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+         }
+     }
+ 
++    [HttpGet("notifications/unread-count")]
++    public async Task<ActionResult<NotificationUnreadCountDto>> GetUnreadCountAsync(
++        [FromRoute] Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _notificationInboxService.GetUnreadCountAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("notifications")]
++    public async Task<ActionResult<NotificationListItemDto>> CreateNotificationAsync(
++        Guid companyId,
++        [FromBody] CreateNotificationCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var notification = await _notificationInboxService.CreateAsync(companyId, command, cancellationToken);
++            return CreatedAtAction(nameof(GetInboxAsync), new { companyId }, notification);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or InvalidOperationException)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(command)] = [ex.Message]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("approvals/inbox")]
+     public async Task<ActionResult<IReadOnlyList<ApprovalInboxItemDto>>> GetApprovalInboxAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 13455a9..5a4f9d9 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -62,6 +62,98 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             approvals.Count);
+     }
+ 
++    public async Task<IReadOnlyList<NotificationListItemDto>> ListAsync(
++        Guid companyId,
++        ListNotificationInboxQuery query,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var notifications = _dbContext.CompanyNotifications
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId);
++
++        if (query.UnreadOnly)
++        {
++            notifications = notifications.Where(x => x.Status == CompanyNotificationStatus.Unread);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Type))
++        {
++            var type = ParseNotificationType(query.Type);
++            notifications = notifications.Where(x => x.Type == type);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Priority))
++        {
++            var priority = CompanyNotificationPriorityValues.Parse(query.Priority);
++            notifications = notifications.Where(x => x.Priority == priority);
++        }
++
++        var skip = Math.Max(0, query.Skip);
++        var take = Math.Clamp(query.Take, 1, 200);
++
++        return await notifications
++            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
++            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
++            .ThenByDescending(x => x.Priority)
++            .ThenByDescending(x => x.CreatedUtc)
++            .Skip(skip)
++            .Take(take)
++            .Select(x => ToDto(x))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<NotificationUnreadCountDto> GetUnreadCountAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var unreadCount = await _dbContext.CompanyNotifications
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == companyId &&
++                     x.UserId == membership.UserId &&
++                     x.Status == CompanyNotificationStatus.Unread,
++                cancellationToken);
++
++        return new NotificationUnreadCountDto(unreadCount);
++    }
++
++    public async Task<NotificationListItemDto> CreateAsync(
++        Guid companyId,
++        CreateNotificationCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var recipientUserId = command.RecipientUserId is Guid userId && userId != Guid.Empty
++            ? userId
++            : membership.UserId;
++
++        if (recipientUserId != membership.UserId &&
++            membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin))
++        {
++            throw new UnauthorizedAccessException("Only company owners and admins can create notifications for another user.");
++        }
++
++        var recipientIsActive = await _dbContext.CompanyMemberships
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.CompanyId == companyId &&
++                     x.UserId == recipientUserId &&
++                     x.Status == CompanyMembershipStatus.Active,
++                cancellationToken);
++        if (!recipientIsActive)
++        {
++            throw new KeyNotFoundException("Notification recipient is not an active company member.");
++        }
++
++        var notification = new CompanyNotification(
++            Guid.NewGuid(),
++            companyId,
++            recipientUserId,
++            ParseNotificationType(command.Type),
++            CompanyNotificationPriorityValues.Parse(command.Priority),
++            command.Title,
++            command.Body,
++            command.RelatedEntityType,
++            command.RelatedEntityId,
++            command.ActionUrl,
++            command.MetadataJson,
++            string.IsNullOrWhiteSpace(command.DedupeKey) ? $"manual-notification:{Guid.NewGuid():N}" : command.DedupeKey);
++
++        _dbContext.CompanyNotifications.Add(notification);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(notification);
++    }
++
+     public async Task<ApprovalRequestDto> GetApprovalDetailAsync(
+         Guid companyId,
+         Guid approvalId,
+@@ -140,6 +232,16 @@ public sealed class CompanyNotificationService : INotificationInboxService
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
+         await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
+         ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+ 
++    private static CompanyNotificationType ParseNotificationType(string value) =>
++        value.Trim().ToLowerInvariant() switch
++        {
++            "approval_requested" => CompanyNotificationType.ApprovalRequested,
++            "escalation" => CompanyNotificationType.Escalation,
++            "workflow_failure" => CompanyNotificationType.WorkflowFailure,
++            "briefing_available" => CompanyNotificationType.BriefingAvailable,
++            _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported notification type value.")
++        };
++
+     private static bool IsEligibleApprover(ApprovalRequestDto approval, ResolvedCompanyMembershipContext membership)
+     {
+         var current = approval.CurrentStep;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index a6e8c25..6bcd617 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -536,12 +536,12 @@ internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispat
+         var notificationType = ParseNotificationType(message.NotificationType);
+         var priority = CompanyNotificationPriorityValues.Parse(message.Priority);
+         var recipients = await ResolveRecipientsAsync(message, cancellationToken);
++        var createdCount = 0;
++        var pendingDedupeKeys = new List<string>();
+ 
+         foreach (var userId in recipients)
+         {
+             var dedupeKey = $"{message.DedupeKey}:{userId:N}";
+-            var createdCount = 0;
+-            var pendingDedupeKeys = new List<string>();
+             var exists = await _dbContext.CompanyNotifications
+                 .AnyAsync(x => x.CompanyId == message.CompanyId && x.UserId == userId && x.DedupeKey == dedupeKey, cancellationToken);
+             if (exists)
+END_OF_PATCH

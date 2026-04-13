@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Companies;
 using Xunit;
 
@@ -87,6 +88,56 @@ public sealed class PolicyGuardrailEngineTests
 
         Assert.Equal("deny", decision.Outcome);
         Assert.Contains(PolicyDecisionReasonCodes.InvalidActionType, decision.ReasonCodes);
+    }
+
+    [Fact]
+    public void Evaluate_denies_when_action_type_is_missing()
+    {
+        var decision = _engine.Evaluate(CreateRequest(
+            autonomyLevel: "level_2",
+            toolName: "erp",
+            actionType: null,
+            scope: "payments"));
+
+        Assert.Equal("deny", decision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.InvalidActionType, decision.ReasonCodes);
+        Assert.Equal(string.Empty, decision.EvaluatedActionType);
+    }
+
+    [Fact]
+    public void Evaluate_denies_when_configured_action_scope_does_not_allow_requested_action()
+    {
+        var decision = _engine.Evaluate(CreateRequest(
+            autonomyLevel: "level_2",
+            toolName: "erp",
+            actionType: "execute",
+            scope: "payments",
+            toolPermissions: Payload(
+                ("allowed", new JsonArray(JsonValue.Create("erp"))),
+                ("actions", new JsonArray(JsonValue.Create("read"), JsonValue.Create("recommend"))))));
+
+        Assert.Equal("deny", decision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.ToolActionNotPermitted, decision.ReasonCodes);
+        Assert.Equal("configured", decision.Metadata["actionPolicyState"]!.GetValue<string>());
+        Assert.False(decision.Metadata["actionAllowed"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void Evaluate_denies_when_configured_action_scope_is_ambiguous()
+    {
+        var decision = _engine.Evaluate(CreateRequest(
+            autonomyLevel: "level_2",
+            toolName: "erp",
+            actionType: "execute",
+            scope: "payments",
+            toolPermissions: Payload(
+                ("allowed", new JsonArray(JsonValue.Create("erp"))),
+                ("actions", new JsonArray(JsonValue.Create("execute"))),
+                ("deniedActions", new JsonArray(JsonValue.Create("execute"))))));
+
+        Assert.Equal("deny", decision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration, decision.ReasonCodes);
+        Assert.Equal("ambiguous", decision.Metadata["actionPolicyState"]!.GetValue<string>());
     }
 
     [Fact]
@@ -207,7 +258,7 @@ public sealed class PolicyGuardrailEngineTests
             Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
             Payload(("escalateTo", JsonValue.Create("founder"))),
             "erp",
-            "execute",
+            ToolActionType.Execute,
             "payments",
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
             null,
@@ -444,7 +495,7 @@ public sealed class PolicyGuardrailEngineTests
     private static PolicyEvaluationRequest CreateRequest(
         string autonomyLevel,
         string toolName,
-        string actionType,
+        string? actionType,
         string? scope,
         string? thresholdCategory = null,
         string? thresholdKey = null,
@@ -455,6 +506,7 @@ public sealed class PolicyGuardrailEngineTests
         Dictionary<string, JsonNode?>? escalationRules = null,
         bool sensitiveAction = false)
     {
+        var parsedActionType = ToolActionTypeValues.TryParse(actionType, out var value) ? value : (ToolActionType?)null;
         var companyId = Guid.NewGuid();
         return new PolicyEvaluationRequest(
             companyId,
@@ -471,7 +523,7 @@ public sealed class PolicyGuardrailEngineTests
             thresholds ?? Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
             escalationRules ?? Payload(("escalateTo", JsonValue.Create("founder"))),
             toolName,
-            actionType,
+            parsedActionType,
             scope,
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
             thresholdCategory,

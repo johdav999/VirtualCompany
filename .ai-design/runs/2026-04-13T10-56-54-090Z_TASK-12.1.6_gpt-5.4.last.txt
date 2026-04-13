@@ -1,0 +1,592 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 8c6b9dd..1e65a4f 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -9,6 +9,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     string CompanyName,
+     DateTime GeneratedAtUtc,
+     DateTime? CacheTimestampUtc,
++    IReadOnlyList<ExecutiveCockpitSummaryKpiDto> SummaryKpis,
+     ExecutiveCockpitDailyBriefingDto? DailyBriefing,
+     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
+     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
+@@ -17,6 +18,77 @@ public sealed record ExecutiveCockpitDashboardDto(
+     ExecutiveCockpitSetupStateDto SetupState,
+     ExecutiveCockpitEmptyStateFlagsDto EmptyStateFlags);
+ 
++public sealed record ExecutiveCockpitSummaryKpiDto(
++    string Key,
++    string Label,
++    int CurrentValue,
++    int? PreviousValue,
++    string TrendDirection,
++    int? DeltaValue,
++    decimal? DeltaPercentage,
++    string DeltaText,
++    string ComparisonLabel,
++    string? StatusHint,
++    bool IsEmpty);
++
++public static class ExecutiveCockpitTrendDirections
++{
++    public const string Up = "up";
++    public const string Down = "down";
++    public const string Flat = "flat";
++    public const string Unknown = "unknown";
++}
++
++public sealed record ExecutiveCockpitKpiTrend(
++    string Direction,
++    int? DeltaValue,
++    decimal? DeltaPercentage,
++    string DeltaText,
++    string ComparisonLabel);
++
++public static class ExecutiveCockpitKpiTrendCalculator
++{
++    public const string DefaultComparisonLabel = "vs previous 7 days";
++
++    public static ExecutiveCockpitKpiTrend Calculate(
++        int currentValue,
++        int? previousValue,
++        string comparisonLabel = DefaultComparisonLabel)
++    {
++        if (previousValue is null)
++        {
++            return new ExecutiveCockpitKpiTrend(
++                ExecutiveCockpitTrendDirections.Unknown,
++                null,
++                null,
++                "Trend unavailable",
++                "No prior period data");
++        }
++
++        var delta = currentValue - previousValue.Value;
++        var direction = delta switch
++        {
++            > 0 => ExecutiveCockpitTrendDirections.Up,
++            < 0 => ExecutiveCockpitTrendDirections.Down,
++            _ => ExecutiveCockpitTrendDirections.Flat
++        };
++
++        decimal? deltaPercentage = previousValue.Value == 0
++            ? null
++            : Math.Round(delta / (decimal)previousValue.Value * 100m, 1, MidpointRounding.AwayFromZero);
++
++        var deltaText = direction == ExecutiveCockpitTrendDirections.Flat
++            ? $"No change {comparisonLabel}"
++            : $"{FormatDelta(delta)} {comparisonLabel}";
++
++        if (deltaPercentage is not null && direction != ExecutiveCockpitTrendDirections.Flat)
++        {
++            deltaText = $"{deltaText} ({FormatDelta(deltaPercentage.Value)}%)";
++        }
++
++        return new ExecutiveCockpitKpiTrend(direction, delta, deltaPercentage, deltaText, comparisonLabel);
++    }
++
++    private static string FormatDelta(int delta) =>
++        delta > 0 ? $"+{delta}" : delta.ToString();
++
++    private static string FormatDelta(decimal delta) =>
++        delta > 0 ? $"+{delta:0.#}" : delta.ToString("0.#");
++}
++
+ public sealed record ExecutiveCockpitDailyBriefingDto(
+     Guid Id,
+     string Title,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 8e69b75..b9bfb07 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -50,6 +50,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             return cached.Dashboard with
+             {
+                 CacheTimestampUtc = cached.CachedAtUtc
+             };
+         }
+@@ -103,6 +104,8 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             .AsNoTracking()
+             .CountAsync(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
+ 
++        var summaryKpis = await BuildSummaryKpisAsync(companyId, nowUtc, pendingApprovalCount, cancellationToken);
++
+         var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
+             pendingApprovalCount,
+             pendingApprovalRows
+@@ -283,6 +286,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             company.Name,
+             nowUtc,
+             null,
++            summaryKpis,
+             dailyBriefing,
+             pendingApprovals,
+             alerts,
+@@ -293,6 +297,94 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             emptyStates);
+     }
+ 
++    private async Task<IReadOnlyList<ExecutiveCockpitSummaryKpiDto>> BuildSummaryKpisAsync(
++        Guid companyId,
++        DateTime nowUtc,
++        int pendingApprovalCount,
++        CancellationToken cancellationToken)
++    {
++        var currentPeriodStartUtc = nowUtc.AddDays(-7);
++        var previousPeriodStartUtc = nowUtc.AddDays(-14);
++
++        var openTaskStatuses = new[]
++        {
++            WorkTaskStatus.New,
++            WorkTaskStatus.InProgress,
++            WorkTaskStatus.Blocked,
++            WorkTaskStatus.AwaitingApproval
++        };
++
++        var openTaskCount = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && openTaskStatuses.Contains(x.Status), cancellationToken);
++
++        var completedTasksCurrentPeriod = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == companyId &&
++                     x.Status == WorkTaskStatus.Completed &&
++                     x.CompletedUtc >= currentPeriodStartUtc &&
++                     x.CompletedUtc < nowUtc,
++                cancellationToken);
++
++        var completedTasksPreviousPeriod = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == companyId &&
++                     x.Status == WorkTaskStatus.Completed &&
++                     x.CompletedUtc >= previousPeriodStartUtc &&
++                     x.CompletedUtc < currentPeriodStartUtc,
++                cancellationToken);
++
++        var activeAgentCount = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && x.Status == AgentStatus.Active, cancellationToken);
++
++        var blockedTaskCount = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(
++                x => x.CompanyId == companyId &&
++                     (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed),
++                cancellationToken);
++
++        return
++        [
++            CreateSummaryKpi(
++                "pending_approvals",
++                "Pending approvals",
++                pendingApprovalCount,
++                null,
++                "attention"),
++            CreateSummaryKpi(
++                "open_tasks",
++                "Open tasks",
++                openTaskCount,
++                null,
++                openTaskCount > 0 ? "active" : "neutral"),
++            CreateSummaryKpi(
++                "completed_tasks_7d",
++                "Completed tasks",
++                completedTasksCurrentPeriod,
++                completedTasksPreviousPeriod,
++                completedTasksCurrentPeriod > 0 ? "positive" : "neutral"),
++            CreateSummaryKpi(
++                "active_agents",
++                "Active agents",
++                activeAgentCount,
++                null,
++                activeAgentCount > 0 ? "positive" : "neutral"),
++            CreateSummaryKpi(
++                "blocked_tasks",
++                "Blocked tasks",
++                blockedTaskCount,
++                null,
++                blockedTaskCount > 0 ? "attention" : "neutral")
++        ];
++    }
++
++    private static ExecutiveCockpitSummaryKpiDto CreateSummaryKpi(
++        string key,
++        string label,
++        int currentValue,
++        int? previousValue,
++        string? statusHint)
++    {
++        var trend = ExecutiveCockpitKpiTrendCalculator.Calculate(currentValue, previousValue);
++        return new ExecutiveCockpitSummaryKpiDto(
++            key,
++            label,
++            currentValue,
++            previousValue,
++            trend.Direction,
++            trend.DeltaValue,
++            trend.DeltaPercentage,
++            trend.DeltaText,
++            trend.ComparisonLabel,
++            statusHint,
++            currentValue == 0 && previousValue.GetValueOrDefault() == 0);
++    }
++
+     private async Task<IReadOnlyList<ExecutiveCockpitActivityItemDto>> BuildRecentActivityAsync(
+         Guid companyId,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 9f7ad61..f6272bb 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -58,6 +58,43 @@ public sealed class ExecutiveCockpitApiClient
+             CompanyId = companyId,
+             CompanyName = "Offline workspace",
+             GeneratedAtUtc = DateTime.UtcNow,
++            SummaryKpis =
++            [
++                new ExecutiveCockpitSummaryKpiViewModel
++                {
++                    Key = "pending_approvals",
++                    Label = "Pending approvals",
++                    CurrentValue = 0,
++                    TrendDirection = "unknown",
++                    DeltaText = "Trend unavailable",
++                    ComparisonLabel = "No prior period data",
++                    StatusHint = "neutral",
++                    IsEmpty = true
++                },
++                new ExecutiveCockpitSummaryKpiViewModel
++                {
++                    Key = "open_tasks",
++                    Label = "Open tasks",
++                    CurrentValue = 0,
++                    TrendDirection = "unknown",
++                    DeltaText = "Trend unavailable",
++                    ComparisonLabel = "No prior period data",
++                    StatusHint = "neutral",
++                    IsEmpty = true
++                },
++                new ExecutiveCockpitSummaryKpiViewModel
++                {
++                    Key = "completed_tasks_7d",
++                    Label = "Completed tasks",
++                    CurrentValue = 0,
++                    PreviousValue = 0,
++                    TrendDirection = "flat",
++                    DeltaValue = 0,
++                    DeltaText = "No change vs previous 7 days",
++                    ComparisonLabel = "vs previous 7 days",
++                    StatusHint = "neutral",
++                    IsEmpty = true
++                }
++            ],
+             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
+             {
+                 TotalCount = 0,
+@@ -113,6 +150,7 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public DateTime GeneratedAtUtc { get; set; }
+     public DateTime? CacheTimestampUtc { get; set; }
+     public ExecutiveCockpitDailyBriefingViewModel? DailyBriefing { get; set; }
++    public List<ExecutiveCockpitSummaryKpiViewModel> SummaryKpis { get; set; } = [];
+     public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
+     public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
+     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
+@@ -121,6 +159,22 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+ }
+ 
++public sealed class ExecutiveCockpitSummaryKpiViewModel
++{
++    public string Key { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public int CurrentValue { get; set; }
++    public int? PreviousValue { get; set; }
++    public string TrendDirection { get; set; } = "unknown";
++    public int? DeltaValue { get; set; }
++    public decimal? DeltaPercentage { get; set; }
++    public string DeltaText { get; set; } = "Trend unavailable";
++    public string ComparisonLabel { get; set; } = "No prior period data";
++    public string? StatusHint { get; set; }
++    public bool IsEmpty { get; set; }
++}
++
+ public sealed class ExecutiveCockpitDailyBriefingViewModel
+ {
+     public Guid Id { get; set; }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index e4a2ab6..0d37e68 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -39,6 +39,34 @@
+                 </div>
+             </div>
+         </div>
++
++        @if (dashboard.SummaryKpis.Count > 0)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++                <div class="cockpit-card__header">
++                    <div>
++                        <h3 class="h5 mb-1">Summary KPIs</h3>
++                        <p class="text-body-secondary mb-0">Current operating signals for this company.</p>
++                    </div>
++                </div>
++                <div class="cockpit-summary-kpi-grid mt-3">
++                    @foreach (var kpi in dashboard.SummaryKpis)
++                    {
++                        <section class="@SummaryKpiCardClass(kpi)" aria-label="@kpi.Label">
++                            <div class="cockpit-summary-kpi__label">@kpi.Label</div>
++                            <strong class="cockpit-summary-kpi__value">@kpi.CurrentValue</strong>
++                            <div class="@SummaryKpiTrendClass(kpi)">
++                                <span aria-hidden="true">@TrendGlyph(kpi.TrendDirection)</span>
++                                <span>@kpi.DeltaText</span>
++                            </div>
++                            @if (kpi.PreviousValue is not null)
++                            {
++                                <small class="text-body-secondary">Previous: @kpi.PreviousValue</small>
++                            }
++                        </section>
++                    }
++                </div>
++            </article>
++        }
+         
+         @if (IsInitialSetupEmpty)
+         {
+@@ -221,6 +249,22 @@
+     private static string SafeDrillRoute(string? route, string fallbackRoute) =>
+         HasDrillRoute(route) ? route! : fallbackRoute;
+ 
++    private static string SummaryKpiCardClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
++        $"cockpit-summary-kpi cockpit-summary-kpi--{NormalizeCssToken(kpi.StatusHint)}";
++
++    private static string SummaryKpiTrendClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
++        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(kpi.TrendDirection)}";
++
++    private static string NormalizeCssToken(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
++
++    private static string TrendGlyph(string? direction) =>
++        string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
++        string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
++        string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
++        "Trend";
++
+     private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
+     {
+         var sequence = 0;
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 751421d..2a92d77 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -476,6 +476,62 @@
+     justify-content: space-between;
+ }
+ 
++.cockpit-summary-kpi-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++}
++
++.cockpit-summary-kpi {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 0.5rem;
++    display: grid;
++    gap: 0.5rem;
++    min-width: 0;
++    padding: 1rem;
++}
++
++.cockpit-summary-kpi--attention {
++    border-color: rgba(180, 83, 9, 0.32);
++}
++
++.cockpit-summary-kpi--positive {
++    border-color: rgba(22, 101, 52, 0.28);
++}
++
++.cockpit-summary-kpi__label {
++    color: #475569;
++    font-weight: 700;
++}
++
++.cockpit-summary-kpi__value {
++    color: #0f172a;
++    font-size: 2rem;
++    line-height: 1;
++}
++
++.cockpit-summary-kpi__trend {
++    align-items: center;
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.35rem;
++    font-size: 0.92rem;
++    font-weight: 700;
++}
++
++.cockpit-summary-kpi__trend--up {
++    color: #166534;
++}
++
++.cockpit-summary-kpi__trend--down {
++    color: #991b1b;
++}
++
++.cockpit-summary-kpi__trend--flat,
++.cockpit-summary-kpi__trend--unknown {
++    color: #475569;
++}
++
+ .cockpit-kpi-grid {
+     display: grid;
+     gap: 1rem;
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 56e0f4d..963cb18 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -2,6 +2,7 @@ using System.Net;
+ using System.Net.Http.Json;
+ using System.Text.Json.Nodes;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -31,6 +32,11 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Equal(companyId, dashboard!.CompanyId);
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "pending_approvals" && x.CurrentValue == 0 && x.TrendDirection == "unknown");
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "open_tasks" && x.CurrentValue == 0 && x.TrendDirection == "unknown");
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "completed_tasks_7d" && x.CurrentValue == 0 && x.PreviousValue == 0 && x.TrendDirection == "flat");
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "active_agents" && x.CurrentValue == 0);
+         Assert.True(dashboard.EmptyStateFlags.NoAgents);
+         Assert.True(dashboard.EmptyStateFlags.NoWorkflows);
+         Assert.True(dashboard.EmptyStateFlags.NoKnowledge);
+@@ -66,6 +72,11 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.NotNull(dashboard);
+         Assert.Equal(seed.CompanyId, dashboard!.CompanyId);
+         Assert.NotNull(dashboard.DailyBriefing);
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "pending_approvals" && x.CurrentValue == 1);
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "open_tasks" && x.CurrentValue == 1);
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "completed_tasks_7d" && x.CurrentValue == 2 && x.PreviousValue == 1 && x.TrendDirection == "up");
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "active_agents" && x.CurrentValue == 1);
++        Assert.Contains(dashboard.SummaryKpis, x => x.Key == "blocked_tasks" && x.CurrentValue == 0);
+         Assert.Equal(1, dashboard.PendingApprovals.TotalCount);
+         Assert.Contains(dashboard.PendingApprovals.Items, x => x.Id == seed.ApprovalId);
+         Assert.Contains(dashboard.PendingApprovals.Items, x => x.Id == seed.ApprovalId && x.Route.Contains($"approvalId={seed.ApprovalId}", StringComparison.OrdinalIgnoreCase));
+@@ -95,6 +106,31 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.NotEqual(ExecutiveCockpitDashboardCache.BuildCacheKey(companyA), ExecutiveCockpitDashboardCache.BuildCacheKey(companyB));
+     }
+ 
++    [Theory]
++    [InlineData(5, 2, "up", 3, 150)]
++    [InlineData(2, 5, "down", -3, -60)]
++    [InlineData(3, 3, "flat", 0, 0)]
++    public void Kpi_trend_calculator_compares_current_to_previous_period(
++        int current,
++        int previous,
++        string expectedDirection,
++        int expectedDelta,
++        decimal expectedPercentage)
++    {
++        var trend = ExecutiveCockpitKpiTrendCalculator.Calculate(current, previous);
++
++        Assert.Equal(expectedDirection, trend.Direction);
++        Assert.Equal(expectedDelta, trend.DeltaValue);
++        Assert.Equal(expectedPercentage, trend.DeltaPercentage);
++    }
++
++    [Fact]
++    public void Kpi_trend_calculator_avoids_divide_by_zero_and_unknown_prior_values()
++    {
++        Assert.Null(ExecutiveCockpitKpiTrendCalculator.Calculate(4, 0).DeltaPercentage);
++        Assert.Equal("unknown", ExecutiveCockpitKpiTrendCalculator.Calculate(4, null).Direction);
++        Assert.Null(ExecutiveCockpitKpiTrendCalculator.Calculate(4, null).DeltaValue);
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+@@ -146,6 +182,9 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         var workflowExceptionId = Guid.NewGuid();
+         var approvalId = Guid.NewGuid();
+         var documentId = Guid.NewGuid();
++        var completedTaskCurrentId = Guid.NewGuid();
++        var completedTaskCurrentSecondId = Guid.NewGuid();
++        var completedTaskPreviousId = Guid.NewGuid();
+         var otherCompanyApprovalId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+@@ -161,8 +200,23 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+             var task = new WorkTask(taskId, companyId, "ops", "Complete founder report", null, WorkTaskPriority.High, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
+             task.UpdateStatus(WorkTaskStatus.InProgress);
+             dbContext.WorkTasks.Add(task);
+ 
++            var completedTaskCurrent = new WorkTask(completedTaskCurrentId, companyId, "ops", "Publish current report", null, WorkTaskPriority.Normal, agentId, null, "user", userId);
++            completedTaskCurrent.UpdateStatus(WorkTaskStatus.Completed);
++            SetTaskTimestamps(completedTaskCurrent, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow.AddDays(-1));
++
++            var completedTaskCurrentSecond = new WorkTask(completedTaskCurrentSecondId, companyId, "ops", "Close current checklist", null, WorkTaskPriority.Normal, agentId, null, "user", userId);
++            completedTaskCurrentSecond.UpdateStatus(WorkTaskStatus.Completed);
++            SetTaskTimestamps(completedTaskCurrentSecond, DateTime.UtcNow.AddDays(-2), DateTime.UtcNow.AddDays(-2));
++
++            var completedTaskPrevious = new WorkTask(completedTaskPreviousId, companyId, "ops", "Publish previous report", null, WorkTaskPriority.Normal, agentId, null, "user", userId);
++            completedTaskPrevious.UpdateStatus(WorkTaskStatus.Completed);
++            SetTaskTimestamps(completedTaskPrevious, DateTime.UtcNow.AddDays(-10), DateTime.UtcNow.AddDays(-10));
++
++            dbContext.WorkTasks.AddRange(completedTaskCurrent, completedTaskCurrentSecond, completedTaskPrevious);
++
+             dbContext.CompanyKnowledgeDocuments.Add(new CompanyKnowledgeDocument(
+                 documentId,
+                 companyId,
+                 "Cockpit handbook",
+@@ -199,6 +253,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties) =>
+         properties.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
++    private static void SetTaskTimestamps(WorkTask task, DateTime createdUtc, DateTime completedUtc)
++    {
++        typeof(WorkTask).GetProperty(nameof(WorkTask.CreatedUtc))!.SetValue(task, createdUtc);
++        typeof(WorkTask).GetProperty(nameof(WorkTask.UpdatedUtc))!.SetValue(task, completedUtc);
++        typeof(WorkTask).GetProperty(nameof(WorkTask.CompletedUtc))!.SetValue(task, completedUtc);
++    }
++
+     private sealed record CockpitSeed(Guid CompanyId, Guid OtherCompanyId, Guid ApprovalId, Guid OtherCompanyApprovalId, Guid WorkflowExceptionId, Guid WorkflowInstanceId, Guid TaskId);
+ 
+     private sealed class ExecutiveCockpitDashboardResponse
+@@ -206,6 +267,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         public Guid CompanyId { get; set; }
+         public ExecutiveCockpitDailyBriefingResponse? DailyBriefing { get; set; }
++        public List<ExecutiveCockpitSummaryKpiResponse> SummaryKpis { get; set; } = [];
+         public ExecutiveCockpitPendingApprovalsResponse PendingApprovals { get; set; } = new();
+         public List<ExecutiveCockpitAlertResponse> Alerts { get; set; } = [];
+         public List<ExecutiveCockpitDepartmentKpiResponse> DepartmentKpis { get; set; } = [];
+@@ -216,6 +278,19 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+     }
+ 
+     private sealed class ExecutiveCockpitDailyBriefingResponse { public Guid Id { get; set; } }
++    private sealed class ExecutiveCockpitSummaryKpiResponse
++    {
++        public string Key { get; set; } = string.Empty;
++        public string Label { get; set; } = string.Empty;
++        public int CurrentValue { get; set; }
++        public int? PreviousValue { get; set; }
++        public string TrendDirection { get; set; } = string.Empty;
++        public int? DeltaValue { get; set; }
++        public decimal? DeltaPercentage { get; set; }
++        public string DeltaText { get; set; } = string.Empty;
++        public string ComparisonLabel { get; set; } = string.Empty;
++        public bool IsEmpty { get; set; }
++    }
+     private sealed class ExecutiveCockpitPendingApprovalsResponse { public int TotalCount { get; set; } public List<ExecutiveCockpitApprovalResponse> Items { get; set; } = []; public string Route { get; set; } = string.Empty; }
+     private sealed class ExecutiveCockpitApprovalResponse { public Guid Id { get; set; } public string Route { get; set; } = string.Empty; }
+     private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } public string? Route { get; set; } }
+END_OF_PATCH

@@ -127,7 +127,7 @@ public sealed class ApprovalApiClient
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
     }
 
-    private static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
+    internal static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
     [
         new()
         {
@@ -137,6 +137,10 @@ public sealed class ApprovalApiClient
             TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
             ApprovalType = "threshold",
             Status = "pending",
+            RequestedByActorType = "agent",
+            RequestedByActorId = Guid.Parse("6ed95431-1b05-4419-8342-245d87d516e8"),
+            RequiredRole = "owner",
+            RequiredUserId = null,
             RationaleSummary = "This action exceeded a configured approval threshold.",
             Steps =
             [

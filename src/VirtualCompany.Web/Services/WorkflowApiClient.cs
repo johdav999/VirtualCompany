@@ -26,6 +26,11 @@ public sealed class WorkflowApiClient
             ? Task.FromResult<IReadOnlyList<WorkflowInstanceViewModel>>([])
             : GetAsync<IReadOnlyList<WorkflowInstanceViewModel>>($"api/companies/{companyId}/workflows/instances", cancellationToken);
 
+    public Task<WorkflowInstanceViewModel> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(OfflineInstance(companyId, instanceId))
+            : GetAsync<WorkflowInstanceViewModel>($"api/companies/{companyId}/workflows/instances/{instanceId}", cancellationToken);
+
     public async Task<WorkflowDefinitionViewModel> GetLatestDefinitionByCodeAsync(Guid companyId, string code, CancellationToken cancellationToken = default)
     {
         if (_useOfflineMode)
@@ -154,6 +159,23 @@ public sealed class WorkflowApiClient
             DefinitionJson = new Dictionary<string, JsonNode?> { ["templateCode"] = JsonValue.Create("LEAD-FOLLOW-UP") }
         }
     ];
+
+    private static WorkflowInstanceViewModel OfflineInstance(Guid companyId, Guid instanceId) =>
+        new()
+        {
+            Id = instanceId,
+            CompanyId = companyId,
+            DefinitionId = Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"),
+            TriggerSource = "manual",
+            TriggerRef = "offline",
+            Status = "started",
+            State = "started",
+            CurrentStep = "qualify-lead",
+            StartedAt = DateTime.UtcNow.AddHours(-2),
+            UpdatedAt = DateTime.UtcNow.AddHours(-1),
+            DefinitionCode = "LEAD-FOLLOW-UP",
+            DefinitionName = "Lead follow-up"
+        };
 
     private sealed class ApiProblemResponse
     {

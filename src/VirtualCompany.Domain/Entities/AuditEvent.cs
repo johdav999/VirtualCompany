@@ -1,10 +1,24 @@
 namespace VirtualCompany.Domain.Entities;
 
+public sealed record AuditDataSourceUsed(
+    string SourceType,
+    string? SourceId = null,
+    string? DisplayName = null,
+    string? Reference = null);
+
 public sealed class AuditEvent : ICompanyOwnedEntity
 {
     private AuditEvent()
     {
+        Metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
     }
+
+    private const string AgentActorType = "agent";
+    private const string AgentTargetType = "agent";
+    private const string AgentToolExecutionTargetType = "agent_tool_execution";
+    private const string ApprovalRequestTargetType = "approval_request";
+    private const string WorkflowInstanceTargetType = "workflow_instance";
+    private const string WorkTaskTargetType = "work_task";
 
     public AuditEvent(
         Guid id,
@@ -19,7 +33,8 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         IEnumerable<string>? dataSources = null,
         IReadOnlyDictionary<string, string?>? metadata = null,
         string? correlationId = null,
-        DateTime? occurredUtc = null)
+        DateTime? occurredUtc = null,
+        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -41,8 +56,14 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         Outcome = NormalizeRequired(outcome, nameof(outcome), 64);
         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), 512);
         DataSources = NormalizeDataSources(dataSources);
+        DataSourcesUsed = NormalizeDataSourcesUsed(dataSourcesUsed);
         Metadata = NormalizeMetadata(metadata);
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        RelatedAgentId = ResolveActorAgentId() ?? ResolveRelatedId(AgentTargetType, "agentId");
+        RelatedTaskId = ResolveRelatedId(WorkTaskTargetType, "taskId", "workTaskId");
+        RelatedWorkflowInstanceId = ResolveRelatedId(WorkflowInstanceTargetType, "workflowInstanceId");
+        RelatedApprovalRequestId = ResolveRelatedId(ApprovalRequestTargetType, "approvalRequestId");
+        RelatedToolExecutionAttemptId = ResolveRelatedId(AgentToolExecutionTargetType, "toolExecutionId", "toolExecutionAttemptId");
         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
     }
 
@@ -56,8 +77,14 @@ public sealed class AuditEvent : ICompanyOwnedEntity
     public string Outcome { get; private set; } = null!;
     public string? RationaleSummary { get; private set; }
     public List<string> DataSources { get; private set; } = [];
+    public List<AuditDataSourceUsed> DataSourcesUsed { get; private set; } = [];
     public Dictionary<string, string?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public string? CorrelationId { get; private set; }
+    public Guid? RelatedAgentId { get; private set; }
+    public Guid? RelatedTaskId { get; private set; }
+    public Guid? RelatedWorkflowInstanceId { get; private set; }
+    public Guid? RelatedApprovalRequestId { get; private set; }
+    public Guid? RelatedToolExecutionAttemptId { get; private set; }
     public DateTime OccurredUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 
@@ -114,6 +141,42 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         return normalized.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    private static List<AuditDataSourceUsed> NormalizeDataSourcesUsed(IEnumerable<AuditDataSourceUsed>? dataSourcesUsed)
+    {
+        if (dataSourcesUsed is null)
+        {
+            return [];
+        }
+
+        var normalized = new Dictionary<string, AuditDataSourceUsed>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dataSource in dataSourcesUsed)
+        {
+            if (dataSource is null || string.IsNullOrWhiteSpace(dataSource.SourceType))
+            {
+                continue;
+            }
+
+            var source = new AuditDataSourceUsed(
+                NormalizeRequired(dataSource.SourceType, nameof(dataSourcesUsed), 64),
+                NormalizeOptional(dataSource.SourceId, nameof(dataSourcesUsed), 128),
+                NormalizeOptional(dataSource.DisplayName, nameof(dataSourcesUsed), 200),
+                NormalizeOptional(dataSource.Reference, nameof(dataSourcesUsed), 512));
+
+            var key = string.Join(
+                ":",
+                source.SourceType,
+                source.SourceId ?? string.Empty,
+                source.DisplayName ?? string.Empty,
+                source.Reference ?? string.Empty);
+            normalized[key] = source;
+        }
+
+        return normalized.Values
+            .OrderBy(value => value.SourceType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value.SourceId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private static Dictionary<string, string?> NormalizeMetadata(IReadOnlyDictionary<string, string?>? metadata)
     {
         var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -134,5 +197,30 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         }
 
         return normalized;
+    }
+
+    private Guid? ResolveActorAgentId() =>
+        ActorId.HasValue && string.Equals(ActorType, AgentActorType, StringComparison.OrdinalIgnoreCase)
+            ? ActorId.Value
+            : null;
+
+    private Guid? ResolveRelatedId(string targetType, params string[] metadataKeys)
+    {
+        if (string.Equals(TargetType, targetType, StringComparison.OrdinalIgnoreCase) &&
+            Guid.TryParse(TargetId, out var targetId))
+        {
+            return targetId;
+        }
+
+        foreach (var metadataKey in metadataKeys)
+        {
+            if (Metadata.TryGetValue(metadataKey, out var value) &&
+                Guid.TryParse(value, out var metadataId))
+            {
+                return metadataId;
+            }
+        }
+
+        return null;
     }
 }

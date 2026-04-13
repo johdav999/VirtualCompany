@@ -1,0 +1,379 @@
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+index 2f5df8d..9a2d4d8 100644
+--- a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -30,6 +30,10 @@ public sealed record ApprovalInboxItemDto(
+     Guid TargetEntityId,
+     string Status,
+     string RationaleSummary,
++    string RequestedByActorType,
++    Guid RequestedByActorId,
++    string? RequiredRole,
++    Guid? RequiredUserId,
+     string AffectedDataSummary,
+     string? ThresholdSummary,
+     ApprovalStepDto? CurrentStep,
+@@ -39,5 +43,6 @@ public sealed record SetNotificationStatusCommand(string Status);
+ 
+ public interface INotificationInboxService
+ {
+     Task<NotificationInboxDto> GetInboxAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<ApprovalRequestDto> GetApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
+     Task<NotificationListItemDto> SetStatusAsync(Guid companyId, Guid notificationId, SetNotificationStatusCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 53268f7..701b80c 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+ [Route("api/companies/{companyId:guid}")]
+@@ -57,6 +58,25 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("approvals/inbox/{approvalId:guid}")]
++    public async Task<ActionResult<ApprovalRequestDto>> GetApprovalInboxDetailAsync(
++        Guid companyId,
++        Guid approvalId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _notificationInboxService.GetApprovalDetailAsync(companyId, approvalId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+     public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+         SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("read"), cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 665db48..1120c3b 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -43,21 +43,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             .ToListAsync(cancellationToken);
+ 
+         var approvals = (await _approvalRequestService.ListAsync(companyId, "pending", cancellationToken))
+-            .Where(x => IsEligibleApprover(x, membership))
+-            .OrderByDescending(x => x.CreatedAt)
+-            .Take(50)
+-            .Select(x => new ApprovalInboxItemDto(
+-                x.Id,
+-                x.ApprovalType,
+-                x.TargetEntityType,
+-                x.TargetEntityId,
+-                x.Status,
+-                x.RationaleSummary,
+-                x.AffectedDataSummary,
+-                x.ThresholdSummary,
+-                x.CurrentStep,
+-                x.CreatedAt))
+-            .ToList();
++            .Where(x => IsEligibleApprover(x, membership))
++            .OrderByDescending(x => x.CreatedAt)
++            .Take(50)
++            .Select(ToInboxItemDto)
++            .ToList();
+ 
+         return new NotificationInboxDto(
+             notifications.Select(ToDto).ToList(),
+@@ -66,6 +52,28 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             approvals.Count);
+     }
+ 
++    public async Task<ApprovalRequestDto> GetApprovalDetailAsync(
++        Guid companyId,
++        Guid approvalId,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var approval = await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken);
++
++        if (!string.Equals(approval.Status, ApprovalRequestStatus.Pending.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            throw new KeyNotFoundException("Approval request is not pending.");
++        }
++
++        if (!IsEligibleApprover(approval, membership))
++        {
++            throw new UnauthorizedAccessException("The current user is not an approver for this approval request.");
++        }
++
++        return approval;
++    }
++
+     public async Task<NotificationListItemDto> SetStatusAsync(
+         Guid companyId,
+         Guid notificationId,
+@@ -123,4 +131,20 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             notification.Status.ToStorageValue(),
+             notification.CreatedUtc,
+             notification.ReadUtc,
+             notification.ActionedUtc);
++
++    private static ApprovalInboxItemDto ToInboxItemDto(ApprovalRequestDto approval) =>
++        new(
++            approval.Id,
++            approval.ApprovalType,
++            approval.TargetEntityType,
++            approval.TargetEntityId,
++            approval.Status,
++            approval.RationaleSummary,
++            approval.RequestedByActorType,
++            approval.RequestedByActorId,
++            approval.RequiredRole,
++            approval.RequiredUserId,
++            approval.AffectedDataSummary,
++            approval.ThresholdSummary,
++            approval.CurrentStep,
++            approval.CreatedAt);
+ }
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+index 0ddc5fd..c5276a7 100644
+--- a/src/VirtualCompany.Web/Services/InboxApiClient.cs
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -25,6 +25,16 @@ public sealed class InboxApiClient
+         return GetAsync<InboxViewModel>($"api/companies/{companyId}/inbox", cancellationToken);
+     }
+ 
++    public Task<ApprovalRequestViewModel> GetPendingApprovalDetailAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(ApprovalApiClient.OfflineApprovals(companyId).Single(x => x.Id == approvalId));
++        }
++
++        return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/inbox/{approvalId}", cancellationToken);
++    }
++
+     public Task<NotificationListItemViewModel> SetStatusAsync(Guid companyId, Guid notificationId, string status, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+@@ -102,7 +112,7 @@ public sealed class InboxApiClient
+             ],
+             PendingApprovals =
+             [
+-                new() { Id = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"), ApprovalType = "threshold", TargetEntityType = "task", TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"), Status = "pending", RationaleSummary = "This action exceeded a configured approval threshold.", AffectedDataSummary = "Task: Vendor payment run for April", ThresholdSummary = "Threshold: amount 25000 (configured 10000)", CreatedAt = DateTime.UtcNow }
++                new() { Id = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"), ApprovalType = "threshold", TargetEntityType = "task", TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"), Status = "pending", RationaleSummary = "This action exceeded a configured approval threshold.", RequestedByActorType = "agent", RequestedByActorId = Guid.Parse("6ed95431-1b05-4419-8342-245d87d516e8"), RequiredRole = "owner", AffectedDataSummary = "Task: Vendor payment run for April", ThresholdSummary = "Threshold: amount 25000 (configured 10000)", CurrentStep = new ApprovalStepViewModel { Id = Guid.Parse("7c797ca4-4a74-49f5-a669-9dc4173f2aa6"), SequenceNo = 1, ApproverType = "role", ApproverRef = "owner", Status = "pending" }, CreatedAt = DateTime.UtcNow }
+             ],
+             UnreadCount = 1,
+             PendingApprovalCount = 1
+@@ -154,6 +164,10 @@ public sealed class ApprovalInboxItemViewModel
+     public string Status { get; set; } = string.Empty;
+     public string RationaleSummary { get; set; } = string.Empty;
+     public string AffectedDataSummary { get; set; } = string.Empty;
++    public string RequestedByActorType { get; set; } = string.Empty;
++    public Guid RequestedByActorId { get; set; }
++    public string? RequiredRole { get; set; }
++    public Guid? RequiredUserId { get; set; }
+     public string? ThresholdSummary { get; set; }
+     public ApprovalStepViewModel? CurrentStep { get; set; }
+     public DateTime CreatedAt { get; set; }
+diff --git a/src/VirtualCompany.Web/Services/ApprovalApiClient.cs b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+index 1e845ad..bd8b298 100644
+--- a/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+@@ -112,7 +112,7 @@ public sealed class ApprovalApiClient
+         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+     }
+ 
+-    private static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
++    internal static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
+     [
+         new()
+         {
+@@ -122,6 +122,10 @@ public sealed class ApprovalApiClient
+             TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
+             ApprovalType = "threshold",
+             Status = "pending",
++            RequestedByActorType = "agent",
++            RequestedByActorId = Guid.Parse("6ed95431-1b05-4419-8342-245d87d516e8"),
++            RequiredRole = "owner",
++            RequiredUserId = null,
+             RationaleSummary = "This action exceeded a configured approval threshold.",
+             Steps =
+             [
+diff --git a/src/VirtualCompany.Web/Pages/Inbox.razor b/src/VirtualCompany.Web/Pages/Inbox.razor
+index 7146d5e..2ab2293 100644
+--- a/src/VirtualCompany.Web/Pages/Inbox.razor
++++ b/src/VirtualCompany.Web/Pages/Inbox.razor
+@@ -69,7 +69,9 @@ else
+                                             <strong>@approval.ApprovalType approval</strong>
+                                             <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
+                                             <div class="small mt-2">@approval.AffectedDataSummary</div>
+-                                            @if (!string.IsNullOrWhiteSpace(approval.ThresholdSummary))
++                                            <div class="small mt-1">Requested by @approval.RequestedByActorType @approval.RequestedByActorId.ToString("N")</div>
++                                            <div class="small mt-1">Approver: @FormatApprover(approval)</div>
++                                            @if (!string.IsNullOrWhiteSpace(approval.ThresholdSummary))
+                                             {
+                                                 <div class="small mt-1">@approval.ThresholdSummary</div>
+                                             }
+@@ -255,6 +257,16 @@ else
+             "high" => "badge text-bg-warning",
+             _ => "badge text-bg-light"
+         };
++
++    private static string FormatApprover(ApprovalInboxItemViewModel approval)
++    {
++        if (approval.RequiredUserId is Guid requiredUserId)
++        {
++            return $"user {requiredUserId:N}";
++        }
++
++        return !string.IsNullOrWhiteSpace(approval.RequiredRole) ? $"role {approval.RequiredRole}" : FormatStepApprover(approval.CurrentStep);
++    }
++
++    private static string FormatStepApprover(ApprovalStepViewModel? step) =>
++        step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+index 7ceac87..c43ca9f 100644
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -1,5 +1,6 @@
+ @page "/approvals"
+ @inject ApprovalApiClient ApprovalApiClient
++@inject InboxApiClient InboxApiClient
+ @inject OnboardingApiClient OnboardingApiClient
+ @inject NavigationManager Navigation
+ @using Microsoft.AspNetCore.Components
+@@ -107,6 +108,8 @@ else
+                                         <strong>@approval.ApprovalType approval</strong>
+                                         <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
+                                         <div class="small mt-2">@approval.AffectedDataSummary</div>
++                                        <div class="small mt-1">Requested by @approval.RequestedByActorType @approval.RequestedByActorId.ToString("N")</div>
++                                        <div class="small mt-1">Approver: @FormatApprover(approval)</div>
+                                     </div>
+                                     <span class="badge text-bg-light align-self-start">@approval.Status</span>
+                                 </div>
+@@ -130,6 +133,12 @@ else
+                         <dt>Target</dt>
+                         <dd>@selectedApproval.TargetEntityType</dd>
++                        <dt>Target id</dt>
++                        <dd>@selectedApproval.TargetEntityId.ToString("N")</dd>
++                        <dt>Requested by</dt>
++                        <dd>@selectedApproval.RequestedByActorType @selectedApproval.RequestedByActorId.ToString("N")</dd>
++                        <dt>Required approver</dt>
++                        <dd>@FormatApprover(selectedApproval)</dd>
+                     </dl>
+ 
+                     <h3 class="h6">Rationale</h3>
+@@ -237,9 +246,7 @@ else
+ 
+             companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+-            approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
+-            selectedApproval = ApprovalId is Guid approvalId
+-                ? await ApprovalApiClient.GetAsync(companyId, approvalId)
+-                : approvals.FirstOrDefault();
++            await LoadApprovalInboxAsync(companyId);
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -259,7 +266,7 @@ else
+             return;
+         }
+ 
+-        selectedApproval = await ApprovalApiClient.GetAsync(companyId, approvalId);
++        selectedApproval = IsPendingInboxFilter ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId) : await ApprovalApiClient.GetAsync(companyId, approvalId);
+         decisionComment = null;
+         Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
+     }
+@@ -293,7 +300,7 @@ else
+                     Comment = decisionComment
+                 });
+             selectedApproval = result.Approval;
+-            approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
++            await LoadApprovalInboxAsync(companyId);
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -304,6 +311,37 @@ else
+         }
+     }
+ 
++    private async Task LoadApprovalInboxAsync(Guid companyId)
++    {
++        if (IsPendingInboxFilter)
++        {
++            var inbox = await InboxApiClient.GetInboxAsync(companyId);
++            approvals = inbox.PendingApprovals.Select(ToApprovalRequestViewModel).ToList();
++            selectedApproval = ApprovalId is Guid approvalId
++                ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId)
++                : approvals.FirstOrDefault();
++            return;
++        }
++
++        approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
++        selectedApproval = ApprovalId is Guid selectedApprovalId
++            ? await ApprovalApiClient.GetAsync(companyId, selectedApprovalId)
++            : approvals.FirstOrDefault();
++    }
++
++    private static ApprovalRequestViewModel ToApprovalRequestViewModel(ApprovalInboxItemViewModel item) =>
++        new()
++        {
++            Id = item.Id,
++            TargetEntityType = item.TargetEntityType,
++            TargetEntityId = item.TargetEntityId,
++            ApprovalType = item.ApprovalType,
++            Status = item.Status,
++            RationaleSummary = item.RationaleSummary,
++            RequestedByActorType = item.RequestedByActorType,
++            RequestedByActorId = item.RequestedByActorId,
++            RequiredRole = item.RequiredRole,
++            RequiredUserId = item.RequiredUserId,
++            AffectedDataSummary = item.AffectedDataSummary,
++            ThresholdSummary = item.ThresholdSummary,
++            CurrentStep = item.CurrentStep,
++            CreatedAt = item.CreatedAt
++        };
++
+     private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
+         selectedApproval?.Id == approval.Id
+             ? "list-group-item list-group-item-action active"
+@@ -313,6 +351,8 @@ else
+         string.IsNullOrWhiteSpace(Status)
+             ? "pending"
+             : Status.Trim();
++
++    private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, "pending", StringComparison.OrdinalIgnoreCase);
+ 
+     private static bool IsSelected(string? currentValue, string expectedValue) =>
+         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+@@ -320,4 +360,21 @@ else
+ 
+     private static bool IsPending(ApprovalRequestViewModel approval) =>
+         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
++
++    private static string FormatApprover(ApprovalRequestViewModel approval)
++    {
++        if (approval.RequiredUserId is Guid requiredUserId)
++        {
++            return $"user {requiredUserId:N}";
++        }
++
++        if (!string.IsNullOrWhiteSpace(approval.RequiredRole))
++        {
++            return $"role {approval.RequiredRole}";
++        }
++
++        return FormatStepApprover(approval.CurrentStep);
++    }
++
++    private static string FormatStepApprover(ApprovalStepViewModel? step) =>
++        step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
+ }
+END_OF_PATCH

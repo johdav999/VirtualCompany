@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.4",
+  "promptPath": ".ai-design/prompts/TASK-12.2.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:17:40.782Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-17-40-782Z_TASK-12.2.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-17-40-782Z_TASK-12.2.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:20:35.483Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "history.Items);\n+        Assert.True(item.Explanation.Summary.Length <= 240);\n+        Assert.True(detail.Explanation.Summary.Length <= 240);\n+        Assert.Contains(\"finance policy\", detail.Explanation.DataSources);\n+        Assert.Contains(\"customer record\", detail.Explanation.DataSources);\n+        Assert.Equal(\"task_12_2_4\", detail.Metadata[\"policyVersion\"]);\n+        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"reasoning\", StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"notes\", StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(JsonSerializer.Serialize(detail), \"chain-of-thought\", StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain(JsonSerializer.Serialize(detail), \"scratchpad\", StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void SafeAuditExplanationMapper_uses_fallback_for_missing_or_raw_reasoning_summary()\n+    {\n+        var missing = SafeAuditExplanationMapper.Build(\n+            AuditEventActions.AgentToolExecutionExecuted,\n+            AuditEventOutcomes.Succeeded,\n+            null,\n+            [\"policy guardrails\"]);\n+        var unsafeSummary = SafeAuditExplanationMapper.Build(\n+            AuditEventActions.AgentToolExecutionExecuted,\n+            AuditEventOutcomes.Succeeded,\n+            \"chain-of-thought: I considered hidden alternatives before doing the action.\",\n+            [\"policy guardrails\"]);\n+\n+        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, missing.Summary);\n+        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, unsafeSummary.Summary);\n+        Assert.Contains(\"policy guardrails\", unsafeSummary.DataSources);\n+        Assert.DoesNotContain(\"chain-of-thought\", unsafeSummary.Summary, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     [Fact]\n     public async Task GetAsync_returns_linked_approvals_tool_executions_and_affected_entities_for_action_detail()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "      Assert.True(item.Explanation.Summary.Length <= 240);\n+        Assert.True(detail.Explanation.Summary.Length <= 240);\n+        Assert.Contains(\"finance policy\", detail.Explanation.DataSources);\n+        Assert.Contains(\"customer record\", detail.Explanation.DataSources);\n+        Assert.Equal(\"task_12_2_4\", detail.Metadata[\"policyVersion\"]);\n+        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"reasoning\", StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"notes\", StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(JsonSerializer.Serialize(detail), \"chain-of-thought\", StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain(JsonSerializer.Serialize(detail), \"scratchpad\", StringComparison.OrdinalIgnoreCase);\n+    }\n+\n+    [Fact]\n+    public void SafeAuditExplanationMapper_uses_fallback_for_missing_or_raw_reasoning_summary()\n+    {\n+        var missing = SafeAuditExplanationMapper.Build(\n+            AuditEventActions.AgentToolExecutionExecuted,\n+            AuditEventOutcomes.Succeeded,\n+            null,\n+            [\"policy guardrails\"]);\n+        var unsafeSummary = SafeAuditExplanationMapper.Build(\n+            AuditEventActions.AgentToolExecutionExecuted,\n+            AuditEventOutcomes.Succeeded,\n+            \"chain-of-thought: I considered hidden alternatives before doing the action.\",\n+            [\"policy guardrails\"]);\n+\n+        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, missing.Summary);\n+        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, unsafeSummary.Summary);\n+        Assert.Contains(\"policy guardrails\", unsafeSummary.DataSources);\n+        Assert.DoesNotContain(\"chain-of-thought\", unsafeSummary.Summary, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     [Fact]\n     public async Task GetAsync_returns_linked_approvals_tool_executions_and_affected_entities_for_action_detail()\n     {\nEND_OF_PATCH\ntokens used\n61,114\n",
+  "verbosityMode": "summary"
+}

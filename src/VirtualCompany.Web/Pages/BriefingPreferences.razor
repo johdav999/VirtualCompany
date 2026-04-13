@@ -1,0 +1,212 @@
+@page "/briefing-preferences"
+@inject OnboardingApiClient ApiClient
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.Components
+
+<PageTitle>Briefing Delivery</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Briefing delivery</h1>
+        <p class="text-body-secondary mb-0">Loading delivery preferences...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Briefing delivery</span>
+                <h1>Choose a company</h1>
+                <p class="lead mb-3">Briefing delivery preferences are scoped to your user account in a company workspace.</p>
+
+                @if (ActiveMemberships.Count > 0)
+                {
+                    <div class="template-grid mt-4">
+                        @foreach (var membership in ActiveMemberships)
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@($"/briefing-preferences?companyId={membership.CompanyId}")">
+                                <strong>@membership.CompanyName</strong>
+                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Briefing delivery</span>
+                <h1>@(companyAccess?.CompanyName ?? "Briefing delivery")</h1>
+                <p class="text-body-secondary mb-0">Choose whether daily briefings and executive summaries should appear in the workspace inbox.</p>
+
+                @if (!string.IsNullOrWhiteSpace(successMessage))
+                {
+                    <div class="alert alert-success mt-4 mb-0">@successMessage</div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+
+                <EditForm Model="form" OnValidSubmit="SaveAsync" class="mt-4">
+                    <div class="form-check form-switch mb-3">
+                        <InputCheckbox id="in-app-enabled" class="form-check-input" @bind-Value="form.InAppEnabled" />
+                        <label class="form-check-label" for="in-app-enabled">
+                            In-app notifications
+                        </label>
+                        <div class="form-text">Create briefing notifications in the workspace inbox.</div>
+                    </div>
+
+                    <div class="dashboard-actions mt-4">
+                        <button class="btn btn-primary" type="submit" disabled="@isSaving">Save preferences</button>
+                        <a class="btn btn-outline-secondary" href="@DashboardPath">Back to dashboard</a>
+                    </div>
+                </EditForm>
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">Current scope</h2>
+                <dl class="kv-list mb-0">
+                    <dt>Category</dt>
+                    <dd>Daily briefing and executive summary</dd>
+                    <dt>Default</dt>
+                    <dd>In-app on</dd>
+                    <dt>Cadence</dt>
+                    <dd>@(form.DailyEnabled ? "Daily on" : "Daily off") / @(form.WeeklyEnabled ? "Weekly on" : "Weekly off")</dd>
+                </dl>
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    private bool isLoading = true;
+    private bool isSaving;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private BriefingPreferenceForm form = new();
+    private string? errorMessage;
+    private string? successMessage;
+    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            currentUser = await ApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is not Guid companyId)
+            {
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/briefing-preferences?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                }
+
+                return;
+            }
+
+            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+            var preferences = companyAccess is null ? null : await ApiClient.GetBriefingPreferencesAsync(companyId);
+            form = BriefingPreferenceForm.From(preferences);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            companyAccess = null;
+            form = new BriefingPreferenceForm();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isSaving = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            var saved = await ApiClient.UpdateBriefingPreferencesAsync(companyId, form.ToRequest());
+            form = BriefingPreferenceForm.From(saved);
+            successMessage = "Briefing delivery preferences saved.";
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private sealed class BriefingPreferenceForm
+    {
+        public bool InAppEnabled { get; set; } = true;
+        public bool MobileEnabled { get; set; }
+        public bool DailyEnabled { get; set; } = true;
+        public bool WeeklyEnabled { get; set; } = true;
+        public TimeOnly? PreferredDeliveryTime { get; set; } = new(8, 0);
+        public string? PreferredTimezone { get; set; }
+
+        public static BriefingPreferenceForm From(BriefingPreferenceViewModel? preferences) =>
+            preferences is null
+                ? new BriefingPreferenceForm()
+                : new BriefingPreferenceForm
+                {
+                    InAppEnabled = preferences.InAppEnabled,
+                    MobileEnabled = preferences.MobileEnabled,
+                    DailyEnabled = preferences.DailyEnabled,
+                    WeeklyEnabled = preferences.WeeklyEnabled,
+                    PreferredDeliveryTime = preferences.PreferredDeliveryTime,
+                    PreferredTimezone = preferences.PreferredTimezone
+                };
+
+        public BriefingPreferenceUpdateRequest ToRequest() =>
+            new()
+            {
+                InAppEnabled = InAppEnabled,
+                MobileEnabled = false,
+                DailyEnabled = DailyEnabled,
+                WeeklyEnabled = WeeklyEnabled,
+                PreferredDeliveryTime = PreferredDeliveryTime,
+                PreferredTimezone = PreferredTimezone
+            };
+    }
+}

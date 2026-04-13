@@ -1,0 +1,260 @@
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -186,6 +186,7 @@ public sealed class CompanyNotification : ICompanyOwnedEntity
+     public CompanyNotificationStatus Status { get; private set; }
+     public DateTime? ReadUtc { get; private set; }
+     public DateTime? ActionedUtc { get; private set; }
++    public Guid? ActionedByUserId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public User User { get; private set; } = null!;
+@@ -193,22 +194,41 @@ public sealed class CompanyNotification : ICompanyOwnedEntity
+ 
+     public void MarkRead()
+     {
++        var now = DateTime.UtcNow;
++        if (Status == CompanyNotificationStatus.Actioned)
++        {
++            ReadUtc ??= now;
++            return;
++        }
++
+         Status = CompanyNotificationStatus.Read;
+-        ReadUtc ??= DateTime.UtcNow;
++        ReadUtc ??= now;
+     }
+ 
+     public void MarkUnread()
+     {
++        if (Status == CompanyNotificationStatus.Actioned)
++        {
++            throw new InvalidOperationException("Actioned notifications cannot be marked unread.");
++        }
++
+         Status = CompanyNotificationStatus.Unread;
+         ReadUtc = null;
+     }
+ 
+-    public void MarkActioned()
++    public void MarkActioned(Guid actionedByUserId)
+     {
++        if (actionedByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("Actioned by user id is required.", nameof(actionedByUserId));
++        }
++
++        var now = DateTime.UtcNow;
+         Status = CompanyNotificationStatus.Actioned;
+-        ReadUtc ??= DateTime.UtcNow;
+-        ActionedUtc = DateTime.UtcNow;
++        ReadUtc ??= now;
++        ActionedUtc ??= now;
++        ActionedByUserId ??= actionedByUserId;
+     }
+ }
+diff --git a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
++++ b/src/VirtualCompany.Application/Notifications/NotificationContracts.cs
+@@ -25,7 +25,8 @@ public sealed record NotificationListItemDto(
+     string Status,
+     DateTime CreatedAt,
+     DateTime? ReadAt,
+-    DateTime? ActionedAt);
++    DateTime? ActionedAt,
++    Guid? ActionedByUserId);
+ 
+ public sealed record ApprovalInboxItemDto(
+     Guid Id,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -168,7 +168,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         var finalized = approval.Status != ApprovalRequestStatus.Pending;
+         if (finalized)
+         {
+-            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, cancellationToken);
++            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, membership.UserId, cancellationToken);
+             await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
+             if (linkedEntityTransition is not null)
+             {
+@@ -333,7 +333,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         return null;
+     }
+ 
+-    private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken)
++    private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, Guid actionedByUserId, CancellationToken cancellationToken)
+     {
+         var now = DateTime.UtcNow;
+         await _dbContext.CompanyNotifications
+@@ -346,6 +346,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 setters => setters
+                     .SetProperty(x => x.Status, CompanyNotificationStatus.Actioned)
+                     .SetProperty(x => x.ActionedUtc, now)
++                    .SetProperty(x => x.ActionedByUserId, (Guid?)actionedByUserId)
+                     .SetProperty(x => x.ReadUtc, x => x.ReadUtc ?? now),
+                 cancellationToken);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -99,7 +99,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+                 notification.MarkRead();
+                 break;
+             case "actioned":
+-                notification.MarkActioned();
++                notification.MarkActioned(membership.UserId);
+                 break;
+             default:
+                 throw new ArgumentOutOfRangeException(nameof(command), command.Status, "Notification status must be unread, read, or actioned.");
+@@ -149,7 +149,8 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             notification.Status.ToStorageValue(),
+             notification.CreatedUtc,
+             notification.ReadUtc,
+-            notification.ActionedUtc);
++            notification.ActionedUtc,
++            notification.ActionedByUserId);
+ 
+     private static ApprovalInboxItemDto ToInboxItemDto(ApprovalRequestDto approval) =>
+         new(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1243,6 +1243,7 @@ internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguratio
+         builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(300).IsRequired();
+         builder.Property(x => x.ReadUtc).HasColumnName("read_at");
+         builder.Property(x => x.ActionedUtc).HasColumnName("actioned_at");
++        builder.Property(x => x.ActionedByUserId).HasColumnName("actioned_by_user_id");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Status, x.CreatedUtc });
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413210000_AddNotificationInbox.cs
+@@ -36,6 +36,7 @@ public partial class AddNotificationInbox : Migration
+         migrationBuilder.AddColumn<string>(name: "dedupe_key", table: "company_notifications", type: string300Type, maxLength: 300, nullable: false, defaultValue: "");
+         migrationBuilder.AddColumn<DateTime>(name: "read_at", table: "company_notifications", type: dateTimeType, nullable: true);
+         migrationBuilder.AddColumn<DateTime>(name: "actioned_at", table: "company_notifications", type: dateTimeType, nullable: true);
++        migrationBuilder.AddColumn<Guid>(name: "actioned_by_user_id", table: "company_notifications", type: guidType, nullable: true);
+ 
+         migrationBuilder.Sql(isPostgres
+             ? """
+@@ -77,6 +78,7 @@ public partial class AddNotificationInbox : Migration
+         migrationBuilder.DropColumn(name: "dedupe_key", table: "company_notifications");
+         migrationBuilder.DropColumn(name: "read_at", table: "company_notifications");
+         migrationBuilder.DropColumn(name: "actioned_at", table: "company_notifications");
++        migrationBuilder.DropColumn(name: "actioned_by_user_id", table: "company_notifications");
+         migrationBuilder.AlterColumn<Guid>(name: "briefing_id", table: "company_notifications", type: guidType, nullable: false, oldClrType: typeof(Guid), oldType: guidType, oldNullable: true);
+         migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_briefing_id_channel", "company_notifications", new[] { "company_id", "user_id", "briefing_id", "channel" }, unique: true);
+     }
+diff --git a/src/VirtualCompany.Api/Controllers/NotificationsController.cs b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/NotificationsController.cs
++++ b/src/VirtualCompany.Api/Controllers/NotificationsController.cs
+@@ -84,14 +84,22 @@ public sealed class NotificationsController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("notifications/{notificationId:guid}/read")]
+     [HttpPatch("notifications/{notificationId:guid}/read")]
+     public Task<ActionResult<NotificationListItemDto>> MarkReadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+         SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("read"), cancellationToken);
+ 
++    [HttpPost("notifications/{notificationId:guid}/unread")]
+     [HttpPatch("notifications/{notificationId:guid}/unread")]
+     public Task<ActionResult<NotificationListItemDto>> MarkUnreadAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
+         SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("unread"), cancellationToken);
+ 
++    [HttpPost("notifications/{notificationId:guid}/actioned")]
++    [HttpPatch("notifications/{notificationId:guid}/actioned")]
++    public Task<ActionResult<NotificationListItemDto>> MarkActionedAsync(Guid companyId, Guid notificationId, CancellationToken cancellationToken) =>
++        SetStatusAsync(companyId, notificationId, new SetNotificationStatusCommand("actioned"), cancellationToken);
++
+     [HttpPatch("inbox/notifications/{notificationId:guid}/status")]
++    [HttpPost("inbox/notifications/{notificationId:guid}/status")]
+     [HttpPatch("notifications/{notificationId:guid}/status")]
+     public async Task<ActionResult<NotificationListItemDto>> SetStatusAsync(
+         Guid companyId,
+@@ -110,7 +118,7 @@ public sealed class NotificationsController : ControllerBase
+         {
+             return NotFound();
+         }
+-        catch (ArgumentOutOfRangeException ex)
++        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException)
+         {
+             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+             {
+diff --git a/src/VirtualCompany.Web/Services/InboxApiClient.cs b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/InboxApiClient.cs
++++ b/src/VirtualCompany.Web/Services/InboxApiClient.cs
+@@ -37,6 +37,16 @@ public sealed class InboxApiClient
+         {
+             var notification = OfflineInbox(companyId).Notifications.Single(x => x.Id == notificationId);
+             notification.Status = status;
++            if (string.Equals(status, "read", StringComparison.OrdinalIgnoreCase))
++            {
++                notification.ReadAt ??= DateTime.UtcNow;
++            }
++            else if (string.Equals(status, "actioned", StringComparison.OrdinalIgnoreCase))
++            {
++                notification.ReadAt ??= DateTime.UtcNow;
++                notification.ActionedAt ??= DateTime.UtcNow;
++            }
++
+             return Task.FromResult(notification);
+         }
+ 
+@@ -148,6 +158,7 @@ public sealed class NotificationListItemViewModel
+     public DateTime CreatedAt { get; set; }
+     public DateTime? ReadAt { get; set; }
+     public DateTime? ActionedAt { get; set; }
++    public Guid? ActionedByUserId { get; set; }
+ }
+ 
+ public sealed class ApprovalInboxItemViewModel
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+@@ -25,11 +25,30 @@ public sealed class NotificationInboxTests
+ 
+         Assert.Equal(CompanyNotificationStatus.Unread, notification.Status);
+         Assert.Null(notification.ReadUtc);
++        Assert.Null(notification.ActionedUtc);
+ 
+-        notification.MarkActioned();
++        var actionedByUserId = Guid.NewGuid();
++        notification.MarkActioned(actionedByUserId);
+ 
+         Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);
+         Assert.NotNull(notification.ReadUtc);
+         Assert.NotNull(notification.ActionedUtc);
++        Assert.Equal(actionedByUserId, notification.ActionedByUserId);
++    }
++
++    [Fact]
++    public void Actioned_notification_cannot_be_marked_unread_or_downgraded_to_read()
++    {
++        var notification = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
++        var actionedByUserId = Guid.NewGuid();
++
++        notification.MarkActioned(actionedByUserId);
++        var actionedAt = notification.ActionedUtc;
++
++        notification.MarkRead();
++
++        Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);
++        Assert.Equal(actionedAt, notification.ActionedUtc);
++        Assert.Equal(actionedByUserId, notification.ActionedByUserId);
++        Assert.Throws<InvalidOperationException>(notification.MarkUnread);
+     }
+ 
+     [Fact]
+END_OF_PATCH

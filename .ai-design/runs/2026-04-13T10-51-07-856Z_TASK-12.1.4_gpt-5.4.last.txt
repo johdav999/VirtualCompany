@@ -1,0 +1,529 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -15,6 +15,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
+     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
+     IReadOnlyList<ExecutiveCockpitActivityItemDto> RecentActivity,
++    ExecutiveCockpitSetupStateDto SetupState,
+     ExecutiveCockpitEmptyStateFlagsDto EmptyStateFlags);
+ 
+ public sealed record ExecutiveCockpitDailyBriefingDto(
+@@ -59,6 +60,16 @@ public sealed record ExecutiveCockpitActivityItemDto(
+     DateTime OccurredUtc,
+     string? Route);
+ 
++public sealed record ExecutiveCockpitSetupStateDto(
++    bool HasAgents,
++    bool HasWorkflows,
++    bool HasKnowledge,
++    int AgentCount,
++    int WorkflowCount,
++    int KnowledgeDocumentCount,
++    bool IsInitialSetupEmpty);
++
+ public sealed record ExecutiveCockpitEmptyStateFlagsDto(
+     bool NoAgents,
+     bool NoWorkflows,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -244,24 +244,34 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+ 
+         var recentActivity = await BuildRecentActivityAsync(companyId, cancellationToken);
+ 
+-        var noWorkflows = workflowDepartments.Count == 0 &&
+-            !await _dbContext.WorkflowInstances
++        var hasWorkflowInstances = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        var knowledgeDocumentCount = await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        var setupState = new ExecutiveCockpitSetupStateDto(
++            agentRows.Count > 0,
++            workflowDepartments.Count > 0 || hasWorkflowInstances,
++            knowledgeDocumentCount > 0,
++            agentRows.Count,
++            workflowDepartments.Count,
++            knowledgeDocumentCount,
++            agentRows.Count == 0 && workflowDepartments.Count == 0 && !hasWorkflowInstances && knowledgeDocumentCount == 0);
++
++        var emptyStates = new ExecutiveCockpitEmptyStateFlagsDto(
++            !setupState.HasAgents,
++            !setupState.HasWorkflows,
++            !setupState.HasKnowledge,
++            recentActivity.Count == 0,
++            pendingApprovals.TotalCount == 0,
++            alerts.Count == 0);
++
+-                .IgnoreQueryFilters()
+-                .AsNoTracking()
+-                .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+-
+-        var noKnowledge = !await _dbContext.CompanyKnowledgeDocuments
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+-
+-        var emptyStates = new ExecutiveCockpitEmptyStateFlagsDto(
+-            agentRows.Count == 0,
+-            noWorkflows,
+-            noKnowledge,
+-            recentActivity.Count == 0,
+-            pendingApprovals.TotalCount == 0,
+-            alerts.Count == 0);
+-
+         return new ExecutiveCockpitDashboardDto(
+             companyId,
+             company.Name,
+@@ -273,6 +283,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             alerts,
+             departmentKpis,
+             recentActivity,
++            setupState,
+             emptyStates);
+     }
+ 
+@@ -379,49 +390,3 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+     private sealed record AgentTaskDashboardAggregate(Guid AgentId, int OpenTasks, int CompletedTasksLast7Days);
+     private sealed record AgentApprovalDashboardAggregate(Guid AgentId, int PendingApprovals);
+ }
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
+-            .OrderByDescending(x => x.UpdatedUtc)
+-            .Take(8)
+-            .Select(x => new ExecutiveCockpitActivityItemDto(
+-                x.Id,
+-                "workflow",
+-                x.Definition.Name,
+-                $"Workflow {x.State.ToStorageValue()}.",
+-                x.UpdatedUtc,
+-                $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}&state={Uri.EscapeDataString(x.State.ToStorageValue())}"))
+-            .ToListAsync(cancellationToken);
+-
+-        return auditItems
+-            .Concat(taskItems)
+-            .Concat(workflowItems)
+-            .OrderByDescending(x => x.OccurredUtc)
+-            .Take(10)
+-            .ToList();
+-    }
+-
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+-    {
+-        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
+-        if (membership is null)
+-        {
+-            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+-        }
+-    }
+-
+-    private static string FirstParagraph(string value, int maxLength)
+-    {
+-        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+-        return paragraph.Length <= maxLength ? paragraph : paragraph[..maxLength].TrimEnd() + "...";
+-    }
+-
+-    private static string? BuildAuditRoute(Guid companyId, string targetType, string targetId)
+-    {
+-        if (!Guid.TryParse(targetId, out var id))
+-        {
+-            return null;
+-        }
+-
+-        return targetType.Trim().ToLowerInvariant() switch
+-        {
+-            "agent" => $"/agents/{id}?companyId={companyId}",
+-            "approval_request" => $"/approvals?companyId={companyId}&approvalId={id}",
+-            "work_task" => $"/tasks?companyId={companyId}&taskId={id}",
+-            "workflow_instance" => $"/workflows?companyId={companyId}&workflowInstanceId={id}",
+-            "workflow_exception" => $"/workflows?companyId={companyId}&exceptionId={id}",
+-            _ => null
+-        };
+-    }
+-}
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -78,6 +78,16 @@ public sealed class ExecutiveCockpitApiClient
+                     Route = $"/agents?companyId={companyId}"
+                 }
+             ],
++            SetupState = new ExecutiveCockpitSetupStateViewModel
++            {
++                HasAgents = false,
++                HasWorkflows = false,
++                HasKnowledge = false,
++                AgentCount = 0,
++                WorkflowCount = 0,
++                KnowledgeDocumentCount = 0,
++                IsInitialSetupEmpty = true
++            },
+             EmptyStateFlags = new ExecutiveCockpitEmptyStateFlagsViewModel
+             {
+                 NoAgents = true,
+@@ -108,6 +118,7 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
+     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
+     public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
++    public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
+     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+ }
+ 
+@@ -172,6 +183,17 @@ public sealed class ExecutiveCockpitActivityItemViewModel
+     public string? Route { get; set; }
+ }
+ 
++public sealed class ExecutiveCockpitSetupStateViewModel
++{
++    public bool HasAgents { get; set; }
++    public bool HasWorkflows { get; set; }
++    public bool HasKnowledge { get; set; }
++    public int AgentCount { get; set; }
++    public int WorkflowCount { get; set; }
++    public int KnowledgeDocumentCount { get; set; }
++    public bool IsInitialSetupEmpty { get; set; }
++}
++
+ public sealed class ExecutiveCockpitEmptyStateFlagsViewModel
+ {
+     public bool NoAgents { get; set; }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -39,6 +39,32 @@
+                 </div>
+             </div>
+         </div>
++        
++        @if (IsInitialSetupEmpty)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide cockpit-empty-hero">
++                <span class="dashboard-kicker">Initial setup</span>
++                <h3 class="h4 mt-2 mb-2">Build the first operating layer</h3>
++                <p class="text-body-secondary mb-0">Add agents, workflows, and company knowledge so the cockpit can turn workspace activity into approvals, alerts, KPIs, and briefings.</p>
++                <div class="dashboard-actions mt-4">
++                    <a class="btn btn-primary" href="@AgentsPath">Hire your first agent</a>
++                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Set up a workflow</a>
++                    <a class="btn btn-outline-secondary" href="@KnowledgePath">Upload company knowledge</a>
++                </div>
++            </article>
++        }
++        else if (dashboard.EmptyStateFlags.NoAgents || dashboard.EmptyStateFlags.NoWorkflows || dashboard.EmptyStateFlags.NoKnowledge)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++                <div class="cockpit-card__header">
++                    <div>
++                        <h3 class="h5 mb-1">Setup guidance</h3>
++                        <p class="text-body-secondary mb-0">Complete the missing setup areas to make cockpit signals more useful.</p>
++                    </div>
++                </div>
++                <div class="cockpit-empty-grid mt-3">
++                    @SetupGuidanceCards()
++                </div>
++            </article>
++        }
+ 
+         <article class="wizard-card wizard-card--compact cockpit-card">
+             <h3 class="h5">Daily briefing</h3>
+@@ -105,26 +131,29 @@
+             }
+         </article>
+ 
+-        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-            <h3 class="h5">Department KPIs</h3>
+-            <div class="cockpit-kpi-grid">
+-                @foreach (var kpi in dashboard.DepartmentKpis)
+-                {
+-                    <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
+-                        <strong>@kpi.Department</strong>
+-                        <dl class="cockpit-kpi-list mb-0 mt-3">
+-                            <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
+-                            <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
+-                            <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
+-                            <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
+-                            <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
+-                        </dl>
+-                    </a>
+-                }
+-            </div>
+-        </article>
++        @if (!IsInitialSetupEmpty)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++                <h3 class="h5">Department KPIs</h3>
++                <div class="cockpit-kpi-grid">
++                    @foreach (var kpi in dashboard.DepartmentKpis)
++                    {
++                        <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
++                            <strong>@kpi.Department</strong>
++                            <dl class="cockpit-kpi-list mb-0 mt-3">
++                                <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
++                                <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
++                                <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
++                                <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
++                                <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
++                            </dl>
++                        </a>
++                    }
++                </div>
++            </article>
++        }
+ 
+         <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+             <h3 class="h5">Recent activity</h3>
+@@ -153,37 +182,6 @@
+                 </div>
+             }
+         </article>
+-
+-        @if (dashboard.EmptyStateFlags.NoAgents || dashboard.EmptyStateFlags.NoWorkflows || dashboard.EmptyStateFlags.NoKnowledge)
+-        {
+-            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-                <h3 class="h5">Setup guidance</h3>
+-                <div class="cockpit-empty-grid">
+-                    @if (dashboard.EmptyStateFlags.NoAgents)
+-                    {
+-                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@AgentsPath">
+-                            <strong>Hire agents</strong>
+-                            <p class="text-body-secondary mb-0">Add the first agents so tasks, approvals, and department KPIs have owners.</p>
+-                        </a>
+-                    }
+-                    @if (dashboard.EmptyStateFlags.NoWorkflows)
+-                    {
+-                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@WorkflowsPath">
+-                            <strong>Define workflows</strong>
+-                            <p class="text-body-secondary mb-0">Create or enable workflows so company processes can be tracked here.</p>
+-                        </a>
+-                    }
+-                    @if (dashboard.EmptyStateFlags.NoKnowledge)
+-                    {
+-                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@AgentsPath">
+-                            <strong>Add knowledge</strong>
+-                            <p class="text-body-secondary mb-0">Upload company documents when the knowledge setup flow is available.</p>
+-                        </a>
+-                    }
+-                </div>
+-            </article>
+-        }
+     }
+ </section>
+ 
+@@ -203,12 +201,18 @@
+     private string TasksPath => $"/tasks?companyId={CompanyId}";
+     private string WorkflowsPath => $"/workflows?companyId={CompanyId}";
+     private string ApprovalsPath => $"/approvals?companyId={CompanyId}";
++    private string KnowledgePath => "/onboarding";
+     private string BriefingPreferencesPath => $"/briefing-preferences?companyId={CompanyId}";
+     private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
+         ? CompanyName!
+         : dashboard?.CompanyName ?? "Workspace dashboard";
++    private bool IsInitialSetupEmpty =>
++        dashboard?.SetupState.IsInitialSetupEmpty == true ||
++        dashboard?.EmptyStateFlags is { NoAgents: true, NoWorkflows: true, NoKnowledge: true };
+ 
+     protected override async Task OnParametersSetAsync()
+@@ -276,4 +280,45 @@
+         builder.AddContent(sequence++, $"{item.ActivityType} | {item.OccurredUtc.ToLocalTime():g}");
+         builder.CloseElement();
+     };
++
++    private RenderFragment SetupGuidanceCards() => builder =>
++    {
++        if (dashboard is null)
++        {
++            return;
++        }
++
++        var sequence = 0;
++        if (dashboard.EmptyStateFlags.NoAgents)
++        {
++            builder.OpenElement(sequence++, "a");
++            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
++            builder.AddAttribute(sequence++, "href", AgentsPath);
++            builder.OpenElement(sequence++, "strong");
++            builder.AddContent(sequence++, "Hire agents");
++            builder.CloseElement();
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
++            builder.AddContent(sequence++, "Add the first agents so tasks, approvals, and department KPIs have owners.");
++            builder.CloseElement();
++            builder.CloseElement();
++        }
++
++        if (dashboard.EmptyStateFlags.NoWorkflows)
++        {
++            builder.OpenElement(sequence++, "a");
++            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
++            builder.AddAttribute(sequence++, "href", WorkflowsPath);
++            builder.OpenElement(sequence++, "strong");
++            builder.AddContent(sequence++, "Define workflows");
++            builder.CloseElement();
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
++            builder.AddContent(sequence++, "Create or enable workflows so company processes can be tracked here.");
++            builder.CloseElement();
++            builder.CloseElement();
++        }
++
++        if (dashboard.EmptyStateFlags.NoKnowledge)
++        {
++            builder.OpenElement(sequence++, "a");
++            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
++            builder.AddAttribute(sequence++, "href", KnowledgePath);
++            builder.OpenElement(sequence++, "strong");
++            builder.AddContent(sequence++, "Add knowledge");
++            builder.CloseElement();
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
++            builder.AddContent(sequence++, "Upload company documents so agents can ground decisions in current workspace context.");
++            builder.CloseElement();
++            builder.CloseElement();
++        }
++    };
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -501,6 +501,12 @@
+     font-weight: 600;
+ }
+ 
++.cockpit-empty-hero {
++    background: #f8fafc;
++    border-color: rgba(37, 99, 235, 0.22);
++    border-radius: 0.5rem;
++}
++
+ .cockpit-empty-grid {
+     display: grid;
+     gap: 1rem;
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -27,6 +27,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Equal(companyId, dashboard!.CompanyId);
+         Assert.True(dashboard.EmptyStateFlags.NoAgents);
+         Assert.True(dashboard.EmptyStateFlags.NoWorkflows);
+         Assert.True(dashboard.EmptyStateFlags.NoKnowledge);
++        Assert.False(dashboard.SetupState.HasAgents);
++        Assert.False(dashboard.SetupState.HasWorkflows);
++        Assert.False(dashboard.SetupState.HasKnowledge);
++        Assert.Equal(0, dashboard.SetupState.AgentCount);
++        Assert.Equal(0, dashboard.SetupState.WorkflowCount);
++        Assert.Equal(0, dashboard.SetupState.KnowledgeDocumentCount);
++        Assert.True(dashboard.SetupState.IsInitialSetupEmpty);
+         Assert.True(dashboard.EmptyStateFlags.NoRecentActivity);
+         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);
+         Assert.True(dashboard.EmptyStateFlags.NoAlerts);
+@@ -61,6 +68,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Contains(dashboard.DepartmentKpis, x => x.Department == "Operations" && x.ActiveAgents == 1);
+         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId);
+         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId && x.Route?.Contains($"taskId={seed.TaskId}", StringComparison.OrdinalIgnoreCase) == true);
++        Assert.True(dashboard.SetupState.HasAgents);
++        Assert.True(dashboard.SetupState.HasWorkflows);
++        Assert.True(dashboard.SetupState.HasKnowledge);
++        Assert.Equal(1, dashboard.SetupState.AgentCount);
++        Assert.Equal(1, dashboard.SetupState.WorkflowCount);
++        Assert.Equal(1, dashboard.SetupState.KnowledgeDocumentCount);
++        Assert.False(dashboard.SetupState.IsInitialSetupEmpty);
+         Assert.DoesNotContain(dashboard.PendingApprovals.Items, x => x.Id == seed.OtherCompanyApprovalId);
+ 
+         var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/executive-cockpit");
+@@ -94,12 +108,28 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+     {
+         var userId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var otherAgentId = Guid.NewGuid();
++        var otherWorkflowDefinitionId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+             dbContext.Users.Add(new User(userId, "cockpit-founder@example.com", "Cockpit Founder", "dev-header", "cockpit-founder"));
+-            dbContext.Companies.Add(new Company(companyId, "Sparse Cockpit Company"));
++            dbContext.Companies.AddRange(new Company(companyId, "Sparse Cockpit Company"), new Company(otherCompanyId, "Other Sparse Cockpit Company"));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(otherAgentId, otherCompanyId, "ops", "Other Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(otherWorkflowDefinitionId, otherCompanyId, "other-cockpit-test", "Other cockpit test", "Operations", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))));
++            dbContext.CompanyKnowledgeDocuments.Add(new CompanyKnowledgeDocument(
++                Guid.NewGuid(),
++                otherCompanyId,
++                "Other company handbook",
++                CompanyKnowledgeDocumentType.Policy,
++                "knowledge/other/handbook.md",
++                null,
++                "handbook.md",
++                "text/markdown",
++                ".md",
++                1024,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(otherCompanyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility)));
+             return Task.CompletedTask;
+         });
+ 
+@@ -122,6 +152,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         var workflowInstanceId = Guid.NewGuid();
+         var workflowExceptionId = Guid.NewGuid();
+         var approvalId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
+         var otherCompanyApprovalId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+@@ -139,6 +170,20 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+             task.UpdateStatus(WorkTaskStatus.InProgress);
+             dbContext.WorkTasks.Add(task);
+ 
++            dbContext.CompanyKnowledgeDocuments.Add(new CompanyKnowledgeDocument(
++                documentId,
++                companyId,
++                "Cockpit handbook",
++                CompanyKnowledgeDocumentType.Policy,
++                "knowledge/cockpit/handbook.md",
++                null,
++                "handbook.md",
++                "text/markdown",
++                ".md",
++                1024,
++                accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility)));
++
+             dbContext.ApprovalRequests.AddRange(
+                 ApprovalRequest.CreateForTarget(approvalId, companyId, ApprovalTargetEntityType.Task, taskId, "agent", agentId, "threshold", Payload(("amount", JsonValue.Create(25000))), "owner", null, []),
+                 ApprovalRequest.CreateForTarget(otherCompanyApprovalId, otherCompanyId, ApprovalTargetEntityType.Task, Guid.NewGuid(), "agent", Guid.NewGuid(), "threshold", Payload(("amount", JsonValue.Create(50000))), "owner", null, []));
+@@ -163,6 +208,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         public List<ExecutiveCockpitAlertResponse> Alerts { get; set; } = [];
+         public List<ExecutiveCockpitDepartmentKpiResponse> DepartmentKpis { get; set; } = [];
+         public List<ExecutiveCockpitActivityResponse> RecentActivity { get; set; } = [];
++        public ExecutiveCockpitSetupStateResponse SetupState { get; set; } = new();
+         public ExecutiveCockpitEmptyStateFlagsResponse EmptyStateFlags { get; set; } = new();
+     }
+ 
+@@ -173,6 +219,17 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+     private sealed class ExecutiveCockpitDepartmentKpiResponse { public string Department { get; set; } = string.Empty; public int ActiveAgents { get; set; } }
+     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }
++    private sealed class ExecutiveCockpitSetupStateResponse
++    {
++        public bool HasAgents { get; set; }
++        public bool HasWorkflows { get; set; }
++        public bool HasKnowledge { get; set; }
++        public int AgentCount { get; set; }
++        public int WorkflowCount { get; set; }
++        public int KnowledgeDocumentCount { get; set; }
++        public bool IsInitialSetupEmpty { get; set; }
++    }
++
+     private sealed class ExecutiveCockpitEmptyStateFlagsResponse
+     {
+         public bool NoAgents { get; set; }
+END_OF_PATCH

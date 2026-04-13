@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.2",
+  "promptPath": ".ai-design/prompts/TASK-12.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:41:53.348Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-41-53-348Z_TASK-12.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-41-53-348Z_TASK-12.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:45:03.653Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "tEntityId,\n+            ApprovalType = item.ApprovalType,\n+            Status = item.Status,\n+            RationaleSummary = item.RationaleSummary,\n+            RequestedByActorType = item.RequestedByActorType,\n+            RequestedByActorId = item.RequestedByActorId,\n+            RequiredRole = item.RequiredRole,\n+            RequiredUserId = item.RequiredUserId,\n+            AffectedDataSummary = item.AffectedDataSummary,\n+            ThresholdSummary = item.ThresholdSummary,\n+            CurrentStep = item.CurrentStep,\n+            CreatedAt = item.CreatedAt\n+        };\n+\n     private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>\n         selectedApproval?.Id == approval.Id\n             ? \"list-group-item list-group-item-action active\"\n@@ -313,6 +351,8 @@ else\n         string.IsNullOrWhiteSpace(Status)\n             ? \"pending\"\n             : Status.Trim();\n+\n+    private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, \"pending\", StringComparison.OrdinalIgnoreCase);\n \n     private static bool IsSelected(string? currentValue, string expectedValue) =>\n         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);\n@@ -320,4 +360,21 @@ else\n \n     private static bool IsPending(ApprovalRequestViewModel approval) =>\n         string.Equals(approval.Status, \"pending\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string FormatApprover(ApprovalRequestViewModel approval)\n+    {\n+        if (approval.RequiredUserId is Guid requiredUserId)\n+        {\n+            return $\"user {requiredUserId:N}\";\n+        }\n+\n+        if (!string.IsNullOrWhiteSpace(approval.RequiredRole))\n+        {\n+            return $\"role {approval.RequiredRole}\";\n+        }\n+\n+        return FormatStepApprover(approval.CurrentStep);\n+    }\n+\n+    private static string FormatStepApprover(ApprovalStepViewModel? step) =>\n+        step is null ? \"current approver\" : $\"{step.ApproverType} {step.ApproverRef}\";\n }\nEND_OF_PATCH\n",
+  "stderrTail": "     ApprovalType = item.ApprovalType,\n+            Status = item.Status,\n+            RationaleSummary = item.RationaleSummary,\n+            RequestedByActorType = item.RequestedByActorType,\n+            RequestedByActorId = item.RequestedByActorId,\n+            RequiredRole = item.RequiredRole,\n+            RequiredUserId = item.RequiredUserId,\n+            AffectedDataSummary = item.AffectedDataSummary,\n+            ThresholdSummary = item.ThresholdSummary,\n+            CurrentStep = item.CurrentStep,\n+            CreatedAt = item.CreatedAt\n+        };\n+\n     private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>\n         selectedApproval?.Id == approval.Id\n             ? \"list-group-item list-group-item-action active\"\n@@ -313,6 +351,8 @@ else\n         string.IsNullOrWhiteSpace(Status)\n             ? \"pending\"\n             : Status.Trim();\n+\n+    private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, \"pending\", StringComparison.OrdinalIgnoreCase);\n \n     private static bool IsSelected(string? currentValue, string expectedValue) =>\n         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);\n@@ -320,4 +360,21 @@ else\n \n     private static bool IsPending(ApprovalRequestViewModel approval) =>\n         string.Equals(approval.Status, \"pending\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string FormatApprover(ApprovalRequestViewModel approval)\n+    {\n+        if (approval.RequiredUserId is Guid requiredUserId)\n+        {\n+            return $\"user {requiredUserId:N}\";\n+        }\n+\n+        if (!string.IsNullOrWhiteSpace(approval.RequiredRole))\n+        {\n+            return $\"role {approval.RequiredRole}\";\n+        }\n+\n+        return FormatStepApprover(approval.CurrentStep);\n+    }\n+\n+    private static string FormatStepApprover(ApprovalStepViewModel? step) =>\n+        step is null ? \"current approver\" : $\"{step.ApproverType} {step.ApproverRef}\";\n }\nEND_OF_PATCH\ntokens used\n88,289\n",
+  "verbosityMode": "summary"
+}

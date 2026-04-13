@@ -1,0 +1,287 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 7f4a6f2..2c9f2b1 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -23,7 +23,51 @@ public sealed record ExecuteAgentToolResultDto(
+     ToolExecutionDecisionDto PolicyDecision,
+     Dictionary<string, JsonNode?>? ExecutionResult,
+     string Message,
+-    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null);
++    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null,
++    ToolExecutionDenialDto? Denial = null);
++
++public sealed record ToolExecutionDenialDto(
++    string Code,
++    string UserFacingMessage,
++    IReadOnlyList<string> ReasonCodes,
++    string RationaleSummary,
++    Dictionary<string, JsonNode?> Metadata,
++    string SchemaVersion = PolicyDecisionSchemaVersions.V1)
++{
++    public static ToolExecutionDenialDto FromDecision(ToolExecutionDecisionDto decision, string userFacingMessage)
++    {
++        ArgumentNullException.ThrowIfNull(decision);
++
++        var primaryReasonCode = decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code));
++        var rationaleSummary = decision.Reasons?.FirstOrDefault(reason =>
++            string.Equals(reason.Code, primaryReasonCode, StringComparison.OrdinalIgnoreCase))?.Summary
++            ?? "Action blocked by policy before execution.";
++
++        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["policyOutcome"] = JsonValue.Create(decision.Outcome),
++            ["policyDecisionSchemaVersion"] = JsonValue.Create(decision.SchemaVersion),
++            ["primaryReasonCode"] = string.IsNullOrWhiteSpace(primaryReasonCode) ? null : JsonValue.Create(primaryReasonCode),
++            ["policyEvaluationVersion"] = string.IsNullOrWhiteSpace(decision.Audit?.PolicyVersion) ? null : JsonValue.Create(decision.Audit.PolicyVersion),
++            ["policyCorrelationId"] = string.IsNullOrWhiteSpace(decision.Audit?.CorrelationId) ? null : JsonValue.Create(decision.Audit.CorrelationId),
++            ["executionId"] = decision.Audit is null ? null : JsonValue.Create(decision.Audit.ExecutionId),
++            ["toolName"] = string.IsNullOrWhiteSpace(decision.Tool?.ToolName) ? null : JsonValue.Create(decision.Tool.ToolName),
++            ["actionType"] = string.IsNullOrWhiteSpace(decision.Tool?.ActionType) ? null : JsonValue.Create(decision.Tool.ActionType),
++            ["scope"] = string.IsNullOrWhiteSpace(decision.Tool?.Scope) ? null : JsonValue.Create(decision.Tool.Scope),
++            ["companyId"] = decision.Tenant is null ? null : JsonValue.Create(decision.Tenant.CompanyId),
++            ["agentId"] = decision.Actor is null ? null : JsonValue.Create(decision.Actor.AgentId)
++        };
++
++        return new ToolExecutionDenialDto(
++            "policy_denied",
++            string.IsNullOrWhiteSpace(userFacingMessage)
++                ? "This action was blocked by policy."
++                : userFacingMessage.Trim(),
++            decision.ReasonCodes.ToArray(),
++            rationaleSummary,
++            metadata,
++            decision.SchemaVersion);
++    }
++}
+ 
+ public static class PolicyDecisionSchemaVersions
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 58e5c8c..c0356f7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -94,13 +94,15 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
+         var serializedDecision = SerializeDecision(decision);
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
+         {
++            var callerMessage = BuildCallerMessage(decision);
++            var denial = ToolExecutionDenialDto.FromDecision(decision, callerMessage);
+             var structuredResult = ToolExecutionResult.Failed(
+                 command.ToolName,
+                 command.ActionType,
+                 ToolExecutionStatus.Denied.ToStorageValue(),
+                 "policy_denied",
+-                BuildCallerMessage(decision),
+-                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId));
++                callerMessage,
++                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, userFacingMessage: callerMessage));
+             attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
+ 
+             await _auditEventWriter.WriteAsync(
+@@ -128,7 +130,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
+                 null,
+                 decision,
+                 structuredResult.ToStructuredPayload(),
+-                structuredResult.Summary);
++                callerMessage,
++                Denial: denial);
+         }
+ 
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
+@@ -478,12 +481,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
+         string correlationId,
+         Guid executionId,
+         Guid? approvalRequestId = null,
++        string? userFacingMessage = null,
+         string? exceptionType = null)
+     {
+         var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["correlationId"] = JsonValue.Create(correlationId),
+             ["executionId"] = JsonValue.Create(executionId),
++            ["primaryReasonCode"] = string.IsNullOrWhiteSpace(GetPrimaryReasonCode(decision)) ? null : JsonValue.Create(GetPrimaryReasonCode(decision)),
+             ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+             ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+             ["policyOutcome"] = JsonValue.Create(decision.Outcome),
+@@ -491,6 +496,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
+             ["approvalRequestId"] = approvalRequestId.HasValue ? JsonValue.Create(approvalRequestId.Value) : null,
+             ["exceptionType"] = string.IsNullOrWhiteSpace(exceptionType) ? null : JsonValue.Create(exceptionType)
+         };
++        metadata["userFacingMessage"] = string.IsNullOrWhiteSpace(userFacingMessage) ? null : JsonValue.Create(userFacingMessage.Trim());
+ 
+         return metadata;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index e3d6f3a..668a2dc 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -7,6 +7,8 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ {
++    private const string SafeDeniedExplanation = "This action was blocked by policy.";
++
+     public ToolExecutionDecisionDto Evaluate(PolicyEvaluationRequest request)
+     {
+         var metadata = CreateBaseMetadata(request);
+@@ -516,12 +518,14 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyDecisionApprovalRequirementDto? approvalRequirement = null)
+     {
+         metadata["executionBlocked"] = JsonValue.Create(true);
++        metadata["internalRationaleSummary"] = JsonValue.Create(explanation);
++        metadata["safeUserFacingExplanation"] = JsonValue.Create(SafeDeniedExplanation);
+         metadata["blockedPendingApproval"] = JsonValue.Create(false);
+         metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Denied.ToStorageValue());
+         return new(
+             PolicyDecisionOutcomeValues.Deny,
+             reasonCodes,
+-            explanation,
++            SafeDeniedExplanation,
+             request.EvaluatedAutonomyLevel,
+             evaluatedActionType,
+             string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim(),
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 0a8a7b5..a9df627 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -564,6 +564,20 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             builder.Append(toolResults.Count == 1 ? " tool invocation was processed." : " tool invocations were processed.");
+         }
+ 
++        var deniedResults = toolResults
++            .Where(x => string.Equals(x.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++            .ToList();
++        if (deniedResults.Count > 0)
++        {
++            builder.Append(' ');
++            builder.Append(deniedResults.Count == 1
++                ? "One action was blocked by policy and was not executed."
++                : "One or more actions were blocked by policy and were not executed.");
++            if (deniedResults.Count == 1 && !string.IsNullOrWhiteSpace(deniedResults[0].Message))
++            {
++                builder.Append(' ').Append(Trim(deniedResults[0].Message, 240));
++            }
++        }
++
+         if (toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase)))
+         {
+             builder.Append(" One or more actions are awaiting approval before execution can continue.");
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 1e02d5a..0d9aaf1 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -53,6 +53,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Contains("tool_not_permitted", payload.PolicyDecision.ReasonCodes);
+         Assert.Equal("This action was blocked by policy because the agent is not permitted to use that tool.", payload.Message);
+         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++        Assert.Equal("This action was blocked by policy.", payload.PolicyDecision.Explanation);
++        Assert.NotNull(payload.Denial);
++        Assert.Equal("policy_denied", payload.Denial!.Code);
++        Assert.Equal(payload.Message, payload.Denial.UserFacingMessage);
++        Assert.DoesNotContain("outside the agent's allowed tool scope", payload.Denial.UserFacingMessage, StringComparison.OrdinalIgnoreCase);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+@@ -68,6 +73,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(seed.CompanyId, attempt.PolicyDecision["tenant"]!["companyId"]!.GetValue<Guid>());
+         Assert.Equal("tool_not_permitted", attempt.PolicyDecision["reasons"]![0]!["code"]!.GetValue<string>());
+         Assert.Null(attempt.ApprovalRequestId);
++        Assert.Equal("The requested tool is outside the agent's allowed tool scope.", attempt.PolicyDecision["metadata"]!["internalRationaleSummary"]!.GetValue<string>());
++        Assert.Equal("This action was blocked by policy.", attempt.PolicyDecision["metadata"]!["safeUserFacingExplanation"]!.GetValue<string>());
++        Assert.Equal("tool_not_permitted", attempt.ResultPayload["metadata"]!["primaryReasonCode"]!.GetValue<string>());
++        Assert.Equal(payload.Message, attempt.ResultPayload["metadata"]!["userFacingMessage"]!.GetValue<string>());
++        Assert.DoesNotContain("outside the agent's allowed tool scope", attempt.ResultPayload["errorMessage"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
+ 
+         var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+@@ -540,6 +550,15 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }
+         public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }
+         public string Message { get; set; } = string.Empty;
++        public ToolExecutionDenialResponse? Denial { get; set; }
++    }
++
++    private sealed class ToolExecutionDenialResponse
++    {
++        public string Code { get; set; } = string.Empty;
++        public string UserFacingMessage { get; set; } = string.Empty;
++        public List<string> ReasonCodes { get; set; } = [];
++        public Dictionary<string, JsonElement> Metadata { get; set; } = [];
+     }
+ 
+     private sealed class PolicyDecisionResponse
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 3a8ef21..5967a8b 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -128,6 +128,101 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+     }
+ 
++    [Fact]
++    public async Task Task_execute_endpoint_surfaces_safe_policy_denial_output_and_persists_audit()
++    {
++        var seed = await SeedTaskAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{seed.TaskId}/execute", new
++        {
++            agentId = seed.AgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "orch-denial-correlation",
++            intent = "execute_task",
++            toolInvocations = new[]
++            {
++                new
++                {
++                    toolName = "wire_transfer",
++                    actionType = "execute",
++                    scope = "payments",
++                    requestPayload = new { paymentId = "pay-denied" },
++                    sensitiveAction = false
++                }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<OrchestrationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("completed", payload!.Status);
++        Assert.Contains("blocked by policy", payload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain("outside the agent's allowed tool scope", payload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
++        Assert.Single(payload.ToolExecutions);
++        Assert.Equal("denied", payload.ToolExecutions[0].Status);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);
++        Assert.Equal(seed.CompanyId, attempt.CompanyId);
++        Assert.Equal(seed.AgentId, attempt.AgentId);
++        Assert.Equal(seed.TaskId, attempt.TaskId);
++        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
++        Assert.Equal("deny", attempt.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal("This action was blocked by policy.", attempt.PolicyDecision["explanation"]!.GetValue<string>());
++        Assert.Equal("This action was blocked by policy.", attempt.PolicyDecision["metadata"]!["safeUserFacingExplanation"]!.GetValue<string>());
++        Assert.Equal("tool_not_permitted", attempt.ResultPayload["metadata"]!["primaryReasonCode"]!.GetValue<string>());
++
++        var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.AgentToolExecutionDenied &&
++            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString("N"));
++
++        Assert.Equal(AuditEventOutcomes.Denied, auditEvent.Outcome);
++        Assert.Equal(seed.AgentId, auditEvent.ActorId);
++        Assert.Equal("tool_not_permitted", auditEvent.Metadata["primaryReasonCode"]);
++        Assert.Equal("orch-denial-correlation", auditEvent.CorrelationId);
++    }
++
+     [Fact]
+     public void Single_agent_entry_points_resolve_one_shared_orchestration_engine()
+     {
+END_OF_PATCH

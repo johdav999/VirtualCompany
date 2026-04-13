@@ -1,0 +1,312 @@
+diff --git a/src/VirtualCompany.Api/Controllers/TasksController.cs b/src/VirtualCompany.Api/Controllers/TasksController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/TasksController.cs
++++ b/src/VirtualCompany.Api/Controllers/TasksController.cs
+@@ -4,6 +4,7 @@ using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Observability;
+ 
+ namespace VirtualCompany.Api.Controllers;
+ 
+@@ -16,14 +17,17 @@ public sealed class TasksController : ControllerBase
+     private readonly ICompanyTaskCommandService _taskCommands;
+     private readonly ICompanyTaskQueryService _taskQueries;
+     private readonly ISingleAgentOrchestrationService _orchestrationService;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public TasksController(
+         ICompanyTaskCommandService taskCommands,
+         ICompanyTaskQueryService taskQueries,
+-        ISingleAgentOrchestrationService orchestrationService)
++        ISingleAgentOrchestrationService orchestrationService,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _taskCommands = taskCommands;
+         _taskQueries = taskQueries;
+         _orchestrationService = orchestrationService;
++        _correlationContextAccessor = correlationContextAccessor;
+     }
+ 
+     [HttpPost]
+@@ -175,7 +179,7 @@ public sealed class TasksController : ControllerBase
+                     command.AgentId,
+                     command.InitiatingActorId,
+                     command.InitiatingActorType,
+-                    command.CorrelationId,
++                    ResolveCorrelationId(command.CorrelationId),
+                     command.Intent,
+                     command.ToolInvocations),
+                 cancellationToken));
+@@ -225,6 +229,11 @@ public sealed class TasksController : ControllerBase
+             Status = StatusCodes.Status400BadRequest
+         });
++
++    private string ResolveCorrelationId(string? requestedCorrelationId) =>
++        string.IsNullOrWhiteSpace(requestedCorrelationId)
++            ? _correlationContextAccessor.CorrelationId ?? HttpContext.TraceIdentifier
++            : requestedCorrelationId.Trim();
+ }
+ 
+ public sealed record ExecuteSingleAgentTaskCommand(
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -120,7 +120,8 @@ public sealed record DirectAgentChatOrchestrationRequest(
+     Guid ConversationId,
+     Guid AgentId,
+     Guid UserId,
+-    string HumanMessage);
++    string HumanMessage,
++    string CorrelationId);
+ 
+ public sealed record DirectAgentChatReply(
+     string MessageText,
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -332,7 +332,7 @@ public sealed record OrchestrationResult(
+     OrchestrationArtifact Metadata,
+     string CorrelationId,
+-    string? FailureReason = null);
++    string? FailureReason = null)
+ {
+     public OrchestrationUserOutput UserOutput { get; init; } = new(UserFacingOutput);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -10,6 +10,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
++using VirtualCompany.Infrastructure.Observability;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+@@ -38,15 +39,18 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+     private readonly IDirectAgentChatOrchestrator _orchestrator;
+     private readonly ICompanyTaskCommandService _taskCommandService;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public CompanyDirectChatService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IDirectAgentChatOrchestrator orchestrator,
+         ICompanyTaskCommandService taskCommandService,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _orchestrator = orchestrator;
+         _taskCommandService = taskCommandService;
+         _auditEventWriter = auditEventWriter;
++        _correlationContextAccessor = correlationContextAccessor;
+     }
+@@ -203,7 +207,8 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+                 conversation.Id,
+                 agentId,
+                 membership.UserId,
+-                command.Body),
++                command.Body,
++                ResolveCorrelationId()),
+             cancellationToken).ConfigureAwait(false);
+ 
+         var agentPayload = SanitizeStructuredPayload(reply.StructuredPayload);
+@@ -679,6 +684,11 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             : string.Concat(trimmed.AsSpan(0, RationaleSummaryMaxLength - 3), "...");
+     }
++
++    private string ResolveCorrelationId() =>
++        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++            ? Guid.NewGuid().ToString("N")
++            : _correlationContextAccessor.CorrelationId!;
+ }
+ 
+ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+@@ -724,6 +734,7 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+                 InitiatingActorId: request.UserId,
+                 InitiatingActorType: "user",
++                CorrelationId: request.CorrelationId,
+                 IntentHint: OrchestrationIntentValues.Chat,
+                 ActorMetadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationResolver.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationResolver.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationResolver.cs
+@@ -5,7 +5,6 @@ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+-using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -15,18 +14,15 @@ public sealed class SingleAgentOrchestrationResolver : ISingleAgentOrchestration
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
+-    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+     private readonly TimeProvider _timeProvider;
+ 
+     public SingleAgentOrchestrationResolver(
+         VirtualCompanyDbContext dbContext,
+         IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
+-        ICorrelationContextAccessor correlationContextAccessor,
+         TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+-        _correlationContextAccessor = correlationContextAccessor;
+         _timeProvider = timeProvider;
+     }
+@@ -343,17 +339,12 @@ public sealed class SingleAgentOrchestrationResolver : ISingleAgentOrchestration
+             conversation.AgentId,
+             conversation.UpdatedUtc);
+ 
+-    private string EnsureCorrelationId(string? requestedCorrelationId)
++    private static string EnsureCorrelationId(string? requestedCorrelationId)
+     {
+         if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
+         {
+             return requestedCorrelationId.Trim();
+         }
+ 
+-        if (!string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId))
+-        {
+-            return _correlationContextAccessor.CorrelationId;
+-        }
+-
+         return Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -10,7 +10,6 @@ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Domain.Enums;
+-using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -22,7 +21,6 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     private readonly IPromptBuilder _promptBuilder;
+     private readonly IToolExecutor _toolExecutor;
+     private readonly IOrchestrationAuditWriter _auditWriter;
+-    private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public SingleAgentOrchestrationService(
+         VirtualCompanyDbContext dbContext,
+@@ -30,15 +28,13 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IGroundedPromptContextService groundedPromptContextService,
+         IPromptBuilder promptBuilder,
+         IToolExecutor toolExecutor,
+-        IOrchestrationAuditWriter auditWriter,
+-        ICorrelationContextAccessor correlationContextAccessor)
++        IOrchestrationAuditWriter auditWriter)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+         _groundedPromptContextService = groundedPromptContextService;
+         _promptBuilder = promptBuilder;
+         _toolExecutor = toolExecutor;
+         _auditWriter = auditWriter;
+-        _correlationContextAccessor = correlationContextAccessor;
+     }
+@@ -83,10 +79,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         ArgumentNullException.ThrowIfNull(request);
+ 
+         var startedAtUtc = DateTime.UtcNow;
+-        var previousCorrelationId = _correlationContextAccessor.CorrelationId;
+         var correlationId = EnsureCorrelationId(request.CorrelationId);
+-        _correlationContextAccessor.CorrelationId = correlationId;
+-
+         // One shared engine path: role/persona differences enter only through persisted agent configuration.
+-        try
+-        {
++        {
+             var persistedTask = request.TaskId.HasValue
+                 ? await GetTaskAsync(request.CompanyId, request.TaskId.Value, cancellationToken)
+                 : null;
+@@ -202,11 +195,6 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+ 
+             return result;
+         }
+-        finally
+-        {
+-            _correlationContextAccessor.CorrelationId = previousCorrelationId;
+-        }
+     }
+ 
+     private static void Validate(SingleAgentOrchestrationRequest request)
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationResolverTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationResolverTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationResolverTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationResolverTests.cs
+@@ -6,6 +6,7 @@ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+@@ -132,6 +133,27 @@ public sealed class SingleAgentOrchestrationResolverTests : IClassFixture<TestWe
+         Assert.True(result.RuntimeContext.Policy.ToolPermissionSnapshot.ContainsKey("allowed"));
+     }
+ 
++    [Fact]
++    public async Task ResolveAsync_does_not_read_ambient_correlation_when_request_omits_it()
++    {
++        var seed = await SeedScenarioAsync();
++
++        using var scope = _factory.Services.CreateScope();
++        var ambientCorrelation = scope.ServiceProvider.GetRequiredService<ICorrelationContextAccessor>();
++        ambientCorrelation.CorrelationId = "ambient-http-correlation";
++        var resolver = scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationResolver>();
++
++        var result = await resolver.ResolveAsync(
++            new OrchestrationRequest(
++                seed.CompanyId,
++                AgentId: seed.AgentId,
++                UserInput: "Summarize this account."),
++            CancellationToken.None);
++
++        Assert.True(result.Succeeded);
++        Assert.False(string.IsNullOrWhiteSpace(result.CorrelationId));
++        Assert.NotEqual("ambient-http-correlation", result.CorrelationId);
++        Assert.Equal(result.CorrelationId, result.RuntimeContext!.Actor.CorrelationId);
++    }
++
+     [Fact]
+     public async Task ResolveAsync_rejects_non_executable_agent_status()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -10,6 +10,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Observability;
+ using Xunit;
+ using VirtualCompany.Infrastructure.Companies;
+@@ -136,6 +137,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         var service = Assert.Single(services);
+         Assert.IsType<SingleAgentOrchestrationService>(service);
+         Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());
++
++        var constructor = Assert.Single(typeof(SingleAgentOrchestrationService).GetConstructors());
++        Assert.DoesNotContain(constructor.GetParameters(), parameter => parameter.ParameterType == typeof(ICorrelationContextAccessor));
+     }
+ 
+     private HttpClient CreateAuthenticatedClient()
+END_OF_PATCH

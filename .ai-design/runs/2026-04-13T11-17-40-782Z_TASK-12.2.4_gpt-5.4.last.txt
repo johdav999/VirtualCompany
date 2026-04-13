@@ -1,0 +1,492 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 5e8f9a1..d0c2b6f 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -38,6 +38,7 @@ public sealed record AuditHistoryListItem(
+     string Outcome,
+     string? RationaleSummary,
+     DateTime OccurredAt,
++    AuditSafeExplanationDto Explanation,
+     string? CorrelationId,
+     IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
+ 
+@@ -62,6 +63,7 @@ public sealed record AuditDetailDto(
+     string Outcome,
+     string? RationaleSummary,
+     IReadOnlyList<string> DataSources,
++    AuditSafeExplanationDto Explanation,
+     IReadOnlyList<AuditSourceReferenceDto> SourceReferences,
+     DateTime OccurredAt,
+     string? CorrelationId,
+@@ -70,6 +72,12 @@ public sealed record AuditDetailDto(
+     IReadOnlyList<AuditToolExecutionReferenceDto> LinkedToolExecutions,
+     IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
+ 
++public sealed record AuditSafeExplanationDto(
++    string Summary,
++    string WhyThisAction,
++    string Outcome,
++    IReadOnlyList<string> DataSources);
++
+ public sealed record AuditSourceReferenceDto(
+     string Label,
+     string? Reference,
+diff --git a/src/VirtualCompany.Application/Auditing/SafeAuditExplanationMapper.cs b/src/VirtualCompany.Application/Auditing/SafeAuditExplanationMapper.cs
+new file mode 100644
+index 0000000..e03f0e4
+--- /dev/null
++++ b/src/VirtualCompany.Application/Auditing/SafeAuditExplanationMapper.cs
+@@ -0,0 +1,143 @@
++using System.Text.RegularExpressions;
++
++namespace VirtualCompany.Application.Auditing;
++
++public static partial class SafeAuditExplanationMapper
++{
++    public const string FallbackSummary = "Action completed using configured policy and available company data.";
++    private const int SummaryMaxLength = 240;
++    private const int DataSourceMaxLength = 120;
++
++    private static readonly string[] UnsafeMetadataKeyFragments =
++    [
++        "chainofthought",
++        "chain_of_thought",
++        "chain-of-thought",
++        "cot",
++        "scratchpad",
++        "hiddenreasoning",
++        "hidden_reasoning",
++        "internalreasoning",
++        "internal_reasoning",
++        "rawreasoning",
++        "raw_reasoning",
++        "reasoningtrace",
++        "reasoning_trace",
++        "deliberation",
++        "debugprompt",
++        "debug_prompt"
++    ];
++
++    private static readonly string[] UnsafeTextMarkers =
++    [
++        "chain-of-thought",
++        "chain of thought",
++        "hidden reasoning",
++        "internal reasoning",
++        "raw reasoning",
++        "scratchpad",
++        "private reasoning",
++        "step-by-step reasoning",
++        "deliberation trace"
++    ];
++
++    // Audit/explainability views must expose operational summaries only, never raw chain-of-thought.
++    public static AuditSafeExplanationDto Build(
++        string action,
++        string outcome,
++        string? rationaleSummary,
++        IEnumerable<string>? dataSources = null)
++    {
++        var safeSummary = NormalizeSummary(rationaleSummary);
++        var safeOutcome = NormalizeDisplayText(outcome, nameof(outcome), 64) ?? "recorded";
++        var safeAction = NormalizeDisplayText(action, nameof(action), 128) ?? "audit action";
++        var safeDataSources = NormalizeDataSources(dataSources);
++
++        return new AuditSafeExplanationDto(
++            safeSummary,
++            $"The system recorded '{safeAction}' with outcome '{safeOutcome}' under configured company policy.",
++            safeOutcome,
++            safeDataSources);
++    }
++
++    public static string NormalizeSummary(string? rationaleSummary)
++    {
++        var normalized = NormalizeDisplayText(rationaleSummary, nameof(rationaleSummary), SummaryMaxLength);
++        if (string.IsNullOrWhiteSpace(normalized) || ContainsUnsafeReasoningMarker(normalized))
++        {
++            return FallbackSummary;
++        }
++
++        return normalized;
++    }
++
++    public static Dictionary<string, string?> SanitizeMetadata(IReadOnlyDictionary<string, string?> metadata)
++    {
++        var safe = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var pair in metadata)
++        {
++            if (!IsSafeMetadataEntry(pair.Key, pair.Value))
++            {
++                continue;
++            }
++
++            safe[pair.Key] = pair.Value;
++        }
++
++        return safe;
++    }
++
++    public static bool IsSafeMetadataEntry(string key, string? value)
++    {
++        var normalizedKey = NormalizeKey(key);
++        if (string.IsNullOrWhiteSpace(normalizedKey))
++        {
++            return false;
++        }
++
++        if (UnsafeMetadataKeyFragments.Any(fragment => normalizedKey.Contains(fragment, StringComparison.OrdinalIgnoreCase)))
++        {
++            return false;
++        }
++
++        return string.IsNullOrWhiteSpace(value) || !ContainsUnsafeReasoningMarker(value);
++    }
++
++    private static IReadOnlyList<string> NormalizeDataSources(IEnumerable<string>? dataSources)
++    {
++        if (dataSources is null)
++        {
++            return [];
++        }
++
++        return dataSources
++            .Select(value => NormalizeDisplayText(value, nameof(dataSources), DataSourceMaxLength))
++            .Where(value => !string.IsNullOrWhiteSpace(value))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
++            .ToList()!;
++    }
++
++    private static string? NormalizeDisplayText(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var compact = WhitespaceRegex().Replace(value.Trim(), " ");
++        if (compact.Length <= maxLength)
++        {
++            return compact;
++        }
++
++        var sentenceEnd = compact.LastIndexOfAny(['.', '!', '?'], maxLength - 1);
++        var trimmed = sentenceEnd >= 80
++            ? compact[..(sentenceEnd + 1)]
++            : compact[..maxLength].TrimEnd(' ', '.', ',', ';', ':') + ".";
++
++        return trimmed.Length > maxLength
++            ? trimmed[..maxLength].TrimEnd(' ', '.', ',', ';', ':') + "."
++            : trimmed;
++    }
++
++    private static bool ContainsUnsafeReasoningMarker(string value) =>
++        UnsafeTextMarkers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
++
++    private static string NormalizeKey(string key) =>
++        key.Trim().Replace("-", string.Empty, StringComparison.Ordinal).Replace("_", string.Empty, StringComparison.Ordinal);
++
++    [GeneratedRegex(@"\s+")]
++    private static partial Regex WhitespaceRegex();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 84abbb7..7041116 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -83,6 +83,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         var related = await LoadRelatedReferencesAsync(companyId, [auditEvent], cancellationToken);
+         var linkedApprovals = await LoadLinkedApprovalsAsync(companyId, auditEvent, cancellationToken);
+         var linkedToolExecutions = await LoadLinkedToolExecutionsAsync(companyId, auditEvent, cancellationToken);
++        var sourceReferences = BuildSourceReferences(auditEvent);
+ 
+         return new AuditDetailDto(
+             auditEvent.Id,
+@@ -97,11 +98,12 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             ResolveTargetLabel(auditEvent, related),
+             auditEvent.Outcome,
+             auditEvent.RationaleSummary,
+-            auditEvent.DataSources.ToList(),
+-            BuildSourceReferences(auditEvent),
++            auditEvent.DataSources.Select(SafeAuditExplanationMapper.NormalizeSummary).ToList(),
++            BuildSafeExplanation(auditEvent, sourceReferences),
++            sourceReferences,
+             auditEvent.OccurredUtc,
+             auditEvent.CorrelationId,
+-            new Dictionary<string, string?>(auditEvent.Metadata, StringComparer.OrdinalIgnoreCase),
++            SafeAuditExplanationMapper.SanitizeMetadata(auditEvent.Metadata),
+             linkedApprovals,
+             linkedToolExecutions,
+             BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions));
+@@ -298,9 +300,20 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             ResolveTargetLabel(auditEvent, related),
+             auditEvent.Outcome,
+             auditEvent.RationaleSummary,
++            auditEvent.OccurredUtc,
++            BuildSafeExplanation(auditEvent),
++            auditEvent.CorrelationId,
++            BuildAffectedEntities(auditEvent, related));
++
++    private static AuditSafeExplanationDto BuildSafeExplanation(
++        AuditEvent auditEvent,
++        IReadOnlyList<AuditSourceReferenceDto>? sourceReferences = null) =>
++        SafeAuditExplanationMapper.Build(
++            auditEvent.Action,
++            auditEvent.Outcome,
++            auditEvent.RationaleSummary,
++            sourceReferences?.Select(source => source.Label)
++                ?? auditEvent.DataSources.Concat(auditEvent.DataSourcesUsed.Select(GetDataSourceLabel)));
+-            auditEvent.OccurredUtc,
+-            auditEvent.CorrelationId,
+-            BuildAffectedEntities(auditEvent, related));
+ 
+     private static IReadOnlyList<AuditSourceReferenceDto> BuildSourceReferences(AuditEvent auditEvent)
+     {
+@@ -339,6 +352,12 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             .ToList();
+     }
+ 
++    private static string GetDataSourceLabel(AuditDataSourceUsed source) =>
++        !string.IsNullOrWhiteSpace(source.DisplayName)
++            ? source.DisplayName
++            : !string.IsNullOrWhiteSpace(source.Reference) ? source.Reference
++            : source.SourceType;
++
+     private static IReadOnlyList<AuditEntityReferenceDto> BuildAffectedEntities(
+         AuditEvent auditEvent,
+         RelatedReferenceSet related,
+diff --git a/src/VirtualCompany.Web/Services/AuditApiClient.cs b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+index c6bb996..5d4e18b 100644
+--- a/src/VirtualCompany.Web/Services/AuditApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+@@ -132,6 +132,12 @@ public sealed class AuditApiClient
+                     TargetLabel = "Payment tool execution",
+                     Outcome = "pending",
+                     RationaleSummary = "The requested payment exceeded the configured approval threshold.",
++                    Explanation = new()
++                    {
++                        Summary = "The requested payment exceeded the configured approval threshold.",
++                        WhyThisAction = "The system recorded 'agent.tool_execution.approval_requested' with outcome 'pending' under configured company policy.",
++                        Outcome = "pending",
++                        DataSources = ["approval thresholds", "policy guardrails"]
++                    },
+                     OccurredAt = DateTime.UtcNow.AddMinutes(-20),
+                     CorrelationId = "offline-audit-demo",
+                     AffectedEntities =
+@@ -160,6 +166,12 @@ public sealed class AuditApiClient
+             Outcome = "pending",
+             RationaleSummary = "The requested payment exceeded the configured approval threshold.",
+             DataSources = ["policy guardrails", "approval thresholds"],
++            Explanation = new()
++            {
++                Summary = "The requested payment exceeded the configured approval threshold.",
++                WhyThisAction = "The system recorded 'agent.tool_execution.approval_requested' with outcome 'pending' under configured company policy.",
++                Outcome = "pending",
++                DataSources = ["approval thresholds", "policy guardrails"]
++            },
+             SourceReferences = [new() { Label = "policyVersion", Reference = "task_8_3_7", Type = "metadata" }],
+             OccurredAt = DateTime.UtcNow.AddMinutes(-20),
+             CorrelationId = "offline-audit-demo",
+@@ -235,6 +247,7 @@ public sealed class AuditHistoryListItemViewModel
+     public string Outcome { get; set; } = string.Empty;
+     public string? RationaleSummary { get; set; }
+     public DateTime OccurredAt { get; set; }
++    public AuditSafeExplanationViewModel Explanation { get; set; } = new();
+     public string? CorrelationId { get; set; }
+     public List<AuditEntityReferenceViewModel> AffectedEntities { get; set; } = [];
+ }
+@@ -250,6 +263,14 @@ public sealed class AuditDetailViewModel : AuditHistoryListItemViewModel
+     public List<AuditToolExecutionReferenceViewModel> LinkedToolExecutions { get; set; } = [];
+ }
+ 
++public sealed class AuditSafeExplanationViewModel
++{
++    public string Summary { get; set; } = "Action completed using configured policy and available company data.";
++    public string WhyThisAction { get; set; } = string.Empty;
++    public string Outcome { get; set; } = string.Empty;
++    public List<string> DataSources { get; set; } = [];
++}
++
+ public sealed class AuditSourceReferenceViewModel
+ {
+     public string Label { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/Audit.razor b/src/VirtualCompany.Web/Pages/Audit.razor
+index 022fd86..71365fd 100644
+--- a/src/VirtualCompany.Web/Pages/Audit.razor
++++ b/src/VirtualCompany.Web/Pages/Audit.razor
+@@ -112,7 +112,7 @@ else
+                                     <th>Action</th>
+                                     <th>Target</th>
+                                     <th>Outcome</th>
+-                                    <th>Rationale</th>
++                                    <th>Summary</th>
+                                     <th></th>
+                                 </tr>
+                             </thead>
+@@ -125,7 +125,7 @@ else
+                                         <td>@item.Action</td>
+                                         <td>@DisplayTarget(item)</td>
+                                         <td><span class="badge text-bg-light">@item.Outcome</span></td>
+-                                        <td>@(item.RationaleSummary ?? "No rationale summary recorded.")</td>
++                                        <td>@DisplaySummary(item)</td>
+                                         <td><a class="btn btn-sm btn-outline-primary" href="@DetailUrl(item.Id)">Open</a></td>
+                                     </tr>
+                                 }
+@@ -269,4 +269,9 @@ else
+         string.IsNullOrWhiteSpace(item.TargetLabel)
+             ? $"{item.TargetType}: {item.TargetId}"
+             : $"{item.TargetLabel} ({item.TargetType})";
++
++    private static string DisplaySummary(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.Explanation?.Summary)
++            ? "Action completed using configured policy and available company data."
++            : item.Explanation.Summary;
+ }
+diff --git a/src/VirtualCompany.Web/Pages/AuditDetail.razor b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+index f97584f..81a1120 100644
+--- a/src/VirtualCompany.Web/Pages/AuditDetail.razor
++++ b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+@@ -53,13 +53,34 @@ else if (detail is not null)
+             </div>
+ 
+             <div class="wizard-card wizard-card--compact">
+-                <h2 class="h5">Rationale summary</h2>
+-                <p class="text-body-secondary mb-0">@(detail.RationaleSummary ?? "No rationale summary recorded.")</p>
++                <h2 class="h5">Summary</h2>
++                <p class="text-body-secondary mb-3">@DisplaySummary(detail)</p>
++                @if (!string.IsNullOrWhiteSpace(detail.Explanation.WhyThisAction))
++                {
++                    <h3 class="h6">Why this happened</h3>
++                    <p class="text-body-secondary mb-3">@detail.Explanation.WhyThisAction</p>
++                }
++                @if (!string.IsNullOrWhiteSpace(detail.Explanation.Outcome))
++                {
++                    <h3 class="h6">Outcome</h3>
++                    <p class="text-body-secondary mb-0">@detail.Explanation.Outcome</p>
++                }
+             </div>
+ 
+             <div class="wizard-card wizard-card--compact">
+-                <h2 class="h5">Data sources</h2>
+-                @if (detail.SourceReferences.Count == 0 && detail.DataSources.Count == 0)
++                <h2 class="h5">Data used</h2>
++                @if (detail.Explanation.DataSources.Count > 0)
++                {
++                    <ul class="list-unstyled mb-3">
++                        @foreach (var source in detail.Explanation.DataSources)
++                        {
++                            <li>@source</li>
++                        }
++                    </ul>
++                }
++
++                <h3 class="h6">References</h3>
++                @if (detail.SourceReferences.Count == 0 &&
++                    detail.DataSources.Count == 0 &&
++                    detail.Explanation.DataSources.Count == 0)
+                 {
+                     <p class="text-body-secondary mb-0">No source references were recorded.</p>
+                 }
+@@ -219,4 +240,9 @@ else if (detail is not null)
+         string.IsNullOrWhiteSpace(item.TargetLabel)
+             ? $"{item.TargetType}: {item.TargetId}"
+             : $"{item.TargetLabel} ({item.TargetType})";
++
++    private static string DisplaySummary(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.Explanation?.Summary)
++            ? "Action completed using configured policy and available company data."
++            : item.Explanation.Summary;
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index b0f7b14..48d612c 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+@@ -197,12 +198,82 @@ public sealed class AuditQueryServiceTests
+ 
+         Assert.Equal("The task was completed using the approved data source.", detail.RationaleSummary);
++        Assert.Equal("The task was completed using the approved data source.", detail.Explanation.Summary);
++        Assert.Equal("succeeded", detail.Explanation.Outcome);
++        Assert.Contains("Runbook", detail.Explanation.DataSources);
+         Assert.Contains(detail.SourceReferences, source =>
+             source.Type == "document" &&
+             source.Reference == "kb://runbook-1");
+         Assert.Empty(detail.LinkedApprovals);
+         Assert.Empty(detail.LinkedToolExecutions);
+         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    [Fact]
++    public async Task ListAsync_and_GetAsync_return_concise_safe_explanations()
++    {
++        var companyId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        var longSummary = string.Concat(
++            "Completed the task using the approved customer record and finance policy. ",
++            "This extra operational context is intentionally long so the audit surface trims it for review without exposing verbose internal notes. ",
++            "The reviewer can use linked references for follow-up.");
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            companyId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++            AuditTargetTypes.WorkTask,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded,
++            longSummary,
++            ["finance policy", "customer record"],
++            metadata: new Dictionary<string, string?>
++            {
++                ["policyVersion"] = "task_12_2_4",
++                ["rawReasoning"] = "chain-of-thought: hidden deliberation",
++                ["notes"] = "scratchpad: private reasoning"
++            }));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var history = await service.ListAsync(companyId, new AuditHistoryFilter(), CancellationToken.None);
++        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);
++
++        var item = Assert.Single(history.Items);
++        Assert.True(item.Explanation.Summary.Length <= 240);
++        Assert.True(detail.Explanation.Summary.Length <= 240);
++        Assert.Contains("finance policy", detail.Explanation.DataSources);
++        Assert.Contains("customer record", detail.Explanation.DataSources);
++        Assert.Equal("task_12_2_4", detail.Metadata["policyVersion"]);
++        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("reasoning", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("notes", StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(JsonSerializer.Serialize(detail), "chain-of-thought", StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain(JsonSerializer.Serialize(detail), "scratchpad", StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public void SafeAuditExplanationMapper_uses_fallback_for_missing_or_raw_reasoning_summary()
++    {
++        var missing = SafeAuditExplanationMapper.Build(
++            AuditEventActions.AgentToolExecutionExecuted,
++            AuditEventOutcomes.Succeeded,
++            null,
++            ["policy guardrails"]);
++        var unsafeSummary = SafeAuditExplanationMapper.Build(
++            AuditEventActions.AgentToolExecutionExecuted,
++            AuditEventOutcomes.Succeeded,
++            "chain-of-thought: I considered hidden alternatives before doing the action.",
++            ["policy guardrails"]);
++
++        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, missing.Summary);
++        Assert.Equal(SafeAuditExplanationMapper.FallbackSummary, unsafeSummary.Summary);
++        Assert.Contains("policy guardrails", unsafeSummary.DataSources);
++        Assert.DoesNotContain("chain-of-thought", unsafeSummary.Summary, StringComparison.OrdinalIgnoreCase);
++    }
++
+     [Fact]
+     public async Task GetAsync_returns_linked_approvals_tool_executions_and_affected_entities_for_action_detail()
+     {
+END_OF_PATCH

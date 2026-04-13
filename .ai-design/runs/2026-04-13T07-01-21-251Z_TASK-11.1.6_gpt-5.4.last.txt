@@ -1,0 +1,292 @@
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -68,6 +68,7 @@ public sealed record ChatMessageDto(
+     Guid? SenderId,
+     string MessageType,
+     string Body,
++    string? RationaleSummary,
+     Dictionary<string, JsonNode?> StructuredPayload,
+     DateTime CreatedAt);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -16,6 +16,17 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+     private const int DefaultPageSize = 50;
+     private const int MaxPageSize = 200;
+     private const int MessageMaxLength = 16000;
++    private const int RationaleSummaryMaxLength = 512;
++
++    private static readonly HashSet<string> UnsafePayloadKeys = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "analysis",
++        "chain_of_thought",
++        "chainOfThought",
++        "hidden_reasoning",
++        "hiddenReasoning",
++        "internal_reasoning",
++        "internalReasoning",
++        "raw_reasoning",
++        "rawReasoning",
++        "reasoning",
++        "scratchpad",
++        "thoughts"
++    };
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+@@ -185,9 +196,10 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+                 command.Body),
+             cancellationToken).ConfigureAwait(false);
+ 
+-        var agentPayload = CloneNodes(reply.StructuredPayload);
+-        if (!string.IsNullOrWhiteSpace(reply.RationaleSummary))
++        var agentPayload = SanitizeStructuredPayload(reply.StructuredPayload);
++        var rationaleSummary = NormalizeRationaleSummary(reply.RationaleSummary);
++        if (!string.IsNullOrWhiteSpace(rationaleSummary))
+         {
+-            agentPayload["rationale_summary"] = JsonValue.Create(reply.RationaleSummary);
++            agentPayload["rationale_summary"] = JsonValue.Create(rationaleSummary);
+         }
+ 
+         var agentMessage = new Message(
+@@ -238,8 +250,8 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+                     x.Conversation.CompanyId == companyId &&
+                     x.Conversation.ChannelType == ChatChannelTypes.DirectAgent &&
+                     x.Conversation.CreatedByUserId == conversation.CreatedByUserId &&
+-                    x.ConversationId == conversationId &&
+-                    cancellationToken);
++                    x.ConversationId == conversationId,
++                    cancellationToken);
+ 
+             if (sourceMessage is null)
+             {
+@@ -617,12 +629,46 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+             message.SenderId,
+             message.MessageType,
+             message.Body,
+-            CloneNodes(message.StructuredPayload),
++            ExtractRationaleSummary(message.StructuredPayload),
++            SanitizeStructuredPayload(message.StructuredPayload),
+             message.CreatedUtc);
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+         nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static Dictionary<string, JsonNode?> SanitizeStructuredPayload(IReadOnlyDictionary<string, JsonNode?> nodes)
++    {
++        if (nodes.Count == 0)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        var sanitized = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var pair in nodes)
++        {
++            if (UnsafePayloadKeys.Contains(pair.Key))
++            {
++                continue;
++            }
++
++            sanitized[pair.Key] = pair.Value?.DeepClone();
++        }
++
++        return sanitized;
++    }
++
++    private static string? ExtractRationaleSummary(IReadOnlyDictionary<string, JsonNode?> payload)
++    {
++        if (!payload.TryGetValue("rationale_summary", out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        return value.TryGetValue<string>(out var rationale)
++            ? NormalizeRationaleSummary(rationale)
++            : null;
++    }
++
++    private static string? NormalizeRationaleSummary(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.ReplaceLineEndings(" ").Trim();
++        return trimmed.Length <= RationaleSummaryMaxLength
++            ? trimmed
++            : string.Concat(trimmed.AsSpan(0, RationaleSummaryMaxLength - 3), "...");
++    }
+ }
+ 
+ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+@@ -687,8 +733,8 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+         }
+ 
+         var reply = BuildPersonaGroundedReply(profile, groundedContext, history, request.HumanMessage);
+-        var rationale = "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history. Raw reasoning was not generated or exposed.";
++        var rationale = "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history.";
+         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["agent_display_name"] = JsonValue.Create(profile.DisplayName),
+             ["agent_role_name"] = JsonValue.Create(profile.RoleName),
+@@ -707,6 +753,8 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+             payload["agent_data_scope_count"] = JsonValue.Create(profile.DataScopes.Count);
+         }
+ 
++        // Direct chat persists concise rationale summaries, never hidden internal deliberation.
+         if (groundedContext is not null)
+         {
+             payload["retrieval_id"] = JsonValue.Create(groundedContext.RetrievalId.ToString());
+diff --git a/src/VirtualCompany.Web/Pages/AgentChat.razor b/src/VirtualCompany.Web/Pages/AgentChat.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/AgentChat.razor
++++ b/src/VirtualCompany.Web/Pages/AgentChat.razor
+@@ -70,9 +70,9 @@ else
+                             </div>
+                             <p class="mb-0 mt-2">@message.Body</p>
+-                            @if (message.StructuredPayload.TryGetValue("rationale_summary", out var rationale) && rationale is not null)
++                            @if (!string.IsNullOrWhiteSpace(message.RationaleSummary))
+                             {
+-                                <p class="text-body-secondary small mb-0 mt-2">Rationale: @rationale.ToString()</p>
++                                <p class="text-body-secondary small mb-0 mt-2">Rationale: @message.RationaleSummary</p>
+                             }
+                             <div class="mt-2">
+                                 <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => SelectTaskSource(message.Id))">Use for task</button>
+diff --git a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
++++ b/src/VirtualCompany.Web/Services/DirectChatApiClient.cs
+@@ -168,6 +168,7 @@ public sealed class ChatMessageViewModel
+     public Guid? SenderId { get; set; }
+     public string MessageType { get; set; } = string.Empty;
+     public string Body { get; set; } = string.Empty;
++    public string? RationaleSummary { get; set; }
+     public Dictionary<string, JsonNode?> StructuredPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedAt { get; set; }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -211,6 +211,79 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey("agent_personality_summary"));
+     }
+ 
++    [Fact]
++    public async Task Sending_direct_agent_message_returns_rationale_summary_without_raw_reasoning_fields()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var sendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("Why should I prioritize this?"));
++
++        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
++
++        var payload = await sendResponse.Content.ReadFromJsonAsync<SendDirectAgentMessageResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(
++            "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history.",
++            payload!.AgentMessage.RationaleSummary);
++        Assert.Equal(
++            payload.AgentMessage.RationaleSummary,
++            payload.AgentMessage.StructuredPayload["rationale_summary"]!.GetValue<string>());
++        AssertPayloadOmitsUnsafeReasoningFields(payload.AgentMessage.StructuredPayload);
++    }
++
++    [Fact]
++    public async Task Getting_direct_agent_messages_filters_legacy_raw_reasoning_payload_fields()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Messages.Add(new Message(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                conversation!.Id,
++                ChatSenderTypes.Agent,
++                seed.AgentId,
++                ChatMessageTypes.Text,
++                "Safe response body.",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["rationale_summary"] = JsonValue.Create("Used the current chat context."),
++                    ["reasoning"] = JsonValue.Create("private chain-of-thought"),
++                    ["analysis"] = JsonValue.Create("hidden analysis"),
++                    ["scratchpad"] = JsonValue.Create("private scratchpad"),
++                    ["agent_role_name"] = JsonValue.Create("Operations Lead")
++                }));
++
++            return Task.CompletedTask;
++        });
++
++        var getResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages?take=10");
++
++        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
++
++        var page = await getResponse.Content.ReadFromJsonAsync<ChatMessagePageResponse>();
++        Assert.NotNull(page);
++        var agentMessage = Assert.Single(page!.Items, x => x.Body == "Safe response body.");
++        Assert.Equal("Used the current chat context.", agentMessage.RationaleSummary);
++        Assert.True(agentMessage.StructuredPayload.ContainsKey("agent_role_name"));
++        AssertPayloadOmitsUnsafeReasoningFields(agentMessage.StructuredPayload);
++    }
++
+     [Fact]
+     public async Task Sending_direct_agent_message_passes_selected_agent_scope_to_retrieval()
+     {
+@@ -540,6 +613,20 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+     private static void SetCreatedUtc(Message message, DateTime createdUtc) =>
+         typeof(Message).GetProperty(nameof(Message.CreatedUtc))!.SetValue(message, createdUtc);
+ 
++    private static void AssertPayloadOmitsUnsafeReasoningFields(IReadOnlyDictionary<string, JsonNode?> payload)
++    {
++        Assert.False(payload.ContainsKey("analysis"));
++        Assert.False(payload.ContainsKey("chain_of_thought"));
++        Assert.False(payload.ContainsKey("chainOfThought"));
++        Assert.False(payload.ContainsKey("hidden_reasoning"));
++        Assert.False(payload.ContainsKey("hiddenReasoning"));
++        Assert.False(payload.ContainsKey("internal_reasoning"));
++        Assert.False(payload.ContainsKey("internalReasoning"));
++        Assert.False(payload.ContainsKey("raw_reasoning"));
++        Assert.False(payload.ContainsKey("rawReasoning"));
++        Assert.False(payload.ContainsKey("reasoning"));
++        Assert.False(payload.ContainsKey("scratchpad"));
++        Assert.False(payload.ContainsKey("thoughts"));
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -728,6 +815,7 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         public Guid? SenderId { get; set; }
+         public string MessageType { get; set; } = string.Empty;
+         public string Body { get; set; } = string.Empty;
++        public string? RationaleSummary { get; set; }
+         public Dictionary<string, JsonNode?> StructuredPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+         public DateTime CreatedAt { get; set; }
+     }
+END_OF_PATCH

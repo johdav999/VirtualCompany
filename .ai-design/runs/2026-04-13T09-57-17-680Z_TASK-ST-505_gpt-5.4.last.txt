@@ -1,0 +1,1651 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+new file mode 100644
+index 0000000..cf1c6d5
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -0,0 +1,95 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum CompanyBriefingType
++{
++    Daily = 1,
++    Weekly = 2
++}
++
++public enum CompanyBriefingStatus
++{
++    Generated = 1,
++    Failed = 2
++}
++
++public enum CompanyNotificationChannel
++{
++    InApp = 1,
++    Mobile = 2
++}
++
++public enum CompanyNotificationStatus
++{
++    Pending = 1,
++    Delivered = 2,
++    Suppressed = 3
++}
++
++public static class CompanyBriefingTypeValues
++{
++    public const string Daily = "daily";
++    public const string Weekly = "weekly";
++
++    private static readonly IReadOnlyDictionary<CompanyBriefingType, string> Values = new Dictionary<CompanyBriefingType, string>
++    {
++        [CompanyBriefingType.Daily] = Daily,
++        [CompanyBriefingType.Weekly] = Weekly
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyBriefingType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = [Daily, Weekly];
++
++    public static string ToStorageValue(this CompanyBriefingType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, BuildValidationMessage());
++
++    public static bool TryParse(string? value, out CompanyBriefingType type)
++    {
++        type = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out type)
++            || Enum.TryParse(trimmed, ignoreCase: true, out type) && Values.ContainsKey(type);
++    }
++
++    public static CompanyBriefingType Parse(string value) =>
++        TryParse(value, out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Briefing type is required. Allowed values: {allowedValues}."
++            : $"Unsupported briefing type value '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
++
++public static class CompanyBriefingStatusValues
++{
++    public static string ToStorageValue(this CompanyBriefingStatus status) =>
++        status switch
++        {
++            CompanyBriefingStatus.Generated => "generated",
++            CompanyBriefingStatus.Failed => "failed",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported briefing status.")
++        };
++
++    public static CompanyBriefingStatus Parse(string value) =>
++        value.Trim().ToLowerInvariant() switch
++        {
++            "generated" => CompanyBriefingStatus.Generated,
++            "failed" => CompanyBriefingStatus.Failed,
++            _ when Enum.TryParse<CompanyBriefingStatus>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
++            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported briefing status value.")
++        };
++}
++
++public static class CompanyNotificationChannelValues
++{
++    public static string ToStorageValue(this CompanyNotificationChannel channel) =>
++        channel == CompanyNotificationChannel.InApp ? "in_app" :
++        channel == CompanyNotificationChannel.Mobile ? "mobile" :
++        throw new ArgumentOutOfRangeException(nameof(channel), channel, "Unsupported notification channel.");
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+new file mode 100644
+index 0000000..55559bc
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -0,0 +1,180 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CompanyBriefing : ICompanyOwnedEntity
++{
++    private const int TitleMaxLength = 200;
++    private const int BodyMaxLength = 16000;
++
++    private CompanyBriefing()
++    {
++    }
++
++    public CompanyBriefing(
++        Guid id,
++        Guid companyId,
++        CompanyBriefingType briefingType,
++        DateTime periodStartUtc,
++        DateTime periodEndUtc,
++        string title,
++        string summaryBody,
++        IDictionary<string, JsonNode?>? structuredPayload,
++        IDictionary<string, JsonNode?>? sourceReferences,
++        Guid? messageId = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (periodEndUtc <= periodStartUtc)
++        {
++            throw new ArgumentOutOfRangeException(nameof(periodEndUtc), "Period end must be after period start.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        BriefingType = briefingType;
++        PeriodStartUtc = NormalizeUtc(periodStartUtc);
++        PeriodEndUtc = NormalizeUtc(periodEndUtc);
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        SummaryBody = NormalizeRequired(summaryBody, nameof(summaryBody), BodyMaxLength);
++        StructuredPayload = CloneNodes(structuredPayload);
++        SourceReferences = CloneNodes(sourceReferences);
++        MessageId = messageId;
++        Status = CompanyBriefingStatus.Generated;
++        GeneratedUtc = DateTime.UtcNow;
++        CreatedUtc = GeneratedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public CompanyBriefingType BriefingType { get; private set; }
++    public DateTime PeriodStartUtc { get; private set; }
++    public DateTime PeriodEndUtc { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string SummaryBody { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> StructuredPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> SourceReferences { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public CompanyBriefingStatus Status { get; private set; }
++    public Guid? MessageId { get; private set; }
++    public DateTime GeneratedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Message? Message { get; private set; }
++
++    public void AttachMessage(Guid messageId)
++    {
++        if (messageId == Guid.Empty)
++        {
++            throw new ArgumentException("MessageId cannot be empty.", nameof(messageId));
++        }
++
++        MessageId = messageId;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class CompanyBriefingDeliveryPreference : ICompanyOwnedEntity
++{
++    private CompanyBriefingDeliveryPreference()
++    {
++    }
++
++    public CompanyBriefingDeliveryPreference(Guid id, Guid companyId, Guid userId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        InAppEnabled = true;
++        MobileEnabled = false;
++        DailyEnabled = true;
++        WeeklyEnabled = true;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public bool InAppEnabled { get; private set; }
++    public bool MobileEnabled { get; private set; }
++    public bool DailyEnabled { get; private set; }
++    public bool WeeklyEnabled { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++
++    public void Update(bool inAppEnabled, bool mobileEnabled, bool dailyEnabled, bool weeklyEnabled)
++    {
++        InAppEnabled = inAppEnabled;
++        MobileEnabled = mobileEnabled;
++        DailyEnabled = dailyEnabled;
++        WeeklyEnabled = weeklyEnabled;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++public sealed class CompanyNotification : ICompanyOwnedEntity
++{
++    private const int TitleMaxLength = 200;
++    private const int BodyMaxLength = 4000;
++
++    private CompanyNotification()
++    {
++    }
++
++    public CompanyNotification(Guid id, Guid companyId, Guid userId, Guid briefingId, CompanyNotificationChannel channel, string title, string body)
++    {
++        if (companyId == Guid.Empty || userId == Guid.Empty || briefingId == Guid.Empty)
++        {
++            throw new ArgumentException("Company, user, and briefing ids are required.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        BriefingId = briefingId;
++        Channel = channel;
++        Title = string.IsNullOrWhiteSpace(title) ? "Executive briefing" : title.Trim()[..Math.Min(title.Trim().Length, TitleMaxLength)];
++        Body = string.IsNullOrWhiteSpace(body) ? string.Empty : body.Trim()[..Math.Min(body.Trim().Length, BodyMaxLength)];
++        Status = CompanyNotificationStatus.Pending;
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public Guid BriefingId { get; private set; }
++    public CompanyNotificationChannel Channel { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Body { get; private set; } = null!;
++    public CompanyNotificationStatus Status { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++    public CompanyBriefing Briefing { get; private set; } = null!;
++}
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+new file mode 100644
+index 0000000..5de8e3e
+--- /dev/null
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -0,0 +1,91 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Briefings;
++
++public sealed record GenerateCompanyBriefingCommand(
++    string BriefingType,
++    DateTime? NowUtc = null,
++    bool Force = false,
++    string? CorrelationId = null);
++
++public sealed record GenerateDueBriefingsCommand(
++    DateTime NowUtc,
++    int BatchSize = 50);
++
++public sealed record BriefingSourceReferenceDto(
++    string EntityType,
++    Guid EntityId,
++    string Label);
++
++public sealed record BriefingSectionDto(
++    string Name,
++    IReadOnlyList<string> Items);
++
++public sealed record CompanyBriefingDto(
++    Guid Id,
++    Guid CompanyId,
++    string BriefingType,
++    DateTime PeriodStartUtc,
++    DateTime PeriodEndUtc,
++    string Title,
++    string SummaryBody,
++    Dictionary<string, JsonNode?> StructuredPayload,
++    IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
++    Guid? MessageId,
++    DateTime GeneratedUtc);
++
++public sealed record DashboardBriefingCardDto(
++    CompanyBriefingDto? Daily,
++    CompanyBriefingDto? Weekly);
++
++public sealed record CompanyBriefingDeliveryPreferenceDto(
++    Guid CompanyId,
++    Guid UserId,
++    bool InAppEnabled,
++    bool MobileEnabled,
++    bool DailyEnabled,
++    bool WeeklyEnabled,
++    DateTime? UpdatedUtc);
++
++public sealed record UpdateCompanyBriefingDeliveryPreferenceCommand(
++    bool InAppEnabled,
++    bool MobileEnabled,
++    bool DailyEnabled,
++    bool WeeklyEnabled);
++
++public sealed record BriefingSchedulerRunResult(
++    bool LockAcquired,
++    int CompaniesScanned,
++    int BriefingsGenerated,
++    int NotificationsCreated,
++    int Failures);
++
++public sealed record CompanyBriefingGenerationResult(
++    CompanyBriefingDto Briefing,
++    bool AlreadyExisted,
++    int NotificationsCreated);
++
++public sealed class BriefingValidationException : Exception
++{
++    public BriefingValidationException(IDictionary<string, string[]> errors)
++        : base("Briefing validation failed.") =>
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public interface ICompanyBriefingService
++{
++    Task<CompanyBriefingGenerationResult> GenerateAsync(
++        Guid companyId,
++        GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken);
++
++    Task<BriefingSchedulerRunResult> GenerateDueAsync(
++        GenerateDueBriefingsCommand command,
++        CancellationToken cancellationToken);
++
++    Task<DashboardBriefingCardDto> GetLatestDashboardBriefingsAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<CompanyBriefingDeliveryPreferenceDto> GetDeliveryPreferenceAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<CompanyBriefingDeliveryPreferenceDto> UpdateDeliveryPreferenceAsync(
++        Guid companyId,
++        UpdateCompanyBriefingDeliveryPreferenceCommand command,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+new file mode 100644
+index 0000000..c8f86d0
+--- /dev/null
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -0,0 +1,22 @@
++namespace VirtualCompany.Shared;
++
++public sealed record SharedBriefingSourceReference(
++    string EntityType,
++    Guid EntityId,
++    string Label);
++
++public sealed record SharedCompanyBriefing(
++    Guid Id,
++    Guid CompanyId,
++    string BriefingType,
++    DateTime PeriodStartUtc,
++    DateTime PeriodEndUtc,
++    string Title,
++    string SummaryBody,
++    IReadOnlyList<SharedBriefingSourceReference> SourceReferences,
++    Guid? MessageId,
++    DateTime GeneratedUtc);
++
++public sealed record SharedCompanyBriefingDeliveryPreference(
++    bool InAppEnabled,
++    bool MobileEnabled,
++    bool DailyEnabled,
++    bool WeeklyEnabled);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4f34dbd..cb86989 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -39,6 +39,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<Conversation> Conversations => Set<Conversation>();
+     public DbSet<Message> Messages => Set<Message>();
+     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
++    public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
++    public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
++    public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+@@ -87,6 +90,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ConversationTaskLink>()
+             .HasQueryFilter(link =>
+                 CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefing>()
++            .HasQueryFilter(briefing =>
++                CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
++            .HasQueryFilter(preference =>
++                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyNotification>()
++            .HasQueryFilter(notification =>
++                CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 3956ad3..f0d1215 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1064,6 +1064,117 @@ internal sealed class ConversationTaskLinkConfiguration : IEntityTypeConfigurati
+     }
+ }
+ 
++internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<CompanyBriefing>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefing> builder)
++    {
++        builder.ToTable("company_briefings");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.BriefingType)
++            .HasColumnName("briefing_type")
++            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.PeriodStartUtc).HasColumnName("period_start_at").IsRequired();
++        builder.Property(x => x.PeriodEndUtc).HasColumnName("period_end_at").IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.SummaryBody).HasColumnName("summary_body").IsRequired();
++        builder.Property(x => x.StructuredPayload)
++            .HasColumnName("structured_payload_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.SourceReferences)
++            .HasColumnName("source_refs_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.MessageId).HasColumnName("message_id");
++        builder.Property(x => x.GeneratedUtc).HasColumnName("generated_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.BriefingType, x.GeneratedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.BriefingType, x.PeriodStartUtc, x.PeriodEndUtc }).IsUnique();
++        builder.HasIndex(x => x.MessageId).IsUnique().HasFilter("[message_id] IS NOT NULL");
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Message).WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class CompanyBriefingDeliveryPreferenceConfiguration : IEntityTypeConfiguration<CompanyBriefingDeliveryPreference>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefingDeliveryPreference> builder)
++    {
++        builder.ToTable("company_briefing_delivery_preferences");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.InAppEnabled).HasColumnName("in_app_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.MobileEnabled).HasColumnName("mobile_enabled").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DailyEnabled).HasColumnName("daily_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.WeeklyEnabled).HasColumnName("weekly_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.UserId }).IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguration<CompanyNotification>
++{
++    public void Configure(EntityTypeBuilder<CompanyNotification> builder)
++    {
++        builder.ToTable("company_notifications");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.BriefingId).HasColumnName("briefing_id").IsRequired();
++        builder.Property(x => x.Channel)
++            .HasColumnName("channel")
++            .HasConversion(value => value.ToStorageValue(), value => value == "mobile" ? CompanyNotificationChannel.Mobile : CompanyNotificationChannel.InApp)
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Body).HasColumnName("body").HasMaxLength(4000).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(
++                value => value == CompanyNotificationStatus.Delivered ? "delivered" : value == CompanyNotificationStatus.Suppressed ? "suppressed" : "pending",
++                value => value == "delivered" ? CompanyNotificationStatus.Delivered : value == "suppressed" ? CompanyNotificationStatus.Suppressed : CompanyNotificationStatus.Pending)
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.BriefingId });
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.BriefingId, x.Channel }).IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Briefing).WithMany().HasForeignKey(x => x.BriefingId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class WorkflowDefinitionConfiguration : IEntityTypeConfiguration<WorkflowDefinition>
+ {
+     private static readonly ValueConverter<WorkflowTriggerType, string> TriggerTypeConverter =
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+new file mode 100644
+index 0000000..21881b8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -0,0 +1,402 @@
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyBriefingService : ICompanyBriefingService
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private const string BriefingConversationChannel = "executive_briefing";
++    private const string SystemSenderType = "system";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly ILogger<CompanyBriefingService> _logger;
++
++    public CompanyBriefingService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        ILogger<CompanyBriefingService> logger)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _logger = logger;
++    }
++
++    public async Task<CompanyBriefingGenerationResult> GenerateAsync(
++        Guid companyId,
++        GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]> { [nameof(companyId)] = ["Company id is required."] });
++        }
++
++        var briefingType = CompanyBriefingTypeValues.Parse(command.BriefingType);
++        var nowUtc = NormalizeUtc(command.NowUtc ?? DateTime.UtcNow);
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken)
++            ?? throw new KeyNotFoundException("Company not found.");
++
++        var window = ResolveWindow(company.Timezone, briefingType, nowUtc);
++        var existing = await _dbContext.CompanyBriefings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId &&
++                     x.BriefingType == briefingType &&
++                     x.PeriodStartUtc == window.StartUtc &&
++                     x.PeriodEndUtc == window.EndUtc,
++                cancellationToken);
++
++        if (existing is not null && !command.Force)
++        {
++            return new CompanyBriefingGenerationResult(await ToDtoAsync(existing, cancellationToken), true, 0);
++        }
++
++        var aggregate = await BuildAggregateAsync(companyId, briefingType, window, cancellationToken);
++        var title = briefingType == CompanyBriefingType.Daily
++            ? $"Daily briefing for {company.Name}"
++            : $"Weekly executive summary for {company.Name}";
++        var body = RenderBody(company.Name, briefingType, window, aggregate);
++        var structuredPayload = BuildPayload(company.Name, briefingType, window, aggregate);
++        var sourceRefs = BuildSourceReferences(aggregate.SourceReferences);
++
++        var ownerUserId = await ResolveOwnerUserIdAsync(companyId, cancellationToken);
++        var conversation = ownerUserId.HasValue
++            ? await ResolveBriefingConversationAsync(companyId, ownerUserId.Value, cancellationToken)
++            : null;
++        var message = conversation is null
++            ? null
++            : new Message(
++                Guid.NewGuid(),
++                companyId,
++                conversation.Id,
++                SystemSenderType,
++                senderId: null,
++                briefingType == CompanyBriefingType.Daily ? "daily_briefing" : "weekly_summary",
++                body,
++                structuredPayload);
++
++        if (message is not null)
++        {
++            _dbContext.Messages.Add(message);
++            conversation.Touch();
++        }
++
++        var briefing = new CompanyBriefing(
++            Guid.NewGuid(),
++            companyId,
++            briefingType,
++            window.StartUtc,
++            window.EndUtc,
++            title,
++            body,
++            structuredPayload,
++            sourceRefs,
++            message?.Id);
++        _dbContext.CompanyBriefings.Add(briefing);
++
++        var notificationsCreated = await AddNotificationsAsync(briefing, cancellationToken);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogInformation(
++            "Generated {BriefingType} briefing {BriefingId} for company {CompanyId}; notifications created: {NotificationsCreated}.",
++            briefingType.ToStorageValue(),
++            briefing.Id,
++            companyId,
++            notificationsCreated);
++
++        return new CompanyBriefingGenerationResult(await ToDtoAsync(briefing, cancellationToken), false, notificationsCreated);
++    }
++
++    public async Task<BriefingSchedulerRunResult> GenerateDueAsync(
++        GenerateDueBriefingsCommand command,
++        CancellationToken cancellationToken)
++    {
++        var nowUtc = NormalizeUtc(command.NowUtc);
++        var companyIds = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .OrderBy(x => x.Id)
++            .Select(x => x.Id)
++            .Take(Math.Max(1, command.BatchSize))
++            .ToListAsync(cancellationToken);
++
++        var generated = 0;
++        var notifications = 0;
++        var failures = 0;
++
++        foreach (var companyId in companyIds)
++        {
++            using var scope = _companyExecutionScopeFactory.BeginScope(companyId);
++            foreach (var briefingType in new[] { CompanyBriefingType.Daily, CompanyBriefingType.Weekly })
++            {
++                try
++                {
++                    var result = await GenerateAsync(
++                        companyId,
++                        new GenerateCompanyBriefingCommand(briefingType.ToStorageValue(), nowUtc),
++                        cancellationToken);
++                    if (!result.AlreadyExisted)
++                    {
++                        generated++;
++                        notifications += result.NotificationsCreated;
++                    }
++                }
++                catch (Exception ex) when (ex is not OperationCanceledException)
++                {
++                    failures++;
++                    _logger.LogError(ex, "Failed to generate {BriefingType} briefing for company {CompanyId}.", briefingType.ToStorageValue(), companyId);
++                }
++            }
++        }
++
++        return new BriefingSchedulerRunResult(true, companyIds.Count, generated, notifications, failures);
++    }
++
++    public async Task<DashboardBriefingCardDto> GetLatestDashboardBriefingsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var briefings = await _dbContext.CompanyBriefings
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .GroupBy(x => x.BriefingType)
++            .Select(x => x.OrderByDescending(briefing => briefing.GeneratedUtc).First())
++            .ToListAsync(cancellationToken);
++
++        var daily = briefings.SingleOrDefault(x => x.BriefingType == CompanyBriefingType.Daily);
++        var weekly = briefings.SingleOrDefault(x => x.BriefingType == CompanyBriefingType.Weekly);
++        return new DashboardBriefingCardDto(
++            daily is null ? null : ToDto(daily),
++            weekly is null ? null : ToDto(weekly));
++    }
++
++    public async Task<CompanyBriefingDeliveryPreferenceDto> GetDeliveryPreferenceAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var preference = await _dbContext.CompanyBriefingDeliveryPreferences
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId, cancellationToken);
++
++        return preference is null
++            ? new CompanyBriefingDeliveryPreferenceDto(companyId, membership.UserId, true, false, true, true, null)
++            : ToDto(preference);
++    }
++
++    public async Task<CompanyBriefingDeliveryPreferenceDto> UpdateDeliveryPreferenceAsync(
++        Guid companyId,
++        UpdateCompanyBriefingDeliveryPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var preference = await _dbContext.CompanyBriefingDeliveryPreferences
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId, cancellationToken);
++
++        if (preference is null)
++        {
++            preference = new CompanyBriefingDeliveryPreference(Guid.NewGuid(), companyId, membership.UserId);
++            _dbContext.CompanyBriefingDeliveryPreferences.Add(preference);
++        }
++
++        preference.Update(command.InAppEnabled, command.MobileEnabled, command.DailyEnabled, command.WeeklyEnabled);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(preference);
++    }
++
++    private async Task<int> AddNotificationsAsync(CompanyBriefing briefing, CancellationToken cancellationToken)
++    {
++        var users = await _dbContext.CompanyMemberships
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == briefing.CompanyId && x.Status == CompanyMembershipStatus.Active && x.UserId.HasValue)
++            .Select(x => x.UserId!.Value)
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        if (users.Count == 0)
++        {
++            return 0;
++        }
++
++        var preferences = await _dbContext.CompanyBriefingDeliveryPreferences
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == briefing.CompanyId && users.Contains(x.UserId))
++            .ToDictionaryAsync(x => x.UserId, cancellationToken);
++
++        var created = 0;
++        foreach (var userId in users)
++        {
++            preferences.TryGetValue(userId, out var preference);
++            var cadenceEnabled = briefing.BriefingType == CompanyBriefingType.Daily
++                ? preference?.DailyEnabled ?? true
++                : preference?.WeeklyEnabled ?? true;
++            if (!cadenceEnabled)
++            {
++                continue;
++            }
++
++            if (preference?.InAppEnabled ?? true)
++            {
++                _dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), briefing.CompanyId, userId, briefing.Id, CompanyNotificationChannel.InApp, briefing.Title, briefing.SummaryBody));
++                created++;
++            }
++
++            if (preference?.MobileEnabled == true)
++            {
++                _dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), briefing.CompanyId, userId, briefing.Id, CompanyNotificationChannel.Mobile, briefing.Title, briefing.SummaryBody));
++                created++;
++            }
++        }
++
++        return created;
++    }
++
++    private async Task<BriefingAggregate> BuildAggregateAsync(Guid companyId, CompanyBriefingType type, BriefingWindow window, CancellationToken cancellationToken)
++    {
++        var approvals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(10)
++            .Select(x => new BriefingItem("Approval", $"{x.ApprovalType} approval pending for {x.TargetEntityType}", x.Id, x.CreatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var tasks = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.UpdatedUtc >= window.StartUtc && x.UpdatedUtc < window.EndUtc)
++            .GroupBy(x => x.Status)
++            .Select(x => new { Status = x.Key, Count = x.Count() })
++            .ToListAsync(cancellationToken);
++
++        var taskHighlights = tasks
++            .OrderByDescending(x => x.Count)
++            .Select(x => new BriefingItem("Task", $"{x.Count} task(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++            .ToList();
++
++        var workflowExceptions = await _dbContext.WorkflowExceptions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(10)
++            .Select(x => new BriefingItem("WorkflowException", x.Title, x.Id, x.OccurredUtc))
++            .ToListAsync(cancellationToken);
++
++        var agentUpdates = await _dbContext.ToolExecutionAttempts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.StartedUtc >= window.StartUtc && x.StartedUtc < window.EndUtc)
++            .GroupBy(x => x.Status)
++            .Select(x => new { Status = x.Key, Count = x.Count() })
++            .ToListAsync(cancellationToken);
++
++        var agentHighlights = agentUpdates
++            .OrderByDescending(x => x.Count)
++            .Select(x => new BriefingItem("AgentActivity", $"{x.Count} agent tool execution(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++            .ToList();
++
++        var sourceReferences = approvals
++            .Concat(workflowExceptions)
++            .Where(x => x.EntityId != Guid.Empty)
++            .Select(x => new BriefingSourceReferenceDto(x.Kind, x.EntityId, x.Text))
++            .ToList();
++
++        return new BriefingAggregate(approvals, taskHighlights, workflowExceptions, agentHighlights, sourceReferences);
++    }
++
++    private static string RenderBody(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate)
++    {
++        var builder = new StringBuilder();
++        builder.AppendLine(type == CompanyBriefingType.Daily
++            ? $"Daily briefing for {companyName}"
++            : $"Weekly executive summary for {companyName}");
++        builder.AppendLine($"Period: {window.StartUtc:u} to {window.EndUtc:u}");
++        AppendSection(builder, "Approvals", aggregate.Approvals);
++        AppendSection(builder, "Tasks", aggregate.TaskHighlights);
++        AppendSection(builder, "Alerts and anomalies", aggregate.WorkflowExceptions);
++        AppendSection(builder, "Agent and workflow updates", aggregate.AgentHighlights);
++        return builder.ToString().Trim();
++    }
++
++    private static void AppendSection(StringBuilder builder, string title, IReadOnlyList<BriefingItem> items)
++    {
++        builder.AppendLine();
++        builder.AppendLine(title);
++        if (items.Count == 0)
++        {
++            builder.AppendLine("- No notable items.");
++            return;
++        }
++
++        foreach (var item in items.Take(5))
++        {
++            builder.AppendLine($"- {item.Text}");
++        }
++    }
++
++    private static Dictionary<string, JsonNode?> BuildPayload(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["companyName"] = JsonValue.Create(companyName),
++            ["briefingType"] = JsonValue.Create(type.ToStorageValue()),
++            ["periodStartUtc"] = JsonValue.Create(window.StartUtc),
++            ["periodEndUtc"] = JsonValue.Create(window.EndUtc),
++            ["approvals"] = JsonSerializer.SerializeToNode(aggregate.Approvals.Select(x => x.Text), SerializerOptions),
++            ["taskHighlights"] = JsonSerializer.SerializeToNode(aggregate.TaskHighlights.Select(x => x.Text), SerializerOptions),
++            ["alertsAndAnomalies"] = JsonSerializer.SerializeToNode(aggregate.WorkflowExceptions.Select(x => x.Text), SerializerOptions),
++            ["notableUpdates"] = JsonSerializer.SerializeToNode(aggregate.AgentHighlights.Select(x => x.Text), SerializerOptions),
++            ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions)
++        };
++
++    private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["items"] = JsonSerializer.SerializeToNode(references, SerializerOptions)
++        };
++
++    private async Task<Conversation> ResolveBriefingConversationAsync(Guid companyId, Guid ownerUserId, CancellationToken cancellationToken)
++    {
++        var conversation = await _dbContext.Conversations
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.ChannelType == BriefingConversationChannel, cancellationToken);
++        if (conversation is not null)
++        {
++            return conversation;
++        }
++
++        conversation = new Conversation(Guid.NewGuid(), companyId, BriefingConversationChannel, "Executive briefings", ownerUserId, agentId: null);
++        _dbContext.Conversations.Add(conversation);
++        return conversation;
++    }
++
++    private async Task<Guid?> ResolveOwnerUserIdAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _dbContext.CompanyMemberships
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active && x.UserId.HasValue)
++            .OrderBy(x => x.Role == CompanyMembershipRole.Owner ? 0 : x.Role == CompanyMembershipRole.Admin ? 1 : 2)
++            .Select(x => x.UserId)
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        return membership ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++    }
++
++    private Task<CompanyBriefingDto> ToDtoAsync(CompanyBriefing briefing, CancellationToken cancellationToken) =>
++        Task.FromResult(ToDto(briefing));
++
++    private static CompanyBriefingDto ToDto(CompanyBriefing briefing)
++    {
++        var references = briefing.SourceReferences.TryGetValue("items", out var node) && node is not null
++            ? JsonSerializer.Deserialize<List<BriefingSourceReferenceDto>>(node.ToJsonString(), SerializerOptions) ?? []
++            : [];
++        return new CompanyBriefingDto(
++            briefing.Id,
++            briefing.CompanyId,
++            briefing.BriefingType.ToStorageValue(),
++            briefing.PeriodStartUtc,
++            briefing.PeriodEndUtc,
++            briefing.Title,
++            briefing.SummaryBody,
++            briefing.StructuredPayload.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++            references,
++            briefing.MessageId,
++            briefing.GeneratedUtc);
++    }
++
++    private static CompanyBriefingDeliveryPreferenceDto ToDto(CompanyBriefingDeliveryPreference preference) =>
++        new(preference.CompanyId, preference.UserId, preference.InAppEnabled, preference.MobileEnabled, preference.DailyEnabled, preference.WeeklyEnabled, preference.UpdatedUtc);
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static BriefingWindow ResolveWindow(string? timezone, CompanyBriefingType type, DateTime nowUtc)
++    {
++        var zone = ResolveTimezone(timezone);
++        var localNow = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone);
++        var localEnd = localNow.Date;
++        if (type == CompanyBriefingType.Weekly)
++        {
++            var daysSinceMonday = ((int)localEnd.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
++            localEnd = localEnd.AddDays(-daysSinceMonday);
++        }
++
++        var localStart = type == CompanyBriefingType.Daily ? localEnd.AddDays(-1) : localEnd.AddDays(-7);
++        return new BriefingWindow(
++            TimeZoneInfo.ConvertTimeToUtc(localStart, zone),
++            TimeZoneInfo.ConvertTimeToUtc(localEnd, zone));
++    }
++
++    private static TimeZoneInfo ResolveTimezone(string? timezone)
++    {
++        if (string.IsNullOrWhiteSpace(timezone))
++        {
++            return TimeZoneInfo.Utc;
++        }
++
++        try
++        {
++            return TimeZoneInfo.FindSystemTimeZoneById(timezone.Trim());
++        }
++        catch (TimeZoneNotFoundException)
++        {
++            return TimeZoneInfo.Utc;
++        }
++        catch (InvalidTimeZoneException)
++        {
++            return TimeZoneInfo.Utc;
++        }
++    }
++
++    private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
++    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc);
++    private sealed record BriefingAggregate(
++        IReadOnlyList<BriefingItem> Approvals,
++        IReadOnlyList<BriefingItem> TaskHighlights,
++        IReadOnlyList<BriefingItem> WorkflowExceptions,
++        IReadOnlyList<BriefingItem> AgentHighlights,
++        IReadOnlyList<BriefingSourceReferenceDto> SourceReferences);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs
+new file mode 100644
+index 0000000..0b725c5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs
+@@ -0,0 +1,120 @@
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Application.Workflows;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class BriefingSchedulerOptions
++{
++    public const string SectionName = "BriefingScheduler";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalSeconds { get; set; } = 900;
++    public int LockTtlSeconds { get; set; } = 300;
++    public int BatchSize { get; set; } = 50;
++    public string LockKey { get; set; } = "briefing-scheduler";
++}
++
++public sealed class BriefingSchedulerCoordinator
++{
++    private readonly IDistributedLockProvider _lockProvider;
++    private readonly ICompanyBriefingService _briefingService;
++    private readonly IOptions<BriefingSchedulerOptions> _options;
++    private readonly ILogger<BriefingSchedulerCoordinator> _logger;
++
++    public BriefingSchedulerCoordinator(
++        IDistributedLockProvider lockProvider,
++        ICompanyBriefingService briefingService,
++        IOptions<BriefingSchedulerOptions> options,
++        ILogger<BriefingSchedulerCoordinator> logger)
++    {
++        _lockProvider = lockProvider;
++        _briefingService = briefingService;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<BriefingSchedulerRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken)
++    {
++        var options = _options.Value;
++        var lockKey = string.IsNullOrWhiteSpace(options.LockKey) ? "briefing-scheduler" : options.LockKey.Trim();
++        var lockTtl = TimeSpan.FromSeconds(Math.Max(30, options.LockTtlSeconds));
++        await using var handle = await _lockProvider.TryAcquireAsync(lockKey, lockTtl, cancellationToken);
++        if (handle is null)
++        {
++            _logger.LogInformation("Briefing scheduler skipped polling because distributed lock {LockKey} was not acquired.", lockKey);
++            return new BriefingSchedulerRunResult(false, 0, 0, 0, 0);
++        }
++
++        var result = await _briefingService.GenerateDueAsync(
++            new GenerateDueBriefingsCommand(now.UtcDateTime, Math.Max(1, options.BatchSize)),
++            cancellationToken);
++        _logger.LogInformation(
++            "Briefing scheduler completed. Companies scanned: {CompaniesScanned}. Briefings generated: {BriefingsGenerated}. Notifications created: {NotificationsCreated}. Failures: {Failures}.",
++            result.CompaniesScanned,
++            result.BriefingsGenerated,
++            result.NotificationsCreated,
++            result.Failures);
++        return result;
++    }
++}
++
++public sealed class BriefingSchedulerBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly TimeProvider _timeProvider;
++    private readonly IOptions<BriefingSchedulerOptions> _options;
++    private readonly ILogger<BriefingSchedulerBackgroundService> _logger;
++
++    public BriefingSchedulerBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        TimeProvider timeProvider,
++        IOptions<BriefingSchedulerOptions> options,
++        ILogger<BriefingSchedulerBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _timeProvider = timeProvider;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Briefing scheduler background service is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromSeconds(Math.Max(60, _options.Value.PollIntervalSeconds));
++        using var timer = new PeriodicTimer(pollInterval);
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var coordinator = scope.ServiceProvider.GetRequiredService<BriefingSchedulerCoordinator>();
++                await coordinator.RunOnceAsync(_timeProvider.GetUtcNow(), stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Briefing scheduler polling loop failed unexpectedly.");
++            }
++
++            try
++            {
++                await timer.WaitForNextTickAsync(stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++        }
++
++        _logger.LogInformation("Briefing scheduler background service stopped.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 54a63bd..23e3034 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Chat;
+ using StackExchange.Redis;
+@@ -126,6 +127,8 @@ public static class DependencyInjection
+         services.AddHostedService<WorkflowSchedulerBackgroundService>();
+         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
+         services.AddScoped<IWorkflowProgressionService, WorkflowProgressionService>();
++        services.AddOptions<BriefingSchedulerOptions>().Bind(configuration.GetSection(BriefingSchedulerOptions.SectionName));
++        services.AddHostedService<BriefingSchedulerBackgroundService>();
+         services.AddHostedService<WorkflowProgressionBackgroundService>();
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+@@ -182,6 +185,8 @@ public static class DependencyInjection
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
++        services.AddScoped<BriefingSchedulerCoordinator>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Api/Controllers/BriefingsController.cs b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+new file mode 100644
+index 0000000..f186af6
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+@@ -0,0 +1,96 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/briefings")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class BriefingsController : ControllerBase
++{
++    private readonly ICompanyBriefingService _briefingService;
++
++    public BriefingsController(ICompanyBriefingService briefingService)
++    {
++        _briefingService = briefingService;
++    }
++
++    [HttpGet("latest")]
++    public async Task<ActionResult<DashboardBriefingCardDto>> GetLatestAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.GetLatestDashboardBriefingsAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("generate")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<CompanyBriefingGenerationResult>> GenerateAsync(
++        Guid companyId,
++        [FromBody] GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.GenerateAsync(companyId, command, cancellationToken));
++        }
++        catch (BriefingValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("preferences")]
++    public async Task<ActionResult<CompanyBriefingDeliveryPreferenceDto>> GetPreferencesAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.GetDeliveryPreferenceAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("preferences")]
++    public async Task<ActionResult<CompanyBriefingDeliveryPreferenceDto>> UpdatePreferencesAsync(
++        Guid companyId,
++        [FromBody] UpdateCompanyBriefingDeliveryPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.UpdateDeliveryPreferenceAsync(companyId, command, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
++        ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
++        {
++            Title = "Validation failed",
++            Status = StatusCodes.Status400BadRequest
++        });
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs
+new file mode 100644
+index 0000000..d7b4b94
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs
+@@ -0,0 +1,150 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413160000_AddCompanyBriefings")]
++public partial class AddCompanyBriefings : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "company_briefings",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                briefing_type = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                period_start_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                period_end_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                summary_body = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                structured_payload_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "'{}'"),
++                source_refs_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "'{}'"),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                message_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                generated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_briefings", x => x.id);
++                table.ForeignKey(
++                    name: "FK_company_briefings_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_company_briefings_messages_message_id",
++                    column: x => x.message_id,
++                    principalTable: "messages",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "company_briefing_delivery_preferences",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                in_app_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                mobile_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                daily_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                weekly_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_briefing_delivery_preferences", x => x.id);
++                table.ForeignKey("FK_company_briefing_delivery_preferences_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                table.ForeignKey("FK_company_briefing_delivery_preferences_users_user_id", x => x.user_id, "users", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "company_notifications",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                briefing_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                body = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_notifications", x => x.id);
++                table.ForeignKey("FK_company_notifications_company_briefings_briefing_id", x => x.briefing_id, "company_briefings", "id", onDelete: ReferentialAction.Cascade);
++                table.ForeignKey("FK_company_notifications_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                table.ForeignKey("FK_company_notifications_users_user_id", x => x.user_id, "users", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex("IX_company_briefings_company_id_briefing_type_generated_at", "company_briefings", new[] { "company_id", "briefing_type", "generated_at" });
++        migrationBuilder.CreateIndex("IX_company_briefings_company_id_briefing_type_period_start_at_period_end_at", "company_briefings", new[] { "company_id", "briefing_type", "period_start_at", "period_end_at" }, unique: true);
++        migrationBuilder.CreateIndex("IX_company_briefings_message_id", "company_briefings", "message_id", unique: true, filter: "[message_id] IS NOT NULL");
++        migrationBuilder.CreateIndex("IX_company_briefing_delivery_preferences_company_id_user_id", "company_briefing_delivery_preferences", new[] { "company_id", "user_id" }, unique: true);
++        migrationBuilder.CreateIndex("IX_company_briefing_delivery_preferences_user_id", "company_briefing_delivery_preferences", "user_id");
++        migrationBuilder.CreateIndex("IX_company_notifications_briefing_id", "company_notifications", "briefing_id");
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_briefing_id", "company_notifications", new[] { "company_id", "briefing_id" });
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_briefing_id_channel", "company_notifications", new[] { "company_id", "user_id", "briefing_id", "channel" }, unique: true);
++        migrationBuilder.CreateIndex("IX_company_notifications_company_id_user_id_created_at", "company_notifications", new[] { "company_id", "user_id", "created_at" });
++        migrationBuilder.CreateIndex("IX_company_notifications_user_id", "company_notifications", "user_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "company_notifications");
++        migrationBuilder.DropTable(name: "company_briefing_delivery_preferences");
++        migrationBuilder.DropTable(name: "company_briefings");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index e29f2a4..2eecb63 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -56,6 +56,14 @@ public sealed class OnboardingApiClient
+             ? Task.FromResult(OfflineStore.GetDashboardEntry(companyId))
+             : GetDashboardEntryCoreAsync(companyId, cancellationToken);
+ 
++    public Task<DashboardBriefingCardViewModel?> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<DashboardBriefingCardViewModel?>(new DashboardBriefingCardViewModel())
++            : GetLatestBriefingsCoreAsync(companyId, cancellationToken);
++
++    public Task<BriefingPreferenceViewModel> UpdateBriefingPreferencesAsync(Guid companyId, BriefingPreferenceUpdateRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<BriefingPreferenceViewModel>(HttpMethod.Put, $"api/companies/{companyId}/briefings/preferences", request, cancellationToken);
++
+     private async Task<IReadOnlyList<OnboardingTemplateViewModel>> GetTemplatesCoreAsync(CancellationToken cancellationToken)
+     {
+         try
+@@ -198,6 +206,21 @@ public sealed class OnboardingApiClient
+         }
+     }
+ 
++    private async Task<DashboardBriefingCardViewModel?> GetLatestBriefingsCoreAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var response = await _httpClient.GetAsync($"api/companies/{companyId}/briefings/latest", cancellationToken);
++            if (response.StatusCode == System.Net.HttpStatusCode.Forbidden || response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
++            {
++                return null;
++            }
++
++            response.EnsureSuccessStatusCode();
++            return await response.Content.ReadFromJsonAsync<DashboardBriefingCardViewModel>(SerializerOptions, cancellationToken);
++        }
++        catch (HttpRequestException ex) { throw CreateNetworkException(ex); }
++    }
++
+     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
+     {
+         try
+@@ -757,6 +780,51 @@ public sealed class CompanyDashboardEntryViewModel
+     public List<string> StarterGuidance { get; set; } = [];
+ }
+ 
++public sealed class DashboardBriefingCardViewModel
++{
++    public CompanyBriefingViewModel? Daily { get; set; }
++    public CompanyBriefingViewModel? Weekly { get; set; }
++}
++
++public sealed class CompanyBriefingViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string BriefingType { get; set; } = string.Empty;
++    public DateTime PeriodStartUtc { get; set; }
++    public DateTime PeriodEndUtc { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string SummaryBody { get; set; } = string.Empty;
++    public List<BriefingSourceReferenceViewModel> SourceReferences { get; set; } = [];
++    public Guid? MessageId { get; set; }
++    public DateTime GeneratedUtc { get; set; }
++}
++
++public sealed class BriefingSourceReferenceViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public Guid EntityId { get; set; }
++    public string Label { get; set; } = string.Empty;
++}
++
++public sealed class BriefingPreferenceViewModel
++{
++    public Guid CompanyId { get; set; }
++    public Guid UserId { get; set; }
++    public bool InAppEnabled { get; set; }
++    public bool MobileEnabled { get; set; }
++    public bool DailyEnabled { get; set; }
++    public bool WeeklyEnabled { get; set; }
++    public DateTime? UpdatedUtc { get; set; }
++}
++
++public sealed class BriefingPreferenceUpdateRequest
++{
++    public bool InAppEnabled { get; set; }
++    public bool MobileEnabled { get; set; }
++    public bool DailyEnabled { get; set; }
++    public bool WeeklyEnabled { get; set; }
++}
++
+ public sealed class CurrentUserContextViewModel
+ {
+     public CurrentUserViewModel User { get; set; } = new();
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index eb18bf4..a641113 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -95,6 +95,42 @@ else
+                     <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                 }
+             </div>
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Executive briefings</h2>
++                @if (briefings?.Daily is null && briefings?.Weekly is null)
++                {
++                    <p class="text-body-secondary mb-0">No briefing has been generated for this workspace yet.</p>
++                }
++                else
++                {
++                    @if (briefings?.Daily is not null)
++                    {
++                        <article class="mb-4">
++                            <strong>@briefings.Daily.Title</strong>
++                            <div class="text-body-secondary">@briefings.Daily.GeneratedUtc.ToLocalTime():g</div>
++                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Daily.SummaryBody)</p>
++                            @if (briefings.Daily.SourceReferences.Count > 0)
++                            {
++                                <div class="text-body-secondary">Linked items: @briefings.Daily.SourceReferences.Count</div>
++                            }
++                        </article>
++                    }
++
++                    @if (briefings?.Weekly is not null)
++                    {
++                        <article>
++                            <strong>@briefings.Weekly.Title</strong>
++                            <div class="text-body-secondary">@briefings.Weekly.GeneratedUtc.ToLocalTime():g</div>
++                            <p class="mt-2 mb-2">@FirstParagraph(briefings.Weekly.SummaryBody)</p>
++                            @if (briefings.Weekly.SourceReferences.Count > 0)
++                            {
++                                <div class="text-body-secondary">Linked items: @briefings.Weekly.SourceReferences.Count</div>
++                            }
++                        </article>
++                    }
++                }
++            </div>
+ 
+             <div class="wizard-card wizard-card--compact">
+                 <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+@@ -145,6 +181,7 @@ else
+     private OnboardingProgressViewModel? onboardingProgress;
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
++    private DashboardBriefingCardViewModel? briefings;
+     private string? errorMessage;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+     private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
+@@ -174,6 +211,7 @@ else
+             onboardingProgress = await ApiClient.GetProgressAsync();
+             companyAccess = null;
+             dashboardEntry = null;
++            briefings = null;
+ 
+             if (CompanyId is not Guid companyId)
+             {
+@@ -195,6 +233,7 @@ else
+ 
+             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
++            briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
+ 
+             if (dashboardEntry?.RequiresOnboarding == true)
+             {
+@@ -207,6 +246,7 @@ else
+         {
+             errorMessage = ex.Message;
+             companyAccess = null;
++            briefings = null;
+             dashboardEntry = null;
+         }
+         finally
+@@ -217,4 +257,10 @@ else
+     }
+ 
+     private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
++
++    private static string FirstParagraph(string value)
++    {
++        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
++        return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + "...";
++    }
+ }
+diff --git a/README.md b/README.md
+index 9f2f5ef..f8116aa 100644
+--- a/README.md
++++ b/README.md
+@@ -131,3 +131,12 @@ Health endpoints:
+ - `/health/live` verifies process liveness.
+ - `/health/ready` verifies the database connection and registered dependencies needed to serve tenant traffic.
+ - All health responses include the current correlation id when one is present on the request.
++
++## Executive Briefings
++
++TASK-ST-505 adds a deterministic v1 briefing pipeline. The `BriefingScheduler` hosted service scans tenant companies and generates one daily briefing and one weekly executive summary per company-period, using company timezone windows and an idempotent `(company_id, briefing_type, period_start_at, period_end_at)` key.
++
++Briefings aggregate pending approvals, task status highlights, open workflow exceptions, and recent agent tool execution activity. Generated output is stored in `company_briefings`, projected to the executive briefing conversation when an active user exists, and fan-out notification rows are written to `company_notifications`.
++
++Users can read and update in-app/mobile delivery preferences at `api/companies/{companyId}/briefings/preferences`. In-app delivery defaults on, mobile defaults off, and daily/weekly cadence preferences default on. Push provider and email dispatch are intentionally out of scope for this slice.
+END_OF_PATCH

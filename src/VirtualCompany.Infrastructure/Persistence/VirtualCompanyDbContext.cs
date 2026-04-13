@@ -33,6 +33,12 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<Message> Messages => Set<Message>();
+    public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+    public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
+    public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+    public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
@@ -59,6 +65,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ExecutionExceptionRecord>()
             .HasQueryFilter(executionException =>
                 CurrentCompanyId.HasValue && executionException.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<AuditEvent>()
+            .HasQueryFilter(auditEvent =>
+                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
@@ -71,6 +80,24 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Conversation>()
+            .HasQueryFilter(conversation =>
+                CurrentCompanyId.HasValue && conversation.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Message>()
+            .HasQueryFilter(message =>
+                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ConversationTaskLink>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefing>()
+            .HasQueryFilter(briefing =>
+                CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
+            .HasQueryFilter(preference =>
+                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyNotification>()
+            .HasQueryFilter(notification =>
+                CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<WorkflowDefinition>()
             .HasQueryFilter(definition =>
                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));

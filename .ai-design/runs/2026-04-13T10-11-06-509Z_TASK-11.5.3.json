@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.5.3",
+  "promptPath": ".ai-design/prompts/TASK-11.5.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T10:11:06.509Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T10-11-06-509Z_TASK-11.5.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T10-11-06-509Z_TASK-11.5.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T10:16:14.286Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "riefing_is_tenant_scoped()\n+    {\n+        var seed = await SeedBriefingCompanyAsync();\n+\n+        using var client = CreateAuthenticatedClient();\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/generate\", new\n+        {\n+            briefingType = \"daily_briefing\",\n+            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)\n+        });\n+\n+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n+\n+        var otherCompanyResponse = await client.GetAsync($\"/api/companies/{seed.OtherCompanyId}/briefings/latest\");\n+        Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Aggregate_is_tenant_scoped()\n     {\n@@ -230,6 +290,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         return new BriefingSeed(\n             companyId,\n+            otherCompanyId,\n             agentId,\n             blockedTaskId,\n             workflowExceptionId,\n@@ -253,6 +314,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n     private sealed record BriefingSeed(\n         Guid CompanyId,\n+        Guid OtherCompanyId,\n         Guid AgentId,\n         Guid BlockedTaskId,\n         Guid WorkflowExceptionId,\n@@ -272,9 +334,16 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         public CompanyBriefingResponse Briefing { get; set; } = new();\n     }\n \n+    private sealed class DashboardBriefingCardResponse\n+    {\n+        public CompanyBriefingResponse? Daily { get; set; }\n+        public CompanyBriefingResponse? Weekly { get; set; }\n+    }\n+\n     private sealed class CompanyBriefingResponse\n     {\n+        public Guid CompanyId { get; set; }\n         public Guid? MessageId { get; set; }\n         public string SummaryBody { get; set; } = string.Empty;\n         public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "oped()\n+    {\n+        var seed = await SeedBriefingCompanyAsync();\n+\n+        using var client = CreateAuthenticatedClient();\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/generate\", new\n+        {\n+            briefingType = \"daily_briefing\",\n+            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)\n+        });\n+\n+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n+\n+        var otherCompanyResponse = await client.GetAsync($\"/api/companies/{seed.OtherCompanyId}/briefings/latest\");\n+        Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Aggregate_is_tenant_scoped()\n     {\n@@ -230,6 +290,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         return new BriefingSeed(\n             companyId,\n+            otherCompanyId,\n             agentId,\n             blockedTaskId,\n             workflowExceptionId,\n@@ -253,6 +314,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n     private sealed record BriefingSeed(\n         Guid CompanyId,\n+        Guid OtherCompanyId,\n         Guid AgentId,\n         Guid BlockedTaskId,\n         Guid WorkflowExceptionId,\n@@ -272,9 +334,16 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         public CompanyBriefingResponse Briefing { get; set; } = new();\n     }\n \n+    private sealed class DashboardBriefingCardResponse\n+    {\n+        public CompanyBriefingResponse? Daily { get; set; }\n+        public CompanyBriefingResponse? Weekly { get; set; }\n+    }\n+\n     private sealed class CompanyBriefingResponse\n     {\n+        public Guid CompanyId { get; set; }\n         public Guid? MessageId { get; set; }\n         public string SummaryBody { get; set; } = string.Empty;\n         public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];\n     }\nEND_OF_PATCH\ntokens used\n201,006\n",
+  "verbosityMode": "summary"
+}

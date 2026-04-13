@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.3.7",
+  "promptPath": ".ai-design/prompts/TASK-11.3.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T08:25:21.328Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T08-25-21-328Z_TASK-11.3.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T08-25-21-328Z_TASK-11.3.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T08:28:10.716Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ompany.Domain.Enums;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebApplicationFactory>\n+{\n+    private readonly TestWebApplicationFactory _factory;\n+\n+    public InternalCompanyToolRegistryTests(TestWebApplicationFactory factory)\n+    {\n+        _factory = factory;\n+    }\n+\n+    [Fact]\n+    public void Registry_exposes_initial_internal_tool_set_with_typed_actions()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var registry = scope.ServiceProvider.GetRequiredService<ICompanyToolRegistry>();\n+\n+        var tools = registry.ListTools();\n+\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.get\" && tool.Supports(ToolActionType.Read, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.list\" && tool.Supports(ToolActionType.Read, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.update_status\" && tool.Supports(ToolActionType.Execute, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"approvals.create_request\" && tool.Supports(ToolActionType.Execute, \"approvals\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Read, \"knowledge\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Recommend, \"knowledge\"));\n+    }\n+\n+    [Fact]\n+    public void Registry_rejects_unregistered_external_tools()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var registry = scope.ServiceProvider.GetRequiredService<ICompanyToolRegistry>();\n+\n+        Assert.False(registry.TryGetTool(\"wire_transfer\", out _));\n+        Assert.False(registry.TryGetTool(\"external.crm.raw_http\", out _));\n+        Assert.True(registry.TryGetTool(\"tasks.update_status\", out var taskUpdate));\n+        Assert.False(taskUpdate.Supports(ToolActionType.Read, \"tasks\"));\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": ";\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebApplicationFactory>\n+{\n+    private readonly TestWebApplicationFactory _factory;\n+\n+    public InternalCompanyToolRegistryTests(TestWebApplicationFactory factory)\n+    {\n+        _factory = factory;\n+    }\n+\n+    [Fact]\n+    public void Registry_exposes_initial_internal_tool_set_with_typed_actions()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var registry = scope.ServiceProvider.GetRequiredService<ICompanyToolRegistry>();\n+\n+        var tools = registry.ListTools();\n+\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.get\" && tool.Supports(ToolActionType.Read, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.list\" && tool.Supports(ToolActionType.Read, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"tasks.update_status\" && tool.Supports(ToolActionType.Execute, \"tasks\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"approvals.create_request\" && tool.Supports(ToolActionType.Execute, \"approvals\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Read, \"knowledge\"));\n+        Assert.Contains(tools, tool => tool.ToolName == \"knowledge.search\" && tool.Supports(ToolActionType.Recommend, \"knowledge\"));\n+    }\n+\n+    [Fact]\n+    public void Registry_rejects_unregistered_external_tools()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+        var registry = scope.ServiceProvider.GetRequiredService<ICompanyToolRegistry>();\n+\n+        Assert.False(registry.TryGetTool(\"wire_transfer\", out _));\n+        Assert.False(registry.TryGetTool(\"external.crm.raw_http\", out _));\n+        Assert.True(registry.TryGetTool(\"tasks.update_status\", out var taskUpdate));\n+        Assert.False(taskUpdate.Supports(ToolActionType.Read, \"tasks\"));\n+    }\n+}\nEND_OF_PATCH\ntokens used\n86,518\n",
+  "verbosityMode": "summary"
+}

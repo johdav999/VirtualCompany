@@ -1,0 +1,298 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AuditEvent.cs b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+index 6b0c3b1..b377bf4 100644
+--- a/src/VirtualCompany.Domain/Entities/AuditEvent.cs
++++ b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+@@ -1,5 +1,10 @@
+ namespace VirtualCompany.Domain.Entities;
+ 
++public sealed record AuditDataSourceUsed(
++    string SourceType,
++    string? SourceId = null,
++    string? DisplayName = null,
++    string? Reference = null);
++
+ public sealed class AuditEvent : ICompanyOwnedEntity
+ {
+     private AuditEvent()
+@@ -17,7 +22,8 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         IEnumerable<string>? dataSources = null,
+         IReadOnlyDictionary<string, string?>? metadata = null,
+         string? correlationId = null,
+-        DateTime? occurredUtc = null)
++        DateTime? occurredUtc = null,
++        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -41,6 +47,7 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         Outcome = NormalizeRequired(outcome, nameof(outcome), 64);
+         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), 512);
+         DataSources = NormalizeDataSources(dataSources);
++        DataSourcesUsed = NormalizeDataSourcesUsed(dataSourcesUsed);
+         Metadata = NormalizeMetadata(metadata);
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
+@@ -56,6 +63,7 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+     public string Outcome { get; private set; } = null!;
+     public string? RationaleSummary { get; private set; }
+     public List<string> DataSources { get; private set; } = [];
++    public List<AuditDataSourceUsed> DataSourcesUsed { get; private set; } = [];
+     public Dictionary<string, string?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public string? CorrelationId { get; private set; }
+     public DateTime OccurredUtc { get; private set; }
+@@ -118,6 +126,37 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         return normalized.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+     }
+ 
++    private static List<AuditDataSourceUsed> NormalizeDataSourcesUsed(IEnumerable<AuditDataSourceUsed>? dataSourcesUsed)
++    {
++        if (dataSourcesUsed is null)
++        {
++            return [];
++        }
++
++        var normalized = new Dictionary<string, AuditDataSourceUsed>(StringComparer.OrdinalIgnoreCase);
++        foreach (var dataSource in dataSourcesUsed)
++        {
++            if (dataSource is null || string.IsNullOrWhiteSpace(dataSource.SourceType))
++            {
++                continue;
++            }
++
++            var source = new AuditDataSourceUsed(
++                NormalizeRequired(dataSource.SourceType, nameof(dataSourcesUsed), 64),
++                NormalizeOptional(dataSource.SourceId, nameof(dataSourcesUsed), 128),
++                NormalizeOptional(dataSource.DisplayName, nameof(dataSourcesUsed), 200),
++                NormalizeOptional(dataSource.Reference, nameof(dataSourcesUsed), 512));
++
++            var key = string.Join(
++                ":",
++                source.SourceType,
++                source.SourceId ?? string.Empty,
++                source.DisplayName ?? string.Empty,
++                source.Reference ?? string.Empty);
++            normalized[key] = source;
++        }
++
++        return normalized.Values
++            .OrderBy(value => value.SourceType, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(value => value.SourceId, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++    }
++
+     private static Dictionary<string, string?> NormalizeMetadata(IReadOnlyDictionary<string, string?>? metadata)
+     {
+         var normalized = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 154a6b6..f6d3298 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -1,3 +1,5 @@
++using VirtualCompany.Domain.Entities;
++
+ namespace VirtualCompany.Application.Auditing;
+ 
+ public sealed record AuditEventWriteRequest(
+@@ -12,7 +14,8 @@ public sealed record AuditEventWriteRequest(
+     IReadOnlyCollection<string>? DataSources = null,
+     IReadOnlyDictionary<string, string?>? Metadata = null,
+     string? CorrelationId = null,
+-    DateTime? OccurredUtc = null);
++    DateTime? OccurredUtc = null,
++    IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null);
+ 
+ // Business audit history is an explicit application concern.
+ // Technical diagnostics belong on ILogger and must not be inferred from audit records.
+@@ -137,6 +140,9 @@ public static class AuditEventOutcomes
+     public const string Denied = "denied";
+     public const string Pending = "pending";
+     public const string Failed = "failed";
++    public const string Requested = "requested";
++    public const string Approved = "approved";
++    public const string Rejected = "rejected";
+ }
+ 
+ public static class AuditEventActions
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+index 9335cc8..150dd9d 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+@@ -29,8 +29,19 @@ public sealed class AuditEventWriter : IAuditEventWriter
+             auditEvent.DataSources,
+             auditEvent.Metadata,
+             auditEvent.CorrelationId,
+-            auditEvent.OccurredUtc));
++            auditEvent.OccurredUtc,
++            BuildDataSourcesUsed(auditEvent)));
+         return Task.CompletedTask;
+     }
++
++    private static IReadOnlyCollection<AuditDataSourceUsed> BuildDataSourcesUsed(AuditEventWriteRequest auditEvent)
++    {
++        if (auditEvent.DataSourcesUsed is { Count: > 0 })
++        {
++            return auditEvent.DataSourcesUsed;
++        }
++
++        return auditEvent.DataSources?
++            .Select(source => new AuditDataSourceUsed(source, DisplayName: source))
++            .ToArray() ?? [];
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 84a2309..7f6855c 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -328,6 +328,15 @@ public sealed class CompanyAuditQueryService
+             .Select(x => new AuditSourceReferenceDto(x, x, "data_source"))
+             .ToList();
+ 
++        references.AddRange(auditEvent.DataSourcesUsed.Select(source => new AuditSourceReferenceDto(
++            string.IsNullOrWhiteSpace(source.DisplayName) ? source.SourceType : source.DisplayName,
++            string.IsNullOrWhiteSpace(source.Reference)
++                ? source.SourceId
++                : source.Reference,
++            source.SourceType)));
++
+         foreach (var key in new[] { "sourceReference", "sourceRef", "documentTitle", "policyVersion" })
+         {
+             if (auditEvent.Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0f7d017..3314b8a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -93,7 +93,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 AuditEventActions.ApprovalCreated,
+                 AuditTargetTypes.ApprovalRequest,
+                 approval.Id.ToString("N"),
+-                AuditEventOutcomes.Pending,
++                AuditEventOutcomes.Requested,
+                 DataSources: ["approvals", "http_request"],
+                 RationaleSummary: $"Approval requested for {approval.TargetEntityType} target.",
+                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+@@ -497,7 +497,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 rejected ? AuditEventActions.ApprovalStepRejected : AuditEventActions.ApprovalStepApproved,
+                 AuditTargetTypes.ApprovalRequest,
+                 approval.Id.ToString("N"),
+-                rejected ? AuditEventOutcomes.Denied : AuditEventOutcomes.Succeeded,
++                rejected ? AuditEventOutcomes.Rejected : AuditEventOutcomes.Approved,
+                 DataSources: ["approvals", "http_request"],
+                 RationaleSummary: $"Approval step {step.SequenceNo} {(rejected ? "rejected" : "approved")}.",
+                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+@@ -557,7 +557,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 AuditEventActions.ApprovalCompleted,
+                 AuditTargetTypes.ApprovalRequest,
+                 approval.Id.ToString("N"),
+-                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
++                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
+                 DataSources: ["approvals", "http_request"],
+                 RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}",
+                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index d223f62..2a3f899 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -1054,8 +1054,19 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
+                 artifact?.Metadata ?? BuildFallbackAuditMetadata(request),
+                 artifact?.CorrelationId ?? request.Result.CorrelationId,
+-                artifact?.OccurredUtc ?? request.Result.Metadata.CompletedAtUtc),
++                artifact?.OccurredUtc ?? request.Result.Metadata.CompletedAtUtc,
++                BuildDataSourcesUsed(request)),
+             cancellationToken);
+     }
++
++    private static IReadOnlyCollection<AuditDataSourceUsed> BuildDataSourcesUsed(OrchestrationAuditWriteRequest request) =>
++        request.Result.SourceReferences
++            .Select(source => new AuditDataSourceUsed(
++                source.SourceType,
++                source.SourceId,
++                source.Title,
++                source.Locator))
++            .ToArray();
+ 
+     private static string ResolveAuditOutcome(string status) =>
+         string.Equals(status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index c97dd78..670b9a8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -504,12 +504,18 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEve
+             .HasJsonConversion<List<string>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
+             .IsRequired();
++        builder.Property(x => x.DataSourcesUsed)
++            .HasColumnName("data_sources_used_json")
++            .HasJsonConversion<List<AuditDataSourceUsed>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
+         builder.Property(x => x.Metadata)
+             .HasColumnName("metadata_json")
+             .HasJsonConversion<Dictionary<string, string?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ActorType, x.ActorId });
+         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs
+new file mode 100644
+index 0000000..e8929b0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs
+@@ -0,0 +1,40 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddAuditEventStructuredDataSources : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "data_sources_used_json",
++            table: "audit_events",
++            type: "jsonb",
++            nullable: false,
++            defaultValueSql: "'[]'");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_ActorType_ActorId",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "ActorType", "ActorId" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_ActorType_ActorId",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "data_sources_used_json",
++            table: "audit_events");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index 6cab955..37e6d18 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -92,8 +92,11 @@ public sealed class AuditQueryServiceTests
+             AuditEventOutcomes.Succeeded,
+             "The task was completed using the approved data source.",
+             ["knowledge document"],
+-            new Dictionary<string, string?> { ["policyVersion"] = "task_8_3_7" }));
++            metadata: new Dictionary<string, string?> { ["policyVersion"] = "task_8_3_7" },
++            dataSourcesUsed: [new AuditDataSourceUsed("document", "runbook-1", "Runbook", "kb://runbook-1")]));
+         await dbContext.SaveChangesAsync();
+@@ -104,5 +107,8 @@ public sealed class AuditQueryServiceTests
+ 
+         Assert.Equal("The task was completed using the approved data source.", detail.RationaleSummary);
++        Assert.Contains(detail.SourceReferences, source =>
++            source.Type == "document" &&
++            source.Reference == "kb://runbook-1");
+         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
+     }
+END_OF_PATCH

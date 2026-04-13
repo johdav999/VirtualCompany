@@ -55,6 +55,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnName("data_sources_json")
                         .HasDefaultValueSql("N'[]'");
 
+                    b.Property<string>("DataSourcesUsed")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("data_sources_used_json")
+                        .HasDefaultValueSql("N'[]'");
+
                     b.Property<string>("Metadata")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -69,6 +76,21 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid?>("RelatedAgentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("RelatedApprovalRequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("RelatedTaskId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("RelatedToolExecutionAttemptId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("RelatedWorkflowInstanceId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("RationaleSummary")
                         .HasMaxLength(512)
@@ -86,7 +108,21 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CompanyId", "ActorType", "ActorId");
+
+                    b.HasIndex("CompanyId", "CorrelationId");
+
                     b.HasIndex("CompanyId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedAgentId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedApprovalRequestId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedTaskId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedToolExecutionAttemptId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedWorkflowInstanceId", "OccurredUtc");
 
                     b.HasIndex("CompanyId", "TargetType", "TargetId", "OccurredUtc");
 
@@ -215,6 +251,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CompanyId", "Department");
+
+                    b.HasIndex("CompanyId", "Department", "Status");
 
                     b.HasIndex("CompanyId", "DisplayName");
 

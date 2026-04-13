@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.1",
+  "promptPath": ".ai-design/prompts/TASK-12.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:09:58.603Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-09-58-603Z_TASK-12.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-09-58-603Z_TASK-12.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:13:15.462Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  table: \"audit_events\",\n+            type: \"jsonb\",\n+            nullable: false,\n+            defaultValueSql: \"'[]'\");\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_audit_events_CompanyId_ActorType_ActorId\",\n+            table: \"audit_events\",\n+            columns: new[] { \"CompanyId\", \"ActorType\", \"ActorId\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropIndex(\n+            name: \"IX_audit_events_CompanyId_ActorType_ActorId\",\n+            table: \"audit_events\");\n+\n+        migrationBuilder.DropColumn(\n+            name: \"data_sources_used_json\",\n+            table: \"audit_events\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\nindex 6cab955..37e6d18 100644\n--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\n@@ -92,8 +92,11 @@ public sealed class AuditQueryServiceTests\n             AuditEventOutcomes.Succeeded,\n             \"The task was completed using the approved data source.\",\n             [\"knowledge document\"],\n-            new Dictionary<string, string?> { [\"policyVersion\"] = \"task_8_3_7\" }));\n+            metadata: new Dictionary<string, string?> { [\"policyVersion\"] = \"task_8_3_7\" },\n+            dataSourcesUsed: [new AuditDataSourceUsed(\"document\", \"runbook-1\", \"Runbook\", \"kb://runbook-1\")]));\n         await dbContext.SaveChangesAsync();\n@@ -104,5 +107,8 @@ public sealed class AuditQueryServiceTests\n \n         Assert.Equal(\"The task was completed using the approved data source.\", detail.RationaleSummary);\n+        Assert.Contains(detail.SourceReferences, source =>\n+            source.Type == \"document\" &&\n+            source.Reference == \"kb://runbook-1\");\n         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"chainOfThought\", StringComparison.OrdinalIgnoreCase));\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "nts\",\n+            type: \"jsonb\",\n+            nullable: false,\n+            defaultValueSql: \"'[]'\");\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"IX_audit_events_CompanyId_ActorType_ActorId\",\n+            table: \"audit_events\",\n+            columns: new[] { \"CompanyId\", \"ActorType\", \"ActorId\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropIndex(\n+            name: \"IX_audit_events_CompanyId_ActorType_ActorId\",\n+            table: \"audit_events\");\n+\n+        migrationBuilder.DropColumn(\n+            name: \"data_sources_used_json\",\n+            table: \"audit_events\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\nindex 6cab955..37e6d18 100644\n--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs\n@@ -92,8 +92,11 @@ public sealed class AuditQueryServiceTests\n             AuditEventOutcomes.Succeeded,\n             \"The task was completed using the approved data source.\",\n             [\"knowledge document\"],\n-            new Dictionary<string, string?> { [\"policyVersion\"] = \"task_8_3_7\" }));\n+            metadata: new Dictionary<string, string?> { [\"policyVersion\"] = \"task_8_3_7\" },\n+            dataSourcesUsed: [new AuditDataSourceUsed(\"document\", \"runbook-1\", \"Runbook\", \"kb://runbook-1\")]));\n         await dbContext.SaveChangesAsync();\n@@ -104,5 +107,8 @@ public sealed class AuditQueryServiceTests\n \n         Assert.Equal(\"The task was completed using the approved data source.\", detail.RationaleSummary);\n+        Assert.Contains(detail.SourceReferences, source =>\n+            source.Type == \"document\" &&\n+            source.Reference == \"kb://runbook-1\");\n         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"chainOfThought\", StringComparison.OrdinalIgnoreCase));\n     }\nEND_OF_PATCH\ntokens used\n85,810\n",
+  "verbosityMode": "summary"
+}

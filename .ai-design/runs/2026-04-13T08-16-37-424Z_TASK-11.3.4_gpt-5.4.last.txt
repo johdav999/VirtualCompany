@@ -1,0 +1,363 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 8c3b0b2..87f2a31 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -181,7 +181,8 @@ public sealed record ToolExecutionRequest(
+     IReadOnlyDictionary<string, JsonNode?> RequestPayload,
+     Guid? TaskId = null,
+     Guid? WorkflowInstanceId = null,
+-    string? CorrelationId = null);
++    string? CorrelationId = null,
++    Guid ExecutionId = default);
+ 
+ public sealed record ToolExecutionResult(
+     bool Success,
+diff --git a/src/VirtualCompany.Application/Agents/InternalToolContracts.cs b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+new file mode 100644
+index 0000000..df2a2a0
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/InternalToolContracts.cs
+@@ -0,0 +1,88 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record InternalToolExecutionContext(
++    Guid CompanyId,
++    Guid AgentId,
++    Guid ExecutionId,
++    string ActionType,
++    string? Scope,
++    Guid? TaskId = null,
++    Guid? WorkflowInstanceId = null,
++    string? CorrelationId = null);
++
++public sealed record InternalToolExecutionRequest(
++    string ToolName,
++    InternalToolExecutionContext Context,
++    IReadOnlyDictionary<string, JsonNode?> Payload)
++{
++    public Guid CompanyId => Context.CompanyId;
++    public Guid AgentId => Context.AgentId;
++    public Guid ExecutionId => Context.ExecutionId;
++    public string ActionType => Context.ActionType;
++    public string? Scope => Context.Scope;
++    public Guid? TaskId => Context.TaskId;
++    public Guid? WorkflowInstanceId => Context.WorkflowInstanceId;
++    public string? CorrelationId => Context.CorrelationId;
++}
++
++public sealed record InternalToolExecutionResponse(
++    bool Success,
++    string Status,
++    string UserSafeSummary,
++    Dictionary<string, JsonNode?> Data,
++    Dictionary<string, JsonNode?> Metadata,
++    string? ErrorCode = null)
++{
++    public const string SchemaVersion = "2026-04-13";
++
++    public static InternalToolExecutionResponse Succeeded(
++        string userSafeSummary,
++        Dictionary<string, JsonNode?> data,
++        Dictionary<string, JsonNode?>? metadata = null) =>
++        new(
++            true,
++            "executed",
++            string.IsNullOrWhiteSpace(userSafeSummary) ? "Tool execution completed." : userSafeSummary.Trim(),
++            CloneNodes(data),
++            CloneNodes(metadata));
++
++    public static InternalToolExecutionResponse Failed(
++        string status,
++        string errorCode,
++        string userSafeSummary,
++        Dictionary<string, JsonNode?>? data = null,
++        Dictionary<string, JsonNode?>? metadata = null) =>
++        new(
++            false,
++            string.IsNullOrWhiteSpace(status) ? "failed" : status.Trim(),
++            string.IsNullOrWhiteSpace(userSafeSummary) ? "Tool execution failed." : userSafeSummary.Trim(),
++            CloneNodes(data),
++            CloneNodes(metadata),
++            string.IsNullOrWhiteSpace(errorCode) ? "internal_tool_failed" : errorCode.Trim());
++
++    public Dictionary<string, JsonNode?> ToSafePayload()
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create(SchemaVersion),
++            ["status"] = JsonValue.Create(Status),
++            ["success"] = JsonValue.Create(Success),
++            ["userSafeSummary"] = JsonValue.Create(UserSafeSummary),
++            ["errorCode"] = string.IsNullOrWhiteSpace(ErrorCode) ? null : JsonValue.Create(ErrorCode),
++            ["data"] = ToJsonObject(Data),
++            ["metadata"] = ToJsonObject(Metadata)
++        };
++
++        foreach (var (key, value) in Data)
++        {
++            payload.TryAdd(key, value?.DeepClone());
++        }
++
++        return payload;
++    }
++
++    private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?> values) =>
++        new(CloneNodes(values).Select(pair => KeyValuePair.Create(pair.Key, pair.Value)).ToArray());
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public interface IInternalCompanyToolContract
++{
++    Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 61dcf9f..a8f69cf 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -200,7 +200,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 CloneNodes(command.RequestPayload),
+                 command.TaskId,
+                 command.WorkflowInstanceId,
+-                correlationId),
++                correlationId,
++                executionId),
+             cancellationToken);
+             result = NormalizeStructuredResult(result, command);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 6532ff1..2c3bf1c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -300,7 +300,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                         CloneNodes(attempt.RequestPayload),
+                         attempt.TaskId,
+                         attempt.WorkflowInstanceId,
+-                        attempt.CorrelationId),
++                        attempt.CorrelationId,
++                        attempt.Id),
+                     cancellationToken);
+                 attempt.MarkExecuted(policyDecision, result.ToStructuredPayload());
+                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+index 2fd7085..f58f73e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -5,22 +5,101 @@ using VirtualCompany.Application.Agents;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
++// Adapter boundary: policy-enforced orchestration calls this executor, which then invokes typed application contracts.
+ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+ {
+-    public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
++    private readonly IInternalCompanyToolContract _internalToolContract;
++
++    public NoOpCompanyToolExecutor(IInternalCompanyToolContract internalToolContract)
++    {
++        _internalToolContract = internalToolContract;
++    }
++
++    public async Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
++    {
++        var executionId = request.ExecutionId == Guid.Empty ? Guid.NewGuid() : request.ExecutionId;
++        var context = new InternalToolExecutionContext(
++            request.CompanyId,
++            request.AgentId,
++            executionId,
++            request.ActionType,
++            request.Scope,
++            request.TaskId,
++            request.WorkflowInstanceId,
++            request.CorrelationId);
++
++        var response = await _internalToolContract.ExecuteAsync(
++            new InternalToolExecutionRequest(request.ToolName, context, request.RequestPayload),
++            cancellationToken);
++
++        var payload = response.ToSafePayload();
++        var metadata = CloneNodes(response.Metadata);
++        metadata["contractSchemaVersion"] = JsonValue.Create(InternalToolExecutionResponse.SchemaVersion);
++        metadata["executionId"] = JsonValue.Create(executionId);
++
++        return response.Success
++            ? ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload, metadata)
++            : ToolExecutionResult.Failed(
++                request.ToolName,
++                request.ActionType,
++                response.Status,
++                string.IsNullOrWhiteSpace(response.ErrorCode) ? "internal_tool_failed" : response.ErrorCode,
++                response.UserSafeSummary,
++                payload,
++                metadata);
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class NoOpInternalCompanyToolContract : IInternalCompanyToolContract
++{
++    public Task<InternalToolExecutionResponse> ExecuteAsync(
++        InternalToolExecutionRequest request,
++        CancellationToken cancellationToken)
+     {
+-        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        if (request.Context.CompanyId == Guid.Empty)
+         {
+-            ["mode"] = JsonValue.Create("stub"),
++            return Task.FromResult(InternalToolExecutionResponse.Failed(
++                "failed",
++                "company_context_required",
++                "Tool execution requires a company context."));
++        }
++
++        if (request.Context.AgentId == Guid.Empty)
++        {
++            return Task.FromResult(InternalToolExecutionResponse.Failed(
++                "failed",
++                "agent_context_required",
++                "Tool execution requires an agent context."));
++        }
++
++        if (request.Context.ExecutionId == Guid.Empty)
++        {
++            return Task.FromResult(InternalToolExecutionResponse.Failed(
++                "failed",
++                "execution_context_required",
++                "Tool execution requires an execution context."));
++        }
++
++        if (string.IsNullOrWhiteSpace(request.Context.ActionType))
++        {
++            return Task.FromResult(InternalToolExecutionResponse.Failed(
++                "failed",
++                "action_type_required",
++                "Tool execution requires an action type."));
++        }
++
++        var data = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["mode"] = JsonValue.Create("contract_stub"),
+             ["toolName"] = JsonValue.Create(request.ToolName),
+             ["actionType"] = JsonValue.Create(request.ActionType),
+             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++            ["companyId"] = JsonValue.Create(request.CompanyId),
++            ["agentId"] = JsonValue.Create(request.AgentId),
++            ["executionId"] = JsonValue.Create(request.ExecutionId),
+             ["executedAtUtc"] = JsonValue.Create(DateTime.UtcNow)
+         };
+ 
+-        return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));
++        return Task.FromResult(InternalToolExecutionResponse.Succeeded(
++            "Tool execution completed through the internal contract boundary.",
++            data,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["contractName"] = JsonValue.Create(nameof(NoOpInternalCompanyToolContract))
++            }));
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 7e0635d..d859dc8 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -199,6 +199,7 @@ public static class DependencyInjection
+         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
+         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
++        services.AddScoped<IInternalCompanyToolContract, NoOpInternalCompanyToolContract>();
+         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 7c9a473..204c2d1 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -299,6 +299,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal(seed.CompanyId, executedRequest.CompanyId);
+         Assert.Equal(seed.AgentId, executedRequest.AgentId);
+         Assert.Equal("erp", executedRequest.ToolName);
++        Assert.Equal(executionPayload.ExecutionId, executedRequest.ExecutionId);
+         Assert.Equal("execute", executedRequest.ActionType);
+         Assert.Equal("payments", executedRequest.Scope);
+         Assert.Equal(taskId, executedRequest.TaskId);
+@@ -381,6 +382,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.NotNull(payload.ExecutionResult);
+         Assert.Equal("erp", payload.ExecutionResult!["toolName"].GetString());
++        Assert.Equal("2026-04-13", payload.ExecutionResult["contractSchemaVersion"].GetString());
++        Assert.Equal("Test tool execution completed.", payload.ExecutionResult["userSafeSummary"].GetString());
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 5de1ac9..e71fbd9 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -66,11 +66,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+ 
+             services.RemoveAll<ICompanyInvitationSender>();
+             services.AddSingleton<TestCompanyInvitationSender>();
+-            services.RemoveAll<ICompanyToolExecutor>();
++            services.RemoveAll<IInternalCompanyToolContract>();
+             services.AddSingleton<TestCompanyToolExecutor>();
++            services.AddSingleton<IInternalCompanyToolContract>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
+ 
+-            services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
+             services.RemoveAll<ICompanyDocumentStorage>();
+             services.AddSingleton<TestCompanyDocumentStorage>();
+             services.AddSingleton<ICompanyDocumentStorage>(provider => provider.GetRequiredService<TestCompanyDocumentStorage>());
+@@ -173,9 +172,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+         }
+     }
+ 
+-    public sealed class TestCompanyToolExecutor : ICompanyToolExecutor
++    public sealed class TestCompanyToolExecutor : IInternalCompanyToolContract
+     {
+-        private readonly ConcurrentQueue<ToolExecutionRequest> _requests = new();
++        private readonly ConcurrentQueue<InternalToolExecutionRequest> _requests = new();
+ 
+-        public IReadOnlyList<ToolExecutionRequest> Requests => _requests.ToArray();
++        public IReadOnlyList<InternalToolExecutionRequest> Requests => _requests.ToArray();
+         public int ExecutionCount => _requests.Count;
+ 
+         public void Reset()
+@@ -185,7 +184,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+             }
+         }
+ 
+-        public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
++        public Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
+         {
+             _requests.Enqueue(request);
+ 
+@@ -195,10 +194,20 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 ["toolName"] = JsonValue.Create(request.ToolName),
+                 ["actionType"] = JsonValue.Create(request.ActionType),
+                 ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
++                ["companyId"] = JsonValue.Create(request.CompanyId),
++                ["agentId"] = JsonValue.Create(request.AgentId),
++                ["executionId"] = JsonValue.Create(request.ExecutionId),
+                 ["executed"] = JsonValue.Create(true)
+             };
+ 
+-            return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));
++            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
++                ["companyId"] = JsonValue.Create(request.CompanyId),
++                ["executionId"] = JsonValue.Create(request.ExecutionId)
++            };
++
++            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, metadata));
+         }
+     }
+ 
+END_OF_PATCH

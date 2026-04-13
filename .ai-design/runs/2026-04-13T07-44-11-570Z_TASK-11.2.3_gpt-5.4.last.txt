@@ -1,0 +1,677 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -8,7 +8,10 @@ public sealed record ExecuteAgentToolCommand(
+     string? ThresholdCategory,
+     string? ThresholdKey,
+     decimal? ThresholdValue,
+-    bool SensitiveAction = false);
++    bool SensitiveAction = false,
++    Guid? TaskId = null,
++    Guid? WorkflowInstanceId = null,
++    string? CorrelationId = null);
+ 
+ public sealed record ExecuteAgentToolResultDto(
+     Guid ExecutionId,
+@@ -129,10 +132,73 @@ public sealed record ToolExecutionRequest(
+     Guid AgentId,
+     string ToolName,
+     string ActionType,
+     string? Scope,
+-    IReadOnlyDictionary<string, JsonNode?> RequestPayload);
++    IReadOnlyDictionary<string, JsonNode?> RequestPayload,
++    Guid? TaskId = null,
++    Guid? WorkflowInstanceId = null,
++    string? CorrelationId = null);
+ 
+-public sealed record ToolExecutionResult(
+-    string Summary,
+-    Dictionary<string, JsonNode?> Payload);
++public sealed record ToolExecutionResult(
++    bool Success,
++    string Status,
++    string ToolName,
++    string ActionType,
++    Dictionary<string, JsonNode?> Payload,
++    string? ErrorCode = null,
++    string? ErrorMessage = null,
++    Dictionary<string, JsonNode?>? Metadata = null)
++{
++    public const string SchemaVersion = "2026-04-13";
++
++    public string Summary =>
++        string.IsNullOrWhiteSpace(ErrorMessage)
++            ? $"{ToolName} {ActionType} completed with status '{Status}'."
++            : ErrorMessage!;
++
++    public Dictionary<string, JsonNode?> ToStructuredPayload()
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create(SchemaVersion),
++            ["success"] = JsonValue.Create(Success),
++            ["status"] = JsonValue.Create(Status),
++            ["toolName"] = JsonValue.Create(ToolName),
++            ["actionType"] = JsonValue.Create(ActionType),
++            ["payload"] = ToJsonObject(Payload),
++            ["errorCode"] = string.IsNullOrWhiteSpace(ErrorCode) ? null : JsonValue.Create(ErrorCode),
++            ["errorMessage"] = string.IsNullOrWhiteSpace(ErrorMessage) ? null : JsonValue.Create(ErrorMessage),
++            ["metadata"] = ToJsonObject(Metadata)
++        };
++
++        foreach (var (key, value) in Payload)
++        {
++            payload.TryAdd(key, value?.DeepClone());
++        }
++
++        return payload;
++    }
++
++    public static ToolExecutionResult Succeeded(
++        string toolName,
++        string actionType,
++        Dictionary<string, JsonNode?> payload,
++        Dictionary<string, JsonNode?>? metadata = null) =>
++        new(true, "executed", toolName, actionType, CloneNodes(payload), Metadata: CloneNodes(metadata));
++
++    public static ToolExecutionResult Failed(
++        string toolName,
++        string actionType,
++        string status,
++        string errorCode,
++        string errorMessage,
++        Dictionary<string, JsonNode?>? payload = null,
++        Dictionary<string, JsonNode?>? metadata = null) =>
++        new(false, status, toolName, actionType, CloneNodes(payload), errorCode, errorMessage, CloneNodes(metadata));
++
++    private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?>? nodes)
++    {
++        var jsonObject = new JsonObject();
++        foreach (var (key, value) in CloneNodes(nodes))
++        {
++            jsonObject[key] = value?.DeepClone();
++        }
++
++        return jsonObject;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+ 
+ public interface IPolicyGuardrailEngine
+ {
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -18,7 +18,12 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         string toolName,
+         ToolActionType actionType,
+         string? scope,
+-        IDictionary<string, JsonNode?>? requestPayload = null)
++        IDictionary<string, JsonNode?>? requestPayload = null,
++        Guid? taskId = null,
++        Guid? workflowInstanceId = null,
++        string? correlationId = null,
++        DateTime? startedAtUtc = null,
++        DateTime? completedAtUtc = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -34,6 +39,16 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+             throw new ArgumentException("AgentId is required.", nameof(agentId));
+         }
+ 
++        if (taskId == Guid.Empty)
++        {
++            throw new ArgumentException("TaskId cannot be empty.", nameof(taskId));
++        }
++
++        if (workflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowInstanceId cannot be empty.", nameof(workflowInstanceId));
++        }
++
+         ToolActionTypeValues.EnsureSupported(actionType, nameof(actionType));
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+@@ -42,13 +57,17 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
+         ActionType = actionType;
+         Scope = NormalizeOptional(scope, nameof(scope), ScopeMaxLength);
++        TaskId = taskId;
++        WorkflowInstanceId = workflowInstanceId;
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         Status = ToolExecutionStatus.Denied;
+         RequestPayload = CloneNodes(requestPayload);
+         PolicyDecision = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+         ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+-        CreatedUtc = DateTime.UtcNow;
++        StartedUtc = startedAtUtc ?? DateTime.UtcNow;
++        CompletedUtc = completedAtUtc;
++        CreatedUtc = StartedUtc;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -59,25 +78,35 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+     public string ToolName { get; private set; } = null!;
+     public ToolActionType ActionType { get; private set; }
+     public string? Scope { get; private set; }
++    public Guid? TaskId { get; private set; }
++    public Guid? WorkflowInstanceId { get; private set; }
++    public string? CorrelationId { get; private set; }
+     public ToolExecutionStatus Status { get; private set; }
+     public Guid? ApprovalRequestId { get; private set; }
+     public Dictionary<string, JsonNode?> RequestPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> ResultPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime StartedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? ExecutedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+-    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision)
++    public void MarkDenied(IDictionary<string, JsonNode?>? policyDecision, IDictionary<string, JsonNode?>? resultPayload = null, DateTime? completedAtUtc = null)
+     {
+         Status = ToolExecutionStatus.Denied;
+         PolicyDecision = CloneNodes(policyDecision);
+-        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        ResultPayload = CloneNodes(resultPayload);
+         ApprovalRequestId = null;
+-        UpdatedUtc = DateTime.UtcNow;
++        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
+     }
+ 
+-    public void MarkAwaitingApproval(Guid approvalRequestId, IDictionary<string, JsonNode?>? policyDecision)
++    public void MarkAwaitingApproval(
++        Guid approvalRequestId,
++        IDictionary<string, JsonNode?>? policyDecision,
++        IDictionary<string, JsonNode?>? resultPayload = null,
++        DateTime? completedAtUtc = null)
+     {
+         if (approvalRequestId == Guid.Empty)
+         {
+@@ -88,16 +117,31 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+         Status = ToolExecutionStatus.AwaitingApproval;
+         ApprovalRequestId = approvalRequestId;
+         PolicyDecision = CloneNodes(policyDecision);
+-        ResultPayload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+-        UpdatedUtc = DateTime.UtcNow;
++        ResultPayload = CloneNodes(resultPayload);
++        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
+     }
+ 
+     public void MarkExecuted(
+         IDictionary<string, JsonNode?>? policyDecision,
+-        IDictionary<string, JsonNode?>? resultPayload)
++        IDictionary<string, JsonNode?>? resultPayload,
++        DateTime? completedAtUtc = null)
+     {
+         Status = ToolExecutionStatus.Executed;
+         PolicyDecision = CloneNodes(policyDecision);
+         ResultPayload = CloneNodes(resultPayload);
+-        ExecutedUtc = DateTime.UtcNow;
++        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
++        ExecutedUtc = CompletedUtc;
+         UpdatedUtc = ExecutedUtc.Value;
+     }
++
++    public void MarkFailed(
++        IDictionary<string, JsonNode?>? policyDecision,
++        IDictionary<string, JsonNode?>? resultPayload,
++        DateTime? completedAtUtc = null)
++    {
++        Status = ToolExecutionStatus.Failed;
++        PolicyDecision = CloneNodes(policyDecision);
++        ResultPayload = CloneNodes(resultPayload);
++        ApprovalRequestId = null;
++        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -47,7 +47,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     {
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
+-        var correlationId = CreateCorrelationId();
++        var correlationId = CreateCorrelationId(command.CorrelationId);
++        var startedAtUtc = DateTime.UtcNow;
+         var executionId = Guid.NewGuid();
+ 
+         var attempt = new ToolExecutionAttempt(
+@@ -57,7 +58,12 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             command.ToolName,
+             ToolActionTypeValues.Parse(command.ActionType),
+             command.Scope,
+-            command.RequestPayload);
++            command.RequestPayload,
++            command.TaskId,
++            command.WorkflowInstanceId,
++            correlationId,
++            startedAtUtc);
+ 
+         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
+         var policyRequest = new PolicyEvaluationRequest(
+@@ -92,7 +98,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         var serializedDecision = SerializeDecision(decision);
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
+         {
+-            attempt.MarkDenied(serializedDecision);
++            var structuredResult = ToolExecutionResult.Failed(
++                command.ToolName,
++                command.ActionType,
++                ToolExecutionStatus.Denied.ToStorageValue(),
++                "policy_denied",
++                BuildCallerMessage(decision),
++                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId));
++            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
+ 
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+@@ -120,8 +133,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 attempt.Status.ToStorageValue(),
+                 null,
+                 decision,
+-                null,
+-                BuildCallerMessage(decision));
++                structuredResult.ToStructuredPayload(),
++                structuredResult.Summary);
+         }
+ 
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
+@@ -145,7 +158,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 null);
+             var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, membership.UserId);
+             approvalRequest.SetDecisionChain(decisionChain);
++            var structuredResult = ToolExecutionResult.Failed(
++                command.ToolName,
++                command.ActionType,
++                ToolExecutionStatus.AwaitingApproval.ToStorageValue(),
++                "approval_required",
++                BuildCallerMessage(decision),
++                CloneNodes(decisionChain),
++                BuildExecutionResultMetadata(command, decision, correlationId, executionId, approvalRequest.Id));
+ 
+             _dbContext.ApprovalRequests.Add(approvalRequest);
+-            attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision);
++            attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
+ 
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+@@ -173,11 +193,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 attempt.Status.ToStorageValue(),
+                 approvalRequest.Id,
+                 decision,
+-                null,
+-                BuildCallerMessage(decision),
++                structuredResult.ToStructuredPayload(),
++                structuredResult.Summary,
+                 CloneNodes(decisionChain));
+         }
+ 
+-        var result = await _companyToolExecutor.ExecuteAsync(
++        try
++        {
++            var result = await _companyToolExecutor.ExecuteAsync(
+             new ToolExecutionRequest(
+                 companyId,
+                 agentId,
+@@ -185,9 +205,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 command.ActionType,
+                 command.Scope,
+-                CloneNodes(command.RequestPayload)),
++                CloneNodes(command.RequestPayload),
++                command.TaskId,
++                command.WorkflowInstanceId,
++                correlationId),
+             cancellationToken);
++            result = NormalizeStructuredResult(result, command);
+ 
+-        attempt.MarkExecuted(serializedDecision, result.Payload);
++            attempt.MarkExecuted(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
+ 
+-        await _auditEventWriter.WriteAsync(
++            await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+                 companyId,
+                 AuditActorTypes.User,
+@@ -200,7 +224,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 DataSources: ["agent_execution", "policy_guardrail", "http_request"],
+                 CorrelationId: correlationId,
+                 RationaleSummary: result.Summary,
+-                Metadata: BuildAuditMetadata(command, decision)),
++                Metadata: BuildAuditMetadata(command, decision)),
+             cancellationToken);
+ 
+-        await _dbContext.SaveChangesAsync(cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        return new ExecuteAgentToolResultDto(
++            return new ExecuteAgentToolResultDto(
+             attempt.Id,
+             attempt.Status.ToStorageValue(),
+             null,
+             decision,
+-            CloneNodes(result.Payload),
++            result.ToStructuredPayload(),
+             result.Summary);
++        }
++        catch (Exception ex) when (ex is not OperationCanceledException)
++        {
++            var failedResult = ToolExecutionResult.Failed(
++                command.ToolName,
++                command.ActionType,
++                ToolExecutionStatus.Failed.ToStorageValue(),
++                "tool_execution_failed",
++                "The tool execution failed before a structured successful response was produced.",
++                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, exceptionType: ex.GetType().Name));
++            attempt.MarkFailed(serializedDecision, failedResult.ToStructuredPayload(), DateTime.UtcNow);
++
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    companyId,
++                    AuditActorTypes.User,
++                    membership.UserId,
++                    AuditEventActions.AgentToolExecutionExecuted,
++                    AuditTargetTypes.AgentToolExecution,
++                    attempt.Id.ToString("N"),
++                    AuditEventOutcomes.Failed,
++                    DataSources: ["agent_execution", "policy_guardrail", "http_request"],
++                    CorrelationId: correlationId,
++                    RationaleSummary: failedResult.Summary,
++                    Metadata: BuildAuditMetadata(command, decision)),
++                cancellationToken);
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            return new ExecuteAgentToolResultDto(
++                attempt.Id,
++                attempt.Status.ToStorageValue(),
++                null,
++                decision,
++                failedResult.ToStructuredPayload(),
++                failedResult.Summary);
++        }
+     }
+@@ -385,6 +433,47 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+     private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision) =>
+         ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision);
+ 
++    private static ToolExecutionResult NormalizeStructuredResult(ToolExecutionResult result, ExecuteAgentToolCommand command)
++    {
++        if (result.Payload is null)
++        {
++            return ToolExecutionResult.Failed(
++                command.ToolName,
++                command.ActionType,
++                ToolExecutionStatus.Failed.ToStorageValue(),
++                "unstructured_tool_response",
++                "The tool executor returned no structured payload.");
++        }
++
++        return result with
++        {
++            ToolName = string.IsNullOrWhiteSpace(result.ToolName) ? command.ToolName : result.ToolName.Trim(),
++            ActionType = string.IsNullOrWhiteSpace(result.ActionType) ? command.ActionType : result.ActionType.Trim(),
++            Status = string.IsNullOrWhiteSpace(result.Status) ? ToolExecutionStatus.Failed.ToStorageValue() : result.Status.Trim(),
++            Payload = CloneNodes(result.Payload),
++            Metadata = CloneNodes(result.Metadata)
++        };
++    }
++
++    private static Dictionary<string, JsonNode?> BuildExecutionResultMetadata(
++        ExecuteAgentToolCommand command,
++        ToolExecutionDecisionDto decision,
++        string correlationId,
++        Guid executionId,
++        Guid? approvalRequestId = null,
++        string? exceptionType = null)
++    {
++        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["correlationId"] = JsonValue.Create(correlationId),
++            ["executionId"] = JsonValue.Create(executionId),
++            ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
++            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
++            ["policyOutcome"] = JsonValue.Create(decision.Outcome),
++            ["policyDecisionSchemaVersion"] = JsonValue.Create(decision.SchemaVersion),
++            ["approvalRequestId"] = approvalRequestId.HasValue ? JsonValue.Create(approvalRequestId.Value) : null,
++            ["exceptionType"] = string.IsNullOrWhiteSpace(exceptionType) ? null : JsonValue.Create(exceptionType)
++        };
++
++        return metadata;
++    }
++
+     private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?> nodes)
+     {
+         var jsonObject = new JsonObject();
+@@ -449,9 +538,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
+-    private string CreateCorrelationId() =>
+-        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++    private string CreateCorrelationId(string? requestedCorrelationId)
++    {
++        if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
++        {
++            return requestedCorrelationId.Trim();
++        }
++
++        return string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
+             ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+             : _correlationContextAccessor.CorrelationId!;
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -299,7 +299,7 @@ public sealed class CompanyApprovalRequestService : ICompanyApprovalRequestServi
+                         attempt.ActionType.ToStorageValue(),
+                         attempt.Scope,
+                         CloneNodes(attempt.RequestPayload)),
+                     cancellationToken);
+-                attempt.MarkExecuted(approval.PolicyDecision, result.Payload);
++                attempt.MarkExecuted(approval.PolicyDecision, result.ToStructuredPayload());
+                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+             }
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/NoOpCompanyToolExecutor.cs
+@@ -16,8 +16,6 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
+             ["executedAtUtc"] = JsonValue.Create(DateTime.UtcNow)
+         };
+ 
+-        return Task.FromResult(new ToolExecutionResult(
+-            $"Executed '{request.ToolName}' using the default infrastructure stub.",
+-            payload));
++        return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -609,7 +609,10 @@ public sealed class AgentToolOrchestrationExecutor : IToolExecutor
+                 request.ThresholdCategory,
+                 request.ThresholdKey,
+                 request.ThresholdValue,
+-                request.SensitiveAction),
++                request.SensitiveAction,
++                runtimeContext.Task.Id,
++                runtimeContext.Task.WorkflowInstanceId,
++                runtimeContext.CorrelationId),
+             cancellationToken);
+ 
+         return new ToolInvocationResult(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -853,6 +853,9 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+         builder.Property(x => x.AgentId).IsRequired();
+         builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+         builder.Property(x => x.ActionType)
++        builder.Property(x => x.TaskId);
++        builder.Property(x => x.WorkflowInstanceId);
++        builder.Property(x => x.CorrelationId).HasMaxLength(128);
+             .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+@@ -877,8 +880,11 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.StartedUtc).IsRequired();
++        builder.Property(x => x.CompletedUtc);
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.Property(x => x.ExecutedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413130000_AddToolExecutionMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413130000_AddToolExecutionMetadata.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413130000_AddToolExecutionMetadata.cs
+@@ -0,0 +1,77 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddToolExecutionMetadata : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<Guid>(
++            name: "TaskId",
++            table: "tool_execution_attempts",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "WorkflowInstanceId",
++            table: "tool_execution_attempts",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "CorrelationId",
++            table: "tool_execution_attempts",
++            type: "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "StartedUtc",
++            table: "tool_execution_attempts",
++            type: "datetime2",
++            nullable: false,
++            defaultValueSql: "SYSUTCDATETIME()");
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "CompletedUtc",
++            table: "tool_execution_attempts",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tool_execution_attempts_CompanyId_CorrelationId",
++            table: "tool_execution_attempts",
++            columns: new[] { "CompanyId", "CorrelationId" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_tool_execution_attempts_CompanyId_CorrelationId",
++            table: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "CompletedUtc",
++            table: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "StartedUtc",
++            table: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "CorrelationId",
++            table: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "WorkflowInstanceId",
++            table: "tool_execution_attempts");
++
++        migrationBuilder.DropColumn(
++            name: "TaskId",
++            table: "tool_execution_attempts");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -66,6 +66,10 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("executed", payload.ToolExecutions[0].Status);
+         Assert.Equal("orch-test-correlation", payload.ToolExecutions[0].CorrelationId);
++        Assert.NotNull(payload.ToolExecutions[0].ResultPayload);
++        Assert.True(payload.ToolExecutions[0].ResultPayload!.Value.GetProperty("success").GetBoolean());
++        Assert.Equal("executed", payload.ToolExecutions[0].ResultPayload!.Value.GetProperty("status").GetString());
++        Assert.Equal("erp", payload.ToolExecutions[0].ResultPayload!.Value.GetProperty("toolName").GetString());
+         Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
+ 
+         using var scope = _factory.Services.CreateScope();
+@@ -90,6 +94,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("orch-test-correlation", auditEvent.CorrelationId);
+         Assert.Equal(payload.OrchestrationId.ToString("N"), auditEvent.Metadata["orchestrationId"]);
+         Assert.Equal(seed.AgentId, auditEvent.ActorId);
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);
++        Assert.Equal(seed.CompanyId, attempt.CompanyId);
++        Assert.Equal(seed.AgentId, attempt.AgentId);
++        Assert.Equal(seed.TaskId, attempt.TaskId);
++        Assert.Equal("orch-test-correlation", attempt.CorrelationId);
++        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
++        Assert.True(attempt.StartedUtc <= attempt.CompletedUtc);
++        Assert.NotNull(attempt.CompletedUtc);
++        Assert.Equal("inv-100", attempt.RequestPayload["invoiceId"]!.GetValue<string>());
++        Assert.True(attempt.ResultPayload["success"]!.GetValue<bool>());
++        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+     }
+ 
+     private HttpClient CreateAuthenticatedClient()
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -199,8 +199,7 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 ["executed"] = JsonValue.Create(true)
+             };
+ 
+-            return Task.FromResult(new ToolExecutionResult(
+-                $"Executed '{request.ToolName}' in the test tool executor.",
+-                payload));
++            return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));
+         }
+     }
+END_OF_PATCH

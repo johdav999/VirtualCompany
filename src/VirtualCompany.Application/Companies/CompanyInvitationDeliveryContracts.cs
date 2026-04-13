@@ -10,6 +10,7 @@ public static class CompanyOutboxTopics
     public const string InvitationRevoked = "company.invitation.revoked";
     public const string InvitationAccepted = "company.invitation.accepted";
     public const string MembershipRoleChanged = "company.membership.role_changed";
+    public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
 }
 
 public sealed record CompanyInvitationDeliveryRequestedMessage(
@@ -21,6 +22,22 @@ public sealed record CompanyInvitationDeliveryRequestedMessage(
     string AcceptanceToken,
     DateTime ExpiresAtUtc,
     Guid InvitedByUserId,
+    string? CorrelationId);
+
+public sealed record NotificationDeliveryRequestedMessage(
+    Guid CompanyId,
+    string NotificationType,
+    string Priority,
+    string Title,
+    string Body,
+    string RelatedEntityType,
+    Guid? RelatedEntityId,
+    string? ActionUrl,
+    Guid? RecipientUserId,
+    string? RecipientRole,
+    Guid? BriefingId,
+    string? MetadataJson,
+    string DedupeKey,
     string? CorrelationId);
 
 public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
@@ -42,6 +59,11 @@ public interface ICompanyOutboxEnqueuer
 public interface ICompanyInvitationDeliveryDispatcher
 {
     Task DispatchAsync(CompanyInvitationDeliveryRequestedMessage message, CancellationToken cancellationToken);
+}
+
+public interface ICompanyNotificationDispatcher
+{
+    Task DispatchAsync(NotificationDeliveryRequestedMessage message, CancellationToken cancellationToken);
 }
 
 public interface ICompanyInvitationSender

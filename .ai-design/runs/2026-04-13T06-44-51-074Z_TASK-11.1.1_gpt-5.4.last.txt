@@ -1,0 +1,467 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 8e2a78a..a4b74ce 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -42,7 +42,8 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+                 x.ChannelType == ChatChannelTypes.DirectAgent &&
+                 x.CreatedByUserId == membership.UserId &&
+                 x.AgentId == agentId,
+-                cancellationToken);
++                cancellationToken)
++            .ConfigureAwait(false);
+ 
+         if (conversation is null)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index aef2b24..0f252c2 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -982,9 +982,7 @@ internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conver
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.ChannelType, x.CreatedByUserId, x.AgentId })
+-            .HasFilter("[agent_id] IS NOT NULL")
+-            .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ChannelType, x.CreatedByUserId, x.AgentId });
+         builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs
+new file mode 100644
+index 0000000..c76b56c
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs
+@@ -0,0 +1,149 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413120000_AddDirectAgentConversations")]
++public partial class AddDirectAgentConversations : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++
++        migrationBuilder.CreateTable(
++            name: "conversations",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                channel_type = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                subject = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: true),
++                created_by_user_id = table.Column<Guid>(type: guidType, nullable: false),
++                agent_id = table.Column<Guid>(type: guidType, nullable: true),
++                metadata_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_conversations", x => x.id);
++                table.ForeignKey(
++                    name: "FK_conversations_agents_agent_id",
++                    column: x => x.agent_id,
++                    principalTable: "agents",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_conversations_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_conversations_users_created_by_user_id",
++                    column: x => x.created_by_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "messages",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                conversation_id = table.Column<Guid>(type: guidType, nullable: false),
++                sender_type = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                sender_id = table.Column<Guid>(type: guidType, nullable: true),
++                message_type = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                body = table.Column<string>(type: isPostgres ? "character varying(16000)" : "nvarchar(16000)", maxLength: 16000, nullable: false),
++                structured_payload = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_messages", x => x.id);
++                table.ForeignKey(
++                    name: "FK_messages_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_messages_conversations_conversation_id",
++                    column: x => x.conversation_id,
++                    principalTable: "conversations",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversations_company_id_agent_id",
++            table: "conversations",
++            columns: new[] { "company_id", "agent_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversations_company_id_channel_type_created_by_user_id_agent_id",
++            table: "conversations",
++            columns: new[] { "company_id", "channel_type", "created_by_user_id", "agent_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversations_company_id_updated_at",
++            table: "conversations",
++            columns: new[] { "company_id", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_conversations_created_by_user_id",
++            table: "conversations",
++            column: "created_by_user_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_messages_company_id_conversation_id",
++            table: "messages",
++            columns: new[] { "company_id", "conversation_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_messages_conversation_id_created_at",
++            table: "messages",
++            columns: new[] { "conversation_id", "created_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "messages");
++
++        migrationBuilder.DropTable(
++            name: "conversations");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/AgentRoster.razor b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+index 5837d42..5f0be4d 100644
+--- a/src/VirtualCompany.Web/Pages/AgentRoster.razor
++++ b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+@@ -146,6 +146,10 @@ else
+                                         <td>
+                                             <div class="dashboard-actions">
+                                                 <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">Open profile</a>
++                                                @if (IsDirectChatEligible(agent.Status))
++                                                {
++                                                    <a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a>
++                                                }
+                                                 @if (CanManageProfiles)
+                                                 {
+                                                     <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">Manage</a>
+@@ -235,6 +239,15 @@ else
+             _ => "text-body-secondary"
+         };
+     private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
++    private static bool IsDirectChatEligible(string? status) =>
++        !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
++        !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
++
++    private static string BuildChatUri(Guid companyId, Guid agentId)
++    {
++        var query = $"companyId={companyId}";
++        return $"/agents/{agentId}/chat?{query}";
++    }
+ 
+     private static string BuildRosterUri(Guid companyId, string? department, string? status)
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Agents.razor b/src/VirtualCompany.Web/Pages/Agents.razor
+index 4c2d09c..12dfb31 100644
+--- a/src/VirtualCompany.Web/Pages/Agents.razor
++++ b/src/VirtualCompany.Web/Pages/Agents.razor
+@@ -349,9 +349,13 @@ else
+                                             @if (CanManageProfiles)
+                                             {
+                                                 <div class="mt-2">
+-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Open configuration editor</button>
++                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Configure</button>
+                                                 </div>
+                                             }
++                                            @if (IsDirectChatEligible(agent.Status))
++                                            {
++                                                <div class="mt-2"><a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a></div>
++                                            }
+                                         </th>
+                                         <td>@agent.RoleName</td>
+                                         <td>@agent.Department</td>
+@@ -686,6 +690,14 @@ else
+ 
+     private static string FormatRosterActivity(DateTime? lastActivityUtc) =>
+         lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
++    private static bool IsDirectChatEligible(string? status) =>
++        !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
++        !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
++
++    private static string BuildChatUri(Guid companyId, Guid agentId)
++    {
++        return $"/agents/{agentId}/chat?companyId={companyId}";
++    }
+ 
+ 
+     private string BuildAgentsUri(Guid companyId, string? department, string? status, Guid? agentId)
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 72a18f1..b2a31d7 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -93,6 +93,7 @@ else
+                         </ul>
+                         <div class="dashboard-actions mt-4">
+                             <a class="btn btn-primary" href="@DashboardPath">Continue in dashboard</a>
++                            <a class="btn btn-outline-primary" href="@AgentRosterPath">Open agent roster</a>
+                             <a class="btn btn-outline-secondary" href="onboarding">Review setup defaults</a>
+                         </div>
+                     </div>
+@@ -118,6 +119,10 @@ else
+                     <ul class="mb-0">
+                         <li>Use onboarding to create or resume a workspace if no company is selected.</li>
+                         <li>Open the company-specific dashboard route to keep the tenant context explicit.</li>
++                        @if (CompanyId is Guid)
++                        {
++                            <li><a href="@AgentRosterPath">Open the agent roster to start a direct chat.</a></li>
++                        }
+                         <li>Starter guidance appears on redirected dashboard entry for newly completed onboarding.</li>
+                     </ul>
+                 }
+@@ -137,6 +142,7 @@ else
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private string? errorMessage;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
++    private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
+     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+         currentUser?.Memberships
+             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+new file mode 100644
+index 0000000..fc71017
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -0,0 +1,193 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Chat;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public DirectChatIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Opening_direct_agent_conversation_creates_tenant_scoped_record()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal(seed.UserId, payload.CreatedByUserId);
++        Assert.Equal(seed.AgentId, payload.AgentId);
++        Assert.Equal(ChatChannelTypes.DirectAgent, payload.ChannelType);
++        Assert.Equal("Direct chat with Active Agent", payload.Subject);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var conversation = await dbContext.Conversations
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == payload.Id);
++
++        Assert.Equal(seed.CompanyId, conversation.CompanyId);
++        Assert.Equal(seed.UserId, conversation.CreatedByUserId);
++        Assert.Equal(seed.AgentId, conversation.AgentId);
++        Assert.Equal(ChatChannelTypes.DirectAgent, conversation.ChannelType);
++    }
++
++    [Fact]
++    public async Task Opening_direct_agent_conversation_reuses_existing_user_agent_thread()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var firstResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var secondResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++
++        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
++
++        var first = await firstResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        var second = await secondResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(first);
++        Assert.NotNull(second);
++        Assert.Equal(first!.Id, second!.Id);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var conversationCount = await dbContext.Conversations
++            .IgnoreQueryFilters()
++            .CountAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.CreatedByUserId == seed.UserId &&
++                x.AgentId == seed.AgentId &&
++                x.ChannelType == ChatChannelTypes.DirectAgent);
++
++        Assert.Equal(1, conversationCount);
++    }
++
++    [Fact]
++    public async Task Opening_direct_agent_conversation_rejects_cross_tenant_agent()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.OtherCompanyAgentId}/conversations/direct",
++            new { AgentId = seed.OtherCompanyAgentId });
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Opening_direct_agent_conversation_rejects_archived_agent()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Archived);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var conversationExists = await dbContext.Conversations
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == seed.CompanyId && x.AgentId == seed.AgentId);
++
++        Assert.False(conversationExists);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<DirectChatSeed> SeedDirectChatAsync(AgentStatus agentStatus)
++    {
++        var userId = Guid.NewGuid();
++        var subject = $"direct-chat-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, "Chat User", "dev-header", subject));
++
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Direct Chat Company"),
++                new Company(otherCompanyId, "Other Direct Chat Company"));
++
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Employee,
++                CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                new Agent(
++                    agentId,
++                    companyId,
++                    "operations",
++                    agentStatus == AgentStatus.Archived ? "Archived Agent" : "Active Agent",
++                    "Operations Lead",
++                    "Operations",
++                    null,
++                    AgentSeniority.Lead,
++                    agentStatus),
++                new Agent(
++                    otherCompanyAgentId,
++                    otherCompanyId,
++                    "operations",
++                    "Other Tenant Agent",
++                    "Operations Lead",
++                    "Operations",
++                    null,
++                    AgentSeniority.Lead,
++                    AgentStatus.Active));
++
++            return Task.CompletedTask;
++        });
++
++        return new DirectChatSeed(userId, subject, email, companyId, agentId, otherCompanyAgentId);
++    }
++
++    private sealed record DirectChatSeed(Guid UserId, string Subject, string Email, Guid CompanyId, Guid AgentId, Guid OtherCompanyAgentId);
++
++    private sealed class DirectConversationResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string ChannelType { get; set; } = string.Empty;
++        public Guid CreatedByUserId { get; set; }
++        public Guid AgentId { get; set; }
++        public string AgentDisplayName { get; set; } = string.Empty;
++        public string AgentRoleName { get; set; } = string.Empty;
++        public string AgentStatus { get; set; } = string.Empty;
++        public string? Subject { get; set; }
++        public DateTime CreatedAt { get; set; }
++        public DateTime UpdatedAt { get; set; }
++    }
++}
+END_OF_PATCH

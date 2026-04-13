@@ -1,0 +1,238 @@
+@page "/audit/{AuditEventId:guid}"
+@inject AuditApiClient AuditApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Audit Detail</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Audit detail</h1>
+        <p class="text-body-secondary mb-0">Loading audit event...</p>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <h1>Audit detail unavailable</h1>
+                <p class="text-body-secondary mb-0">@errorMessage</p>
+            </div>
+        </div>
+    </section>
+}
+else if (detail is not null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Audit detail</span>
+                <h1>@detail.Action</h1>
+                <p class="text-body-secondary mb-0">@DisplayTarget(detail)</p>
+
+                <div class="dashboard-actions mt-4">
+                    <a class="btn btn-outline-secondary" href="@($"/audit?companyId={CompanyId}")">Back to audit history</a>
+                </div>
+
+                <dl class="mt-4 mb-0">
+                    <dt>Actor</dt>
+                    <dd>@DisplayActor(detail)</dd>
+                    <dt>Outcome</dt>
+                    <dd><span class="badge text-bg-light">@detail.Outcome</span></dd>
+                    <dt>Occurred</dt>
+                    <dd>@detail.OccurredAt.ToLocalTime().ToString("f")</dd>
+                    @if (!string.IsNullOrWhiteSpace(detail.CorrelationId))
+                    {
+                        <dt>Correlation</dt>
+                        <dd>@detail.CorrelationId</dd>
+                    }
+                </dl>
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">Summary</h2>
+                <p class="text-body-secondary mb-3">@DisplaySummary(detail)</p>
+                @if (!string.IsNullOrWhiteSpace(detail.Explanation.WhyThisAction))
+                {
+                    <h3 class="h6">Why this happened</h3>
+                    <p class="text-body-secondary mb-3">@detail.Explanation.WhyThisAction</p>
+                }
+                @if (!string.IsNullOrWhiteSpace(detail.Explanation.Outcome))
+                {
+                    <h3 class="h6">Outcome</h3>
+                    <p class="text-body-secondary mb-0">@detail.Explanation.Outcome</p>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                <h2 class="h5">Data used</h2>
+                @if (detail.Explanation.DataSources.Count > 0)
+                {
+                    <ul class="list-unstyled mb-3">
+                        @foreach (var source in detail.Explanation.DataSources)
+                        {
+                            <li>@source</li>
+                        }
+                    </ul>
+                }
+
+                <h3 class="h6">References</h3>
+                @if (detail.SourceReferences.Count == 0 &&
+                    detail.DataSources.Count == 0 &&
+                    detail.Explanation.DataSources.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0">No source references were recorded.</p>
+                }
+                else
+                {
+                    <ul class="list-unstyled mb-0">
+                        @foreach (var source in detail.SourceReferences)
+                        {
+                            <li class="mb-2">
+                                <strong>@source.Label</strong>
+                                @if (!string.IsNullOrWhiteSpace(source.SecondaryText))
+                                {
+                                    <span class="text-body-secondary"> - @source.SecondaryText</span>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+
+            @if (detail.LinkedApprovals.Count > 0)
+            {
+                <div class="wizard-card wizard-card--compact">
+                    <h2 class="h5">Linked approvals</h2>
+                    <div class="list-group">
+                        @foreach (var approval in detail.LinkedApprovals)
+                        {
+                            <div class="list-group-item">
+                                <div class="d-flex justify-content-between gap-3">
+                                    <strong>@approval.ApprovalType approval</strong>
+                                    <span class="badge text-bg-light">@approval.Status</span>
+                                </div>
+                                <div class="text-body-secondary small mt-1">Target: @approval.TargetEntityType @approval.TargetEntityId</div>
+                                <div class="text-body-secondary small">Created: @approval.CreatedAt.ToLocalTime().ToString("g")</div>
+                                @if (approval.DecidedAt is DateTime decidedAt)
+                                {
+                                    <div class="text-body-secondary small">Decided: @decidedAt.ToLocalTime().ToString("g")</div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(approval.DecisionSummary))
+                                {
+                                    <div class="mt-2">@approval.DecisionSummary</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (detail.LinkedToolExecutions.Count > 0)
+            {
+                <div class="wizard-card wizard-card--compact">
+                    <h2 class="h5">Linked tool executions</h2>
+                    <div class="list-group">
+                        @foreach (var execution in detail.LinkedToolExecutions)
+                        {
+                            <div class="list-group-item">
+                                <div class="d-flex justify-content-between gap-3">
+                                    <strong>@execution.ToolName <span class="text-body-secondary">/@execution.ActionType</span></strong>
+                                    <span class="badge text-bg-light">@execution.Status</span>
+                                </div>
+                                <div class="text-body-secondary small mt-1">
+                                    @(execution.AgentLabel ?? execution.AgentId.ToString()) started @execution.StartedAt.ToLocalTime().ToString("g")
+                                </div>
+                                @if (execution.CompletedAt is DateTime completedAt)
+                                {
+                                    <div class="text-body-secondary small">Completed: @completedAt.ToLocalTime().ToString("g")</div>
+                                }
+                                @if (execution.TaskId is Guid taskId || execution.WorkflowInstanceId is Guid workflowId)
+                                {
+                                    <div class="small mt-2">@((execution.TaskId is Guid t ? $"Task: {t}" : string.Empty)) @((execution.WorkflowInstanceId is Guid w ? $"Workflow: {w}" : string.Empty))</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (detail.AffectedEntities.Count > 0)
+            {
+                <div class="wizard-card wizard-card--compact">
+                    <h2 class="h5">Affected entities</h2>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var entity in detail.AffectedEntities)
+                        {
+                            <span class="badge text-bg-light">@entity.EntityType: @(entity.Label ?? entity.EntityId)</span>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter]
+    public Guid AuditEventId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    private bool isLoading = true;
+    private AuditDetailViewModel? detail;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            if (CompanyId is not Guid companyId)
+            {
+                var currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/audit/{AuditEventId}?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                }
+                else
+                {
+                    errorMessage = "Choose a company before opening an audit event.";
+                }
+
+                return;
+            }
+
+            detail = await AuditApiClient.GetAsync(companyId, AuditEventId);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            detail = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static string DisplayActor(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.ActorLabel)
+            ? $"{item.ActorType}{(item.ActorId is Guid actorId ? $": {actorId}" : string.Empty)}"
+            : $"{item.ActorLabel} ({item.ActorType})";
+
+    private static string DisplayTarget(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.TargetLabel)
+            ? $"{item.TargetType}: {item.TargetId}"
+            : $"{item.TargetLabel} ({item.TargetType})";
+
+    private static string DisplaySummary(AuditHistoryListItemViewModel item) =>
+        string.IsNullOrWhiteSpace(item.Explanation?.Summary)
+            ? "Action completed using configured policy and available company data."
+            : item.Explanation.Summary;
+}

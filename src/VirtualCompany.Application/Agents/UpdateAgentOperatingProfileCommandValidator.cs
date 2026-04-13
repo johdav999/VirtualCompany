@@ -26,7 +26,9 @@ public static class UpdateAgentOperatingProfileCommandValidator
     private static readonly HashSet<string> SupportedToolPermissionActions = new(StringComparer.OrdinalIgnoreCase)
     {
         "allowed",
-        "denied"
+        "denied",
+        "actions",
+        "deniedActions"
     };
 
     private static readonly HashSet<string> SupportedDataScopeActions = new(StringComparer.OrdinalIgnoreCase)
@@ -217,6 +219,8 @@ public static class UpdateAgentOperatingProfileCommandValidator
 
         var allowed = ValidateIdentifierArray(errors, $"{key}.allowed", payload, "allowed");
         var denied = ValidateIdentifierArray(errors, $"{key}.denied", payload, "denied");
+        var allowedActions = ValidateIdentifierArray(errors, $"{key}.actions", payload, "actions");
+        var deniedActions = ValidateIdentifierArray(errors, $"{key}.deniedActions", payload, "deniedActions");
 
         if (allowed.Count == 0 && denied.Count == 0)
         {
@@ -229,6 +233,21 @@ public static class UpdateAgentOperatingProfileCommandValidator
         {
             AddError(errors, $"{key}.allowed", "The same tool cannot be both allowed and denied.");
             AddError(errors, $"{key}.denied", "The same tool cannot be both allowed and denied.");
+        }
+
+        var actionOverlaps = allowedActions.Intersect(deniedActions, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (actionOverlaps.Length > 0)
+        {
+            AddError(errors, $"{key}.actions", "The same action type cannot be both allowed and denied.");
+            AddError(errors, $"{key}.deniedActions", "The same action type cannot be both allowed and denied.");
+        }
+
+        foreach (var action in allowedActions.Concat(deniedActions))
+        {
+            if (!ToolActionTypeValues.TryParse(action, out _))
+            {
+                AddError(errors, $"{key}.actions", ToolActionTypeValues.BuildValidationMessage(action));
+            }
         }
     }
 

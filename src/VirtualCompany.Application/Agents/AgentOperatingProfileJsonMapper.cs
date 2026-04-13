@@ -24,7 +24,9 @@ public static class AgentOperatingProfileJsonMapper
         var payload = CreateNodeMap();
         AddArrayIfPresent(payload, "allowed", input.Allowed);
         AddArrayIfPresent(payload, "denied", input.Denied);
-        AddExtensionData(payload, input.AdditionalProperties, "allowed", "denied");
+        AddArrayIfPresent(payload, "actions", input.Actions);
+        AddArrayIfPresent(payload, "deniedActions", input.DeniedActions);
+        AddExtensionData(payload, input.AdditionalProperties, "allowed", "denied", "actions", "deniedActions");
         return payload;
     }
 

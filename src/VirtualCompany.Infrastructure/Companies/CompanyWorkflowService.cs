@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Workflows;
@@ -26,16 +27,19 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ILogger<CompanyWorkflowService> _logger;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
 
     public CompanyWorkflowService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAuditEventWriter auditEventWriter,
+        ICompanyOutboxEnqueuer outboxEnqueuer,
         ILogger<CompanyWorkflowService> logger)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
+        _outboxEnqueuer = outboxEnqueuer;
         _logger = logger;
     }
 
@@ -837,6 +841,29 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                     ["exceptionType"] = workflowException.ExceptionType.ToStorageValue()
                 }),
             cancellationToken);
+
+        _outboxEnqueuer.Enqueue(
+            instance.CompanyId,
+            CompanyOutboxTopics.NotificationDeliveryRequested,
+            new NotificationDeliveryRequestedMessage(
+                instance.CompanyId,
+                state == WorkflowInstanceStatus.Failed
+                    ? CompanyNotificationType.WorkflowFailure.ToStorageValue()
+                    : CompanyNotificationType.Escalation.ToStorageValue(),
+                CompanyNotificationPriority.High.ToStorageValue(),
+                workflowException.Title,
+                workflowException.Details,
+                AuditTargetTypes.WorkflowException,
+                workflowException.Id,
+                $"/workflows?companyId={instance.CompanyId}",
+                null,
+                CompanyMembershipRole.Owner.ToStorageValue(),
+                null,
+                null,
+                $"workflow-exception:{workflowException.Id:N}",
+                null),
+            idempotencyKey: $"notification:workflow-exception:{workflowException.Id:N}",
+            causationId: workflowException.Id.ToString("N"));
     }
 
     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)

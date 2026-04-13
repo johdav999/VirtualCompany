@@ -1,0 +1,365 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 5db4e02..0f1f2d7 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -16,7 +16,9 @@ public sealed record GenerateDueBriefingsCommand(
+ public sealed record BriefingSourceReferenceDto(
+     string EntityType,
+     Guid EntityId,
+-    string Label);
++    string Label,
++    string? Status = null,
++    string? Route = null);
+ 
+ public sealed record BriefingSectionDto(
+     string Name,
+@@ -31,7 +33,8 @@ public sealed record BriefingAggregateItemDto(
+     string? SourceEntityType,
+     Guid? SourceEntityId,
+     DateTime OccurredUtc,
+-    Dictionary<string, JsonNode?> Metadata);
++    Dictionary<string, JsonNode?> Metadata,
++    IReadOnlyList<BriefingSourceReferenceDto> References);
+ 
+ public sealed record BriefingAggregateResultDto(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 35fa2c5..ccbb0de 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -69,7 +69,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 x.Id,
+                 x.CreatedUtc,
+-                []))
++                [],
++                [CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue())]))
+             .ToList();
+ 
+         var taskRows = await _dbContext.WorkTasks
+@@ -95,7 +96,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+-                }))
++                },
++                [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
+             .ToList();
+         var anomalies = taskRows
+             .Where(x => x.Status is WorkTaskStatus.Blocked or WorkTaskStatus.Failed or WorkTaskStatus.AwaitingApproval)
+@@ -112,7 +114,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+-                }))
++                },
++                [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
+             .ToList();
+ 
+         var workflowExceptionRows = await _dbContext.WorkflowExceptions
+@@ -133,7 +136,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["exceptionType"] = JsonValue.Create(x.ExceptionType.ToStorageValue())
+-                }))
++                },
++                []))
+             .ToList();
+ 
+         var agentRows = await _dbContext.ToolExecutionAttempts
+@@ -160,7 +164,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+                     ["toolNames"] = JsonSerializer.SerializeToNode(x.Select(item => item.ToolName).Distinct().Take(5), SerializerOptions)
+-                }))
++                },
++                []))
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(10)
+             .ToList();
+@@ -214,7 +219,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             : $"Weekly executive summary for {company.Name}";
+         var body = RenderBody(company.Name, briefingType, window, aggregate);
+         var structuredPayload = BuildPayload(company.Name, briefingType, window, aggregate);
+-        var sourceRefs = BuildSourceReferences(aggregate);
++        var sourceRefs = BuildSourceReferences(aggregate.SourceReferences);
+ 
+         var ownerUserId = await ResolveOwnerUserIdAsync(companyId, cancellationToken);
+         var conversation = ownerUserId.HasValue
+@@ -465,7 +470,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(10)
+-            .Select(x => new BriefingItem("Approval", $"{x.ApprovalType} approval pending for {x.TargetEntityType}", x.Id, x.CreatedUtc))
++            .Select(x => new BriefingItem("Approval", $"{x.ApprovalType} approval pending for {x.TargetEntityType}", x.Id, x.CreatedUtc,
++                new[] { CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue()) }))
+             .ToListAsync(cancellationToken);
+ 
+-        var tasks = await _dbContext.WorkTasks
++        var taskRows = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.UpdatedUtc >= window.StartUtc && x.UpdatedUtc < window.EndUtc)
+-            .GroupBy(x => x.Status)
+-            .Select(x => new { Status = x.Key, Count = x.Count() })
++            .Select(x => new { x.Id, x.Title, x.Status, x.UpdatedUtc })
+             .ToListAsync(cancellationToken);
+ 
+-        var taskHighlights = tasks
+-            .OrderByDescending(x => x.Count)
+-            .Select(x => new BriefingItem("Task", $"{x.Count} task(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++        var taskHighlights = taskRows
++            .GroupBy(x => x.Status)
++            .OrderByDescending(x => x.Count())
++            .Select(x => new BriefingItem(
++                "Task",
++                $"{x.Count()} task(s) {x.Key.ToStorageValue()}",
++                Guid.Empty,
++                window.EndUtc,
++                x.OrderByDescending(item => item.UpdatedUtc)
++                    .Take(5)
++                    .Select(item => CreateTaskReference(item.Id, item.Title, item.Status.ToStorageValue()))
++                    .ToList()))
+             .ToList();
+ 
+         var workflowExceptions = await _dbContext.WorkflowExceptions
+@@ -488,7 +504,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(10)
+-            .Select(x => new BriefingItem("WorkflowException", x.Title, x.Id, x.OccurredUtc))
++            .Select(x => new BriefingItem("WorkflowException", x.Title, x.Id, x.OccurredUtc, Array.Empty<BriefingSourceReferenceDto>()))
+             .ToListAsync(cancellationToken);
+ 
+         var agentUpdates = await _dbContext.ToolExecutionAttempts
+@@ -502,14 +518,18 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+         var agentHighlights = agentUpdates
+             .OrderByDescending(x => x.Count)
+-            .Select(x => new BriefingItem("AgentActivity", $"{x.Count} agent tool execution(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++            .Select(x => new BriefingItem("AgentActivity", $"{x.Count} agent tool execution(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc, Array.Empty<BriefingSourceReferenceDto>()))
+             .ToList();
+ 
+-        var sourceReferences = approvals
+-            .Concat(workflowExceptions)
+-            .Where(x => x.EntityId != Guid.Empty)
+-            .Select(x => new BriefingSourceReferenceDto(x.Kind, x.EntityId, x.Text))
+-            .ToList();
++        var sourceReferences = DeduplicateReferences(
++            approvals.SelectMany(x => x.References)
++                .Concat(taskHighlights.SelectMany(x => x.References))
++                .Concat(workflowExceptions
++                    .Where(x => x.EntityId != Guid.Empty)
++                    .Select(x => new BriefingSourceReferenceDto(
++                        "workflow_exception",
++                        x.EntityId,
++                        x.Text,
++                        Route: null))));
+ 
+         return new BriefingAggregate(approvals, taskHighlights, workflowExceptions, agentHighlights, sourceReferences);
+     }
+@@ -555,12 +575,37 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["pendingApprovals"] = JsonSerializer.SerializeToNode(aggregate.Approvals.Select(x => x.Text), SerializerOptions),
+             ["kpiHighlights"] = JsonSerializer.SerializeToNode(aggregate.TaskHighlights.Select(x => x.Text), SerializerOptions),
+             ["anomalies"] = JsonSerializer.SerializeToNode(aggregate.WorkflowExceptions.Select(x => x.Text), SerializerOptions),
+             ["notableAgentUpdates"] = JsonSerializer.SerializeToNode(aggregate.AgentHighlights.Select(x => x.Text), SerializerOptions),
++            ["summaryItems"] = JsonSerializer.SerializeToNode(BuildSummaryItems(aggregate), SerializerOptions),
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["items"] = JsonSerializer.SerializeToNode(references, SerializerOptions)
+         };
+ 
++    private static IReadOnlyList<BriefingSummaryPayloadItem> BuildSummaryItems(BriefingAggregate aggregate) =>
++        SectionItems("approvals", aggregate.Approvals)
++            .Concat(SectionItems("tasks", aggregate.TaskHighlights))
++            .Concat(SectionItems("alerts", aggregate.WorkflowExceptions))
++            .Concat(SectionItems("agent_updates", aggregate.AgentHighlights))
++            .ToList();
++
++    private static IEnumerable<BriefingSummaryPayloadItem> SectionItems(string section, IReadOnlyList<BriefingItem> items) =>
++        items.Select(item => new BriefingSummaryPayloadItem(section, item.Text, item.OccurredUtc, item.References));
++
++    private static BriefingSourceReferenceDto CreateTaskReference(Guid taskId, string title, string status) =>
++        new("task", taskId, title, status, null);
++
++    private static BriefingSourceReferenceDto CreateApprovalReference(Guid companyId, Guid approvalId, string approvalType, string status) =>
++        new("approval", approvalId, $"{approvalType} approval", status, $"/approvals?companyId={companyId}&approvalId={approvalId}");
++
++    private static IReadOnlyList<BriefingSourceReferenceDto> DeduplicateReferences(IEnumerable<BriefingSourceReferenceDto> references) =>
++        references
++            .Where(x => x.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(x.EntityType))
++            .GroupBy(x => new { EntityType = x.EntityType.Trim().ToLowerInvariant(), x.EntityId })
++            .Select(x => x.First())
++            .ToList();
++
+     private async Task<Conversation> ResolveBriefingConversationAsync(Guid companyId, Guid ownerUserId, CancellationToken cancellationToken)
+     {
+         var conversation = await _dbContext.Conversations
+@@ -661,10 +706,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
+     private sealed record DueCompany(Guid Id, string Name, string? Timezone);
+-    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc);
++    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
+     private sealed record BriefingAggregate(
+         IReadOnlyList<BriefingItem> Approvals,
+         IReadOnlyList<BriefingItem> TaskHighlights,
+         IReadOnlyList<BriefingItem> WorkflowExceptions,
+         IReadOnlyList<BriefingItem> AgentHighlights,
+         IReadOnlyList<BriefingSourceReferenceDto> SourceReferences);
++    private sealed record BriefingSummaryPayloadItem(string Section, string Title, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
+ }
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+index 4cbbdd5..e9130d0 100644
+--- a/src/VirtualCompany.Shared/BriefingContracts.cs
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -4,7 +4,9 @@ namespace VirtualCompany.Shared;
+ public sealed record SharedBriefingSourceReference(
+     string EntityType,
+     Guid EntityId,
+-    string Label);
++    string Label,
++    string? Status = null,
++    string? Route = null);
+ 
+ public sealed record SharedCompanyBriefing(
+     Guid Id,
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 45f80cb..03290ce 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -120,7 +120,7 @@ else if (CompanyId is null)
+                             <p class="mt-2 mb-2">@FirstParagraph(briefings.Daily.SummaryBody)</p>
+                             @if (briefings.Daily.SourceReferences.Count > 0)
+                             {
+-                                <div class="text-body-secondary">Linked items: @briefings.Daily.SourceReferences.Count</div>
++                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Daily.SourceReferences)</div>
+                             }
+                         </article>
+                     }
+@@ -133,7 +133,7 @@ else if (CompanyId is null)
+                             <p class="mt-2 mb-2">@FirstParagraph(briefings.Weekly.SummaryBody)</p>
+                             @if (briefings.Weekly.SourceReferences.Count > 0)
+                             {
+-                                <div class="text-body-secondary">Linked items: @briefings.Weekly.SourceReferences.Count</div>
++                                <div class="text-body-secondary">@FormatBriefingReferences(briefings.Weekly.SourceReferences)</div>
+                             }
+                         </article>
+                     }
+@@ -255,4 +255,30 @@ else if (CompanyId is null)
+         var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+         return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + "...";
+     }
++
++    private static string FormatBriefingReferences(IReadOnlyList<BriefingSourceReferenceViewModel> references)
++    {
++        var groups = references
++            .Where(reference => !string.IsNullOrWhiteSpace(reference.Label))
++            .GroupBy(reference => ReferenceGroupLabel(reference.EntityType))
++            .OrderBy(group => group.Key)
++            .Select(group =>
++            {
++                var labels = group
++                    .Take(3)
++                    .Select(ReferenceLabel);
++                return $"Related {group.Key}: {string.Join(", ", labels)}";
++            })
++            .ToList();
++
++        return groups.Count == 0 ? "Related items available." : string.Join(" | ", groups);
++    }
++
++    private static string ReferenceGroupLabel(string entityType) =>
++        entityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? "tasks" :
++        entityType.Equals("approval", StringComparison.OrdinalIgnoreCase) ? "approvals" :
++        "items";
++
++    private static string ReferenceLabel(BriefingSourceReferenceViewModel reference) =>
++        string.IsNullOrWhiteSpace(reference.Status)
++            ? reference.Label
++            : $"{reference.Label} ({reference.Status})";
+ }
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 650eb8d..b5dbf73 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -925,6 +925,8 @@ public sealed class BriefingSourceReferenceViewModel
+     public string EntityType { get; set; } = string.Empty;
+     public Guid EntityId { get; set; }
+     public string Label { get; set; } = string.Empty;
++    public string? Status { get; set; }
++    public string? Route { get; set; }
+ }
+ 
+ public sealed class BriefingPreferenceViewModel
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index 4cd73af..e4cbf77 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -95,6 +95,21 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("kpiHighlights"));
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("anomalies"));
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("notableAgentUpdates"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryItems"));
++        Assert.Contains(result.Briefing.SourceReferences, reference =>
++            reference.EntityType == "approval" &&
++            reference.EntityId == seed.ApprovalId &&
++            reference.Status == "pending");
++        Assert.Contains(result.Briefing.SourceReferences, reference =>
++            reference.EntityType == "task" &&
++            reference.EntityId == seed.CompletedTaskId &&
++            reference.Status == "completed");
++
++        var summaryItems = result.Briefing.StructuredPayload["summaryItems"].EnumerateArray().ToList();
++        Assert.Contains(summaryItems, item =>
++            item.GetProperty("references").EnumerateArray().Any(reference =>
++                reference.GetProperty("entityType").GetString() == "task" &&
++                reference.GetProperty("entityId").GetGuid() == seed.CompletedTaskId));
++        Assert.DoesNotContain(result.Briefing.SourceReferences, reference => reference.EntityId == seed.OtherCompanyApprovalId);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -106,6 +121,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(seed.CompanyId, message.CompanyId);
+         Assert.Equal("daily_briefing", message.MessageType);
+         Assert.True(message.StructuredPayload.ContainsKey("sourceReferences"));
++        Assert.True(message.StructuredPayload.ContainsKey("summaryItems"));
+     }
+ 
+     [Fact]
+@@ -458,6 +474,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+             companyId,
+             otherCompanyId,
+             agentId,
++            completedTaskId,
+             blockedTaskId,
+             workflowExceptionId,
+             approvalId,
+@@ -503,6 +520,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Guid CompanyId,
+         Guid OtherCompanyId,
+         Guid AgentId,
++        Guid CompletedTaskId,
+         Guid BlockedTaskId,
+         Guid WorkflowExceptionId,
+         Guid ApprovalId,
+@@ -562,6 +580,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         public Guid? MessageId { get; set; }
+         public string SummaryBody { get; set; } = string.Empty;
+         public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];
++        public List<BriefingSourceReferenceResponse> SourceReferences { get; set; } = [];
+     }
++
++    private sealed class BriefingSourceReferenceResponse
++    {
++        public string EntityType { get; set; } = string.Empty;
++        public Guid EntityId { get; set; }
++        public string Label { get; set; } = string.Empty;
++        public string? Status { get; set; }
++        public string? Route { get; set; }
++    }
+ }
+END_OF_PATCH

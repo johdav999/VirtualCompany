@@ -1,0 +1,224 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+index 8b2e9f1..b7d7d8f 100644
+--- a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+@@ -69,11 +69,26 @@ public sealed record AgentContributionDto(
+     decimal? ConfidenceScore,
+     string CorrelationId);
+ 
++public sealed record AgentRationaleSummaryDto(
++    Guid AgentId,
++    string AgentName,
++    string? AgentRole,
++    Guid SubtaskId,
++    Guid SourceTaskId,
++    int Sequence,
++    string Status,
++    string? RationaleSummary,
++    decimal? ConfidenceScore,
++    string CorrelationId);
++
+ public sealed record ConsolidatedMultiAgentResponseDto(
+     string FinalResponse,
+-    IReadOnlyList<AgentContributionDto> Contributions);
++    IReadOnlyList<AgentContributionDto> Contributions)
++{
++    public IReadOnlyList<AgentRationaleSummaryDto> ContributorRationaleSummaries { get; init; } = Array.Empty<AgentRationaleSummaryDto>();
++}
+ 
+ public sealed record CollaborationExecutionMetricsDto(
+     int PlannedStepCount,
+@@ -98,6 +113,9 @@ public sealed record MultiAgentCollaborationResultDto(
+     CollaborationExecutionMetricsDto Metrics,
+     Dictionary<string, JsonNode?> StructuredOutput,
+-    string CorrelationId);
++    string CorrelationId)
++{
++    public IReadOnlyList<AgentRationaleSummaryDto> ContributorRationaleSummaries { get; init; } = Array.Empty<AgentRationaleSummaryDto>();
++}
+ 
+ public sealed class MultiAgentCollaborationOptions
+diff --git a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+index 6f3f4c9..9d759c7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+@@ -464,6 +464,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             ? ResolveCollaborationStatus(contributions)
+             : MultiAgentCollaborationStatusValues.Failed;
+         var finalResponse = BuildFinalResponse(command.Objective, contributions);
++        var contributorRationaleSummaries = BuildContributorRationaleSummaries(contributions);
+         var completedUtc = DateTime.UtcNow;
+         var metrics = new CollaborationExecutionMetricsDto(
+             plannedSteps.Count,
+@@ -490,6 +491,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             finalSteps,
+             contributions,
+             status,
++            contributorRationaleSummaries,
+             finalResponse,
+             terminationReason,
+             IsRetryable(status, terminationReason),
+@@ -528,7 +530,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 ["contributionCount"] = contributions.Count.ToString(),
+                 ["failedContributionCount"] = contributions.Count(IsFailed).ToString(),
+                 ["terminationReason"] = terminationReason,
+-                ["actualStepCount"] = executedStepCount.ToString()
++                ["actualStepCount"] = executedStepCount.ToString(),
++                ["contributorRationaleSummaryCount"] = contributorRationaleSummaries.Count.ToString()
+             },
+             cancellationToken);
+ 
+@@ -544,13 +547,18 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             contributions.OrderBy(x => x.Sequence).ToList(),
+             finalSteps.OrderBy(x => x.Sequence).ToList(),
+             contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList(),
+-            new ConsolidatedMultiAgentResponseDto(finalResponse, contributions.OrderBy(x => x.Sequence).ToList()),
++            new ConsolidatedMultiAgentResponseDto(finalResponse, contributions.OrderBy(x => x.Sequence).ToList())
++            {
++                ContributorRationaleSummaries = contributorRationaleSummaries
++            },
+             terminationReason,
+             IsRetryable(status, terminationReason),
+             metrics,
+             structuredOutput,
+-            correlationId);
++            correlationId)
++        {
++            ContributorRationaleSummaries = contributorRationaleSummaries
++        };
+     }
+ 
+     private CollaborationLimitDto ResolveLimits(CollaborationLimitRequest? requested)
+@@ -840,6 +848,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+         IReadOnlyList<CollaborationStepDto> steps,
+         IReadOnlyList<AgentContributionDto> contributions,
+         string status,
++        IReadOnlyList<AgentRationaleSummaryDto> contributorRationaleSummaries,
+         string finalResponse,
+         string terminationReason,
+         bool isRetryable,
+@@ -867,14 +876,17 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 contribution.SubtaskId,
+                 contribution.SourceTaskId,
+                 contribution.Status,
++                contribution.Output,
+                 contribution.RationaleSummary,
+                 contribution.ConfidenceScore,
+                 contribution.CorrelationId
+             }).ToList()),
++            ["contributorRationaleSummaries"] = JsonSerializer.SerializeToNode(contributorRationaleSummaries),
+             ["consolidatedResponse"] = JsonSerializer.SerializeToNode(new ConsolidatedMultiAgentResponseDto(
+                 finalResponse,
+-                contributions.OrderBy(x => x.Sequence).ToList())),
++                contributions.OrderBy(x => x.Sequence).ToList())
++            {
++                ContributorRationaleSummaries = contributorRationaleSummaries
++            }),
+             ["failedSubtaskIds"] = JsonSerializer.SerializeToNode(contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList()),
+             ["correlationId"] = JsonValue.Create(correlationId),
+             ["startedAtUtc"] = JsonValue.Create(startedUtc),
+@@ -1069,6 +1081,23 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             $"Contribute from the {agent.RoleName} perspective in {agent.Department}. Do not create or request additional worker subtasks. Return concise findings, risks, and a recommended next action for: {objective}",
+             1000);
+ 
++    private static IReadOnlyList<AgentRationaleSummaryDto> BuildContributorRationaleSummaries(IReadOnlyList<AgentContributionDto> contributions) =>
++        contributions
++            .OrderBy(x => x.Sequence)
++            .Select(contribution => new AgentRationaleSummaryDto(
++                contribution.AgentId,
++                contribution.AgentName,
++                contribution.AgentRole,
++                contribution.SubtaskId,
++                contribution.SourceTaskId,
++                contribution.Sequence,
++                contribution.Status,
++                string.IsNullOrWhiteSpace(contribution.RationaleSummary) ? null : Trim(contribution.RationaleSummary, RationaleMaxLength),
++                contribution.ConfidenceScore,
++                contribution.CorrelationId))
++            .ToList();
++
+     private static string BuildParentRationale(IReadOnlyList<AgentContributionDto> contributions, string status) =>
+         Trim($"Consolidated {contributions.Count} bounded worker contribution(s) with status '{status}'. No recursive worker delegation was allowed.", RationaleMaxLength);
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+index 2ad64d8..2cf8944 100644
+--- a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+@@ -79,6 +79,22 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         Assert.Contains(seed.OperationsAgentId.ToString("N"), payload.FinalResponse);
+         Assert.All(payload.ConsolidatedResponse.Contributions, contribution => Assert.False(string.IsNullOrWhiteSpace(contribution.AgentName)));
++        Assert.Equal(2, payload.ContributorRationaleSummaries.Count);
++        Assert.Equal(2, payload.ConsolidatedResponse.ContributorRationaleSummaries.Count);
++        foreach (var contribution in payload.Contributions)
++        {
++            var rationaleSummary = Assert.Single(
++                payload.ContributorRationaleSummaries,
++                summary => summary.AgentId == contribution.AgentId);
++            Assert.Equal(contribution.AgentName, rationaleSummary.AgentName);
++            Assert.Equal(contribution.AgentRole, rationaleSummary.AgentRole);
++            Assert.Equal(contribution.SubtaskId, rationaleSummary.SubtaskId);
++            Assert.Equal(contribution.SourceTaskId, rationaleSummary.SourceTaskId);
++            Assert.Equal(contribution.Sequence, rationaleSummary.Sequence);
++            Assert.Equal(contribution.Status, rationaleSummary.Status);
++            Assert.Equal(contribution.RationaleSummary, rationaleSummary.RationaleSummary);
++        }
++
+         Assert.Equal(2, payload.Steps.Count);
+         Assert.All(payload.Steps, step =>
+         {
+@@ -126,9 +142,23 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+             Assert.NotEqual(Guid.Empty, Guid.Parse(source["sourceTaskId"]!.GetValue<string>()));
+         });
++        var contributorRationaleSummaries = parent.OutputPayload["contributorRationaleSummaries"]!.AsArray();
++        Assert.Equal(2, contributorRationaleSummaries.Count);
++        Assert.All(contributorRationaleSummaries, summary =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(summary!["agentName"]!.GetValue<string>()));
++            Assert.False(string.IsNullOrWhiteSpace(summary["rationaleSummary"]!.GetValue<string>()));
++            Assert.NotEqual(Guid.Empty, Guid.Parse(summary["agentId"]!.GetValue<string>()));
++            Assert.NotEqual(Guid.Empty, Guid.Parse(summary["subtaskId"]!.GetValue<string>()));
++            Assert.NotEqual(Guid.Empty, Guid.Parse(summary["sourceTaskId"]!.GetValue<string>()));
++            Assert.Contains(Guid.Parse(summary["agentId"]!.GetValue<string>()), new[] { seed.FinanceAgentId, seed.OperationsAgentId });
++        });
+         var consolidatedResponse = parent.OutputPayload["consolidatedResponse"]!.AsObject();
+         Assert.Equal(payload.FinalResponse, consolidatedResponse["finalResponse"]!.GetValue<string>());
+         Assert.Equal(2, consolidatedResponse["contributions"]!.AsArray().Count);
++        Assert.Equal(2, consolidatedResponse["contributorRationaleSummaries"]!.AsArray().Count);
+ 
+         var subtasks = await dbContext.WorkTasks
+             .AsNoTracking()
+@@ -482,6 +512,7 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         public string FinalResponse { get; set; } = string.Empty;
+         public string CorrelationId { get; set; } = string.Empty;
+         public List<ContributionResponse> Contributions { get; set; } = [];
++        public List<ContributorRationaleSummaryResponse> ContributorRationaleSummaries { get; set; } = [];
+         public ConsolidatedResponse ConsolidatedResponse { get; set; } = new();
+         public List<StepResponse> Steps { get; set; } = [];
+     }
+@@ -502,10 +533,25 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         public string? RationaleSummary { get; set; }
+     }
+ 
++    private sealed class ContributorRationaleSummaryResponse
++    {
++        public Guid AgentId { get; set; }
++        public string AgentName { get; set; } = string.Empty;
++        public string? AgentRole { get; set; }
++        public Guid SubtaskId { get; set; }
++        public Guid SourceTaskId { get; set; }
++        public int Sequence { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string? RationaleSummary { get; set; }
++        public decimal? ConfidenceScore { get; set; }
++        public string CorrelationId { get; set; } = string.Empty;
++    }
++
+     private sealed class ConsolidatedResponse
+     {
+         public string FinalResponse { get; set; } = string.Empty;
+         public List<ContributionResponse> Contributions { get; set; } = [];
++        public List<ContributorRationaleSummaryResponse> ContributorRationaleSummaries { get; set; } = [];
+     }
+ 
+     private sealed class StepResponse
+END_OF_PATCH

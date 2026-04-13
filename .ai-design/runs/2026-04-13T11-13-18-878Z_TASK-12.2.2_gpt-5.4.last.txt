@@ -1,0 +1,216 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AuditController.cs b/src/VirtualCompany.Api/Controllers/AuditController.cs
+index 4a86b42..ac786f0 100644
+--- a/src/VirtualCompany.Api/Controllers/AuditController.cs
++++ b/src/VirtualCompany.Api/Controllers/AuditController.cs
+@@ -39,6 +39,11 @@ public sealed class AuditController : ControllerBase
+                 new AuditHistoryFilter(agentId, taskId, workflowInstanceId, fromUtc, toUtc, skip, take),
+                 cancellationToken));
+         }
++        catch (ArgumentException ex) when (ex.ParamName == "filter")
++        {
++            ModelState.AddModelError("dateRange", ex.Message);
++            return ValidationProblem(ModelState);
++        }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index d6a245c..f171db1 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -29,6 +29,11 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         EnsureTenant(companyId);
+ 
+         filter ??= new AuditHistoryFilter();
++        if (filter.FromUtc is DateTime fromUtc && filter.ToUtc is DateTime toUtc && fromUtc > toUtc)
++        {
++            throw new ArgumentException("Audit history from date must be on or before the to date.", nameof(filter));
++        }
++
+         var skip = Math.Max(filter.Skip ?? 0, 0);
+         var take = Math.Clamp(filter.Take ?? DefaultTake, 1, MaxTake);
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Audit.razor b/src/VirtualCompany.Web/Pages/Audit.razor
+index 4514208..2867bd3 100644
+--- a/src/VirtualCompany.Web/Pages/Audit.razor
++++ b/src/VirtualCompany.Web/Pages/Audit.razor
+@@ -190,7 +190,15 @@ else
+             }
+ 
+             companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+-            history = await AuditApiClient.ListAsync(companyId, BuildFilter());
++            var filter = BuildFilter();
++            if (validationMessages.Count == 0)
++            {
++                history = await AuditApiClient.ListAsync(companyId, filter);
++            }
++            else
++            {
++                history = null;
++            }
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -204,15 +212,24 @@ else
+         }
+     }
+ 
+-    private AuditHistoryFilterViewModel BuildFilter() =>
+-        new()
++    private AuditHistoryFilterViewModel BuildFilter()
++    {
++        var fromUtc = ParseDate(From, "From");
++        var toUtc = ParseDate(To, "To")?.Date.AddDays(1).AddTicks(-1);
++        if (fromUtc is DateTime from && toUtc is DateTime to && from > to)
++        {
++            validationMessages.Add("From must be on or before To.");
++        }
++
++        return new()
+         {
+             AgentId = ParseGuid(AgentId, "Agent id"),
+             TaskId = ParseGuid(TaskId, "Task id"),
+             WorkflowInstanceId = ParseGuid(WorkflowInstanceId, "Workflow id"),
+-            FromUtc = ParseDate(From, "From"),
+-            ToUtc = ParseDate(To, "To")?.Date.AddDays(1).AddTicks(-1),
++            FromUtc = fromUtc,
++            ToUtc = toUtc,
+             Take = 50
+         };
++    }
+ 
+     private Guid? ParseGuid(string? value, string label)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index d7f3a91..a86606e 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -52,6 +52,91 @@ public sealed class AuditQueryServiceTests
+         Assert.Equal("Finance Agent", result.Items[0].ActorLabel);
+     }
+ 
++    [Fact]
++    public async Task ListAsync_filters_by_task_workflow_date_range_combined_filters_and_tenant()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var matchingEventId = Guid.NewGuid();
++        var windowStart = new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc);
++        var windowEnd = new DateTime(2026, 4, 11, 23, 59, 59, DateTimeKind.Utc);
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.Companies.Add(new Company(otherCompanyId, "Other"));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            matchingEventId,
++            companyId,
++            agentId,
++            AuditTargetTypes.WorkTask,
++            taskId,
++            new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc),
++            new Dictionary<string, string?>
++            {
++                ["agentId"] = agentId.ToString(),
++                ["workflowInstanceId"] = workflowInstanceId.ToString()
++            }));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            AuditTargetTypes.WorkTask,
++            taskId,
++            new DateTime(2026, 4, 10, 13, 0, 0, DateTimeKind.Utc),
++            new Dictionary<string, string?> { ["workflowInstanceId"] = Guid.NewGuid().ToString() }));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            AuditTargetTypes.WorkflowInstance,
++            workflowInstanceId,
++            new DateTime(2026, 4, 10, 14, 0, 0, DateTimeKind.Utc),
++            new Dictionary<string, string?> { ["taskId"] = Guid.NewGuid().ToString() }));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            AuditTargetTypes.WorkTask,
++            taskId,
++            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
++            new Dictionary<string, string?> { ["workflowInstanceId"] = workflowInstanceId.ToString() }));
++        dbContext.AuditEvents.Add(CreateAuditEvent(
++            Guid.NewGuid(),
++            otherCompanyId,
++            agentId,
++            AuditTargetTypes.WorkTask,
++            taskId,
++            new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc),
++            new Dictionary<string, string?> { ["workflowInstanceId"] = workflowInstanceId.ToString() }));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var allForTenant = await service.ListAsync(companyId, new AuditHistoryFilter(), CancellationToken.None);
++        var taskResults = await service.ListAsync(companyId, new AuditHistoryFilter(TaskId: taskId), CancellationToken.None);
++        var workflowResults = await service.ListAsync(companyId, new AuditHistoryFilter(WorkflowInstanceId: workflowInstanceId), CancellationToken.None);
++        var dateResults = await service.ListAsync(companyId, new AuditHistoryFilter(FromUtc: windowStart, ToUtc: windowEnd), CancellationToken.None);
++        var combinedResults = await service.ListAsync(
++            companyId,
++            new AuditHistoryFilter(agentId, taskId, workflowInstanceId, windowStart, windowEnd),
++            CancellationToken.None);
++
++        Assert.Equal(4, allForTenant.TotalCount);
++        Assert.All(allForTenant.Items, item => Assert.Equal(companyId, item.CompanyId));
++        Assert.Equal(3, taskResults.TotalCount);
++        Assert.Equal(3, workflowResults.TotalCount);
++        Assert.Equal(3, dateResults.TotalCount);
++        var item = Assert.Single(combinedResults.Items);
++        Assert.Equal(matchingEventId, item.Id);
++    }
++
++    [Fact]
++    public async Task ListAsync_rejects_invalid_date_range()
++    {
++        var companyId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        await Assert.ThrowsAsync<ArgumentException>(() => service.ListAsync(
++            companyId,
++            new AuditHistoryFilter(FromUtc: new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), ToUtc: new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc)),
++            CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task GetAsync_does_not_return_cross_tenant_audit_events()
+     {
+@@ -129,6 +214,26 @@ public sealed class AuditQueryServiceTests
+         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    private static AuditEvent CreateAuditEvent(
++        Guid id,
++        Guid companyId,
++        Guid agentId,
++        string targetType,
++        Guid targetId,
++        DateTime occurredUtc,
++        IReadOnlyDictionary<string, string?>? metadata = null) =>
++        new(
++            id,
++            companyId,
++            AuditActorTypes.Agent,
++            agentId,
++            AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++            targetType,
++            targetId.ToString(),
++            AuditEventOutcomes.Succeeded,
++            "Concise operational summary.",
++            metadata: metadata,
++            occurredUtc: occurredUtc);
++
+     private static VirtualCompanyDbContext CreateDbContext(Guid companyId)
+     {
+         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+END_OF_PATCH

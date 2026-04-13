@@ -1,5 +1,5 @@
 @page "/agents"
-@using Microsoft.AspNetCore.Components
+@rendermode InteractiveServer
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
 @inject NavigationManager Navigation
@@ -154,6 +154,10 @@ else
                                         <td>
                                             <div class="dashboard-actions">
                                                 <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">Open profile</a>
+                                                @if (IsDirectChatEligible(agent.Status))
+                                                {
+                                                    <a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a>
+                                                }
                                                 @if (CanManageProfiles)
                                                 {
                                                     <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">Manage</a>
@@ -269,6 +273,15 @@ else
             _ => "text-body-secondary"
         };
     private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+    private static bool IsDirectChatEligible(string? status) =>
+        !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildChatUri(Guid companyId, Guid agentId)
+    {
+        var query = $"companyId={companyId}";
+        return $"/agents/{agentId}/chat?{query}";
+    }
 
     private static string BuildRosterUri(Guid companyId, string? department, string? status)
     {

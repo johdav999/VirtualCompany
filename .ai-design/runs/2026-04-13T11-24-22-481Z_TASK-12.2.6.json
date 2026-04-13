@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.6",
+  "promptPath": ".ai-design/prompts/TASK-12.2.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:24:22.481Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-24-22-481Z_TASK-12.2.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-24-22-481Z_TASK-12.2.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:28:29.768Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);\n+\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Document: Employee Onboarding SOP - chunk 3\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Task: Investigate failed invoice sync\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Workflow: Daily finance reconciliation (started)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Approval: spend threshold override approval (pending)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Tool execution: invoice_sync execute (started)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Conversation: Support inbox\");\n+        Assert.DoesNotContain(detail.SourceReferences, source => source.Label.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(detail.SourceReferences, source => source.SecondaryText?.Contains(\"s3://\", StringComparison.OrdinalIgnoreCase) == true);\n+        Assert.DoesNotContain(detail.Explanation.DataSources, source => source.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));\n+    }\n+\n+    [Fact]\n+    public void AuditSourceReferenceDisplayFormatter_uses_safe_fallback_for_missing_or_restricted_sources()\n+    {\n+        var missing = AuditSourceReferenceDisplayFormatter.Format(new AuditDataSourceUsed(\n+            GroundedContextSourceTypes.KnowledgeChunk,\n+            Guid.NewGuid().ToString(),\n+            Reference: \"chunk:47\"));\n+\n+        Assert.Equal(\"Document: Document (deleted or inaccessible)\", missing.Label);\n+        Assert.Equal(\"Section excerpt\", missing.SecondaryText);\n+        Assert.DoesNotContain(\"chunk:47\", missing.Label, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     private static AuditEvent CreateAuditEvent(\n         Guid id,\n         Guid companyId,\nEND_OF_PATCH\n",
+  "stderrTail": "t service.GetAsync(companyId, auditEventId, CancellationToken.None);\n+\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Document: Employee Onboarding SOP - chunk 3\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Task: Investigate failed invoice sync\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Workflow: Daily finance reconciliation (started)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Approval: spend threshold override approval (pending)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Tool execution: invoice_sync execute (started)\");\n+        Assert.Contains(detail.SourceReferences, source => source.Label == \"Conversation: Support inbox\");\n+        Assert.DoesNotContain(detail.SourceReferences, source => source.Label.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));\n+        Assert.DoesNotContain(detail.SourceReferences, source => source.SecondaryText?.Contains(\"s3://\", StringComparison.OrdinalIgnoreCase) == true);\n+        Assert.DoesNotContain(detail.Explanation.DataSources, source => source.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));\n+    }\n+\n+    [Fact]\n+    public void AuditSourceReferenceDisplayFormatter_uses_safe_fallback_for_missing_or_restricted_sources()\n+    {\n+        var missing = AuditSourceReferenceDisplayFormatter.Format(new AuditDataSourceUsed(\n+            GroundedContextSourceTypes.KnowledgeChunk,\n+            Guid.NewGuid().ToString(),\n+            Reference: \"chunk:47\"));\n+\n+        Assert.Equal(\"Document: Document (deleted or inaccessible)\", missing.Label);\n+        Assert.Equal(\"Section excerpt\", missing.SecondaryText);\n+        Assert.DoesNotContain(\"chunk:47\", missing.Label, StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     private static AuditEvent CreateAuditEvent(\n         Guid id,\n         Guid companyId,\nEND_OF_PATCH\ntokens used\n93,773\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.5.7",
+  "promptPath": ".ai-design/prompts/TASK-11.5.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T10:25:57.903Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T10-25-57-903Z_TASK-11.5.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T10-25-57-903Z_TASK-11.5.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T10:30:13.793Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "          nowUtc\n+        });\n+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n+        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResultDto>();\n+        Assert.NotNull(aggregate);\n+\n+        using var scope = _factory.Services.CreateScope();\n+        var aggregateCache = scope.ServiceProvider.GetRequiredService<IExecutiveDashboardAggregateCache>();\n+        var otherCompanySnapshot = await aggregateCache.TryGetAsync(seed.OtherCompanyId, \"daily_briefing\", aggregate!.PeriodStartUtc, aggregate.PeriodEndUtc, CancellationToken.None);\n+        Assert.Null(otherCompanySnapshot);\n     }\n \n     [Fact]\n@@ -410,6 +504,22 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         return new EmptyBriefingSeed(companyId);\n     }\n \n+    private async Task<Guid> AddCompletedTaskAsync(BriefingSeed seed, string title)\n+    {\n+        var taskId = Guid.NewGuid();\n+        await _factory.SeedAsync(dbContext =>\n+        {\n+            var task = new WorkTask(taskId, seed.CompanyId, \"briefing\", title, null, WorkTaskPriority.Normal, seed.AgentId, null, \"user\", seed.UserId);\n+            task.UpdateStatus(WorkTaskStatus.Completed);\n+            dbContext.WorkTasks.Add(task);\n+            return Task.CompletedTask;\n+        });\n+\n+        return taskId;\n+    }\n+\n     private async Task<BriefingSeed> SeedBriefingCompanyAsync()\n     {\n         var now = DateTime.UtcNow;\n@@ -492,6 +602,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n         return new BriefingSeed(\n             companyId,\n+            userId,\n             otherCompanyId,\n             agentId,\n             completedTaskId,\n@@ -612,6 +723,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n     private sealed record BriefingSeed(\n         Guid CompanyId,\n+        Guid UserId,\n         Guid OtherCompanyId,\n         Guid AgentId,\n         Guid CompletedTaskId,\nEND_OF_PATCH\n",
+  "stderrTail": "       });\n+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n+        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResultDto>();\n+        Assert.NotNull(aggregate);\n+\n+        using var scope = _factory.Services.CreateScope();\n+        var aggregateCache = scope.ServiceProvider.GetRequiredService<IExecutiveDashboardAggregateCache>();\n+        var otherCompanySnapshot = await aggregateCache.TryGetAsync(seed.OtherCompanyId, \"daily_briefing\", aggregate!.PeriodStartUtc, aggregate.PeriodEndUtc, CancellationToken.None);\n+        Assert.Null(otherCompanySnapshot);\n     }\n \n     [Fact]\n@@ -410,6 +504,22 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n         return new EmptyBriefingSeed(companyId);\n     }\n \n+    private async Task<Guid> AddCompletedTaskAsync(BriefingSeed seed, string title)\n+    {\n+        var taskId = Guid.NewGuid();\n+        await _factory.SeedAsync(dbContext =>\n+        {\n+            var task = new WorkTask(taskId, seed.CompanyId, \"briefing\", title, null, WorkTaskPriority.Normal, seed.AgentId, null, \"user\", seed.UserId);\n+            task.UpdateStatus(WorkTaskStatus.Completed);\n+            dbContext.WorkTasks.Add(task);\n+            return Task.CompletedTask;\n+        });\n+\n+        return taskId;\n+    }\n+\n     private async Task<BriefingSeed> SeedBriefingCompanyAsync()\n     {\n         var now = DateTime.UtcNow;\n@@ -492,6 +602,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n         return new BriefingSeed(\n             companyId,\n+            userId,\n             otherCompanyId,\n             agentId,\n             completedTaskId,\n@@ -612,6 +723,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp\n \n     private sealed record BriefingSeed(\n         Guid CompanyId,\n+        Guid UserId,\n         Guid OtherCompanyId,\n         Guid AgentId,\n         Guid CompletedTaskId,\nEND_OF_PATCH\ntokens used\n55,121\n",
+  "verbosityMode": "summary"
+}

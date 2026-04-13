@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.1",
+  "promptPath": ".ai-design/prompts/TASK-12.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:39:12.308Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-39-12-308Z_TASK-12.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-39-12-308Z_TASK-12.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:41:49.219Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "oval, failure }\n+            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)\n+            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)\n+            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)\n+            .ThenByDescending(x => x.Priority)\n+            .ThenByDescending(x => x.CreatedUtc)\n+            .ToList();\n+\n+        Assert.Same(approval, ordered[0]);\n+        Assert.Equal([CompanyNotificationType.WorkflowFailure, CompanyNotificationType.Escalation], ordered.Skip(1).Take(2).Select(x => x.Type));\n+        Assert.Same(briefing, ordered[3]);\n+    }\n+\n+    [Fact]\n+    public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n+    {\n+        var userId = Guid.NewGuid();\n+        var notification = new CompanyNotification(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            userId,\n+            CompanyNotificationType.WorkflowFailure,\n+            CompanyNotificationPriority.Critical,\n+            \"Workflow failed\",\n+            \"A workflow step failed.\",\n+            \"workflow_exception\",\n+            Guid.NewGuid(),\n+            \"/workflows\",\n+            \"{}\",\n+            $\"workflow-exception:{Guid.NewGuid():N}:{userId:N}\");\n+\n+        Assert.Contains(userId.ToString(\"N\"), notification.DedupeKey);\n+    }\n+\n+    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            type,\n+            priority,\n+            type.ToStorageValue(),\n+            \"Notification body.\",\n+            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n+            Guid.NewGuid(),\n+            \"/inbox\",\n+            \"{}\",\n+            $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "         .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)\n+            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)\n+            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)\n+            .ThenByDescending(x => x.Priority)\n+            .ThenByDescending(x => x.CreatedUtc)\n+            .ToList();\n+\n+        Assert.Same(approval, ordered[0]);\n+        Assert.Equal([CompanyNotificationType.WorkflowFailure, CompanyNotificationType.Escalation], ordered.Skip(1).Take(2).Select(x => x.Type));\n+        Assert.Same(briefing, ordered[3]);\n+    }\n+\n+    [Fact]\n+    public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n+    {\n+        var userId = Guid.NewGuid();\n+        var notification = new CompanyNotification(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            userId,\n+            CompanyNotificationType.WorkflowFailure,\n+            CompanyNotificationPriority.Critical,\n+            \"Workflow failed\",\n+            \"A workflow step failed.\",\n+            \"workflow_exception\",\n+            Guid.NewGuid(),\n+            \"/workflows\",\n+            \"{}\",\n+            $\"workflow-exception:{Guid.NewGuid():N}:{userId:N}\");\n+\n+        Assert.Contains(userId.ToString(\"N\"), notification.DedupeKey);\n+    }\n+\n+    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            type,\n+            priority,\n+            type.ToStorageValue(),\n+            \"Notification body.\",\n+            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n+            Guid.NewGuid(),\n+            \"/inbox\",\n+            \"{}\",\n+            $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n+}\nEND_OF_PATCH\ntokens used\n104,939\n",
+  "verbosityMode": "summary"
+}

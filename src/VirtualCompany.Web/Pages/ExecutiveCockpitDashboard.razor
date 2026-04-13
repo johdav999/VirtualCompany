@@ -1,0 +1,374 @@
+@inject ExecutiveCockpitApiClient ApiClient
+
+<section class="cockpit-panel">
+    @if (isLoading)
+    {
+        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+            <h2 class="h5">Executive cockpit</h2>
+            <p class="text-body-secondary mb-0">Loading company-wide dashboard...</p>
+        </div>
+    }
+    else if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+            <h2 class="h5">Executive cockpit</h2>
+            <div class="alert alert-danger mb-0">@errorMessage</div>
+        </div>
+    }
+    else if (dashboard is null)
+    {
+        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+            <h2 class="h5">Executive cockpit</h2>
+            <p class="text-body-secondary mb-0">Dashboard access is not available for this company.</p>
+        </div>
+    }
+    else
+    {
+        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+            <div class="cockpit-card__header">
+                <div>
+                    <span class="dashboard-kicker">Executive cockpit</span>
+                    <h2 class="h4 mt-2 mb-1">@ResolvedCompanyName</h2>
+                    <p class="text-body-secondary mb-0">Generated @dashboard.GeneratedAtUtc.ToLocalTime():g</p>
+                </div>
+                <div class="dashboard-actions">
+                    <a class="btn btn-outline-primary" href="@AgentsPath">Agents</a>
+                    <a class="btn btn-outline-primary" href="@TasksPath">Tasks</a>
+                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Workflows</a>
+                    <a class="btn btn-outline-primary" href="@ApprovalsPath">Approvals</a>
+                </div>
+            </div>
+        </div>
+
+        @if (dashboard.SummaryKpis.Count > 0)
+        {
+            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+                <div class="cockpit-card__header">
+                    <div>
+                        <h3 class="h5 mb-1">Summary KPIs</h3>
+                        <p class="text-body-secondary mb-0">Current operating signals for this company.</p>
+                    </div>
+                </div>
+                <div class="cockpit-summary-kpi-grid mt-3">
+                    @foreach (var kpi in dashboard.SummaryKpis)
+                    {
+                        <section class="@SummaryKpiCardClass(kpi)" aria-label="@kpi.Label">
+                            <div class="cockpit-summary-kpi__label">@kpi.Label</div>
+                            <strong class="cockpit-summary-kpi__value">@kpi.CurrentValue</strong>
+                            <div class="@SummaryKpiTrendClass(kpi)">
+                                <span aria-hidden="true">@TrendGlyph(kpi.TrendDirection)</span>
+                                <span>@kpi.DeltaText</span>
+                            </div>
+                            @if (kpi.PreviousValue is not null)
+                            {
+                                <small class="text-body-secondary">Previous: @kpi.PreviousValue</small>
+                            }
+                        </section>
+                    }
+                </div>
+            </article>
+        }
+        
+        @if (IsInitialSetupEmpty)
+        {
+            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide cockpit-empty-hero">
+                <span class="dashboard-kicker">Initial setup</span>
+                <h3 class="h4 mt-2 mb-2">Build the first operating layer</h3>
+                <p class="text-body-secondary mb-0">Add agents, workflows, and company knowledge so the cockpit can turn workspace activity into approvals, alerts, KPIs, and briefings.</p>
+                <div class="dashboard-actions mt-4">
+                    <a class="btn btn-primary" href="@AgentsPath">Hire your first agent</a>
+                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Set up a workflow</a>
+                    <a class="btn btn-outline-secondary" href="@KnowledgePath">Upload company knowledge</a>
+                </div>
+            </article>
+        }
+        else if (dashboard.EmptyStateFlags.NoAgents || dashboard.EmptyStateFlags.NoWorkflows || dashboard.EmptyStateFlags.NoKnowledge)
+        {
+            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+                <div class="cockpit-card__header">
+                    <div>
+                        <h3 class="h5 mb-1">Setup guidance</h3>
+                        <p class="text-body-secondary mb-0">Complete the missing setup areas to make cockpit signals more useful.</p>
+                    </div>
+                </div>
+                <div class="cockpit-empty-grid mt-3">
+                    @SetupGuidanceCards()
+                </div>
+            </article>
+        }
+
+        <article class="wizard-card wizard-card--compact cockpit-card">
+            <h3 class="h5">Daily briefing</h3>
+            @if (dashboard.DailyBriefing is null)
+            {
+                <p class="text-body-secondary mb-0">No daily briefing has been generated yet. Generate a briefing after agents, workflows, or approvals start producing activity.</p>
+            }
+            else
+            {
+                <strong>@dashboard.DailyBriefing.Title</strong>
+                <div class="text-body-secondary">@dashboard.DailyBriefing.GeneratedUtc.ToLocalTime():g</div>
+                <p class="mt-2">@dashboard.DailyBriefing.Summary</p>
+                <a href="@(dashboard.DailyBriefing.Route ?? BriefingPreferencesPath)">Briefing delivery</a>
+            }
+        </article>
+
+        <article class="wizard-card wizard-card--compact cockpit-card">
+            <div class="cockpit-card__header">
+                <h3 class="h5 mb-0">Pending approvals</h3>
+                <a href="@SafeDrillRoute(dashboard.PendingApprovals.Route, ApprovalsPath)">Open approvals</a>
+            </div>
+            @if (dashboard.EmptyStateFlags.NoPendingApprovals)
+            {
+                <p class="text-body-secondary mb-0">No approvals are waiting. New guarded actions appear here when they need a decision.</p>
+            }
+            else
+            {
+                <p class="text-body-secondary">@dashboard.PendingApprovals.TotalCount pending approval@(dashboard.PendingApprovals.TotalCount == 1 ? string.Empty : "s")</p>
+                <div class="activity-list">
+                    @foreach (var approval in dashboard.PendingApprovals.Items)
+                    {
+                        <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(approval.Route, dashboard.PendingApprovals.Route)">
+                            <strong>@approval.ApprovalType approval</strong>
+                            <div class="text-body-secondary">@approval.Summary</div>
+                            <small>@approval.CreatedUtc.ToLocalTime():g</small>
+                        </a>
+                    }
+                </div>
+            }
+        </article>
+
+        <article class="wizard-card wizard-card--compact cockpit-card">
+            <h3 class="h5">Alerts</h3>
+            @if (dashboard.EmptyStateFlags.NoAlerts)
+            {
+                <p class="text-body-secondary mb-0">No active alerts. Blocked tasks and workflow exceptions will surface here.</p>
+            }
+            else
+            {
+                <div class="activity-list">
+                    @foreach (var alert in dashboard.Alerts)
+                    {
+                        @if (HasDrillRoute(alert.Route))
+                        {
+                            <a class="activity-item text-decoration-none text-reset" href="@alert.Route" aria-label="@($"Open {alert.Title}")">
+                                @AlertContent(alert)
+                            </a>
+                        }
+                        else
+                        {
+                            <div class="activity-item">
+                                @AlertContent(alert)
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        </article>
+
+        @if (!IsInitialSetupEmpty)
+        {
+            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+                <h3 class="h5">Department KPIs</h3>
+                <div class="cockpit-kpi-grid">
+                    @foreach (var kpi in dashboard.DepartmentKpis)
+                    {
+                        <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
+                            <strong>@kpi.Department</strong>
+                            <dl class="cockpit-kpi-list mb-0 mt-3">
+                                <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
+                                <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
+                                <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
+                                <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
+                                <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
+                            </dl>
+                        </a>
+                    }
+                </div>
+            </article>
+        }
+
+        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+            <h3 class="h5">Recent activity</h3>
+            @if (dashboard.EmptyStateFlags.NoRecentActivity)
+            {
+                <p class="text-body-secondary mb-0">No recent activity yet. Start by hiring agents, running workflows, uploading knowledge, or creating tasks.</p>
+            }
+            else
+            {
+                <div class="activity-list">
+                    @foreach (var item in dashboard.RecentActivity)
+                    {
+                        @if (HasDrillRoute(item.Route))
+                        {
+                            <a class="activity-item text-decoration-none text-reset" href="@item.Route" aria-label="@($"Open {item.Title}")">
+                                @ActivityContent(item)
+                            </a>
+                        }
+                        else
+                        {
+                            <div class="activity-item">
+                                @ActivityContent(item)
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        </article>
+    }
+</section>
+
+@code {
+    [Parameter]
+    public Guid CompanyId { get; set; }
+
+    [Parameter]
+    public string? CompanyName { get; set; }
+
+    private bool isLoading = true;
+    private string? errorMessage;
+    private ExecutiveCockpitDashboardViewModel? dashboard;
+
+    private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+    private string AgentsPath => $"/agents?companyId={CompanyId}";
+    private string TasksPath => $"/tasks?companyId={CompanyId}";
+    private string WorkflowsPath => $"/workflows?companyId={CompanyId}";
+    private string ApprovalsPath => $"/approvals?companyId={CompanyId}";
+    private string KnowledgePath => "/onboarding";
+    private string BriefingPreferencesPath => $"/briefing-preferences?companyId={CompanyId}";
+    private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
+        ? CompanyName!
+        : dashboard?.CompanyName ?? "Workspace dashboard";
+    private bool IsInitialSetupEmpty =>
+        dashboard?.SetupState.IsInitialSetupEmpty == true ||
+        dashboard?.EmptyStateFlags is { NoAgents: true, NoWorkflows: true, NoKnowledge: true };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        dashboard = null;
+
+        try
+        {
+            dashboard = await ApiClient.GetAsync(CompanyId);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static bool HasDrillRoute(string? route) =>
+        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+
+    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
+        HasDrillRoute(route) ? route! : fallbackRoute;
+
+    private static string SummaryKpiCardClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
+        $"cockpit-summary-kpi cockpit-summary-kpi--{NormalizeCssToken(kpi.StatusHint)}";
+
+    private static string SummaryKpiTrendClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
+        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(kpi.TrendDirection)}";
+
+    private static string NormalizeCssToken(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+
+    private static string TrendGlyph(string? direction) =>
+        string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
+        string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
+        string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
+        "Trend";
+
+    private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
+    {
+        var sequence = 0;
+        builder.OpenElement(sequence++, "span");
+        builder.AddAttribute(sequence++, "class", "badge text-bg-warning");
+        builder.AddContent(sequence++, alert.Severity);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "strong");
+        builder.AddAttribute(sequence++, "class", "d-block mt-2");
+        builder.AddContent(sequence++, alert.Title);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "text-body-secondary");
+        builder.AddContent(sequence++, alert.Summary);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "small");
+        builder.AddContent(sequence++, alert.OccurredUtc.ToLocalTime().ToString("g"));
+        builder.CloseElement();
+    };
+
+    private RenderFragment ActivityContent(ExecutiveCockpitActivityItemViewModel item) => builder =>
+    {
+        var sequence = 0;
+        builder.OpenElement(sequence++, "strong");
+        builder.AddContent(sequence++, item.Title);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "text-body-secondary");
+        builder.AddContent(sequence++, item.Summary);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "small");
+        builder.AddContent(sequence++, $"{item.ActivityType} | {item.OccurredUtc.ToLocalTime():g}");
+        builder.CloseElement();
+    };
+
+    private RenderFragment SetupGuidanceCards() => builder =>
+    {
+        if (dashboard is null)
+        {
+            return;
+        }
+
+        var sequence = 0;
+        if (dashboard.EmptyStateFlags.NoAgents)
+        {
+            builder.OpenElement(sequence++, "a");
+            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
+            builder.AddAttribute(sequence++, "href", AgentsPath);
+            builder.OpenElement(sequence++, "strong");
+            builder.AddContent(sequence++, "Hire agents");
+            builder.CloseElement();
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
+            builder.AddContent(sequence++, "Add the first agents so tasks, approvals, and department KPIs have owners.");
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+
+        if (dashboard.EmptyStateFlags.NoWorkflows)
+        {
+            builder.OpenElement(sequence++, "a");
+            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
+            builder.AddAttribute(sequence++, "href", WorkflowsPath);
+            builder.OpenElement(sequence++, "strong");
+            builder.AddContent(sequence++, "Define workflows");
+            builder.CloseElement();
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
+            builder.AddContent(sequence++, "Create or enable workflows so company processes can be tracked here.");
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+
+        if (dashboard.EmptyStateFlags.NoKnowledge)
+        {
+            builder.OpenElement(sequence++, "a");
+            builder.AddAttribute(sequence++, "class", "agent-analytics-placeholder-card text-decoration-none text-reset");
+            builder.AddAttribute(sequence++, "href", KnowledgePath);
+            builder.OpenElement(sequence++, "strong");
+            builder.AddContent(sequence++, "Add knowledge");
+            builder.CloseElement();
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
+            builder.AddContent(sequence++, "Upload company documents so agents can ground decisions in current workspace context.");
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+    };
+}

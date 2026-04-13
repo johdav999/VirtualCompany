@@ -1,0 +1,1672 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 5f8e0ac..3ab61d1 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -19,6 +19,103 @@ public interface IAuditEventWriter
+     Task WriteAsync(AuditEventWriteRequest auditEvent, CancellationToken cancellationToken);
+ }
+ 
++public sealed record AuditHistoryFilter(
++    Guid? AgentId = null,
++    Guid? TaskId = null,
++    Guid? WorkflowInstanceId = null,
++    DateTime? FromUtc = null,
++    DateTime? ToUtc = null,
++    int? Skip = null,
++    int? Take = null);
++
++public sealed record AuditHistoryListItem(
++    Guid Id,
++    Guid CompanyId,
++    string ActorType,
++    Guid? ActorId,
++    string? ActorLabel,
++    string Action,
++    string TargetType,
++    string TargetId,
++    string? TargetLabel,
++    string Outcome,
++    string? RationaleSummary,
++    DateTime OccurredAt,
++    string? CorrelationId,
++    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
++
++public sealed record AuditHistoryResult(
++    IReadOnlyList<AuditHistoryListItem> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
++
++public sealed record AuditDetailDto(
++    Guid Id,
++    Guid CompanyId,
++    string ActorType,
++    Guid? ActorId,
++    string? ActorLabel,
++    string Action,
++    string TargetType,
++    string TargetId,
++    string? TargetLabel,
++    string Outcome,
++    string? RationaleSummary,
++    IReadOnlyList<string> DataSources,
++    IReadOnlyList<AuditSourceReferenceDto> SourceReferences,
++    DateTime OccurredAt,
++    string? CorrelationId,
++    IReadOnlyDictionary<string, string?> Metadata,
++    IReadOnlyList<AuditApprovalReferenceDto> LinkedApprovals,
++    IReadOnlyList<AuditToolExecutionReferenceDto> LinkedToolExecutions,
++    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
++
++public sealed record AuditSourceReferenceDto(
++    string Label,
++    string? Reference,
++    string? Type = null);
++
++public sealed record AuditApprovalReferenceDto(
++    Guid Id,
++    string ApprovalType,
++    string Status,
++    string TargetEntityType,
++    Guid TargetEntityId,
++    string? DecisionSummary,
++    DateTime CreatedAt,
++    DateTime? DecidedAt);
++
++public sealed record AuditToolExecutionReferenceDto(
++    Guid Id,
++    Guid AgentId,
++    string? AgentLabel,
++    string ToolName,
++    string ActionType,
++    string Status,
++    Guid? TaskId,
++    Guid? WorkflowInstanceId,
++    Guid? ApprovalRequestId,
++    DateTime StartedAt,
++    DateTime? CompletedAt);
++
++public sealed record AuditEntityReferenceDto(
++    string EntityType,
++    string EntityId,
++    string? Label);
++
++public interface IAuditQueryService
++{
++    Task<AuditHistoryResult> ListAsync(Guid companyId, AuditHistoryFilter filter, CancellationToken cancellationToken);
++    Task<AuditDetailDto> GetAsync(Guid companyId, Guid auditEventId, CancellationToken cancellationToken);
++}
++
+ public static class AuditActorTypes
+ {
+     public const string User = "user";
+diff --git a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+index e582011..4d5c09f 100644
+--- a/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
++++ b/src/VirtualCompany.Application/Authorization/CompanyPolicies.cs
+@@ -5,9 +5,11 @@ public static class CompanyPolicies
+     public const string AuthenticatedUser = "AuthenticatedUser";
+     public const string CompanyMember = "CompanyMember";
+     public const string CompanyManager = "CompanyManager";
++    public const string AuditReview = "AuditReview";
+     public const string CompanyOwnerOrAdmin = "CompanyOwnerOrAdmin";
+ 
+     public const string CompanyMembership = CompanyMember;
++    public const string CompanyAuditReview = AuditReview;
+     public const string CompanyAdmin = CompanyOwnerOrAdmin;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+index 2fce663..35a5997 100644
+--- a/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
++++ b/src/VirtualCompany.Infrastructure/Authorization/CompanyAuthorizationServiceCollectionExtensions.cs
+@@ -36,6 +36,13 @@ public static class CompanyAuthorizationServiceCollectionExtensions
+                         CompanyMembershipRole.Admin,
+                         CompanyMembershipRole.Manager)));
+ 
++            options.AddPolicy(CompanyPolicies.AuditReview, policy =>
++                policy.RequireAuthenticatedUser()
++                    .AddRequirements(new CompanyMembershipRoleRequirement(
++                        CompanyMembershipRole.Owner,
++                        CompanyMembershipRole.Admin,
++                        CompanyMembershipRole.Manager)));
++
+             options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
+                 policy.RequireAuthenticatedUser()
+                     .AddRequirements(new CompanyMembershipRoleRequirement(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 557b65c..2f1dc4b 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -76,6 +76,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ExecutionExceptionRecord>()
+             .HasQueryFilter(executionException =>
+                 CurrentCompanyId.HasValue && executionException.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<AuditEvent>()
++            .HasQueryFilter(auditEvent =>
++                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<Agent>()
+             .HasQueryFilter(agent =>
+                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+new file mode 100644
+index 0000000..79a1c46
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -0,0 +1,401 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Auditing;
++
++public sealed class CompanyAuditQueryService : IAuditQueryService
++{
++    private const int DefaultTake = 50;
++    private const int MaxTake = 200;
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyAuditQueryService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<AuditHistoryResult> ListAsync(
++        Guid companyId,
++        AuditHistoryFilter filter,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++
++        filter ??= new AuditHistoryFilter();
++        var skip = Math.Max(filter.Skip ?? 0, 0);
++        var take = Math.Clamp(filter.Take ?? DefaultTake, 1, MaxTake);
++
++        var query = _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        if (filter.FromUtc is { } fromUtc)
++        {
++            query = query.Where(x => x.OccurredUtc >= fromUtc);
++        }
++
++        if (filter.ToUtc is { } toUtc)
++        {
++            query = query.Where(x => x.OccurredUtc <= toUtc);
++        }
++
++        var candidateEvents = await query
++            .OrderByDescending(x => x.OccurredUtc)
++            .ToListAsync(cancellationToken);
++
++        var filteredEvents = candidateEvents
++            .Where(x => MatchesAgentFilter(x, filter.AgentId))
++            .Where(x => MatchesTaskFilter(x, filter.TaskId))
++            .Where(x => MatchesWorkflowFilter(x, filter.WorkflowInstanceId))
++            .ToList();
++
++        var page = filteredEvents.Skip(skip).Take(take).ToList();
++        var related = await LoadRelatedReferencesAsync(companyId, page, cancellationToken);
++
++        return new AuditHistoryResult(
++            page.Select(x => MapListItem(x, related)).ToList(),
++            filteredEvents.Count,
++            skip,
++            take);
++    }
++
++    public async Task<AuditDetailDto> GetAsync(
++        Guid companyId,
++        Guid auditEventId,
++        CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++
++        var auditEvent = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == auditEventId, cancellationToken)
++            ?? throw new KeyNotFoundException("Audit event was not found.");
++
++        var related = await LoadRelatedReferencesAsync(companyId, [auditEvent], cancellationToken);
++        var linkedApprovals = await LoadLinkedApprovalsAsync(companyId, auditEvent, cancellationToken);
++        var linkedToolExecutions = await LoadLinkedToolExecutionsAsync(companyId, auditEvent, cancellationToken);
++
++        return new AuditDetailDto(
++            auditEvent.Id,
++            auditEvent.CompanyId,
++            auditEvent.ActorType,
++            auditEvent.ActorId,
++            ResolveActorLabel(auditEvent, related),
++            auditEvent.Action,
++            auditEvent.TargetType,
++            auditEvent.TargetId,
++            ResolveTargetLabel(auditEvent, related),
++            auditEvent.Outcome,
++            auditEvent.RationaleSummary,
++            auditEvent.DataSources.ToList(),
++            BuildSourceReferences(auditEvent),
++            auditEvent.OccurredUtc,
++            auditEvent.CorrelationId,
++            new Dictionary<string, string?>(auditEvent.Metadata, StringComparer.OrdinalIgnoreCase),
++            linkedApprovals,
++            linkedToolExecutions,
++            BuildAffectedEntities(auditEvent, related));
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new UnauthorizedAccessException("Company context is required.");
++        }
++
++        if (!_companyContextAccessor.IsResolved ||
++            _companyContextAccessor.CompanyId is not Guid currentCompanyId ||
++            currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Audit history is scoped to the active company context.");
++        }
++    }
++
++    private async Task<RelatedReferenceSet> LoadRelatedReferencesAsync(
++        Guid companyId,
++        IReadOnlyCollection<AuditEvent> auditEvents,
++        CancellationToken cancellationToken)
++    {
++        var agentIds = new HashSet<Guid>();
++        var taskIds = new HashSet<Guid>();
++        var workflowIds = new HashSet<Guid>();
++
++        foreach (var auditEvent in auditEvents)
++        {
++            if (auditEvent.ActorId is Guid actorId && IsAgentActor(auditEvent.ActorType))
++            {
++                agentIds.Add(actorId);
++            }
++
++            AddIfTargetGuid(auditEvent, AuditTargetTypes.Agent, agentIds);
++            AddIfTargetGuid(auditEvent, AuditTargetTypes.WorkTask, taskIds);
++            AddIfTargetGuid(auditEvent, AuditTargetTypes.WorkflowInstance, workflowIds);
++
++            AddMetadataGuid(auditEvent, "agentId", agentIds);
++            AddMetadataGuid(auditEvent, "taskId", taskIds);
++            AddMetadataGuid(auditEvent, "workTaskId", taskIds);
++            AddMetadataGuid(auditEvent, "workflowInstanceId", workflowIds);
++        }
++
++        var agents = agentIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.Agents
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && agentIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => x.DisplayName, cancellationToken);
++
++        var tasks = taskIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.WorkTasks
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && taskIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => x.Title, cancellationToken);
++
++        var workflows = workflowIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.WorkflowInstances
++                .AsNoTracking()
++                .Include(x => x.Definition)
++                .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
++                .ToDictionaryAsync(
++                    x => x.Id,
++                    x => $"{x.Definition.Name} ({x.State.ToStorageValue()})",
++                    cancellationToken);
++
++        return new RelatedReferenceSet(agents, tasks, workflows);
++    }
++
++    private async Task<IReadOnlyList<AuditApprovalReferenceDto>> LoadLinkedApprovalsAsync(
++        Guid companyId,
++        AuditEvent auditEvent,
++        CancellationToken cancellationToken)
++    {
++        var approvalIds = new HashSet<Guid>();
++        var targetIds = new HashSet<Guid>();
++        var toolExecutionIds = new HashSet<Guid>();
++
++        if (Guid.TryParse(auditEvent.TargetId, out var targetGuid))
++        {
++            targetIds.Add(targetGuid);
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase))
++            {
++                approvalIds.Add(targetGuid);
++            }
++
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.AgentToolExecution, StringComparison.OrdinalIgnoreCase))
++            {
++                toolExecutionIds.Add(targetGuid);
++            }
++        }
++
++        AddMetadataGuid(auditEvent, "approvalRequestId", approvalIds);
++        AddMetadataGuid(auditEvent, "toolExecutionId", toolExecutionIds);
++        AddMetadataGuid(auditEvent, "toolExecutionAttemptId", toolExecutionIds);
++
++        var query = _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        var approvals = await query
++            .Where(x =>
++                approvalIds.Contains(x.Id) ||
++                toolExecutionIds.Contains(x.ToolExecutionAttemptId ?? Guid.Empty) ||
++                targetIds.Contains(x.TargetEntityId))
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(20)
++            .ToListAsync(cancellationToken);
++
++        return approvals
++            .Select(x => new AuditApprovalReferenceDto(
++                x.Id,
++                x.ApprovalType,
++                x.Status.ToStorageValue(),
++                x.TargetEntityType,
++                x.TargetEntityId,
++                x.DecisionSummary,
++                x.CreatedUtc,
++                x.DecidedUtc))
++            .ToList();
++    }
++
++    private async Task<IReadOnlyList<AuditToolExecutionReferenceDto>> LoadLinkedToolExecutionsAsync(
++        Guid companyId,
++        AuditEvent auditEvent,
++        CancellationToken cancellationToken)
++    {
++        var toolExecutionIds = new HashSet<Guid>();
++        var taskIds = new HashSet<Guid>();
++        var workflowIds = new HashSet<Guid>();
++        var approvalIds = new HashSet<Guid>();
++
++        if (Guid.TryParse(auditEvent.TargetId, out var targetGuid))
++        {
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.AgentToolExecution, StringComparison.OrdinalIgnoreCase))
++            {
++                toolExecutionIds.Add(targetGuid);
++            }
++
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.WorkTask, StringComparison.OrdinalIgnoreCase))
++            {
++                taskIds.Add(targetGuid);
++            }
++
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.WorkflowInstance, StringComparison.OrdinalIgnoreCase))
++            {
++                workflowIds.Add(targetGuid);
++            }
++
++            if (string.Equals(auditEvent.TargetType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase))
++            {
++                approvalIds.Add(targetGuid);
++            }
++        }
++
++        AddMetadataGuid(auditEvent, "toolExecutionId", toolExecutionIds);
++        AddMetadataGuid(auditEvent, "toolExecutionAttemptId", toolExecutionIds);
++        AddMetadataGuid(auditEvent, "taskId", taskIds);
++        AddMetadataGuid(auditEvent, "workTaskId", taskIds);
++        AddMetadataGuid(auditEvent, "workflowInstanceId", workflowIds);
++        AddMetadataGuid(auditEvent, "approvalRequestId", approvalIds);
++
++        var executions = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Where(x =>
++                toolExecutionIds.Contains(x.Id) ||
++                taskIds.Contains(x.TaskId ?? Guid.Empty) ||
++                workflowIds.Contains(x.WorkflowInstanceId ?? Guid.Empty) ||
++                approvalIds.Contains(x.ApprovalRequestId ?? Guid.Empty) ||
++                (!string.IsNullOrWhiteSpace(auditEvent.CorrelationId) && x.CorrelationId == auditEvent.CorrelationId))
++            .OrderByDescending(x => x.StartedUtc)
++            .Take(20)
++            .ToListAsync(cancellationToken);
++
++        var agentIds = executions.Select(x => x.AgentId).Distinct().ToList();
++        var agentNames = agentIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.Agents
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && agentIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => x.DisplayName, cancellationToken);
++
++        return executions
++            .Select(x => new AuditToolExecutionReferenceDto(
++                x.Id,
++                x.AgentId,
++                agentNames.GetValueOrDefault(x.AgentId),
++                x.ToolName,
++                x.ActionType.ToStorageValue(),
++                x.Status.ToStorageValue(),
++                x.TaskId,
++                x.WorkflowInstanceId,
++                x.ApprovalRequestId,
++                x.StartedUtc,
++                x.CompletedUtc))
++            .ToList();
++    }
++
++    private static AuditHistoryListItem MapListItem(AuditEvent auditEvent, RelatedReferenceSet related) =>
++        new(
++            auditEvent.Id,
++            auditEvent.CompanyId,
++            auditEvent.ActorType,
++            auditEvent.ActorId,
++            ResolveActorLabel(auditEvent, related),
++            auditEvent.Action,
++            auditEvent.TargetType,
++            auditEvent.TargetId,
++            ResolveTargetLabel(auditEvent, related),
++            auditEvent.Outcome,
++            auditEvent.RationaleSummary,
++            auditEvent.OccurredUtc,
++            auditEvent.CorrelationId,
++            BuildAffectedEntities(auditEvent, related));
++
++    private static IReadOnlyList<AuditSourceReferenceDto> BuildSourceReferences(AuditEvent auditEvent)
++    {
++        var references = auditEvent.DataSources
++            .Select(x => new AuditSourceReferenceDto(x, x, "data_source"))
++            .ToList();
++
++        foreach (var key in new[] { "sourceReference", "sourceRef", "documentTitle", "policyVersion" })
++        {
++            if (auditEvent.Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
++            {
++                references.Add(new AuditSourceReferenceDto(ToDisplayName(key), value, "metadata"));
++            }
++        }
++
++        return references
++            .GroupBy(x => $"{x.Type}:{x.Label}:{x.Reference}", StringComparer.OrdinalIgnoreCase)
++            .Select(x => x.First())
++            .ToList();
++    }
++
++    private static IReadOnlyList<AuditEntityReferenceDto> BuildAffectedEntities(AuditEvent auditEvent, RelatedReferenceSet related)
++    {
++        var entities = new List<AuditEntityReferenceDto>
++        {
++            new(auditEvent.TargetType, auditEvent.TargetId, ResolveTargetLabel(auditEvent, related))
++        };
++
++        AddMetadataEntity(auditEvent, related, entities, "agentId", AuditTargetTypes.Agent);
++        AddMetadataEntity(auditEvent, related, entities, "taskId", AuditTargetTypes.WorkTask);
++        AddMetadataEntity(auditEvent, related, entities, "workTaskId", AuditTargetTypes.WorkTask);
++        AddMetadataEntity(auditEvent, related, entities, "workflowInstanceId", AuditTargetTypes.WorkflowInstance);
++        AddMetadataEntity(auditEvent, related, entities, "approvalRequestId", AuditTargetTypes.ApprovalRequest);
++        AddMetadataEntity(auditEvent, related, entities, "toolExecutionId", AuditTargetTypes.AgentToolExecution);
++
++        return entities
++            .Where(x => !string.IsNullOrWhiteSpace(x.EntityId))
++            .GroupBy(x => $"{x.EntityType}:{x.EntityId}", StringComparer.OrdinalIgnoreCase)
++            .Select(x => x.First())
++            .ToList();
++    }
++
++    private static bool MatchesAgentFilter(AuditEvent auditEvent, Guid? agentId) =>
++        !agentId.HasValue ||
++        (auditEvent.ActorId == agentId.Value && IsAgentActor(auditEvent.ActorType)) ||
++        TargetEquals(auditEvent, AuditTargetTypes.Agent, agentId.Value) ||
++        MetadataEquals(auditEvent, "agentId", agentId.Value);
++
++    private static bool MatchesTaskFilter(AuditEvent auditEvent, Guid? taskId) =>
++        !taskId.HasValue ||
++        TargetEquals(auditEvent, AuditTargetTypes.WorkTask, taskId.Value) ||
++        MetadataEquals(auditEvent, "taskId", taskId.Value) ||
++        MetadataEquals(auditEvent, "workTaskId", taskId.Value);
++
++    private static bool MatchesWorkflowFilter(AuditEvent auditEvent, Guid? workflowInstanceId) =>
++        !workflowInstanceId.HasValue ||
++        TargetEquals(auditEvent, AuditTargetTypes.WorkflowInstance, workflowInstanceId.Value) ||
++        MetadataEquals(auditEvent, "workflowInstanceId", workflowInstanceId.Value);
++
++    private static bool IsAgentActor(string actorType) =>
++        string.Equals(actorType, AuditActorTypes.Agent, StringComparison.OrdinalIgnoreCase);
++
++    private static bool TargetEquals(AuditEvent auditEvent, string targetType, Guid targetId) =>
++        string.Equals(auditEvent.TargetType, targetType, StringComparison.OrdinalIgnoreCase) &&
++        Guid.TryParse(auditEvent.TargetId, out var parsed) &&
++        parsed == targetId;
++
++    private static bool MetadataEquals(AuditEvent auditEvent, string key, Guid expected) =>
++        auditEvent.Metadata.TryGetValue(key, out var value) &&
++        Guid.TryParse(value, out var parsed) &&
++        parsed == expected;
++
++    private static void AddIfTargetGuid(AuditEvent auditEvent, string targetType, ISet<Guid> ids)
++    {
++        if (TargetEquals(auditEvent, targetType, Guid.Empty))
++        {
++            return;
++        }
++
++        if (string.Equals(auditEvent.TargetType, targetType, StringComparison.OrdinalIgnoreCase) &&
++            Guid.TryParse(auditEvent.TargetId, out var id))
++        {
++            ids.Add(id);
++        }
++    }
++
++    private static void AddMetadataGuid(AuditEvent auditEvent, string key, ISet<Guid> ids)
++    {
++        if (auditEvent.Metadata.TryGetValue(key, out var value) &&
++            Guid.TryParse(value, out var id))
++        {
++            ids.Add(id);
++        }
++    }
++
++    private static void AddMetadataEntity(
++        AuditEvent auditEvent,
++        RelatedReferenceSet related,
++        List<AuditEntityReferenceDto> entities,
++        string key,
++        string entityType)
++    {
++        if (auditEvent.Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
++        {
++            entities.Add(new AuditEntityReferenceDto(entityType, value, ResolveEntityLabel(entityType, value, related)));
++        }
++    }
++
++    private static string? ResolveActorLabel(AuditEvent auditEvent, RelatedReferenceSet related) =>
++        auditEvent.ActorId is Guid actorId && IsAgentActor(auditEvent.ActorType)
++            ? related.Agents.GetValueOrDefault(actorId)
++            : null;
++
++    private static string? ResolveTargetLabel(AuditEvent auditEvent, RelatedReferenceSet related) =>
++        ResolveEntityLabel(auditEvent.TargetType, auditEvent.TargetId, related);
++
++    private static string? ResolveEntityLabel(string entityType, string entityId, RelatedReferenceSet related)
++    {
++        if (!Guid.TryParse(entityId, out var id))
++        {
++            return null;
++        }
++
++        if (string.Equals(entityType, AuditTargetTypes.Agent, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Agents.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, AuditTargetTypes.WorkTask, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Tasks.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, AuditTargetTypes.WorkflowInstance, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Workflows.GetValueOrDefault(id);
++        }
++
++        return null;
++    }
++
++    private static string ToDisplayName(string key) =>
++        string.Concat(key.Select((character, index) =>
++            index > 0 && char.IsUpper(character)
++                ? $" {char.ToLowerInvariant(character)}"
++                : character.ToString()));
++
++    private sealed record RelatedReferenceSet(
++        IReadOnlyDictionary<Guid, string> Agents,
++        IReadOnlyDictionary<Guid, string> Tasks,
++        IReadOnlyDictionary<Guid, string> Workflows);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 5048e7e..977988c 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -175,6 +175,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
+         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
+         services.AddScoped<IAuditEventWriter, AuditEventWriter>();
++        services.AddScoped<IAuditQueryService, CompanyAuditQueryService>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+diff --git a/src/VirtualCompany.Api/Controllers/AuditController.cs b/src/VirtualCompany.Api/Controllers/AuditController.cs
+new file mode 100644
+index 0000000..42c0d2c
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/AuditController.cs
+@@ -0,0 +1,72 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/audit")]
++[Authorize(Policy = CompanyPolicies.AuditReview)]
++[RequireCompanyContext]
++public sealed class AuditController : ControllerBase
++{
++    private readonly IAuditQueryService _auditQueryService;
++
++    public AuditController(IAuditQueryService auditQueryService)
++    {
++        _auditQueryService = auditQueryService;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<AuditHistoryResult>> ListAsync(
++        Guid companyId,
++        CancellationToken cancellationToken,
++        [FromQuery] Guid? agentId = null,
++        [FromQuery] Guid? taskId = null,
++        [FromQuery] Guid? workflowInstanceId = null,
++        [FromQuery] DateTime? fromUtc = null,
++        [FromQuery] DateTime? toUtc = null,
++        [FromQuery] int? skip = null,
++        [FromQuery] int? take = null)
++    {
++        try
++        {
++            return Ok(await _auditQueryService.ListAsync(
++                companyId,
++                new AuditHistoryFilter(agentId, taskId, workflowInstanceId, fromUtc, toUtc, skip, take),
++                cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{auditEventId:guid}")]
++    public async Task<ActionResult<AuditDetailDto>> GetAsync(
++        Guid companyId,
++        Guid auditEventId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _auditQueryService.GetAsync(companyId, auditEventId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 5e25e7f..ef12b04 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -50,6 +50,11 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new AuditApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ builder.Services.AddScoped(sp => new TaskApiClient(
+     sp.GetRequiredService<HttpClient>(),
+     ShouldUseOfflineMode(
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 1ad4ed2..80a3547 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -39,6 +39,12 @@
+                 <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="audit">
++                <span class="bi bi-list-check" aria-hidden="true"></span> Audit
++            </NavLink>
++        </div>
+         <div class="nav-item px-3">
+             <NavLink class="nav-link" href="briefing-preferences">
+                 <span class="bi bi-bell" aria-hidden="true"></span> Briefing delivery
+diff --git a/src/VirtualCompany.Web/Services/AuditApiClient.cs b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+new file mode 100644
+index 0000000..f6b3b9f
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+@@ -0,0 +1,242 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Web;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class AuditApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public AuditApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<AuditHistoryResultViewModel> ListAsync(
++        Guid companyId,
++        AuditHistoryFilterViewModel filter,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineHistory(companyId));
++        }
++
++        return GetAsync<AuditHistoryResultViewModel>(
++            $"api/companies/{companyId}/audit{BuildQueryString(filter)}",
++            cancellationToken);
++    }
++
++    public Task<AuditDetailViewModel> GetAsync(
++        Guid companyId,
++        Guid auditEventId,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineDetail(companyId, auditEventId));
++        }
++
++        return GetAsync<AuditDetailViewModel>($"api/companies/{companyId}/audit/{auditEventId}", cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private static string BuildQueryString(AuditHistoryFilterViewModel filter)
++    {
++        var query = HttpUtility.ParseQueryString(string.Empty);
++        if (filter.AgentId is Guid agentId)
++        {
++            query["agentId"] = agentId.ToString();
++        }
++
++        if (filter.TaskId is Guid taskId)
++        {
++            query["taskId"] = taskId.ToString();
++        }
++
++        if (filter.WorkflowInstanceId is Guid workflowInstanceId)
++        {
++            query["workflowInstanceId"] = workflowInstanceId.ToString();
++        }
++
++        if (filter.FromUtc is DateTime fromUtc)
++        {
++            query["fromUtc"] = fromUtc.ToString("O");
++        }
++
++        if (filter.ToUtc is DateTime toUtc)
++        {
++            query["toUtc"] = toUtc.ToString("O");
++        }
++
++        query["skip"] = Math.Max(filter.Skip, 0).ToString();
++        query["take"] = Math.Clamp(filter.Take, 1, 200).ToString();
++
++        var queryString = query.ToString();
++        return string.IsNullOrWhiteSpace(queryString) ? string.Empty : $"?{queryString}";
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static AuditHistoryResultViewModel OfflineHistory(Guid companyId)
++    {
++        var eventId = Guid.Parse("8d570986-8f94-43f9-9991-2cb8c29990f0");
++        return new AuditHistoryResultViewModel
++        {
++            Items =
++            [
++                new()
++                {
++                    Id = eventId,
++                    CompanyId = companyId,
++                    ActorType = "agent",
++                    ActorId = Guid.Parse("69a4f0e5-9537-4e8c-9eb1-785c8ab1d4f0"),
++                    ActorLabel = "Finance Agent",
++                    Action = "agent.tool_execution.approval_requested",
++                    TargetType = "agent_tool_execution",
++                    TargetId = "bb521f6f-7b56-4bea-9f32-4f7fc863cc82",
++                    TargetLabel = "Payment tool execution",
++                    Outcome = "pending",
++                    RationaleSummary = "The requested payment exceeded the configured approval threshold.",
++                    OccurredAt = DateTime.UtcNow.AddMinutes(-20),
++                    CorrelationId = "offline-audit-demo",
++                    AffectedEntities =
++                    [
++                        new() { EntityType = "work_task", EntityId = "9bc83a53-7716-48cd-8150-f9b4b4926e39", Label = "Vendor payment run for April" }
++                    ]
++                }
++            ],
++            TotalCount = 1,
++            Skip = 0,
++            Take = 50
++        };
++    }
++
++    private static AuditDetailViewModel OfflineDetail(Guid companyId, Guid auditEventId) =>
++        new()
++        {
++            Id = auditEventId,
++            CompanyId = companyId,
++            ActorType = "agent",
++            ActorId = Guid.Parse("69a4f0e5-9537-4e8c-9eb1-785c8ab1d4f0"),
++            ActorLabel = "Finance Agent",
++            Action = "agent.tool_execution.approval_requested",
++            TargetType = "agent_tool_execution",
++            TargetId = "bb521f6f-7b56-4bea-9f32-4f7fc863cc82",
++            TargetLabel = "Payment tool execution",
++            Outcome = "pending",
++            RationaleSummary = "The requested payment exceeded the configured approval threshold.",
++            DataSources = ["policy guardrails", "approval thresholds"],
++            SourceReferences = [new() { Label = "policyVersion", Reference = "task_8_3_7", Type = "metadata" }],
++            OccurredAt = DateTime.UtcNow.AddMinutes(-20),
++            CorrelationId = "offline-audit-demo",
++            Metadata = new Dictionary<string, string?> { ["taskId"] = "9bc83a53-7716-48cd-8150-f9b4b4926e39" },
++            LinkedApprovals =
++            [
++                new()
++                {
++                    Id = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"),
++                    ApprovalType = "threshold",
++                    Status = "pending",
++                    TargetEntityType = "task",
++                    TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
++                    CreatedAt = DateTime.UtcNow.AddMinutes(-19)
++                }
++            ],
++            LinkedToolExecutions =
++            [
++                new()
++                {
++                    Id = Guid.Parse("bb521f6f-7b56-4bea-9f32-4f7fc863cc82"),
++                    AgentId = Guid.Parse("69a4f0e5-9537-4e8c-9eb1-785c8ab1d4f0"),
++                    AgentLabel = "Finance Agent",
++                    ToolName = "payments",
++                    ActionType = "execute",
++                    Status = "awaiting_approval",
++                    StartedAt = DateTime.UtcNow.AddMinutes(-20)
++                }
++            ],
++            AffectedEntities =
++            [
++                new() { EntityType = "work_task", EntityId = "9bc83a53-7716-48cd-8150-f9b4b4926e39", Label = "Vendor payment run for April" }
++            ]
++        };
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class AuditHistoryFilterViewModel
++{
++    public Guid? AgentId { get; set; }
++    public Guid? TaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++    public DateTime? FromUtc { get; set; }
++    public DateTime? ToUtc { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; } = 50;
++}
++
++public sealed class AuditHistoryResultViewModel
++{
++    public List<AuditHistoryListItemViewModel> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++}
++
++public sealed class AuditHistoryListItemViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string ActorType { get; set; } = string.Empty;
++    public Guid? ActorId { get; set; }
++    public string? ActorLabel { get; set; }
++    public string Action { get; set; } = string.Empty;
++    public string TargetType { get; set; } = string.Empty;
++    public string TargetId { get; set; } = string.Empty;
++    public string? TargetLabel { get; set; }
++    public string Outcome { get; set; } = string.Empty;
++    public string? RationaleSummary { get; set; }
++    public DateTime OccurredAt { get; set; }
++    public string? CorrelationId { get; set; }
++    public List<AuditEntityReferenceViewModel> AffectedEntities { get; set; } = [];
++}
++
++public sealed class AuditDetailViewModel : AuditHistoryListItemViewModel
++{
++    public List<string> DataSources { get; set; } = [];
++    public List<AuditSourceReferenceViewModel> SourceReferences { get; set; } = [];
++    public Dictionary<string, string?> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public List<AuditApprovalReferenceViewModel> LinkedApprovals { get; set; } = [];
++    public List<AuditToolExecutionReferenceViewModel> LinkedToolExecutions { get; set; } = [];
++}
++
++public sealed class AuditSourceReferenceViewModel
++{
++    public string Label { get; set; } = string.Empty;
++    public string? Reference { get; set; }
++    public string? Type { get; set; }
++}
++
++public sealed class AuditApprovalReferenceViewModel
++{
++    public Guid Id { get; set; }
++    public string ApprovalType { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string TargetEntityType { get; set; } = string.Empty;
++    public Guid TargetEntityId { get; set; }
++    public string? DecisionSummary { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime? DecidedAt { get; set; }
++}
++
++public sealed class AuditToolExecutionReferenceViewModel
++{
++    public Guid Id { get; set; }
++    public Guid AgentId { get; set; }
++    public string? AgentLabel { get; set; }
++    public string ToolName { get; set; } = string.Empty;
++    public string ActionType { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public Guid? TaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++    public Guid? ApprovalRequestId { get; set; }
++    public DateTime StartedAt { get; set; }
++    public DateTime? CompletedAt { get; set; }
++}
++
++public sealed class AuditEntityReferenceViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public string EntityId { get; set; } = string.Empty;
++    public string? Label { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Audit.razor b/src/VirtualCompany.Web/Pages/Audit.razor
+new file mode 100644
+index 0000000..04ac379
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Audit.razor
+@@ -0,0 +1,232 @@
++@page "/audit"
++@inject AuditApiClient AuditApiClient
++@inject OnboardingApiClient OnboardingApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Audit History</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Audit history</h1>
++        <p class="text-body-secondary mb-0">Loading audit events...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <h1>Choose a company audit trail</h1>
++                <p class="lead mb-3">Audit events are scoped to a company workspace.</p>
++
++                @if (ActiveMemberships.Count > 0)
++                {
++                    <div class="template-grid mt-4">
++                        @foreach (var membership in ActiveMemberships)
++                        {
++                            <a class="template-card text-decoration-none text-reset" href="@($"/audit?companyId={membership.CompanyId}")">
++                                <strong>@membership.CompanyName</strong>
++                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
++                            </a>
++                        }
++                    </div>
++                }
++                else
++                {
++                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++            </div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Audit trail</span>
++                <h1>@(companyAccess?.CompanyName ?? "Audit history")</h1>
++                <p class="text-body-secondary mb-0">Review tenant-scoped agent actions, approvals, tool execution links, and concise rationale summaries.</p>
++
++                <form class="agent-filter-bar mt-4" method="get">
++                    <input type="hidden" name="companyId" value="@CompanyId" />
++                    <div>
++                        <label class="form-label" for="audit-agent-filter">Agent id</label>
++                        <input id="audit-agent-filter" class="form-control" name="agentId" value="@AgentId" placeholder="Agent GUID" />
++                    </div>
++                    <div>
++                        <label class="form-label" for="audit-task-filter">Task id</label>
++                        <input id="audit-task-filter" class="form-control" name="taskId" value="@TaskId" placeholder="Task GUID" />
++                    </div>
++                    <div>
++                        <label class="form-label" for="audit-workflow-filter">Workflow id</label>
++                        <input id="audit-workflow-filter" class="form-control" name="workflowInstanceId" value="@WorkflowInstanceId" placeholder="Workflow GUID" />
++                    </div>
++                    <div>
++                        <label class="form-label" for="audit-from-filter">From</label>
++                        <input id="audit-from-filter" class="form-control" type="date" name="from" value="@From" />
++                    </div>
++                    <div>
++                        <label class="form-label" for="audit-to-filter">To</label>
++                        <input id="audit-to-filter" class="form-control" type="date" name="to" value="@To" />
++                    </div>
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="submit">Apply filters</button>
++                        <a class="btn btn-outline-secondary" href="@($"/audit?companyId={CompanyId}")">Clear</a>
++                    </div>
++                </form>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++
++                @if (validationMessages.Count > 0)
++                {
++                    <div class="alert alert-warning mt-4 mb-0">
++                        @foreach (var message in validationMessages)
++                        {
++                            <div>@message</div>
++                        }
++                    </div>
++                }
++
++                @if (history?.Items.Count is null or 0)
++                {
++                    <p class="text-body-secondary mt-4 mb-0">No audit events match the current filters.</p>
++                }
++                else
++                {
++                    <div class="table-responsive mt-4">
++                        <table class="table align-middle">
++                            <thead>
++                                <tr>
++                                    <th>When</th>
++                                    <th>Actor</th>
++                                    <th>Action</th>
++                                    <th>Target</th>
++                                    <th>Outcome</th>
++                                    <th>Rationale</th>
++                                    <th></th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var item in history.Items)
++                                {
++                                    <tr>
++                                        <td>@item.OccurredAt.ToLocalTime().ToString("g")</td>
++                                        <td>@DisplayActor(item)</td>
++                                        <td>@item.Action</td>
++                                        <td>@DisplayTarget(item)</td>
++                                        <td><span class="badge text-bg-light">@item.Outcome</span></td>
++                                        <td>@(item.RationaleSummary ?? "No rationale summary recorded.")</td>
++                                        <td><a class="btn btn-sm btn-outline-primary" href="@DetailUrl(item.Id)">Open</a></td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "agentId")]
++    public string? AgentId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "taskId")]
++    public string? TaskId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "workflowInstanceId")]
++    public string? WorkflowInstanceId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "from")]
++    public string? From { get; set; }
++
++    [SupplyParameterFromQuery(Name = "to")]
++    public string? To { get; set; }
++
++    private bool isLoading = true;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private AuditHistoryResultViewModel? history;
++    private string? errorMessage;
++    private readonly List<string> validationMessages = [];
++
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        validationMessages.Clear();
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is not Guid companyId)
++            {
++                if (currentUser?.ActiveCompany is not null)
++                {
++                    Navigation.NavigateTo($"/audit?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                }
++
++                return;
++            }
++
++            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++            history = await AuditApiClient.ListAsync(companyId, BuildFilter());
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            history = null;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private AuditHistoryFilterViewModel BuildFilter() =>
++        new()
++        {
++            AgentId = ParseGuid(AgentId, "Agent id"),
++            TaskId = ParseGuid(TaskId, "Task id"),
++            WorkflowInstanceId = ParseGuid(WorkflowInstanceId, "Workflow id"),
++            FromUtc = ParseDate(From, "From"),
++            ToUtc = ParseDate(To, "To")?.Date.AddDays(1).AddTicks(-1),
++            Take = 50
++        };
++
++    private Guid? ParseGuid(string? value, string label)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        if (Guid.TryParse(value, out var parsed))
++        {
++            return parsed;
++        }
++
++        validationMessages.Add($"{label} must be a valid GUID.");
++        return null;
++    }
++
++    private DateTime? ParseDate(string? value, string label)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        if (DateTime.TryParse(value, out var parsed))
++        {
++            return DateTime.SpecifyKind(parsed.Date, DateTimeKind.Utc);
++        }
++
++        validationMessages.Add($"{label} must be a valid date.");
++        return null;
++    }
++
++    private string DetailUrl(Guid auditEventId) =>
++        $"/audit/{auditEventId}?companyId={CompanyId}";
++
++    private static string DisplayActor(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.ActorLabel)
++            ? $"{item.ActorType}{(item.ActorId is Guid actorId ? $": {actorId}" : string.Empty)}"
++            : $"{item.ActorLabel} ({item.ActorType})";
++
++    private static string DisplayTarget(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.TargetLabel)
++            ? $"{item.TargetType}: {item.TargetId}"
++            : $"{item.TargetLabel} ({item.TargetType})";
++}
+diff --git a/src/VirtualCompany.Web/Pages/AuditDetail.razor b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+new file mode 100644
+index 0000000..1a036b9
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+@@ -0,0 +1,205 @@
++@page "/audit/{AuditEventId:guid}"
++@inject AuditApiClient AuditApiClient
++@inject OnboardingApiClient OnboardingApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Audit Detail</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Audit detail</h1>
++        <p class="text-body-secondary mb-0">Loading audit event...</p>
++    </section>
++}
++else if (!string.IsNullOrWhiteSpace(errorMessage))
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <h1>Audit detail unavailable</h1>
++                <p class="text-body-secondary mb-0">@errorMessage</p>
++            </div>
++        </div>
++    </section>
++}
++else if (detail is not null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Audit detail</span>
++                <h1>@detail.Action</h1>
++                <p class="text-body-secondary mb-0">@DisplayTarget(detail)</p>
++
++                <div class="dashboard-actions mt-4">
++                    <a class="btn btn-outline-secondary" href="@($"/audit?companyId={CompanyId}")">Back to audit history</a>
++                </div>
++
++                <dl class="mt-4 mb-0">
++                    <dt>Actor</dt>
++                    <dd>@DisplayActor(detail)</dd>
++                    <dt>Outcome</dt>
++                    <dd><span class="badge text-bg-light">@detail.Outcome</span></dd>
++                    <dt>Occurred</dt>
++                    <dd>@detail.OccurredAt.ToLocalTime().ToString("f")</dd>
++                    @if (!string.IsNullOrWhiteSpace(detail.CorrelationId))
++                    {
++                        <dt>Correlation</dt>
++                        <dd>@detail.CorrelationId</dd>
++                    }
++                </dl>
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Rationale summary</h2>
++                <p class="text-body-secondary mb-0">@(detail.RationaleSummary ?? "No rationale summary recorded.")</p>
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Data sources</h2>
++                @if (detail.SourceReferences.Count == 0 && detail.DataSources.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No source references were recorded.</p>
++                }
++                else
++                {
++                    <ul class="list-unstyled mb-0">
++                        @foreach (var source in detail.SourceReferences)
++                        {
++                            <li class="mb-2">
++                                <strong>@source.Label</strong>
++                                @if (!string.IsNullOrWhiteSpace(source.Reference) && source.Reference != source.Label)
++                                {
++                                    <span class="text-body-secondary"> - @source.Reference</span>
++                                }
++                            </li>
++                        }
++                    </ul>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Linked approvals</h2>
++                @if (detail.LinkedApprovals.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No linked approvals were found.</p>
++                }
++                else
++                {
++                    <div class="list-group">
++                        @foreach (var approval in detail.LinkedApprovals)
++                        {
++                            <div class="list-group-item">
++                                <div class="d-flex justify-content-between gap-3">
++                                    <strong>@approval.ApprovalType approval</strong>
++                                    <span class="badge text-bg-light">@approval.Status</span>
++                                </div>
++                                <div class="text-body-secondary small mt-1">@approval.TargetEntityType: @approval.TargetEntityId</div>
++                                @if (!string.IsNullOrWhiteSpace(approval.DecisionSummary))
++                                {
++                                    <div class="mt-2">@approval.DecisionSummary</div>
++                                }
++                            </div>
++                        }
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Linked tool executions</h2>
++                @if (detail.LinkedToolExecutions.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No linked tool executions were found.</p>
++                }
++                else
++                {
++                    <div class="list-group">
++                        @foreach (var execution in detail.LinkedToolExecutions)
++                        {
++                            <div class="list-group-item">
++                                <div class="d-flex justify-content-between gap-3">
++                                    <strong>@execution.ToolName</strong>
++                                    <span class="badge text-bg-light">@execution.Status</span>
++                                </div>
++                                <div class="text-body-secondary small mt-1">
++                                    @execution.ActionType by @(execution.AgentLabel ?? execution.AgentId.ToString()) at @execution.StartedAt.ToLocalTime().ToString("g")
++                                </div>
++                                @if (execution.TaskId is Guid taskId)
++                                {
++                                    <div class="small mt-2">Task: @taskId</div>
++                                }
++                                @if (execution.WorkflowInstanceId is Guid workflowId)
++                                {
++                                    <div class="small">Workflow: @workflowId</div>
++                                }
++                            </div>
++                        }
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Affected entities</h2>
++                @if (detail.AffectedEntities.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No affected entity references were recorded.</p>
++                }
++                else
++                {
++                    <div class="d-flex flex-wrap gap-2">
++                        @foreach (var entity in detail.AffectedEntities)
++                        {
++                            <span class="badge text-bg-light">@entity.EntityType: @(entity.Label ?? entity.EntityId)</span>
++                        }
++                    </div>
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [Parameter]
++    public Guid AuditEventId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private bool isLoading = true;
++    private AuditDetailViewModel? detail;
++    private string? errorMessage;
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++
++        try
++        {
++            if (CompanyId is not Guid companyId)
++            {
++                var currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++                if (currentUser.ActiveCompany is not null)
++                {
++                    Navigation.NavigateTo($"/audit/{AuditEventId}?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                }
++                else
++                {
++                    errorMessage = "Choose a company before opening an audit event.";
++                }
++
++                return;
++            }
++
++            detail = await AuditApiClient.GetAsync(companyId, AuditEventId);
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            detail = null;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private static string DisplayActor(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.ActorLabel)
++            ? $"{item.ActorType}{(item.ActorId is Guid actorId ? $": {actorId}" : string.Empty)}"
++            : $"{item.ActorLabel} ({item.ActorType})";
++
++    private static string DisplayTarget(AuditHistoryListItemViewModel item) =>
++        string.IsNullOrWhiteSpace(item.TargetLabel)
++            ? $"{item.TargetType}: {item.TargetId}"
++            : $"{item.TargetLabel} ({item.TargetType})";
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+new file mode 100644
+index 0000000..9e6e2d8
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -0,0 +1,122 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auditing;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AuditQueryServiceTests
++{
++    [Fact]
++    public async Task ListAsync_filters_by_agent_and_company_context()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.Companies.Add(new Company(otherCompanyId, "Other"));
++        dbContext.Agents.Add(new Agent(agentId, companyId, "finance", "Finance Agent", "Finance", "Finance", null, AgentSeniority.Mid));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            AuditActorTypes.Agent,
++            agentId,
++            AuditEventActions.AgentToolExecutionExecuted,
++            AuditTargetTypes.AgentToolExecution,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded,
++            "Executed after policy checks passed.",
++            ["policy guardrails"]));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            AuditEventActions.AgentToolExecutionExecuted,
++            AuditTargetTypes.AgentToolExecution,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var result = await service.ListAsync(companyId, new AuditHistoryFilter(AgentId: agentId), CancellationToken.None);
++
++        Assert.Single(result.Items);
++        Assert.Equal(agentId, result.Items[0].ActorId);
++        Assert.Equal("Finance Agent", result.Items[0].ActorLabel);
++    }
++
++    [Fact]
++    public async Task GetAsync_does_not_return_cross_tenant_audit_events()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.Companies.Add(new Company(otherCompanyId, "Other"));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            otherCompanyId,
++            AuditActorTypes.System,
++            null,
++            AuditEventActions.WorkflowInstanceStarted,
++            AuditTargetTypes.WorkflowInstance,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.GetAsync(companyId, auditEventId, CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task GetAsync_preserves_summary_without_raw_reasoning_fields()
++    {
++        var companyId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            companyId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++            AuditTargetTypes.WorkTask,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded,
++            "The task was completed using the approved data source.",
++            ["knowledge document"],
++            new Dictionary<string, string?> { ["policyVersion"] = "task_8_3_7" }));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);
++
++        Assert.Equal("The task was completed using the approved data source.", detail.RationaleSummary);
++        Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
++    }
++
++    private static VirtualCompanyDbContext CreateDbContext(Guid companyId)
++    {
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseInMemoryDatabase(Guid.NewGuid().ToString())
++            .Options;
++        return new VirtualCompanyDbContext(options, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++    }
++
++    private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public TestCompanyContextAccessor(Guid? companyId, Guid? userId)
++        {
++            CompanyId = companyId;
++            UserId = userId;
++        }
++
++        public Guid? CompanyId { get; private set; }
++        public Guid? UserId { get; }
++        public bool IsResolved => CompanyId.HasValue;
++        public ResolvedCompanyMembershipContext? Membership => null;
++        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
++        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
++    }
++}
+END_OF_PATCH

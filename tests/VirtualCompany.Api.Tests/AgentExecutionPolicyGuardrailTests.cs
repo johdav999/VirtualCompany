@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Approvals;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Domain.Entities;
@@ -53,6 +55,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.Contains("tool_not_permitted", payload.PolicyDecision.ReasonCodes);
         Assert.Equal("This action was blocked by policy because the agent is not permitted to use that tool.", payload.Message);
         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+        Assert.Equal("This action was blocked by policy.", payload.PolicyDecision.Explanation);
+        Assert.NotNull(payload.Denial);
+        Assert.Equal("policy_denied", payload.Denial!.Code);
+        Assert.Equal(payload.Message, payload.Denial.UserFacingMessage);
+        Assert.DoesNotContain("outside the agent's allowed tool scope", payload.Denial.UserFacingMessage, StringComparison.OrdinalIgnoreCase);
 
         using var scope = _factory.Services.CreateScope();
         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
@@ -67,6 +74,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.Equal(seed.CompanyId, attempt.PolicyDecision["tenant"]!["companyId"]!.GetValue<Guid>());
         Assert.Equal("tool_not_permitted", attempt.PolicyDecision["reasons"]![0]!["code"]!.GetValue<string>());
         Assert.Null(attempt.ApprovalRequestId);
+        Assert.Equal("The requested tool is outside the agent's allowed tool scope.", attempt.PolicyDecision["metadata"]!["internalRationaleSummary"]!.GetValue<string>());
+        Assert.Equal("This action was blocked by policy.", attempt.PolicyDecision["metadata"]!["safeUserFacingExplanation"]!.GetValue<string>());
+        Assert.Equal("tool_not_permitted", attempt.ResultPayload["metadata"]!["primaryReasonCode"]!.GetValue<string>());
+        Assert.Equal(payload.Message, attempt.ResultPayload["metadata"]!["userFacingMessage"]!.GetValue<string>());
+        Assert.DoesNotContain("outside the agent's allowed tool scope", attempt.ResultPayload["errorMessage"]!.GetValue<string>(), StringComparison.OrdinalIgnoreCase);
 
         var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
             x.CompanyId == seed.CompanyId &&
@@ -229,6 +241,128 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
     }
 
     [Fact]
+    public async Task Approval_create_and_chain_advancement_enqueue_notification_outbox_without_inline_fanout()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level3,
+            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
+            scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
+        var taskId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.WorkTasks.Add(new WorkTask(
+                taskId,
+                seed.CompanyId,
+                "approval",
+                "Review payment threshold",
+                null,
+                WorkTaskPriority.High,
+                seed.AgentId,
+                null,
+                AuditActorTypes.User,
+                seed.UserId));
+            return Task.CompletedTask;
+        });
+
+        using var client = CreateAuthenticatedClient();
+        var createResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals", new
+        {
+            targetEntityType = ApprovalTargetEntityType.Task.ToStorageValue(),
+            targetEntityId = taskId,
+            requestedByActorType = AuditActorTypes.User,
+            requestedByActorId = seed.UserId,
+            approvalType = "threshold",
+            thresholdContext = new
+            {
+                thresholdKey = "expenseUsd",
+                thresholdValue = 7500
+            },
+            steps = new[]
+            {
+                new
+                {
+                    sequenceNo = 1,
+                    approverType = ApprovalStepApproverType.Role.ToStorageValue(),
+                    approverRef = CompanyMembershipRole.Owner.ToStorageValue()
+                },
+                new
+                {
+                    sequenceNo = 2,
+                    approverType = ApprovalStepApproverType.Role.ToStorageValue(),
+                    approverRef = CompanyMembershipRole.Admin.ToStorageValue()
+                }
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+        var approval = await createResponse.Content.ReadFromJsonAsync<ApprovalRequestDto>();
+        Assert.NotNull(approval);
+        Assert.NotNull(approval!.CurrentStep);
+        Assert.Equal(2, approval.Steps.Count);
+
+        using (var assertionScope = _factory.Services.CreateScope())
+        {
+            var companyContextAccessor = assertionScope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+            companyContextAccessor.SetCompanyId(seed.CompanyId);
+            var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+            var initialOutbox = await dbContext.CompanyOutboxMessages
+                .AsNoTracking()
+                .SingleAsync(x =>
+                    x.CompanyId == seed.CompanyId &&
+                    x.Topic == CompanyOutboxTopics.NotificationDeliveryRequested &&
+                    x.IdempotencyKey == $"notification:approval-requested:{approval.Id:N}:step:{approval.CurrentStep!.Id:N}");
+
+            Assert.Equal(CompanyOutboxMessageStatus.Pending, initialOutbox.Status);
+            Assert.Null(initialOutbox.ProcessedUtc);
+            Assert.Equal(approval.Id.ToString("N"), initialOutbox.CausationId);
+            Assert.Empty(await dbContext.CompanyNotifications
+                .IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.RelatedEntityId == approval.Id)
+                .ToListAsync());
+        }
+
+        var decisionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{approval.Id}/decisions", new
+        {
+            decision = "approve",
+            stepId = approval.CurrentStep.Id,
+            comment = "Advance to final reviewer."
+        });
+
+        Assert.Equal(HttpStatusCode.OK, decisionResponse.StatusCode);
+        var decision = await decisionResponse.Content.ReadFromJsonAsync<ApprovalDecisionResultDto>();
+        Assert.NotNull(decision);
+        Assert.False(decision!.IsFinalized);
+        Assert.NotNull(decision.NextStep);
+
+        using var finalScope = _factory.Services.CreateScope();
+        var finalCompanyContextAccessor = finalScope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        finalCompanyContextAccessor.SetCompanyId(seed.CompanyId);
+        var finalDbContext = finalScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var approvalNotificationOutbox = await finalDbContext.CompanyOutboxMessages
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == seed.CompanyId &&
+                x.Topic == CompanyOutboxTopics.NotificationDeliveryRequested &&
+                x.IdempotencyKey != null &&
+                x.IdempotencyKey.Contains($"notification:approval-requested:{approval.Id:N}"))
+            .ToListAsync();
+
+        Assert.Equal(2, approvalNotificationOutbox.Count);
+        Assert.Contains(approvalNotificationOutbox, x => x.IdempotencyKey == $"notification:approval-requested:{approval.Id:N}:step:{approval.Steps[0].Id:N}");
+        Assert.Contains(approvalNotificationOutbox, x => x.IdempotencyKey == $"notification:approval-requested:{approval.Id:N}:step:{approval.Steps[1].Id:N}");
+        Assert.All(approvalNotificationOutbox, x => Assert.Equal(CompanyOutboxMessageStatus.Pending, x.Status));
+        Assert.Empty(await finalDbContext.CompanyNotifications
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == seed.CompanyId && x.RelatedEntityId == approval.Id)
+            .ToListAsync());
+    }
+
+    [Fact]
     public async Task Policy_required_approval_skips_tool_executor_and_creates_pending_approval()
     {
         var seed = await SeedAgentAsync(
@@ -268,6 +402,79 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
     }
 
     [Fact]
+    public async Task Approved_policy_required_execution_runs_tool_executor_with_original_execution_context_and_marks_attempt_executed()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level3,
+            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
+            scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+            escalationRules: Payload(
+                ("escalateTo", JsonValue.Create("founder")),
+                ("requireApproval", new JsonObject
+                {
+                    ["actions"] = new JsonArray(JsonValue.Create("execute")),
+                    ["tools"] = new JsonArray(JsonValue.Create("erp")),
+                    ["scopes"] = new JsonArray(JsonValue.Create("payments"))
+                })));
+        var taskId = Guid.NewGuid();
+        var workflowInstanceId = Guid.NewGuid();
+
+        using var client = CreateAuthenticatedClient();
+        var executionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = "erp",
+            actionType = "execute",
+            scope = "payments",
+            taskId,
+            workflowInstanceId,
+            correlationId = "corr-approved-policy-execution",
+            requestPayload = new { paymentId = "pay-approved-500" }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, executionResponse.StatusCode);
+
+        var executionPayload = await executionResponse.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(executionPayload);
+        Assert.Equal("awaiting_approval", executionPayload!.Status);
+        Assert.NotNull(executionPayload.ApprovalRequestId);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+
+        var approvalResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{executionPayload.ApprovalRequestId}/decisions", new
+        {
+            decision = "approve",
+            comment = "Approved for execution."
+        });
+
+        Assert.Equal(HttpStatusCode.OK, approvalResponse.StatusCode);
+        Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
+
+        var executedRequest = Assert.Single(_factory.ToolExecutor.Requests);
+        Assert.Equal(seed.CompanyId, executedRequest.CompanyId);
+        Assert.Equal(seed.AgentId, executedRequest.AgentId);
+        Assert.Equal("erp", executedRequest.ToolName);
+        Assert.Equal(executionPayload.ExecutionId, executedRequest.ExecutionId);
+        Assert.Equal("execute", executedRequest.ActionType);
+        Assert.Equal("payments", executedRequest.Scope);
+        Assert.Equal(taskId, executedRequest.TaskId);
+        Assert.Equal(workflowInstanceId, executedRequest.WorkflowInstanceId);
+        Assert.Equal("corr-approved-policy-execution", executedRequest.CorrelationId);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == executionPayload.ExecutionId);
+        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
+        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+        Assert.False(attempt.PolicyDecision["approvalRequired"]!.GetValue<bool>());
+        Assert.Equal("approved", attempt.PolicyDecision["approvalStatus"]!.GetValue<string>());
+        Assert.Equal("executed", attempt.PolicyDecision["metadata"]!["executionState"]!.GetValue<string>());
+        Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task Allowed_execution_runs_tool_executor_and_persists_structured_policy_decision_metadata()
     {
         var seed = await SeedAgentAsync(
@@ -276,6 +483,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
             scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
             thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
             escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
+        var taskId = Guid.NewGuid();
+        var workflowInstanceId = Guid.NewGuid();
 
         using var client = CreateAuthenticatedClient();
         var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
@@ -286,6 +495,9 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
             thresholdCategory = "approval",
             thresholdKey = "expenseUsd",
             thresholdValue = 750,
+            taskId,
+            workflowInstanceId,
+            correlationId = "corr-allowed-execution-persistence",
             requestPayload = new { expenseId = "exp-300" }
         });
 
@@ -300,6 +512,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
         Assert.NotNull(payload.ExecutionResult);
         Assert.Equal("erp", payload.ExecutionResult!["toolName"].GetString());
+        Assert.Equal("2026-04-13", payload.ExecutionResult["contractSchemaVersion"].GetString());
+        Assert.Equal("Test tool execution completed.", payload.ExecutionResult["userSafeSummary"].GetString());
 
         using var scope = _factory.Services.CreateScope();
         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
@@ -307,16 +521,154 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
 
         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+        Assert.Equal(seed.CompanyId, attempt.CompanyId);
+        Assert.Equal(seed.AgentId, attempt.AgentId);
+        Assert.Equal(taskId, attempt.TaskId);
+        Assert.Equal(workflowInstanceId, attempt.WorkflowInstanceId);
+        Assert.Equal("corr-allowed-execution-persistence", attempt.CorrelationId);
+        Assert.Equal("erp", attempt.ToolName);
+        Assert.Equal(ToolActionType.Execute, attempt.ActionType);
         Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);
+        Assert.True(attempt.StartedUtc <= attempt.CompletedUtc);
+        Assert.NotNull(attempt.CompletedUtc);
         Assert.Equal("execute", attempt.PolicyDecision["evaluatedActionType"]!.GetValue<string>());
         Assert.Equal("default_deny", attempt.PolicyDecision["metadata"]!["policyMode"]!.GetValue<string>());
         Assert.Equal(PolicyDecisionSchemaVersions.V1, attempt.PolicyDecision["schemaVersion"]!.GetValue<string>());
         Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+        Assert.Equal("allow", attempt.PolicyDecision["metadata"]!["decisionOutcome"]!.GetValue<string>());
         Assert.Equal("erp", attempt.PolicyDecision["tool"]!["toolName"]!.GetValue<string>());
         Assert.Equal(PolicyDecisionEvaluationVersions.Current, attempt.PolicyDecision["audit"]!["policyVersion"]!.GetValue<string>());
+        Assert.Equal("exp-300", attempt.RequestPayload["expenseId"]!.GetValue<string>());
         Assert.Equal("erp", attempt.ResultPayload["toolName"]!.GetValue<string>());
+        Assert.True(attempt.ResultPayload["success"]!.GetValue<bool>());
         Assert.Equal("expenseUsd", attempt.PolicyDecision["thresholdEvaluations"]![0]!["key"]!.GetValue<string>());
         Assert.NotNull(attempt.ExecutedUtc);
+    }
+
+    [Fact]
+    public async Task Action_scope_denial_is_blocked_before_tool_executor_runs_and_persists_policy_decision()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(
+                ("allowed", new JsonArray(JsonValue.Create("erp"))),
+                ("actions", new JsonArray(JsonValue.Create("read"), JsonValue.Create("recommend")))),
+            scopes: Payload(
+                ("read", new JsonArray(JsonValue.Create("finance"))),
+                ("recommend", new JsonArray(JsonValue.Create("finance"))),
+                ("execute", new JsonArray(JsonValue.Create("payments")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+            escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = "erp",
+            actionType = "execute",
+            scope = "payments",
+            requestPayload = new { expenseId = "exp-action-scope" }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(payload);
+        Assert.Equal("denied", payload!.Status);
+        Assert.Equal("deny", payload.PolicyDecision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.ToolActionNotPermitted, payload.PolicyDecision.ReasonCodes);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+        Assert.Equal("tool_action_not_permitted", attempt.PolicyDecision["reasons"]![0]!["code"]!.GetValue<string>());
+        Assert.Equal("configured", attempt.PolicyDecision["metadata"]!["actionPolicyState"]!.GetValue<string>());
+        Assert.False(attempt.PolicyDecision["metadata"]!["actionAllowed"]!.GetValue<bool>());
+        Assert.False(attempt.ResultPayload["success"]!.GetValue<bool>());
+        Assert.Equal("policy_denied", attempt.ResultPayload["errorCode"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Registered_policy_allowance_still_cannot_execute_unregistered_external_tool()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(("allowed", new JsonArray(JsonValue.Create("unregistered_external_system")))),
+            scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = "unregistered_external_system",
+            actionType = "execute",
+            scope = "payments",
+            requestPayload = new { paymentId = "pay-registry-denied" }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(payload);
+        Assert.Equal("denied", payload!.Status);
+        Assert.Equal("allow", payload.PolicyDecision.Outcome);
+        Assert.Equal("The requested tool is not registered for trusted execution.", payload.Message);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+        Assert.NotNull(payload.ExecutionResult);
+        Assert.Equal("unregistered_tool", payload.ExecutionResult!["errorCode"].GetString());
+        Assert.Equal("policy_enforced_tool_executor", payload.ExecutionResult["metadata"].GetProperty("executionBoundary").GetString());
+        Assert.False(payload.ExecutionResult["metadata"].GetProperty("modelOutputTrusted").GetBoolean());
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+        Assert.Null(attempt.ExecutedUtc);
+        Assert.Equal("unregistered_external_system", attempt.ToolName);
+        Assert.Equal("allow", attempt.PolicyDecision["outcome"]!.GetValue<string>());
+        Assert.Equal("unregistered_tool", attempt.ResultPayload["errorCode"]!.GetValue<string>());
+        Assert.Equal("deny", attempt.ResultPayload["metadata"]!["registryDecision"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Model_supplied_direct_external_execution_payload_is_rejected_before_policy_or_tool_execution()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
+            scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))));
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = "erp",
+            actionType = "execute",
+            scope = "payments",
+            requestPayload = new
+            {
+                paymentId = "pay-direct-external",
+                endpointUrl = "https://payments.example.invalid/transfer",
+                headers = new { Authorization = "Bearer model-supplied" }
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Contains("RequestPayload.endpointUrl", problem!.Errors.Keys);
+        Assert.Contains("RequestPayload.headers", problem.Errors.Keys);
     }
 
     private HttpClient CreateAuthenticatedClient()
@@ -380,7 +732,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
             return Task.CompletedTask;
         });
 
-        return new SeededExecutionAgent(companyId, agentId);
+        return new SeededExecutionAgent(companyId, agentId, userId);
     }
 
     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
@@ -394,7 +746,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         return payload;
     }
 
-    private sealed record SeededExecutionAgent(Guid CompanyId, Guid AgentId);
+    private sealed record SeededExecutionAgent(Guid CompanyId, Guid AgentId, Guid UserId);
 
     private sealed class AgentToolExecutionResponse
     {
@@ -405,6 +757,15 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }
         public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }
         public string Message { get; set; } = string.Empty;
+        public ToolExecutionDenialResponse? Denial { get; set; }
+    }
+
+    private sealed class ToolExecutionDenialResponse
+    {
+        public string Code { get; set; } = string.Empty;
+        public string UserFacingMessage { get; set; } = string.Empty;
+        public List<string> ReasonCodes { get; set; } = [];
+        public Dictionary<string, JsonElement> Metadata { get; set; } = [];
     }
 
     private sealed class PolicyDecisionResponse

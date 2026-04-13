@@ -10,6 +10,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
     private const int DescriptionMaxLength = 4000;
     private const int ActorTypeMaxLength = 64;
     private const int RationaleSummaryMaxLength = 2000;
+    private const int CorrelationIdMaxLength = 128;
 
     private WorkTask()
     {
@@ -30,7 +31,8 @@ public sealed class WorkTask : ICompanyOwnedEntity
         Guid? workflowInstanceId = null,
         IDictionary<string, JsonNode?>? outputPayload = null,
         string? rationaleSummary = null,
-        decimal? confidenceScore = null)
+        decimal? confidenceScore = null,
+        string? correlationId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -79,6 +81,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
         OutputPayload = CloneNodes(outputPayload);
         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
         ConfidenceScore = confidenceScore;
+        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
         WorkflowInstanceId = workflowInstanceId;
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
@@ -101,6 +104,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
     public Dictionary<string, JsonNode?> OutputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public string? RationaleSummary { get; private set; }
     public decimal? ConfidenceScore { get; private set; }
+    public string? CorrelationId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? CompletedUtc { get; private set; }
@@ -109,6 +113,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
     public WorkTask? ParentTask { get; private set; }
     public ICollection<WorkTask> Subtasks { get; } = new List<WorkTask>();
     public WorkflowInstance? WorkflowInstance { get; private set; }
+    public ICollection<ConversationTaskLink> ConversationLinks { get; } = new List<ConversationTaskLink>();
 
     public void SetDueDate(DateTime? dueUtc)
     {
@@ -145,6 +150,12 @@ public sealed class WorkTask : ICompanyOwnedEntity
         }
 
         ParentTaskId = parentTaskId;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void SetCorrelationId(string? correlationId)
+    {
+        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
         UpdatedUtc = DateTime.UtcNow;
     }
 

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.3",
+  "promptPath": ".ai-design/prompts/TASK-12.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:45:08.317Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-45-08-317Z_TASK-12.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-45-08-317Z_TASK-12.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:48:09.627Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "cation);\n         }\n \n@@ -148,6 +158,7 @@ public sealed class NotificationListItemViewModel\n     public DateTime CreatedAt { get; set; }\n     public DateTime? ReadAt { get; set; }\n     public DateTime? ActionedAt { get; set; }\n+    public Guid? ActionedByUserId { get; set; }\n }\n \n public sealed class ApprovalInboxItemViewModel\ndiff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n@@ -25,11 +25,30 @@ public sealed class NotificationInboxTests\n \n         Assert.Equal(CompanyNotificationStatus.Unread, notification.Status);\n         Assert.Null(notification.ReadUtc);\n+        Assert.Null(notification.ActionedUtc);\n \n-        notification.MarkActioned();\n+        var actionedByUserId = Guid.NewGuid();\n+        notification.MarkActioned(actionedByUserId);\n \n         Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);\n         Assert.NotNull(notification.ReadUtc);\n         Assert.NotNull(notification.ActionedUtc);\n+        Assert.Equal(actionedByUserId, notification.ActionedByUserId);\n+    }\n+\n+    [Fact]\n+    public void Actioned_notification_cannot_be_marked_unread_or_downgraded_to_read()\n+    {\n+        var notification = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);\n+        var actionedByUserId = Guid.NewGuid();\n+\n+        notification.MarkActioned(actionedByUserId);\n+        var actionedAt = notification.ActionedUtc;\n+\n+        notification.MarkRead();\n+\n+        Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);\n+        Assert.Equal(actionedAt, notification.ActionedUtc);\n+        Assert.Equal(actionedByUserId, notification.ActionedByUserId);\n+        Assert.Throws<InvalidOperationException>(notification.MarkUnread);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "\n \n@@ -148,6 +158,7 @@ public sealed class NotificationListItemViewModel\n     public DateTime CreatedAt { get; set; }\n     public DateTime? ReadAt { get; set; }\n     public DateTime? ActionedAt { get; set; }\n+    public Guid? ActionedByUserId { get; set; }\n }\n \n public sealed class ApprovalInboxItemViewModel\ndiff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n@@ -25,11 +25,30 @@ public sealed class NotificationInboxTests\n \n         Assert.Equal(CompanyNotificationStatus.Unread, notification.Status);\n         Assert.Null(notification.ReadUtc);\n+        Assert.Null(notification.ActionedUtc);\n \n-        notification.MarkActioned();\n+        var actionedByUserId = Guid.NewGuid();\n+        notification.MarkActioned(actionedByUserId);\n \n         Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);\n         Assert.NotNull(notification.ReadUtc);\n         Assert.NotNull(notification.ActionedUtc);\n+        Assert.Equal(actionedByUserId, notification.ActionedByUserId);\n+    }\n+\n+    [Fact]\n+    public void Actioned_notification_cannot_be_marked_unread_or_downgraded_to_read()\n+    {\n+        var notification = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);\n+        var actionedByUserId = Guid.NewGuid();\n+\n+        notification.MarkActioned(actionedByUserId);\n+        var actionedAt = notification.ActionedUtc;\n+\n+        notification.MarkRead();\n+\n+        Assert.Equal(CompanyNotificationStatus.Actioned, notification.Status);\n+        Assert.Equal(actionedAt, notification.ActionedUtc);\n+        Assert.Equal(actionedByUserId, notification.ActionedByUserId);\n+        Assert.Throws<InvalidOperationException>(notification.MarkUnread);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n84,852\n",
+  "verbosityMode": "summary"
+}

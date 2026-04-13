@@ -1,0 +1,341 @@
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 7b1f7a2..b2a8a5e 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -12,6 +12,7 @@ public static class ChatSenderTypes
+ {
+     public const string User = "user";
+     public const string Agent = "agent";
++    public const string System = "system";
+ }
+ 
+ public static class ChatMessageTypes
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1c5128d..4a8b4cc 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -979,6 +979,7 @@ internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conver
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
++        builder.HasIndex(x => new { x.CompanyId, x.ChannelType });
+         builder.HasIndex(x => new { x.CompanyId, x.ChannelType, x.CreatedByUserId, x.AgentId });
+         builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId });
+@@ -1018,8 +1019,7 @@ internal sealed class MessageConfiguration : IEntityTypeConfiguration<Message>
+             .IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.ConversationId });
+-        builder.HasIndex(x => new { x.ConversationId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.ConversationId, x.CreatedUtc });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs
+index d87eae5..d2302b1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413120000_AddDirectAgentConversations.cs
+@@ -103,6 +103,11 @@ public partial class AddDirectAgentConversations : Migration
+             columns: new[] { "company_id", "agent_id" });
+ 
+         migrationBuilder.CreateIndex(
++            name: "IX_conversations_company_id_channel_type",
++            table: "conversations",
++            columns: new[] { "company_id", "channel_type" });
++
++        migrationBuilder.CreateIndex(
+             name: "IX_conversations_company_id_channel_type_created_by_user_id_agent_id",
+             table: "conversations",
+             columns: new[] { "company_id", "channel_type", "created_by_user_id", "agent_id" });
+@@ -121,14 +126,9 @@ public partial class AddDirectAgentConversations : Migration
+             column: "created_by_user_id");
+ 
+         migrationBuilder.CreateIndex(
+-            name: "IX_messages_company_id_conversation_id",
++            name: "IX_messages_company_id_conversation_id_created_at",
+             table: "messages",
+-            columns: new[] { "company_id", "conversation_id" });
+-
+-        migrationBuilder.CreateIndex(
+-            name: "IX_messages_conversation_id_created_at",
+-            table: "messages",
+-            columns: new[] { "conversation_id", "created_at" });
++            columns: new[] { "company_id", "conversation_id", "created_at" });
+     }
+ 
+     protected override void Down(MigrationBuilder migrationBuilder)
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+index 0e65f98..2a9800a 100644
+--- a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -120,6 +120,146 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         Assert.False(conversationExists);
+     }
+ 
++    [Fact]
++    public async Task Sending_direct_agent_message_persists_sender_metadata_and_updates_conversation_timestamp()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        await Task.Delay(20);
++        var sendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("What should I prioritize today?"));
++
++        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
++
++        var payload = await sendResponse.Content.ReadFromJsonAsync<SendDirectAgentMessageResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.HumanMessage.CompanyId);
++        Assert.Equal(conversation.Id, payload.HumanMessage.ConversationId);
++        Assert.Equal(ChatSenderTypes.User, payload.HumanMessage.SenderType);
++        Assert.Equal(seed.UserId, payload.HumanMessage.SenderId);
++        Assert.Equal(ChatMessageTypes.Text, payload.HumanMessage.MessageType);
++        Assert.Equal("What should I prioritize today?", payload.HumanMessage.Body);
++        Assert.NotEqual(default, payload.HumanMessage.CreatedAt);
++        Assert.Equal(seed.CompanyId, payload.AgentMessage.CompanyId);
++        Assert.Equal(conversation.Id, payload.AgentMessage.ConversationId);
++        Assert.Equal(ChatSenderTypes.Agent, payload.AgentMessage.SenderType);
++        Assert.Equal(seed.AgentId, payload.AgentMessage.SenderId);
++        Assert.NotEqual(default, payload.AgentMessage.CreatedAt);
++        Assert.True(payload.Conversation.UpdatedAt > conversation.UpdatedAt);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persistedConversation = await dbContext.Conversations
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == conversation.Id);
++        var messages = await dbContext.Messages
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == seed.CompanyId && x.ConversationId == conversation.Id)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++
++        Assert.Equal(ChatChannelTypes.DirectAgent, persistedConversation.ChannelType);
++        Assert.NotEqual(default, persistedConversation.CreatedUtc);
++        Assert.True(persistedConversation.UpdatedUtc > persistedConversation.CreatedUtc);
++        Assert.Equal(2, messages.Count);
++        Assert.Equal(seed.CompanyId, messages[0].CompanyId);
++        Assert.Equal(conversation.Id, messages[0].ConversationId);
++        Assert.Equal(ChatSenderTypes.User, messages[0].SenderType);
++        Assert.Equal(seed.UserId, messages[0].SenderId);
++        Assert.NotEqual(default, messages[0].CreatedUtc);
++        Assert.Equal(ChatSenderTypes.Agent, messages[1].SenderType);
++        Assert.Equal(seed.AgentId, messages[1].SenderId);
++        Assert.NotEqual(default, messages[1].CreatedUtc);
++    }
++
++    [Fact]
++    public async Task Getting_direct_agent_messages_returns_chronological_page()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var firstSendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("First message"));
++        Assert.Equal(HttpStatusCode.OK, firstSendResponse.StatusCode);
++
++        await Task.Delay(20);
++        var secondSendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation.Id}/messages",
++            new SendDirectAgentMessageCommand("Second message"));
++        Assert.Equal(HttpStatusCode.OK, secondSendResponse.StatusCode);
++
++        var getResponse = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation.Id}/messages?take=10");
++
++        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
++
++        var page = await getResponse.Content.ReadFromJsonAsync<ChatMessagePageResponse>();
++        Assert.NotNull(page);
++        Assert.Equal(4, page!.TotalCount);
++        Assert.Equal(4, page.Items.Count);
++        Assert.Equal("First message", page.Items[0].Body);
++        Assert.Equal(ChatSenderTypes.User, page.Items[0].SenderType);
++        Assert.Equal("Second message", page.Items[2].Body);
++        Assert.Equal(ChatSenderTypes.User, page.Items[2].SenderType);
++        Assert.True(page.Items.SequenceEqual(page.Items.OrderBy(x => x.CreatedAt)));
++    }
++
++    [Fact]
++    public async Task Getting_messages_scopes_conversation_lookup_to_requested_tenant()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await ownerClient.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        using var otherTenantClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, "Other Chat User");
++        var getResponse = await otherTenantClient.GetAsync(
++            $"/api/companies/{seed.OtherCompanyId}/conversations/{conversation!.Id}/messages");
++
++        Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task System_messages_can_be_persisted_without_sender_id()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var systemMessage = new Message(
++            Guid.NewGuid(),
++            seed.CompanyId,
++            conversation!.Id,
++            ChatSenderTypes.System,
++            null,
++            ChatMessageTypes.Text,
++            "Conversation opened.");
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        dbContext.Messages.Add(systemMessage);
++        await dbContext.SaveChangesAsync();
++
++        var persisted = await dbContext.Messages
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == systemMessage.Id);
++
++        Assert.Equal(seed.CompanyId, persisted.CompanyId);
++        Assert.Equal(conversation.Id, persisted.ConversationId);
++        Assert.Equal(ChatSenderTypes.System, persisted.SenderType);
++        Assert.Null(persisted.SenderId);
++        Assert.NotEqual(default, persisted.CreatedUtc);
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
+     {
+         var client = _factory.CreateClient();
+@@ -136,8 +276,12 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         var email = $"{subject}@example.com";
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
++        var otherUserId = Guid.NewGuid();
++        var otherSubject = $"direct-chat-other-{Guid.NewGuid():N}";
++        var otherEmail = $"{otherSubject}@example.com";
+         var agentId = Guid.NewGuid();
+         var otherCompanyAgentId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+-            dbContext.Users.Add(new User(userId, email, "Chat User", "dev-header", subject));
++            dbContext.Users.AddRange(
++                new User(userId, email, "Chat User", "dev-header", subject),
++                new User(otherUserId, otherEmail, "Other Chat User", "dev-header", otherSubject));
+ 
+             dbContext.Companies.AddRange(
+                 new Company(companyId, "Direct Chat Company"),
+                 new Company(otherCompanyId, "Other Direct Chat Company"));
+ 
+-            dbContext.CompanyMemberships.Add(new CompanyMembership(
+-                Guid.NewGuid(),
+-                companyId,
+-                userId,
+-                CompanyMembershipRole.Employee,
+-                CompanyMembershipStatus.Active));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(
++                    Guid.NewGuid(),
++                    companyId,
++                    userId,
++                    CompanyMembershipRole.Employee,
++                    CompanyMembershipStatus.Active),
++                new CompanyMembership(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    otherUserId,
++                    CompanyMembershipRole.Employee,
++                    CompanyMembershipStatus.Active));
+ 
+             dbContext.Agents.AddRange(
+                 new Agent(
+@@ -175,11 +319,21 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+             return Task.CompletedTask;
+         });
+ 
+-        return new DirectChatSeed(userId, subject, email, companyId, agentId, otherCompanyAgentId);
++        return new DirectChatSeed(
++            userId,
++            subject,
++            email,
++            companyId,
++            otherCompanyId,
++            otherSubject,
++            otherEmail,
++            agentId,
++            otherCompanyAgentId);
+     }
+ 
+-    private sealed record DirectChatSeed(Guid UserId, string Subject, string Email, Guid CompanyId, Guid AgentId, Guid OtherCompanyAgentId);
++    private sealed record DirectChatSeed(
++        Guid UserId,
++        string Subject,
++        string Email,
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        string OtherSubject,
++        string OtherEmail,
++        Guid AgentId,
++        Guid OtherCompanyAgentId);
+ 
+     private sealed class DirectConversationResponse
+     {
+@@ -196,4 +350,36 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         public DateTime CreatedAt { get; set; }
+         public DateTime UpdatedAt { get; set; }
+     }
++
++    private sealed class ChatMessageResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid ConversationId { get; set; }
++        public string SenderType { get; set; } = string.Empty;
++        public Guid? SenderId { get; set; }
++        public string MessageType { get; set; } = string.Empty;
++        public string Body { get; set; } = string.Empty;
++        public Dictionary<string, JsonNode?> StructuredPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++        public DateTime CreatedAt { get; set; }
++    }
++
++    private sealed class ChatMessagePageResponse
++    {
++        public List<ChatMessageResponse> Items { get; set; } = [];
++        public int TotalCount { get; set; }
++        public int Skip { get; set; }
++        public int Take { get; set; }
++    }
++
++    private sealed class SendDirectAgentMessageResponse
++    {
++        public DirectConversationResponse Conversation { get; set; } = new();
++        public ChatMessageResponse HumanMessage { get; set; } = new();
++        public ChatMessageResponse AgentMessage { get; set; } = new();
++    }
+ }
+END_OF_PATCH

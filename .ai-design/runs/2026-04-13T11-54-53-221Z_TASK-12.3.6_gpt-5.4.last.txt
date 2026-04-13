@@ -1,0 +1,208 @@
+diff --git a/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs b/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs
+new file mode 100644
+index 0000000..f90a8e1
+--- /dev/null
++++ b/src/VirtualCompany.Application/Notifications/CompanyNotificationInboxOrdering.cs
+@@ -0,0 +1,45 @@
++using System.Linq.Expressions;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Notifications;
++
++public static class CompanyNotificationInboxOrdering
++{
++    public const int PendingApprovalPriority = 0;
++    public const int ExceptionAlertPriority = 1;
++    public const int UnreadRoutinePriority = 2;
++    public const int ReadOrActionedPriority = 3;
++
++    public static readonly Expression<Func<CompanyNotification, int>> SortPriorityExpression =
++        notification =>
++            notification.Status == CompanyNotificationStatus.Read ||
++            notification.Status == CompanyNotificationStatus.Actioned ||
++            notification.Status == CompanyNotificationStatus.Suppressed
++                ? ReadOrActionedPriority
++                : notification.Type == CompanyNotificationType.ApprovalRequested
++                    ? PendingApprovalPriority
++                    : notification.Type == CompanyNotificationType.WorkflowFailure ||
++                      notification.Type == CompanyNotificationType.Escalation
++                        ? ExceptionAlertPriority
++                        : UnreadRoutinePriority;
++
++    public static int GetSortPriority(CompanyNotification notification)
++    {
++        ArgumentNullException.ThrowIfNull(notification);
++
++        if (notification.Status is CompanyNotificationStatus.Read or CompanyNotificationStatus.Actioned or CompanyNotificationStatus.Suppressed)
++        {
++            return ReadOrActionedPriority;
++        }
++
++        return notification.Type switch
++        {
++            CompanyNotificationType.ApprovalRequested => PendingApprovalPriority,
++            CompanyNotificationType.WorkflowFailure or CompanyNotificationType.Escalation => ExceptionAlertPriority,
++            _ => UnreadRoutinePriority
++        };
++    }
++
++    public static IOrderedQueryable<CompanyNotification> ApplyInboxOrdering(this IQueryable<CompanyNotification> query) =>
++        query
++            .OrderBy(SortPriorityExpression)
++            .ThenByDescending(notification => notification.CreatedUtc)
++            .ThenBy(notification => notification.Id);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 7d63757..6a7b13c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -30,15 +30,12 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         var membership = await RequireMembershipAsync(companyId, cancellationToken);
+ 
+         var notifications = await _dbContext.CompanyNotifications
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.UserId == membership.UserId)
+-            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
+-            .ThenByDescending(x => x.Priority)
+-            .ThenByDescending(x => x.CreatedUtc)
++            .ApplyInboxOrdering()
+             .Take(100)
+             .ToListAsync(cancellationToken);
+ 
+         var approvals = (await _approvalRequestService.ListAsync(companyId, "pending", cancellationToken))
+             .Where(x => IsEligibleApprover(x, membership))
+@@ -82,15 +79,12 @@ public sealed class CompanyNotificationService : INotificationInboxService
+         var skip = Math.Max(0, query.Skip);
+         var take = Math.Clamp(query.Take, 1, 200);
+ 
+         return await notifications
+-            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
+-            .ThenByDescending(x => x.Priority)
+-            .ThenByDescending(x => x.CreatedUtc)
++            .ApplyInboxOrdering()
+             .Skip(skip)
+             .Take(take)
+             .Select(x => ToDto(x))
+             .ToListAsync(cancellationToken);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+index 238c80a..99f97f8 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+@@ -1,3 +1,4 @@
++using VirtualCompany.Application.Notifications;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using Xunit;
+@@ -55,23 +56,62 @@ public sealed class NotificationInboxTests
+ 
+     [Fact]
+     public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()
+     {
+         var approval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
+         var escalation = CreateNotification(CompanyNotificationType.Escalation, CompanyNotificationPriority.High);
+         var failure = CreateNotification(CompanyNotificationType.WorkflowFailure, CompanyNotificationPriority.Critical);
+         var briefing = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal);
+ 
+         var ordered = new[] { briefing, escalation, approval, failure }
+-            .OrderByDescending(x => x.Status == CompanyNotificationStatus.Unread)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.ApprovalRequested)
+-            .ThenByDescending(x => x.Type == CompanyNotificationType.WorkflowFailure || x.Type == CompanyNotificationType.Escalation)
+-            .ThenByDescending(x => x.Priority)
+-            .ThenByDescending(x => x.CreatedUtc)
++            .AsQueryable()
++            .ApplyInboxOrdering()
+             .ToList();
+ 
+         Assert.Same(approval, ordered[0]);
+         Assert.Equal([CompanyNotificationType.WorkflowFailure, CompanyNotificationType.Escalation], ordered.Skip(1).Take(2).Select(x => x.Type));
+         Assert.Same(briefing, ordered[3]);
+     }
+ 
++    [Fact]
++    public void Notification_priority_sort_places_read_and_actioned_items_last()
++    {
++        var readApproval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
++        var actionedException = CreateNotification(CompanyNotificationType.WorkflowFailure, CompanyNotificationPriority.Critical);
++        var unreadRoutine = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal);
++
++        readApproval.MarkRead();
++        actionedException.MarkActioned(Guid.NewGuid());
++
++        var ordered = new[] { readApproval, actionedException, unreadRoutine }
++            .AsQueryable()
++            .ApplyInboxOrdering()
++            .ToList();
++
++        Assert.Same(unreadRoutine, ordered[0]);
++        Assert.Equal([CompanyNotificationStatus.Read, CompanyNotificationStatus.Actioned], ordered.Skip(1).Select(x => x.Status));
++    }
++
++    [Fact]
++    public void Notification_priority_sort_uses_newest_then_id_within_same_bucket()
++    {
++        var older = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal);
++        var newer = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal);
++        SetCreatedUtc(older, new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));
++        SetCreatedUtc(newer, new DateTime(2026, 4, 13, 9, 0, 0, DateTimeKind.Utc));
++
++        var ordered = new[] { older, newer }
++            .AsQueryable()
++            .ApplyInboxOrdering()
++            .ToList();
++
++        Assert.Equal([newer.Id, older.Id], ordered.Select(x => x.Id));
++    }
++
++    [Fact]
++    public void Notification_priority_sort_preserves_existing_tenant_scope()
++    {
++        var companyId = Guid.NewGuid();
++        var matching = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal, companyId);
++        var otherCompanyApproval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High, Guid.NewGuid());
++
++        var ordered = new[] { otherCompanyApproval, matching }
++            .AsQueryable()
++            .Where(x => x.CompanyId == companyId)
++            .ApplyInboxOrdering()
++            .ToList();
++
++        var item = Assert.Single(ordered);
++        Assert.Same(matching, item);
++    }
++
+     [Fact]
+     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()
+     {
+         var userId = Guid.NewGuid();
+@@ -95,13 +135,17 @@ public sealed class NotificationInboxTests
+         Assert.Contains(userId.ToString("N"), notification.DedupeKey);
+     }
+ 
+-    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>
++    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority, Guid? companyId = null) =>
+         new(
+             Guid.NewGuid(),
+-            Guid.NewGuid(),
++            companyId ?? Guid.NewGuid(),
+             Guid.NewGuid(),
+             type,
+             priority,
+             type.ToStorageValue(),
+             "Notification body.",
+             type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : "approval_request",
+             Guid.NewGuid(),
+             "/inbox",
+             "{}",
+             $"{type.ToStorageValue()}:{Guid.NewGuid():N}");
++
++    private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>
++        typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);
+ }
+END_OF_PATCH

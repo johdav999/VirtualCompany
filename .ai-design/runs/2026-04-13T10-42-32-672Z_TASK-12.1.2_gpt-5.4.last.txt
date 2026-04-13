@@ -1,0 +1,994 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 7b2f7b1..8b8bb7d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -101,7 +101,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+                     x.CreatedUtc,
+                     $"/approvals?companyId={companyId}&approvalId={x.Id}"))
+                 .ToList(),
+-            $"/approvals?companyId={companyId}");
++            $"/approvals?companyId={companyId}&status=pending");
+ 
+         var workflowAlerts = await _dbContext.WorkflowExceptions
+             .IgnoreQueryFilters()
+@@ -117,8 +117,8 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+                 x.Details,
+                 "workflow_exception",
+                 x.Id,
+-                x.OccurredUtc,
+-                $"/workflows?companyId={companyId}"))
++                x.OccurredUtc,
++                $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}&exceptionId={x.Id}"))
+             .ToListAsync(cancellationToken);
+ 
+         var taskAlerts = await _dbContext.WorkTasks
+@@ -225,15 +225,16 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+                 x.Id,
+                 "audit",
+                 x.Action,
+                 string.IsNullOrWhiteSpace(x.RationaleSummary) ? $"{x.TargetType} {x.Outcome}" : x.RationaleSummary!,
+                 x.OccurredUtc,
+-                null))
++                BuildAuditRoute(companyId, x.TargetType, x.TargetId)))
+             .ToListAsync(cancellationToken);
+ 
+         var taskItems = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
+             .OrderByDescending(x => x.UpdatedUtc)
+             .Take(8)
+@@ -257,7 +258,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+                 $"Workflow {x.State.ToStorageValue()}.",
+                 x.UpdatedUtc,
+-                $"/workflows?companyId={companyId}"))
++                $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}&state={Uri.EscapeDataString(x.State.ToStorageValue())}"))
+             .ToListAsync(cancellationToken);
+ 
+         return auditItems
+@@ -285,4 +286,31 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+         return paragraph.Length <= maxLength ? paragraph : paragraph[..maxLength].TrimEnd() + "...";
+     }
++
++    private static string? BuildAuditRoute(Guid companyId, string targetType, string targetId)
++    {
++        if (!Guid.TryParse(targetId, out var id))
++        {
++            return null;
++        }
++
++        return targetType.Trim().ToLowerInvariant() switch
++        {
++            "agent" => $"/agents/{id}?companyId={companyId}",
++            "approval_request" => $"/approvals?companyId={companyId}&approvalId={id}",
++            "work_task" => $"/tasks?companyId={companyId}&taskId={id}",
++            "workflow_instance" => $"/workflows?companyId={companyId}&workflowInstanceId={id}",
++            "workflow_exception" => $"/workflows?companyId={companyId}&exceptionId={id}",
++            _ => null
++        };
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+index 61a7d7f..7195db1 100644
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -40,6 +40,25 @@ else
+                 <h1>@(companyAccess?.CompanyName ?? "Approvals")</h1>
+                 <p class="text-body-secondary mb-0">Review the rationale and affected data before deciding.</p>
+ 
++                <form class="agent-filter-bar mt-4" method="get">
++                    <input type="hidden" name="companyId" value="@CompanyId" />
++                    @if (ApprovalId is Guid approvalId)
++                    {
++                        <input type="hidden" name="approvalId" value="@approvalId" />
++                    }
++                    <div>
++                        <label class="form-label" for="approval-status-filter">Status</label>
++                        <select id="approval-status-filter" class="form-select" name="status">
++                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All approvals</option>
++                            <option value="pending" selected="@IsSelected(Status, "pending")">Pending</option>
++                            <option value="approved" selected="@IsSelected(Status, "approved")">Approved</option>
++                            <option value="rejected" selected="@IsSelected(Status, "rejected")">Rejected</option>
++                        </select>
++                    </div>
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="submit">Apply filter</button>
++                        <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}")">Clear</a>
++                    </div>
++                </form>
++
+                 @if (!string.IsNullOrWhiteSpace(errorMessage))
+                 {
+                     <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+@@ -173,6 +192,9 @@ else
+     [SupplyParameterFromQuery(Name = "approvalId")]
+     public Guid? ApprovalId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? Status { get; set; }
++
+     private bool isLoading = true;
+     private bool isDeciding;
+     private CurrentUserContextViewModel? currentUser;
+@@ -204,7 +226,7 @@ else
+ 
+             companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+-            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
++            approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
+             selectedApproval = ApprovalId is Guid approvalId
+                 ? await ApprovalApiClient.GetAsync(companyId, approvalId)
+                 : approvals.FirstOrDefault();
+@@ -248,7 +270,7 @@ else
+                 });
+             selectedApproval = result.Approval;
+-            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
++            approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -267,6 +289,16 @@ else
+             : "list-group-item list-group-item-action";
+ 
++    private string? StatusOrDefault =>
++        string.IsNullOrWhiteSpace(Status)
++            ? "pending"
++            : Status.Trim();
++
++    private static bool IsSelected(string? currentValue, string expectedValue) =>
++        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
++
+     private static bool IsPending(ApprovalRequestViewModel approval) =>
+         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index a8f080d..760b091 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -56,7 +56,7 @@
+         <article class="wizard-card wizard-card--compact cockpit-card">
+             <div class="cockpit-card__header">
+                 <h3 class="h5 mb-0">Pending approvals</h3>
+-                <a href="@dashboard.PendingApprovals.Route">Open approvals</a>
++                <a href="@SafeDrillRoute(dashboard.PendingApprovals.Route, ApprovalsPath)">Open approvals</a>
+             </div>
+             @if (dashboard.EmptyStateFlags.NoPendingApprovals)
+             {
+@@ -68,7 +68,7 @@
+                 <div class="activity-list">
+                     @foreach (var approval in dashboard.PendingApprovals.Items)
+                     {
+-                        <a class="activity-item text-decoration-none text-reset" href="@approval.Route">
++                        <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(approval.Route, dashboard.PendingApprovals.Route)">
+                             <strong>@approval.ApprovalType approval</strong>
+                             <div class="text-body-secondary">@approval.Summary</div>
+                             <small>@approval.CreatedUtc.ToLocalTime():g</small>
+@@ -88,12 +88,19 @@
+                 <div class="activity-list">
+                     @foreach (var alert in dashboard.Alerts)
+                     {
+-                        <a class="activity-item text-decoration-none text-reset" href="@(alert.Route ?? DashboardPath)">
+-                            <span class="badge text-bg-warning">@alert.Severity</span>
+-                            <strong class="d-block mt-2">@alert.Title</strong>
+-                            <div class="text-body-secondary">@alert.Summary</div>
+-                            <small>@alert.OccurredUtc.ToLocalTime():g</small>
+-                        </a>
++                        @if (HasDrillRoute(alert.Route))
++                        {
++                            <a class="activity-item text-decoration-none text-reset" href="@alert.Route" aria-label="@($"Open {alert.Title}")">
++                                @AlertContent(alert)
++                            </a>
++                        }
++                        else
++                        {
++                            <div class="activity-item">
++                                @AlertContent(alert)
++                            </div>
++                        }
+                     }
+                 </div>
+             }
+@@ -111,7 +118,7 @@
+             <div class="cockpit-kpi-grid">
+                 @foreach (var kpi in dashboard.DepartmentKpis)
+                 {
+-                    <a class="summary-pill text-decoration-none text-reset" href="@kpi.Route">
++                    <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
+                         <strong>@kpi.Department</strong>
+                         <dl class="cockpit-kpi-list mb-0 mt-3">
+                             <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
+@@ -134,11 +141,18 @@
+                 <div class="activity-list">
+                     @foreach (var item in dashboard.RecentActivity)
+                     {
+-                        <a class="activity-item text-decoration-none text-reset" href="@(item.Route ?? DashboardPath)">
+-                            <strong>@item.Title</strong>
+-                            <div class="text-body-secondary">@item.Summary</div>
+-                            <small>@item.ActivityType | @item.OccurredUtc.ToLocalTime():g</small>
+-                        </a>
++                        @if (HasDrillRoute(item.Route))
++                        {
++                            <a class="activity-item text-decoration-none text-reset" href="@item.Route" aria-label="@($"Open {item.Title}")">
++                                @ActivityContent(item)
++                            </a>
++                        }
++                        else
++                        {
++                            <div class="activity-item">
++                                @ActivityContent(item)
++                            </div>
++                        }
+                     }
+                 </div>
+             }
+@@ -209,4 +223,43 @@
+             isLoading = false;
+         }
+     }
++
++    private static bool HasDrillRoute(string? route) =>
++        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
++
++    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
++        HasDrillRoute(route) ? route! : fallbackRoute;
++
++    private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
++    {
++        var sequence = 0;
++        builder.OpenElement(sequence++, "span");
++        builder.AddAttribute(sequence++, "class", "badge text-bg-warning");
++        builder.AddContent(sequence++, alert.Severity);
++        builder.CloseElement();
++        builder.OpenElement(sequence++, "strong");
++        builder.AddAttribute(sequence++, "class", "d-block mt-2");
++        builder.AddContent(sequence++, alert.Title);
++        builder.CloseElement();
++        builder.OpenElement(sequence++, "div");
++        builder.AddAttribute(sequence++, "class", "text-body-secondary");
++        builder.AddContent(sequence++, alert.Summary);
++        builder.CloseElement();
++        builder.OpenElement(sequence++, "small");
++        builder.AddContent(sequence++, alert.OccurredUtc.ToLocalTime().ToString("g"));
++        builder.CloseElement();
++    };
++
++    private RenderFragment ActivityContent(ExecutiveCockpitActivityItemViewModel item) => builder =>
++    {
++        var sequence = 0;
++        builder.OpenElement(sequence++, "strong");
++        builder.AddContent(sequence++, item.Title);
++        builder.CloseElement();
++        builder.OpenElement(sequence++, "div");
++        builder.AddAttribute(sequence++, "class", "text-body-secondary");
++        builder.AddContent(sequence++, item.Summary);
++        builder.CloseElement();
++        builder.OpenElement(sequence++, "small");
++        builder.AddContent(sequence++, $"{item.ActivityType} | {item.OccurredUtc.ToLocalTime():g}");
++        builder.CloseElement();
++    };
+ }
+diff --git a/src/VirtualCompany.Web/Pages/Tasks.razor b/src/VirtualCompany.Web/Pages/Tasks.razor
+new file mode 100644
+index 0000000..5a01637
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Tasks.razor
+@@ -0,0 +1,253 @@
++@page "/tasks"
++@rendermode InteractiveServer
++@using System.Text.Json
++@using System.Text.Json.Nodes
++@inject OnboardingApiClient OnboardingApiClient
++@inject TaskApiClient TaskApiClient
++@inject NavigationManager Navigation
++
++<PageTitle>Tasks</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Tasks</h1>
++        <p class="text-body-secondary mb-0">Loading tenant-scoped tasks...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="wizard-card">
++            <h1>Select a company</h1>
++            <p class="text-body-secondary">Choose the company where you want to review tasks.</p>
++
++            @if (activeMemberships.Count == 0)
++            {
++                <p class="mb-0">No active company memberships are available yet.</p>
++            }
++            else
++            {
++                <div class="template-grid">
++                    @foreach (var membership in activeMemberships)
++                    {
++                        <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, null, null, null)">
++                            <strong>@membership.CompanyName</strong>
++                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
++                        </a>
++                    }
++                </div>
++            }
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Task review</span>
++                <h1>@(companyAccess?.CompanyName ?? "Tasks")</h1>
++                <p class="text-body-secondary mb-0">Open work, blocked execution, and dashboard-linked task details are scoped to this company.</p>
++
++                <form class="agent-filter-bar mt-4" method="get">
++                    <input type="hidden" name="companyId" value="@CompanyId" />
++                    @if (TaskId is Guid taskId)
++                    {
++                        <input type="hidden" name="taskId" value="@taskId" />
++                    }
++                    <div>
++                        <label class="form-label" for="task-status-filter">Status</label>
++                        <select id="task-status-filter" class="form-select" name="status">
++                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All tasks</option>
++                            @foreach (var status in SupportedStatuses)
++                            {
++                                <option value="@status" selected="@IsSelected(Status, status)">@ToDisplayText(status)</option>
++                            }
++                        </select>
++                    </div>
++                    <div>
++                        <label class="form-label" for="agent-filter">Assigned agent id</label>
++                        <input id="agent-filter" class="form-control" name="assignedAgentId" value="@AssignedAgentId" />
++                    </div>
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="submit">Apply filters</button>
++                        <a class="btn btn-outline-secondary" href="@BuildTasksUri(CompanyId!.Value, null, null, null)">Clear</a>
++                    </div>
++                </form>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++
++                @if (tasks.Count == 0)
++                {
++                    <p class="text-body-secondary mt-4 mb-0">No tasks match the selected filters.</p>
++                }
++                else
++                {
++                    <div class="list-group mt-4">
++                        @foreach (var task in tasks)
++                        {
++                            <a class="@GetTaskListItemClass(task)" href="@BuildTasksUri(task.CompanyId, Status, AssignedAgentId, task.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@task.Title</strong>
++                                        <div class="text-body-secondary small mt-1">@task.Type | @task.Priority</div>
++                                        <div class="small mt-2">@FormatAssignment(task.AssignedAgent)</div>
++                                    </div>
++                                    <span class="badge @GetStatusBadge(task.Status) align-self-start">@ToDisplayText(task.Status)</span>
++                                </div>
++                            </a>
++                        }
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                @if (selectedTask is null)
++                {
++                    <h2 class="h5">Task detail</h2>
++                    <p class="text-body-secondary mb-0">Select a task to review its status, assignment, rationale, and workflow context.</p>
++                }
++                else
++                {
++                    <h2 class="h5">@selectedTask.Title</h2>
++                    <dl class="mb-4">
++                        <dt>Status</dt>
++                        <dd><span class="badge @GetStatusBadge(selectedTask.Status)">@ToDisplayText(selectedTask.Status)</span></dd>
++                        <dt>Priority</dt>
++                        <dd>@ToDisplayText(selectedTask.Priority)</dd>
++                        <dt>Assigned agent</dt>
++                        <dd>@FormatAssignment(selectedTask.AssignedAgent)</dd>
++                        <dt>Updated</dt>
++                        <dd>@selectedTask.UpdatedAt.ToLocalTime().ToString("g")</dd>
++                    </dl>
++
++                    @if (!string.IsNullOrWhiteSpace(selectedTask.Description))
++                    {
++                        <h3 class="h6">Description</h3>
++                        <p class="text-body-secondary">@selectedTask.Description</p>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(selectedTask.RationaleSummary))
++                    {
++                        <h3 class="h6">Rationale</h3>
++                        <p class="text-body-secondary">@selectedTask.RationaleSummary</p>
++                    }
++
++                    @if (selectedTask.WorkflowInstanceId is Guid workflowInstanceId)
++                    {
++                        <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={selectedTask.CompanyId}&workflowInstanceId={workflowInstanceId}")">Open workflow</a>
++                    }
++
++                    @if (selectedTask.Subtasks.Count > 0)
++                    {
++                        <h3 class="h6 mt-4">Subtasks</h3>
++                        <ul class="list-unstyled mb-0">
++                            @foreach (var subtask in selectedTask.Subtasks)
++                            {
++                                <li class="mb-2">
++                                    <a href="@BuildTasksUri(subtask.CompanyId, null, null, subtask.Id)">@subtask.Title</a>
++                                    <span class="text-body-secondary"> - @ToDisplayText(subtask.Status)</span>
++                                </li>
++                            }
++                        </ul>
++                    }
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    private static readonly IReadOnlyList<string> SupportedStatuses =
++    [
++        "pending",
++        "in_progress",
++        "blocked",
++        "awaiting_approval",
++        "completed",
++        "failed",
++        "cancelled"
++    ];
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "taskId")]
++    public Guid? TaskId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? Status { get; set; }
++
++    [SupplyParameterFromQuery(Name = "assignedAgentId")]
++    public Guid? AssignedAgentId { get; set; }
++
++    private bool isLoading = true;
++    private string? errorMessage;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private List<TaskListItemViewModel> tasks = [];
++    private TaskDetailViewModel? selectedTask;
++
++    private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        selectedTask = null;
++        tasks = [];
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is null && currentUser?.ActiveCompany is not null)
++            {
++                Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, Status, AssignedAgentId, TaskId), replace: true);
++                return;
++            }
++
++            if (CompanyId is Guid companyId)
++            {
++                companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++                var result = await TaskApiClient.ListAsync(companyId, Status, AssignedAgentId);
++                tasks = result.Items.ToList();
++                selectedTask = TaskId is Guid taskId
++                    ? await TaskApiClient.GetAsync(companyId, taskId)
++                    : null;
++            }
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            tasks = [];
++            selectedTask = null;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private string GetTaskListItemClass(TaskListItemViewModel task) =>
++        selectedTask?.Id == task.Id
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private static bool IsSelected(string? currentValue, string expectedValue) =>
++        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
++
++    private static string FormatAssignment(TaskAgentSummaryViewModel? agent) =>
++        agent is null ? "Unassigned" : $"{agent.DisplayName} ({ToDisplayText(agent.Status)})";
++
++    private static string ToDisplayText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
++
++    private static string GetStatusBadge(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            "blocked" or "failed" => "text-bg-danger",
++            "awaiting_approval" => "text-bg-warning",
++            "completed" => "text-bg-success",
++            "in_progress" => "text-bg-primary",
++            _ => "text-bg-secondary"
++        };
++
++    private static string BuildTasksUri(Guid companyId, string? status, Guid? assignedAgentId, Guid? taskId)
++    {
++        var query = new List<string> { $"companyId={companyId}" };
++        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
++        if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
++        if (taskId is Guid selectedTaskId) query.Add($"taskId={selectedTaskId}");
++        return $"/tasks?{string.Join("&", query)}";
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Workflows.razor b/src/VirtualCompany.Web/Pages/Workflows.razor
+index 40cf84d..c41c8f7 100644
+--- a/src/VirtualCompany.Web/Pages/Workflows.razor
++++ b/src/VirtualCompany.Web/Pages/Workflows.razor
+@@ -49,6 +49,25 @@ else
+                 <h1>Workflows for @(companyAccess?.CompanyName ?? "your company")</h1>
+                 <p class="text-body-secondary">Choose from approved workflow templates. Freeform workflow builders and custom step graphs are not available in v1.</p>
+ 
++                <form class="agent-filter-bar mt-4" method="get">
++                    <input type="hidden" name="companyId" value="@CompanyId" />
++                    @if (WorkflowInstanceId is Guid workflowInstanceId)
++                    {
++                        <input type="hidden" name="workflowInstanceId" value="@workflowInstanceId" />
++                    }
++                    @if (ExceptionId is Guid exceptionId)
++                    {
++                        <input type="hidden" name="exceptionId" value="@exceptionId" />
++                    }
++                    <div>
++                        <label class="form-label" for="workflow-state-filter">Instance state</label>
++                        <input id="workflow-state-filter" class="form-control" name="state" value="@State" placeholder="failed, blocked, started" />
++                    </div>
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="submit">Apply filter</button>
++                        <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={CompanyId}")">Clear</a>
++                    </div>
++                </form>
++
+                 @if (!string.IsNullOrWhiteSpace(errorMessage))
+                 {
+                     <div class="alert alert-danger">@errorMessage</div>
+@@ -78,6 +97,21 @@ else
+                 </div>
+             </div>
+ 
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h4 mb-3">Instance detail</h2>
++                @if (selectedInstance is null)
++                {
++                    <p class="text-body-secondary mb-0">Select a workflow instance below or drill in from the dashboard.</p>
++                }
++                else
++                {
++                    <dl class="kv-list">
++                        <dt>Workflow</dt><dd>@selectedInstance.DefinitionName</dd>
++                        <dt>State</dt><dd>@ToDisplayText(selectedInstance.State)</dd>
++                        <dt>Current step</dt><dd>@(selectedInstance.CurrentStep ?? "Not set")</dd>
++                        <dt>Updated</dt><dd>@selectedInstance.UpdatedAt.ToLocalTime().ToString("g")</dd>
++                    </dl>
++                }
++            </div>
++
+             <div class="wizard-card">
+                 <h2 class="h4 mb-3">Launch</h2>
+ 
+@@ -133,9 +167,13 @@ else
+                         <tbody>
+                             @foreach (var instance in instances)
+                             {
+-                                <tr>
+-                                    <td>@instance.DefinitionName</td>
+-                                    <td><span class="badge @GetStateBadge(instance.State)">@instance.State</span></td>
++                                <tr class="@(selectedInstance?.Id == instance.Id ? "table-active" : null)">
++                                    <td>
++                                        <a class="fw-semibold text-decoration-none" href="@BuildWorkflowInstanceUri(instance.CompanyId, instance.Id, State, ExceptionId)">
++                                            @instance.DefinitionName
++                                        </a>
++                                    </td>
++                                    <td><span class="badge @GetStateBadge(instance.State)">@ToDisplayText(instance.State)</span></td>
+                                     <td>@(instance.CurrentStep ?? "Not set")</td>
+                                     <td>@instance.TriggerSource</td>
+                                     <td>@instance.StartedAt.ToLocalTime().ToString("g")</td>
+@@ -158,6 +196,15 @@ else
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "workflowInstanceId")]
++    public Guid? WorkflowInstanceId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "exceptionId")]
++    public Guid? ExceptionId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "state")]
++    public string? State { get; set; }
++
+     private bool isLoading = true;
+     private bool isStarting;
+     private string? errorMessage;
+@@ -168,6 +215,7 @@ else
+     private CompanyAccessViewModel? companyAccess;
+     private List<WorkflowCatalogItemViewModel> catalog = [];
+     private List<WorkflowInstanceViewModel> instances = [];
++    private WorkflowInstanceViewModel? selectedInstance;
+ 
+     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+         currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
+@@ -195,7 +243,19 @@ else
+             {
+                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                 catalog = (await WorkflowApiClient.GetCatalogAsync(companyId)).ToList();
+-                instances = (await WorkflowApiClient.GetInstancesAsync(companyId)).ToList();
++                instances = (await WorkflowApiClient.GetInstancesAsync(companyId))
++                    .Where(instance => string.IsNullOrWhiteSpace(State) || string.Equals(instance.State, State, StringComparison.OrdinalIgnoreCase))
++                    .ToList();
++                if (WorkflowInstanceId is Guid workflowInstanceId)
++                {
++                    selectedInstance = instances.FirstOrDefault(x => x.Id == workflowInstanceId)
++                        ?? await WorkflowApiClient.GetInstanceAsync(companyId, workflowInstanceId);
++                    if (!instances.Any(x => x.Id == selectedInstance.Id))
++                    {
++                        instances.Insert(0, selectedInstance);
++                    }
++                }
++
+                 selectedWorkflowCode ??= catalog.FirstOrDefault()?.Code;
+             }
+         }
+@@ -243,4 +303,17 @@ else
+         state.Equals("blocked", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" :
+         state.Equals("completed", StringComparison.OrdinalIgnoreCase) ? "text-bg-success" :
+         "text-bg-secondary";
++
++    private static string ToDisplayText(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
++
++    private static string BuildWorkflowInstanceUri(Guid companyId, Guid workflowInstanceId, string? state, Guid? exceptionId)
++    {
++        var query = new List<string> { $"companyId={companyId}", $"workflowInstanceId={workflowInstanceId}" };
++        if (!string.IsNullOrWhiteSpace(state)) query.Add($"state={Uri.EscapeDataString(state)}");
++        if (exceptionId is Guid selectedExceptionId) query.Add($"exceptionId={selectedExceptionId}");
++        return $"/workflows?{string.Join("&", query)}";
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index e05f40e..8b74852 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -42,6 +42,11 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new TaskApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ builder.Services.AddScoped(sp => new DirectChatApiClient(
+     sp.GetRequiredService<HttpClient>(),
+     ShouldUseOfflineMode(
+diff --git a/src/VirtualCompany.Web/Services/TaskApiClient.cs b/src/VirtualCompany.Web/Services/TaskApiClient.cs
+new file mode 100644
+index 0000000..27760fa
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/TaskApiClient.cs
+@@ -0,0 +1,202 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class TaskApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public TaskApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<TaskListResultViewModel> ListAsync(
++        Guid companyId,
++        string? status,
++        Guid? assignedAgentId,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var items = OfflineTasks(companyId)
++                .Where(x => string.IsNullOrWhiteSpace(status) || string.Equals(x.Status, status, StringComparison.OrdinalIgnoreCase))
++                .Where(x => assignedAgentId is null || x.AssignedAgentId == assignedAgentId)
++                .ToList();
++            return Task.FromResult(new TaskListResultViewModel { Items = items, TotalCount = items.Count, Take = items.Count });
++        }
++
++        var query = new List<string>();
++        if (!string.IsNullOrWhiteSpace(status)) query.Add($"status={Uri.EscapeDataString(status)}");
++        if (assignedAgentId is Guid agentId) query.Add($"assignedAgentId={agentId}");
++        var uri = query.Count == 0
++            ? $"api/companies/{companyId}/tasks"
++            : $"api/companies/{companyId}/tasks?{string.Join("&", query)}";
++        return GetAsync<TaskListResultViewModel>(uri, cancellationToken);
++    }
++
++    public Task<TaskDetailViewModel> GetAsync(Guid companyId, Guid taskId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var item = OfflineTasks(companyId).FirstOrDefault(x => x.Id == taskId)
++                ?? throw new OnboardingApiException("Task was not found.");
++            return Task.FromResult(new TaskDetailViewModel
++            {
++                Id = item.Id,
++                CompanyId = item.CompanyId,
++                Type = item.Type,
++                Title = item.Title,
++                Priority = item.Priority,
++                Status = item.Status,
++                AssignedAgentId = item.AssignedAgentId,
++                CreatedAt = item.CreatedAt,
++                UpdatedAt = item.UpdatedAt,
++                AssignedAgent = item.AssignedAgent
++            });
++        }
++
++        return GetAsync<TaskDetailViewModel>($"api/companies/{companyId}/tasks/{taskId}", cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static IReadOnlyList<TaskListItemViewModel> OfflineTasks(Guid companyId) =>
++    [
++        new()
++        {
++            Id = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
++            CompanyId = companyId,
++            Type = "review",
++            Title = "Vendor payment run for April",
++            Priority = "high",
++            Status = "awaiting_approval",
++            CreatedAt = DateTime.UtcNow.AddHours(-6),
++            UpdatedAt = DateTime.UtcNow.AddHours(-1)
++        }
++    ];
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class TaskListResultViewModel
++{
++    public List<TaskListItemViewModel> Items { get; set; } = [];
++    public int TotalCount { get; set; }
++    public int Skip { get; set; }
++    public int Take { get; set; }
++}
++
++public sealed class TaskListItemViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime? DueAt { get; set; }
++    public Guid? AssignedAgentId { get; set; }
++    public Guid? ParentTaskId { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime UpdatedAt { get; set; }
++    public TaskAgentSummaryViewModel? AssignedAgent { get; set; }
++}
++
++public sealed class TaskDetailViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string? Description { get; set; }
++    public string Priority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime? DueAt { get; set; }
++    public Guid? AssignedAgentId { get; set; }
++    public Guid? ParentTaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++    public string CreatedByActorType { get; set; } = string.Empty;
++    public Guid? CreatedByActorId { get; set; }
++    public Dictionary<string, JsonNode?> InputPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> OutputPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? RationaleSummary { get; set; }
++    public decimal? ConfidenceScore { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime UpdatedAt { get; set; }
++    public DateTime? CompletedAt { get; set; }
++    public TaskAgentSummaryViewModel? AssignedAgent { get; set; }
++    public TaskParentSummaryViewModel? ParentTask { get; set; }
++    public string? CorrelationId { get; set; }
++    public List<TaskSubtaskSummaryViewModel> Subtasks { get; set; } = [];
++}
++
++public sealed class TaskAgentSummaryViewModel
++{
++    public Guid Id { get; set; }
++    public string DisplayName { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
++public sealed class TaskParentSummaryViewModel
++{
++    public Guid Id { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++}
++
++public sealed class TaskSubtaskSummaryViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime? DueAt { get; set; }
++    public Guid? AssignedAgentId { get; set; }
++    public Guid? ParentTaskId { get; set; }
++    public Guid? WorkflowInstanceId { get; set; }
++    public DateTime CreatedAt { get; set; }
++    public DateTime UpdatedAt { get; set; }
++    public DateTime? CompletedAt { get; set; }
++    public TaskAgentSummaryViewModel? AssignedAgent { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Services/WorkflowApiClient.cs b/src/VirtualCompany.Web/Services/WorkflowApiClient.cs
+index 25fcdde..cc01847 100644
+--- a/src/VirtualCompany.Web/Services/WorkflowApiClient.cs
++++ b/src/VirtualCompany.Web/Services/WorkflowApiClient.cs
+@@ -25,6 +25,10 @@ public sealed class WorkflowApiClient
+             ? Task.FromResult<IReadOnlyList<WorkflowInstanceViewModel>>([])
+             : GetAsync<IReadOnlyList<WorkflowInstanceViewModel>>($"api/companies/{companyId}/workflows/instances", cancellationToken);
+ 
++    public Task<WorkflowInstanceViewModel> GetInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(OfflineInstance(companyId, instanceId))
++            : GetAsync<WorkflowInstanceViewModel>($"api/companies/{companyId}/workflows/instances/{instanceId}", cancellationToken);
++
+     public async Task<WorkflowDefinitionViewModel> GetLatestDefinitionByCodeAsync(Guid companyId, string code, CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+@@ -161,6 +165,23 @@ public sealed class WorkflowApiClient
+         }
+     ];
+ 
++    private static WorkflowInstanceViewModel OfflineInstance(Guid companyId, Guid instanceId) =>
++        new()
++        {
++            Id = instanceId,
++            CompanyId = companyId,
++            DefinitionId = Guid.Parse("ec1f7bb3-1f3f-4f56-bba6-f403bd02ea04"),
++            TriggerSource = "manual",
++            TriggerRef = "offline",
++            Status = "started",
++            State = "started",
++            CurrentStep = "qualify-lead",
++            StartedAt = DateTime.UtcNow.AddHours(-2),
++            UpdatedAt = DateTime.UtcNow.AddHours(-1),
++            DefinitionCode = "LEAD-FOLLOW-UP",
++            DefinitionName = "Lead follow-up"
++        };
++
+     private sealed class ApiProblemResponse
+     {
+         public string? Title { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 52a1533..caa0fc5 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -50,8 +50,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+         Assert.NotNull(dashboard.DailyBriefing);
+         Assert.Equal(1, dashboard.PendingApprovals.TotalCount);
+         Assert.Contains(dashboard.PendingApprovals.Items, x => x.Id == seed.ApprovalId);
++        Assert.Contains(dashboard.PendingApprovals.Items, x => x.Id == seed.ApprovalId && x.Route.Contains($"approvalId={seed.ApprovalId}", StringComparison.OrdinalIgnoreCase));
++        Assert.Contains("status=pending", dashboard.PendingApprovals.Route, StringComparison.OrdinalIgnoreCase);
+         Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId);
++        Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId && x.Route?.Contains($"workflowInstanceId={seed.WorkflowInstanceId}", StringComparison.OrdinalIgnoreCase) == true);
+         Assert.Contains(dashboard.DepartmentKpis, x => x.Department == "Operations" && x.ActiveAgents == 1);
+         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId);
++        Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId && x.Route?.Contains($"taskId={seed.TaskId}", StringComparison.OrdinalIgnoreCase) == true);
+         Assert.DoesNotContain(dashboard.PendingApprovals.Items, x => x.Id == seed.OtherCompanyApprovalId);
+ 
+         var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/executive-cockpit");
+@@ -122,10 +127,10 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+             return Task.CompletedTask;
+         });
+ 
+-        return new CockpitSeed(companyId, otherCompanyId, approvalId, otherCompanyApprovalId, workflowExceptionId, taskId);
++        return new CockpitSeed(companyId, otherCompanyId, approvalId, otherCompanyApprovalId, workflowExceptionId, workflowInstanceId, taskId);
+     }
+@@ -135,7 +140,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+ 
+-    private sealed record CockpitSeed(Guid CompanyId, Guid OtherCompanyId, Guid ApprovalId, Guid OtherCompanyApprovalId, Guid WorkflowExceptionId, Guid TaskId);
++    private sealed record CockpitSeed(Guid CompanyId, Guid OtherCompanyId, Guid ApprovalId, Guid OtherCompanyApprovalId, Guid WorkflowExceptionId, Guid WorkflowInstanceId, Guid TaskId);
+ 
+     private sealed class ExecutiveCockpitDashboardResponse
+     {
+@@ -148,9 +153,9 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+     }
+ 
+     private sealed class ExecutiveCockpitDailyBriefingResponse { public Guid Id { get; set; } }
+-    private sealed class ExecutiveCockpitPendingApprovalsResponse { public int TotalCount { get; set; } public List<ExecutiveCockpitApprovalResponse> Items { get; set; } = []; }
+-    private sealed class ExecutiveCockpitApprovalResponse { public Guid Id { get; set; } }
+-    private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } }
++    private sealed class ExecutiveCockpitPendingApprovalsResponse { public int TotalCount { get; set; } public List<ExecutiveCockpitApprovalResponse> Items { get; set; } = []; public string Route { get; set; } = string.Empty; }
++    private sealed class ExecutiveCockpitApprovalResponse { public Guid Id { get; set; } public string Route { get; set; } = string.Empty; }
++    private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } public string? Route { get; set; } }
+     private sealed class ExecutiveCockpitDepartmentKpiResponse { public string Department { get; set; } = string.Empty; public int ActiveAgents { get; set; } }
+-    private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } }
++    private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }
+     private sealed class ExecutiveCockpitEmptyStateFlagsResponse
+     {
+END_OF_PATCH

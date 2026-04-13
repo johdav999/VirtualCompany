@@ -1,0 +1,861 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 6fdcb9a..fe4db5b 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -13,6 +13,34 @@ public sealed record BriefingSourceReferenceDto(
+ public sealed record BriefingSectionDto(
+     string Name,
+     IReadOnlyList<string> Items);
+ 
++public sealed record BriefingAggregateItemDto(
++    string Section,
++    string Title,
++    string Summary,
++    string? Severity,
++    string? Status,
++    string? SourceEntityType,
++    Guid? SourceEntityId,
++    DateTime OccurredUtc,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record BriefingAggregateResultDto(
++    Guid CompanyId,
++    string BriefingType,
++    DateTime PeriodStartUtc,
++    DateTime PeriodEndUtc,
++    IReadOnlyList<BriefingAggregateItemDto> Alerts,
++    IReadOnlyList<BriefingAggregateItemDto> PendingApprovals,
++    IReadOnlyList<BriefingAggregateItemDto> KpiHighlights,
++    IReadOnlyList<BriefingAggregateItemDto> Anomalies,
++    IReadOnlyList<BriefingAggregateItemDto> NotableAgentUpdates)
++{
++    public bool HasItems =>
++        Alerts.Count > 0 ||
++        PendingApprovals.Count > 0 ||
++        KpiHighlights.Count > 0 ||
++        Anomalies.Count > 0 ||
++        NotableAgentUpdates.Count > 0;
++}
++
+ public sealed record CompanyBriefingDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -65,6 +93,11 @@ public sealed class BriefingValidationException : Exception
+ 
+ public interface ICompanyBriefingService
+ {
++    Task<BriefingAggregateResultDto> AggregateAsync(
++        Guid companyId,
++        GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken);
++
+     Task<CompanyBriefingGenerationResult> GenerateAsync(
+         Guid companyId,
+         GenerateCompanyBriefingCommand command,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 0b86359..3b8d2ed 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -33,6 +33,27 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         _logger = logger;
+     }
+ 
++    public async Task<BriefingAggregateResultDto> AggregateAsync(
++        Guid companyId,
++        GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]> { [nameof(companyId)] = ["Company id is required."] });
++        }
++
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var briefingType = CompanyBriefingTypeValues.Parse(command.BriefingType);
++        var nowUtc = NormalizeUtc(command.NowUtc ?? DateTime.UtcNow);
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken)
++            ?? throw new KeyNotFoundException("Company not found.");
++        return await BuildAggregateAsync(companyId, briefingType, ResolveWindow(company.Timezone, briefingType, nowUtc), cancellationToken);
++    }
++
+     public async Task<CompanyBriefingGenerationResult> GenerateAsync(
+         Guid companyId,
+         GenerateCompanyBriefingCommand command,
+@@ -267,91 +288,265 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Select(x => x.UserId)
+             .FirstOrDefaultAsync(cancellationToken);
+ 
+-    private async Task<BriefingAggregate> BuildAggregateAsync(Guid companyId, CompanyBriefingType type, BriefingWindow window, CancellationToken cancellationToken)
++    private async Task<BriefingAggregateResultDto> BuildAggregateAsync(
++        Guid companyId,
++        CompanyBriefingType type,
++        BriefingWindow window,
++        CancellationToken cancellationToken)
+     {
+-        var approvals = await _dbContext.ApprovalRequests
++        var approvalRows = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(10)
+-            .Select(x => new BriefingItem("Approval", $"{x.ApprovalType} approval pending for {x.TargetEntityType}", x.Id, x.CreatedUtc))
++            .Select(x => new
++            {
++                x.Id,
++                x.ApprovalType,
++                x.TargetEntityType,
++                x.TargetEntityId,
++                x.RequiredRole,
++                x.RequiredUserId,
++                x.Status,
++                x.CreatedUtc
++            })
+             .ToListAsync(cancellationToken);
++        var approvals = approvalRows
++            .Select(x => CreateItem(
++                "pending_approvals",
++                $"{Humanize(x.ApprovalType)} approval pending",
++                $"Approval is pending for {x.TargetEntityType}.",
++                "medium",
++                x.Status.ToStorageValue(),
++                "approval_request",
++                x.Id,
++                x.CreatedUtc,
++                ("targetEntityType", JsonValue.Create(x.TargetEntityType)),
++                ("targetEntityId", JsonValue.Create(x.TargetEntityId)),
++                ("requiredRole", JsonValue.Create(x.RequiredRole)),
++                ("requiredUserId", JsonValue.Create(x.RequiredUserId))))
++            .ToList();
++
++        var workflowExceptionRows = await _dbContext.WorkflowExceptions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(10)
++            .Select(x => new
++            {
++                x.Id,
++                x.Title,
++                x.Details,
++                x.ExceptionType,
++                x.Status,
++                x.WorkflowInstanceId,
++                x.OccurredUtc
++            })
++            .ToListAsync(cancellationToken);
++        var workflowAlerts = workflowExceptionRows
++            .Select(x => CreateItem(
++                "alerts",
++                x.Title,
++                TrimForSummary(x.Details),
++                x.ExceptionType == WorkflowExceptionType.Failed ? "high" : "medium",
++                x.Status.ToStorageValue(),
++                "workflow_exception",
++                x.Id,
++                x.OccurredUtc,
++                ("workflowInstanceId", JsonValue.Create(x.WorkflowInstanceId)),
++                ("exceptionType", JsonValue.Create(x.ExceptionType.ToStorageValue()))))
++            .ToList();
++
++        var executionExceptionRows = await _dbContext.ExecutionExceptionRecords
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ExecutionExceptionStatus.Open)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(10)
++            .Select(x => new
++            {
++                x.Id,
++                x.Title,
++                x.Summary,
++                x.Kind,
++                x.Severity,
++                x.Status,
++                x.SourceType,
++                x.SourceId,
++                x.RelatedEntityType,
++                x.RelatedEntityId,
++                x.CreatedUtc
++            })
++            .ToListAsync(cancellationToken);
++        var executionAlerts = executionExceptionRows
++            .Select(x => CreateItem(
++                "alerts",
++                x.Title,
++                TrimForSummary(x.Summary),
++                x.Severity.ToStorageValue(),
++                x.Status.ToStorageValue(),
++                "execution_exception",
++                x.Id,
++                x.CreatedUtc,
++                ("kind", JsonValue.Create(x.Kind.ToStorageValue())),
++                ("sourceType", JsonValue.Create(x.SourceType.ToStorageValue())),
++                ("sourceId", JsonValue.Create(x.SourceId)),
++                ("relatedEntityType", JsonValue.Create(x.RelatedEntityType)),
++                ("relatedEntityId", JsonValue.Create(x.RelatedEntityId))))
++            .ToList();
++        var alerts = workflowAlerts
++            .Concat(executionAlerts)
++            .OrderByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.Title, StringComparer.OrdinalIgnoreCase)
++            .Take(10)
++            .ToList();
+ 
+         var tasks = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.UpdatedUtc >= window.StartUtc && x.UpdatedUtc < window.EndUtc)
+             .GroupBy(x => x.Status)
+             .Select(x => new { Status = x.Key, Count = x.Count() })
+             .ToListAsync(cancellationToken);
+-
+-        var taskHighlights = tasks
+-            .OrderByDescending(x => x.Count)
+-            .Select(x => new BriefingItem("Task", $"{x.Count} task(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++        var totalTasks = tasks.Sum(x => x.Count);
++        var kpiHighlights = tasks
++            .OrderByDescending(x => x.Count)
++            .ThenBy(x => x.Status.ToStorageValue(), StringComparer.OrdinalIgnoreCase)
++            .Select(x => CreateItem(
++                "kpi_highlights",
++                $"{x.Count} task(s) {Humanize(x.Status.ToStorageValue())}",
++                $"{x.Count} of {totalTasks} task updates in this period were {Humanize(x.Status.ToStorageValue()).ToLowerInvariant()}.",
++                null,
++                x.Status.ToStorageValue(),
++                null,
++                null,
++                window.EndUtc,
++                ("metric", JsonValue.Create("task_status_count")),
++                ("count", JsonValue.Create(x.Count)),
++                ("total", JsonValue.Create(totalTasks))))
+             .ToList();
+ 
+-        var workflowExceptions = await _dbContext.WorkflowExceptions
++        var anomalyRows = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
+-            .OrderByDescending(x => x.OccurredUtc)
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed || x.Status == WorkTaskStatus.AwaitingApproval) &&
++                x.UpdatedUtc >= window.StartUtc &&
++                x.UpdatedUtc < window.EndUtc)
++            .OrderByDescending(x => x.UpdatedUtc)
+             .Take(10)
+-            .Select(x => new BriefingItem("WorkflowException", x.Title, x.Id, x.OccurredUtc))
++            .Select(x => new
++            {
++                x.Id,
++                x.Title,
++                x.Status,
++                x.Priority,
++                x.UpdatedUtc
++            })
+             .ToListAsync(cancellationToken);
++        var taskAnomalies = anomalyRows
++            .Select(x => CreateItem(
++                "anomalies",
++                x.Title,
++                $"Task is {Humanize(x.Status.ToStorageValue()).ToLowerInvariant()} with {Humanize(x.Priority.ToStorageValue()).ToLowerInvariant()} priority.",
++                x.Priority is WorkTaskPriority.Critical or WorkTaskPriority.High ? "high" : "medium",
++                x.Status.ToStorageValue(),
++                "task",
++                x.Id,
++                x.UpdatedUtc,
++                ("priority", JsonValue.Create(x.Priority.ToStorageValue()))))
++            .ToList();
+ 
+-        var agentUpdates = await _dbContext.ToolExecutionAttempts
++        var failedToolRows = await _dbContext.ToolExecutionAttempts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (x.Status == ToolExecutionStatus.Failed || x.Status == ToolExecutionStatus.Denied) &&
++                x.StartedUtc >= window.StartUtc &&
++                x.StartedUtc < window.EndUtc)
++            .OrderByDescending(x => x.StartedUtc)
++            .Take(10)
++            .Select(x => new
++            {
++                x.Id,
++                x.ToolName,
++                x.Status,
++                x.AgentId,
++                x.TaskId,
++                x.WorkflowInstanceId,
++                x.StartedUtc
++            })
++            .ToListAsync(cancellationToken);
++        var toolAnomalies = failedToolRows
++            .Select(x => CreateItem(
++                "anomalies",
++                $"{Humanize(x.ToolName)} tool execution {Humanize(x.Status.ToStorageValue()).ToLowerInvariant()}",
++                $"Agent tool execution for {x.ToolName} was {Humanize(x.Status.ToStorageValue()).ToLowerInvariant()}.",
++                "high",
++                x.Status.ToStorageValue(),
++                "tool_execution",
++                x.Id,
++                x.StartedUtc,
++                ("agentId", JsonValue.Create(x.AgentId)),
++                ("taskId", JsonValue.Create(x.TaskId)),
++                ("workflowInstanceId", JsonValue.Create(x.WorkflowInstanceId))))
++            .ToList();
++        var anomalies = taskAnomalies
++            .Concat(toolAnomalies)
++            .OrderByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.Title, StringComparer.OrdinalIgnoreCase)
++            .Take(10)
++            .ToList();
++
++        var agentUpdates = await _dbContext.ToolExecutionAttempts
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.StartedUtc >= window.StartUtc && x.StartedUtc < window.EndUtc)
+-            .GroupBy(x => x.Status)
+-            .Select(x => new { Status = x.Key, Count = x.Count() })
++            .GroupBy(x => new { x.AgentId, x.Status })
++            .Select(x => new { x.Key.AgentId, x.Key.Status, Count = x.Count(), LastStartedUtc = x.Max(y => y.StartedUtc) })
+             .ToListAsync(cancellationToken);
+-
+         var agentHighlights = agentUpdates
+             .OrderByDescending(x => x.Count)
+-            .Select(x => new BriefingItem("AgentActivity", $"{x.Count} agent tool execution(s) {x.Status.ToStorageValue()}", Guid.Empty, window.EndUtc))
++            .ThenByDescending(x => x.LastStartedUtc)
++            .Take(10)
++            .Select(x => CreateItem(
++                "notable_agent_updates",
++                $"{x.Count} agent tool execution(s) {Humanize(x.Status.ToStorageValue())}",
++                $"Agent {x.AgentId:N} had {x.Count} tool execution(s) {Humanize(x.Status.ToStorageValue()).ToLowerInvariant()} in this period.",
++                x.Status == ToolExecutionStatus.Failed ? "high" : null,
++                x.Status.ToStorageValue(),
++                "agent",
++                x.AgentId,
++                x.LastStartedUtc,
++                ("metric", JsonValue.Create("agent_tool_execution_status_count")),
++                ("count", JsonValue.Create(x.Count))))
+             .ToList();
+ 
+-        var sourceReferences = approvals
+-            .Concat(workflowExceptions)
+-            .Where(x => x.EntityId != Guid.Empty)
+-            .Select(x => new BriefingSourceReferenceDto(x.Kind, x.EntityId, x.Text))
+-            .ToList();
+-
+-        return new BriefingAggregate(approvals, taskHighlights, workflowExceptions, agentHighlights, sourceReferences);
++        return new BriefingAggregateResultDto(
++            companyId,
++            type.ToStorageValue(),
++            window.StartUtc,
++            window.EndUtc,
++            alerts,
++            approvals,
++            kpiHighlights,
++            anomalies,
++            agentHighlights);
+     }
+ 
+-    private static string RenderBody(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate)
++    private static string RenderBody(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregateResultDto aggregate)
+     {
+         var builder = new StringBuilder();
+         builder.AppendLine(type == CompanyBriefingType.Daily
+             ? $"Daily briefing for {companyName}"
+             : $"Weekly executive summary for {companyName}");
+         builder.AppendLine($"Period: {window.StartUtc:u} to {window.EndUtc:u}");
+-        AppendSection(builder, "Approvals", aggregate.Approvals);
+-        AppendSection(builder, "Tasks", aggregate.TaskHighlights);
+-        AppendSection(builder, "Alerts and anomalies", aggregate.WorkflowExceptions);
+-        AppendSection(builder, "Agent and workflow updates", aggregate.AgentHighlights);
++
++        if (!aggregate.HasItems)
++        {
++            builder.AppendLine();
++            builder.AppendLine("No notable items for this period.");
++            return builder.ToString().Trim();
++        }
++
++        AppendSection(builder, "Alerts", aggregate.Alerts);
++        AppendSection(builder, "Approvals", aggregate.PendingApprovals);
++        AppendSection(builder, "KPI highlights", aggregate.KpiHighlights);
++        AppendSection(builder, "Anomalies", aggregate.Anomalies);
++        AppendSection(builder, "Agent updates", aggregate.NotableAgentUpdates);
+         return builder.ToString().Trim();
+     }
+ 
+-    private static void AppendSection(StringBuilder builder, string title, IReadOnlyList<BriefingItem> items)
++    private static void AppendSection(StringBuilder builder, string title, IReadOnlyList<BriefingAggregateItemDto> items)
+     {
+-        builder.AppendLine();
+-        builder.AppendLine(title);
+         if (items.Count == 0)
+         {
+-            builder.AppendLine("- No notable items.");
+             return;
+         }
+ 
++        builder.AppendLine();
++        builder.AppendLine(title);
+         foreach (var item in items.Take(5))
+         {
+-            builder.AppendLine($"- {item.Text}");
++            builder.AppendLine($"- {item.Title}: {item.Summary}");
+         }
+     }
+ 
+-    private static Dictionary<string, JsonNode?> BuildPayload(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate) =>
++    private static Dictionary<string, JsonNode?> BuildPayload(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregateResultDto aggregate) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
+             ["companyName"] = JsonValue.Create(companyName),
+             ["briefingType"] = JsonValue.Create(type.ToStorageValue()),
+             ["periodStartUtc"] = JsonValue.Create(window.StartUtc),
+             ["periodEndUtc"] = JsonValue.Create(window.EndUtc),
+-            ["approvals"] = JsonSerializer.SerializeToNode(aggregate.Approvals.Select(x => x.Text), SerializerOptions),
+-            ["taskHighlights"] = JsonSerializer.SerializeToNode(aggregate.TaskHighlights.Select(x => x.Text), SerializerOptions),
+-            ["alertsAndAnomalies"] = JsonSerializer.SerializeToNode(aggregate.WorkflowExceptions.Select(x => x.Text), SerializerOptions),
+-            ["notableUpdates"] = JsonSerializer.SerializeToNode(aggregate.AgentHighlights.Select(x => x.Text), SerializerOptions),
+-            ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions)
++            ["alerts"] = JsonSerializer.SerializeToNode(aggregate.Alerts, SerializerOptions),
++            ["pendingApprovals"] = JsonSerializer.SerializeToNode(aggregate.PendingApprovals, SerializerOptions),
++            ["kpiHighlights"] = JsonSerializer.SerializeToNode(aggregate.KpiHighlights, SerializerOptions),
++            ["anomalies"] = JsonSerializer.SerializeToNode(aggregate.Anomalies, SerializerOptions),
++            ["notableAgentUpdates"] = JsonSerializer.SerializeToNode(aggregate.NotableAgentUpdates, SerializerOptions),
++            ["sourceReferences"] = JsonSerializer.SerializeToNode(BuildSourceReferenceList(aggregate), SerializerOptions)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
+@@ -360,6 +555,90 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["items"] = JsonSerializer.SerializeToNode(references, SerializerOptions)
+         };
+ 
++    private static IReadOnlyList<BriefingSourceReferenceDto> BuildSourceReferenceList(BriefingAggregateResultDto aggregate) =>
++        aggregate.Alerts
++            .Concat(aggregate.PendingApprovals)
++            .Concat(aggregate.KpiHighlights)
++            .Concat(aggregate.Anomalies)
++            .Concat(aggregate.NotableAgentUpdates)
++            .Where(x => x.SourceEntityId.HasValue && !string.IsNullOrWhiteSpace(x.SourceEntityType))
++            .Select(x => new BriefingSourceReferenceDto(x.SourceEntityType!, x.SourceEntityId!.Value, x.Title))
++            .GroupBy(x => new { x.EntityType, x.EntityId })
++            .Select(x => x.First())
++            .OrderBy(x => x.EntityType, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++    private static Dictionary<string, JsonNode?> BuildSourceReferences(BriefingAggregateResultDto aggregate) =>
++        BuildSourceReferences(BuildSourceReferenceList(aggregate));
++
++    private static BriefingAggregateItemDto CreateItem(
++        string section,
++        string title,
++        string summary,
++        string? severity,
++        string? status,
++        string? sourceEntityType,
++        Guid? sourceEntityId,
++        DateTime occurredUtc,
++        params (string Key, JsonNode? Value)[] metadata)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in metadata)
++        {
++            if (value is not null)
++            {
++                payload[key] = value.DeepClone();
++            }
++        }
++
++        return new BriefingAggregateItemDto(
++            section,
++            TrimForSummary(title, 160),
++            TrimForSummary(summary),
++            string.IsNullOrWhiteSpace(severity) ? null : severity.Trim(),
++            string.IsNullOrWhiteSpace(status) ? null : status.Trim(),
++            string.IsNullOrWhiteSpace(sourceEntityType) ? null : sourceEntityType.Trim(),
++            sourceEntityId == Guid.Empty ? null : sourceEntityId,
++            NormalizeUtc(occurredUtc),
++            payload);
++    }
++
++    private static string Humanize(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return "Unknown";
++        }
++
++        var normalized = value.Replace('_', ' ').Trim();
++        return char.ToUpperInvariant(normalized[0]) + normalized[1..];
++    }
++
++    private static string TrimForSummary(string? value, int maxLength = 220)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return "No summary provided.";
++        }
++
++        var normalized = string.Join(
++            ' ',
++            value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
++        return normalized.Length <= maxLength
++            ? normalized
++            : normalized[..Math.Max(0, maxLength - 1)].TrimEnd() + ".";
++    }
++
+     private async Task<Conversation> ResolveBriefingConversationAsync(Guid companyId, Guid ownerUserId, CancellationToken cancellationToken)
+     {
+         var conversation = await _dbContext.Conversations
+@@ -543,12 +822,6 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     }
+ 
+     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
+-    private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc);
+-    private sealed record BriefingAggregate(
+-        IReadOnlyList<BriefingItem> Approvals,
+-        IReadOnlyList<BriefingItem> TaskHighlights,
+-        IReadOnlyList<BriefingItem> WorkflowExceptions,
+-        IReadOnlyList<BriefingItem> AgentHighlights,
+-        IReadOnlyList<BriefingSourceReferenceDto> SourceReferences);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 3b8d2ed..3f02bc1 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -72,7 +72,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             : $"Weekly executive summary for {company.Name}";
+         var body = RenderBody(company.Name, briefingType, window, aggregate);
+         var structuredPayload = BuildPayload(company.Name, briefingType, window, aggregate);
+-        var sourceRefs = BuildSourceReferences(aggregate.SourceReferences);
++        var sourceRefs = BuildSourceReferences(aggregate);
+ 
+         var ownerUserId = await ResolveOwnerUserIdAsync(companyId, cancellationToken);
+         var conversation = ownerUserId.HasValue
+diff --git a/src/VirtualCompany.Api/Controllers/BriefingsController.cs b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+index 6a1f7d2..6125c58 100644
+--- a/src/VirtualCompany.Api/Controllers/BriefingsController.cs
++++ b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+@@ -21,6 +21,25 @@ public sealed class BriefingsController : ControllerBase
+         _briefingService = briefingService;
+     }
+ 
++    [HttpPost("aggregate")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<BriefingAggregateResultDto>> AggregateAsync(
++        Guid companyId,
++        [FromBody] GenerateCompanyBriefingCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.AggregateAsync(companyId, command, cancellationToken));
++        }
++        catch (BriefingValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("latest")]
+     public async Task<ActionResult<DashboardBriefingCardDto>> GetLatestAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+new file mode 100644
+index 0000000..c089ff8
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -0,0 +1,275 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public BriefingAggregationIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Aggregate_returns_empty_sections_for_empty_company_data()
++    {
++        var seed = await SeedEmptyCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/aggregate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResponse>();
++
++        Assert.NotNull(aggregate);
++        Assert.Equal(seed.CompanyId, aggregate!.CompanyId);
++        Assert.Empty(aggregate.Alerts);
++        Assert.Empty(aggregate.PendingApprovals);
++        Assert.Empty(aggregate.KpiHighlights);
++        Assert.Empty(aggregate.Anomalies);
++        Assert.Empty(aggregate.NotableAgentUpdates);
++    }
++
++    [Fact]
++    public async Task Aggregate_includes_alerts_approvals_kpis_anomalies_and_agent_updates()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/aggregate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResponse>();
++
++        Assert.NotNull(aggregate);
++        Assert.Contains(aggregate!.PendingApprovals, x => x.SourceEntityId == seed.ApprovalId && x.SourceEntityType == "approval_request");
++        Assert.Contains(aggregate.Alerts, x => x.SourceEntityId == seed.WorkflowExceptionId && x.SourceEntityType == "workflow_exception");
++        Assert.Contains(aggregate.KpiHighlights, x => x.Status == "completed");
++        Assert.Contains(aggregate.Anomalies, x => x.SourceEntityId == seed.BlockedTaskId && x.SourceEntityType == "task");
++        Assert.Contains(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.AgentId && x.SourceEntityType == "agent");
++        Assert.DoesNotContain(aggregate.PendingApprovals, x => x.SourceEntityId == seed.OtherCompanyApprovalId);
++        Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
++    }
++
++    [Fact]
++    public async Task Generate_persists_structured_briefing_payload_and_message_for_company()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.NotNull(result!.Briefing.MessageId);
++        Assert.Contains("Alerts", result.Briefing.SummaryBody);
++        Assert.Contains("Approvals", result.Briefing.SummaryBody);
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("alerts"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("pendingApprovals"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("kpiHighlights"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("anomalies"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("notableAgentUpdates"));
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var message = await dbContext.Messages
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == result.Briefing.MessageId);
++
++        Assert.Equal(seed.CompanyId, message.CompanyId);
++        Assert.Equal("daily_briefing", message.MessageType);
++        Assert.True(message.StructuredPayload.ContainsKey("sourceReferences"));
++    }
++
++    [Fact]
++    public async Task Aggregate_is_tenant_scoped()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/aggregate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResponse>();
++
++        Assert.NotNull(aggregate);
++        Assert.DoesNotContain(aggregate!.PendingApprovals, x => x.SourceEntityId == seed.OtherCompanyApprovalId);
++        Assert.DoesNotContain(aggregate.Alerts, x => x.SourceEntityId == seed.OtherCompanyWorkflowExceptionId);
++        Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        return client;
++    }
++
++    private async Task<EmptyBriefingSeed> SeedEmptyCompanyAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Briefing Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new EmptyBriefingSeed(companyId);
++    }
++
++    private async Task<BriefingSeed> SeedBriefingCompanyAsync()
++    {
++        var now = DateTime.UtcNow;
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++        var completedTaskId = Guid.NewGuid();
++        var blockedTaskId = Guid.NewGuid();
++        var otherCompanyTaskId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var workflowExceptionId = Guid.NewGuid();
++        var otherCompanyWorkflowDefinitionId = Guid.NewGuid();
++        var otherCompanyWorkflowInstanceId = Guid.NewGuid();
++        var otherCompanyWorkflowExceptionId = Guid.NewGuid();
++        var toolExecutionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++        var otherCompanyToolExecutionId = Guid.NewGuid();
++        var otherCompanyApprovalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "Briefing Company"), new Company(otherCompanyId, "Other Briefing Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active),
++                new Agent(otherCompanyAgentId, otherCompanyId, "ops", "Other Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            dbContext.WorkflowDefinitions.AddRange(
++                new WorkflowDefinition(workflowDefinitionId, companyId, "daily-briefing-test", "Daily briefing test", "Operations", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))),
++                new WorkflowDefinition(otherCompanyWorkflowDefinitionId, otherCompanyId, "other-daily-briefing-test", "Other daily briefing test", "Operations", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))));
++            dbContext.WorkflowInstances.AddRange(
++                new WorkflowInstance(workflowInstanceId, companyId, workflowDefinitionId, null),
++                new WorkflowInstance(otherCompanyWorkflowInstanceId, otherCompanyId, otherCompanyWorkflowDefinitionId, null));
++
++            var completedTask = new WorkTask(completedTaskId, companyId, "briefing", "Completed customer follow-up", null, WorkTaskPriority.Normal, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
++            completedTask.UpdateStatus(WorkTaskStatus.Completed);
++            var blockedTask = new WorkTask(blockedTaskId, companyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
++            blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
++            var otherCompanyTask = new WorkTask(otherCompanyTaskId, otherCompanyId, "briefing", "Other company task", null, WorkTaskPriority.High, otherCompanyAgentId, null, "user", userId, workflowInstanceId: otherCompanyWorkflowInstanceId);
++            otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
++            dbContext.WorkTasks.AddRange(completedTask, blockedTask, otherCompanyTask);
++
++            dbContext.WorkflowExceptions.AddRange(
++                new WorkflowException(workflowExceptionId, companyId, workflowInstanceId, workflowDefinitionId, "collect", WorkflowExceptionType.Blocked, "Workflow needs review", "A workflow exception needs attention."),
++                new WorkflowException(otherCompanyWorkflowExceptionId, otherCompanyId, otherCompanyWorkflowInstanceId, otherCompanyWorkflowDefinitionId, "collect", WorkflowExceptionType.Blocked, "Other workflow needs review", "Other workflow exception."));
++
++            var toolExecution = new ToolExecutionAttempt(toolExecutionId, companyId, agentId, "erp", ToolActionType.Execute, "finance.approval", taskId: blockedTaskId, workflowInstanceId: workflowInstanceId, startedAtUtc: now);
++            var approval = new ApprovalRequest(approvalId, companyId, agentId, toolExecutionId, userId, "erp", ToolActionType.Execute, "expense", Payload(("expenseUsd", JsonValue.Create(2000))));
++            toolExecution.MarkAwaitingApproval(approvalId, Payload(("outcome", JsonValue.Create("require_approval"))), completedAtUtc: now);
++
++            var otherCompanyToolExecution = new ToolExecutionAttempt(otherCompanyToolExecutionId, otherCompanyId, otherCompanyAgentId, "erp", ToolActionType.Execute, "finance.approval", taskId: otherCompanyTaskId, workflowInstanceId: otherCompanyWorkflowInstanceId, startedAtUtc: now);
++            var otherCompanyApproval = new ApprovalRequest(otherCompanyApprovalId, otherCompanyId, otherCompanyAgentId, otherCompanyToolExecutionId, userId, "erp", ToolActionType.Execute, "expense", Payload(("expenseUsd", JsonValue.Create(9000))));
++            otherCompanyToolExecution.MarkAwaitingApproval(otherCompanyApprovalId, Payload(("outcome", JsonValue.Create("require_approval"))), completedAtUtc: now);
++
++            dbContext.ToolExecutionAttempts.AddRange(toolExecution, otherCompanyToolExecution);
++            dbContext.ApprovalRequests.AddRange(approval, otherCompanyApproval);
++            return Task.CompletedTask;
++        });
++
++        return new BriefingSeed(
++            companyId,
++            agentId,
++            blockedTaskId,
++            workflowExceptionId,
++            approvalId,
++            otherCompanyAgentId,
++            otherCompanyWorkflowExceptionId,
++            otherCompanyApprovalId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record EmptyBriefingSeed(Guid CompanyId);
++
++    private sealed record BriefingSeed(
++        Guid CompanyId,
++        Guid AgentId,
++        Guid BlockedTaskId,
++        Guid WorkflowExceptionId,
++        Guid ApprovalId,
++        Guid OtherCompanyAgentId,
++        Guid OtherCompanyWorkflowExceptionId,
++        Guid OtherCompanyApprovalId);
++
++    private sealed class BriefingAggregateResponse
++    {
++        public Guid CompanyId { get; set; }
++        public List<BriefingAggregateItemResponse> Alerts { get; set; } = [];
++        public List<BriefingAggregateItemResponse> PendingApprovals { get; set; } = [];
++        public List<BriefingAggregateItemResponse> KpiHighlights { get; set; } = [];
++        public List<BriefingAggregateItemResponse> Anomalies { get; set; } = [];
++        public List<BriefingAggregateItemResponse> NotableAgentUpdates { get; set; } = [];
++    }
++
++    private sealed class BriefingAggregateItemResponse
++    {
++        public string Title { get; set; } = string.Empty;
++        public string? Status { get; set; }
++        public string? SourceEntityType { get; set; }
++        public Guid? SourceEntityId { get; set; }
++    }
++
++    private sealed class BriefingGenerationResponse
++    {
++        public CompanyBriefingResponse Briefing { get; set; } = new();
++    }
++
++    private sealed class CompanyBriefingResponse
++    {
++        public Guid? MessageId { get; set; }
++        public string SummaryBody { get; set; } = string.Empty;
++        public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];
++    }
++}
+END_OF_PATCH

@@ -1,0 +1,621 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -160,6 +160,10 @@ public interface IExecutiveCockpitDashboardCache
+ 
+     Task SetAsync(
+         CachedExecutiveCockpitDashboardDto snapshot,
++        CancellationToken cancellationToken);
++
++    Task InvalidateAsync(
++        Guid companyId,
+         CancellationToken cancellationToken);
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+@@ -18,12 +19,14 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly IServiceProvider _serviceProvider;
++    private readonly IExecutiveCockpitDashboardCache _dashboardCache;
+ 
+     public CompanyApprovalRequestService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         IAuditEventWriter auditEventWriter,
+-        IServiceProvider serviceProvider)
++        IServiceProvider serviceProvider,
++        IExecutiveCockpitDashboardCache dashboardCache)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+@@ -31,6 +34,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         _serviceProvider = serviceProvider;
+     }
+ 
++        _dashboardCache = dashboardCache;
+     private const string DefaultRationaleSummary = "This action exceeded a configured approval threshold.";
+     private const string DefaultAffectedDataSummary = "Affected data details unavailable.";
+     private const int SummaryMaxLength = 220;
+@@ -101,6 +105,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             cancellationToken);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return await ToDtoAsync(approval, cancellationToken);
+     }
+@@ -169,6 +174,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         }
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return new ApprovalDecisionResultDto(
+             await ToDtoAsync(approval, cancellationToken),
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -31,10 +31,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _auditEventWriter = auditEventWriter;
+         _serviceProvider = serviceProvider;
++        _dashboardCache = dashboardCache;
+     }
+ 
+-        _dashboardCache = dashboardCache;
+     private const string DefaultRationaleSummary = "This action exceeded a configured approval threshold.";
+     private const string DefaultAffectedDataSummary = "Affected data details unavailable.";
+     private const int SummaryMaxLength = 220;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Domain.Entities;
+@@ -20,13 +21,16 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAgentAssignmentGuard _agentAssignmentGuard;
++    private readonly IExecutiveCockpitDashboardCache _dashboardCache;
+ 
+     public CompanyTaskService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        IAgentAssignmentGuard agentAssignmentGuard)
++        IAgentAssignmentGuard agentAssignmentGuard,
++        IExecutiveCockpitDashboardCache dashboardCache)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _agentAssignmentGuard = agentAssignmentGuard;
++        _dashboardCache = dashboardCache;
+     }
+ 
+     public async Task<TaskDetailDto> CreateTaskAsync(
+@@ -75,6 +79,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+ 
+         _dbContext.WorkTasks.Add(task);
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+     }
+@@ -117,6 +122,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+             command.ConfidenceScore);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+     }
+ 
+@@ -141,6 +147,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+ 
+         task.AssignTo(command.AssignedAgentId);
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -8,7 +8,6 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDashboardService
+ {
+-    private static readonly TimeSpan CacheFreshness = TimeSpan.FromSeconds(60);
+     private const int PendingApprovalPreviewLimit = 5;
+     private const int AlertLimit = 5;
+     private const int PerSourceActivityLimit = 8;
+@@ -43,20 +42,26 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+         }
+ 
+         await RequireMembershipAsync(query.CompanyId, cancellationToken);
+ 
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+         var cached = await _cache.TryGetAsync(query.CompanyId, cancellationToken);
+-        if (cached is not null && cached.CachedAtUtc >= nowUtc.Subtract(CacheFreshness))
++        if (cached is not null)
+         {
+             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+             return cached.Dashboard with
+             {
+                 CacheTimestampUtc = cached.CachedAtUtc
+             };
+         }
+ 
+-        _logger.LogDebug("Building executive cockpit dashboard for company {CompanyId}.", query.CompanyId);
++        _logger.LogDebug(
++            "Executive cockpit dashboard cache miss for company {CompanyId}; building aggregate from database.",
++            query.CompanyId);
+         var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
+-        await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, nowUtc, dashboard), cancellationToken);
+-        return dashboard;
++        var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var cacheableDashboard = dashboard with { CacheTimestampUtc = null };
++        await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
++        return cacheableDashboard;
+     }
+ 
+     private async Task<ExecutiveCockpitDashboardDto> BuildAsync(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs
+@@ -0,0 +1,14 @@
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class ExecutiveCockpitDashboardCacheOptions
++{
++    public const string SectionName = "ExecutiveCockpitDashboardCache";
++
++    public bool Enabled { get; set; } = true;
++    public string KeyPrefix { get; set; } = "vc:executive-cockpit";
++    public string KeyVersion { get; set; } = "v1";
++    public int TtlSeconds { get; set; } = 60;
++
++    public TimeSpan GetTtl() =>
++        TimeSpan.FromSeconds(Math.Clamp(TtlSeconds, 1, 300));
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -2,6 +2,7 @@ using System.Text.Json;
+ using Microsoft.Extensions.Caching.Distributed;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Cockpit;
++using Microsoft.Extensions.Options;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCache
+ {
+-    private const string CacheKeyVersion = "v1";
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+-    private static readonly TimeSpan TimeToLive = TimeSpan.FromMinutes(2);
+ 
+     private readonly IDistributedCache _distributedCache;
++    private readonly ExecutiveCockpitDashboardCacheOptions _options;
+     private readonly ILogger<ExecutiveCockpitDashboardCache> _logger;
+ 
+     public ExecutiveCockpitDashboardCache(
+         IDistributedCache distributedCache,
++        IOptions<ExecutiveCockpitDashboardCacheOptions> options,
+         ILogger<ExecutiveCockpitDashboardCache> logger)
+     {
+         _distributedCache = distributedCache;
++        _options = options.Value;
+         _logger = logger;
+     }
+ 
+@@ -28,12 +28,26 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardC
+         CancellationToken cancellationToken)
+     {
+-        var cacheKey = BuildCacheKey(companyId);
++        if (!_options.Enabled)
++        {
++            return null;
++        }
++
++        var cacheKey = BuildCacheKey(companyId, _options);
++        byte[]? payload;
+         try
+         {
+-            var payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++            payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++        }
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            _logger.LogWarning(ex, "Executive cockpit dashboard cache read failed for company {CompanyId}; falling back to database.", companyId);
++            return null;
++        }
++
+             if (payload is null || payload.Length == 0)
+             {
++            _logger.LogDebug("Executive cockpit dashboard cache miss for company {CompanyId}.", companyId);
+                 return null;
+             }
+ 
++        try
++        {
+             var snapshot = JsonSerializer.Deserialize<CachedExecutiveCockpitDashboardDto>(payload, SerializerOptions);
+             if (snapshot is null ||
+                 snapshot.CompanyId != companyId ||
+@@ -41,33 +55,34 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardC
+             {
+-                await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
++                await SafeRemoveAsync(cacheKey, companyId, cancellationToken);
+                 return null;
+             }
+ 
++            _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", companyId);
+             return snapshot;
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+             _logger.LogWarning(ex, "Ignoring malformed executive cockpit dashboard cache entry for company {CompanyId}.", companyId);
+-            try
+-            {
+-                await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
+-            }
+-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+-            {
+-            }
+-
++            await SafeRemoveAsync(cacheKey, companyId, cancellationToken);
+             return null;
+         }
+     }
+ 
+     public async Task SetAsync(CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken)
+     {
+-        if (snapshot.CompanyId == Guid.Empty || snapshot.Dashboard.CompanyId != snapshot.CompanyId)
++        if (!_options.Enabled ||
++            snapshot.CompanyId == Guid.Empty ||
++            snapshot.Dashboard.CompanyId != snapshot.CompanyId)
+         {
+             return;
+         }
+ 
+         try
+         {
+             await _distributedCache.SetAsync(
+-                BuildCacheKey(snapshot.CompanyId),
++                BuildCacheKey(snapshot.CompanyId, _options),
+                 JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions),
+                 new DistributedCacheEntryOptions
+                 {
+-                    AbsoluteExpirationRelativeToNow = TimeToLive
++                    AbsoluteExpirationRelativeToNow = _options.GetTtl()
+                 },
+                 cancellationToken);
++            _logger.LogDebug("Cached executive cockpit dashboard for company {CompanyId}.", snapshot.CompanyId);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+@@ -75,6 +90,29 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardC
+         }
+     }
+ 
++    public async Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (!_options.Enabled || companyId == Guid.Empty)
++        {
++            return;
++        }
++
++        await SafeRemoveAsync(BuildCacheKey(companyId, _options), companyId, cancellationToken);
++    }
++
++    private async Task SafeRemoveAsync(string cacheKey, Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
++            _logger.LogDebug("Invalidated executive cockpit dashboard cache for company {CompanyId}.", companyId);
++        }
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            _logger.LogWarning(ex, "Failed to invalidate executive cockpit dashboard cache for company {CompanyId}.", companyId);
++        }
++    }
++
+     public static string BuildCacheKey(Guid companyId) =>
+-        $"vc:executive-cockpit:{CacheKeyVersion}:{companyId:N}";
++        BuildCacheKey(companyId, new ExecutiveCockpitDashboardCacheOptions());
++
++    private static string BuildCacheKey(Guid companyId, ExecutiveCockpitDashboardCacheOptions options) =>
++        $"{options.KeyPrefix.Trim().TrimEnd(':')}:{options.KeyVersion.Trim().ToLowerInvariant()}:company:{companyId:N}";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -75,6 +75,18 @@ public static class DependencyInjection
+         services.AddOptions<GroundedContextRetrievalCacheOptions>()
+             .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
+ 
++        services.AddOptions<ExecutiveCockpitDashboardCacheOptions>()
++            .Bind(configuration.GetSection(ExecutiveCockpitDashboardCacheOptions.SectionName))
++            .Validate(options => options.TtlSeconds > 0, "Executive cockpit dashboard cache TTL must be positive.")
++            .PostConfigure(options =>
++            {
++                options.KeyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix)
++                    ? "vc:executive-cockpit"
++                    : options.KeyPrefix.Trim().TrimEnd(':');
++                options.KeyVersion = string.IsNullOrWhiteSpace(options.KeyVersion)
++                    ? "v1"
++                    : options.KeyVersion.Trim().ToLowerInvariant();
++            });
++
+         services.AddOptions<MultiAgentCollaborationOptions>()
+             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
+             .PostConfigure(options =>
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -38,6 +38,12 @@
+     "KnowledgeTtlSeconds": 120,
+     "MemoryTtlSeconds": 30
+   },
++  "ExecutiveCockpitDashboardCache": {
++    "Enabled": true,
++    "KeyPrefix": "vc:executive-cockpit",
++    "KeyVersion": "v1",
++    "TtlSeconds": 60
++  },
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+     "BatchSize": 20,
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -38,6 +38,12 @@
+     "KnowledgeTtlSeconds": 120,
+     "MemoryTtlSeconds": 30
+   },
++  "ExecutiveCockpitDashboardCache": {
++    "Enabled": true,
++    "KeyPrefix": "vc:executive-cockpit",
++    "KeyVersion": "v1",
++    "TtlSeconds": 60
++  },
+ 
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+@@ -0,0 +1,196 @@
++using System.Collections.Concurrent;
++using Microsoft.Extensions.Caching.Distributed;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitDashboardCacheTests
++{
++    [Fact]
++    public async Task Cache_returns_miss_then_hit_for_the_same_tenant()
++    {
++        var distributedCache = new RecordingDistributedCache();
++        var cache = CreateCache(distributedCache);
++        var companyId = Guid.NewGuid();
++        var snapshot = CreateSnapshot(companyId, "Tenant A");
++
++        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));
++
++        await cache.SetAsync(snapshot, CancellationToken.None);
++        var cached = await cache.TryGetAsync(companyId, CancellationToken.None);
++
++        Assert.NotNull(cached);
++        Assert.Equal(companyId, cached!.CompanyId);
++        Assert.Equal("Tenant A", cached.Dashboard.CompanyName);
++        Assert.Single(distributedCache.SetKeys);
++    }
++
++    [Fact]
++    public async Task Cache_keys_and_payload_validation_prevent_cross_tenant_reuse()
++    {
++        var distributedCache = new RecordingDistributedCache();
++        var cache = CreateCache(distributedCache);
++        var companyA = Guid.NewGuid();
++        var companyB = Guid.NewGuid();
++
++        await cache.SetAsync(CreateSnapshot(companyA, "Tenant A"), CancellationToken.None);
++
++        Assert.Null(await cache.TryGetAsync(companyB, CancellationToken.None));
++        Assert.Contains(companyA.ToString("N"), ExecutiveCockpitDashboardCache.BuildCacheKey(companyA));
++        Assert.Contains(companyB.ToString("N"), ExecutiveCockpitDashboardCache.BuildCacheKey(companyB));
++        Assert.NotEqual(
++            ExecutiveCockpitDashboardCache.BuildCacheKey(companyA),
++            ExecutiveCockpitDashboardCache.BuildCacheKey(companyB));
++    }
++
++    [Fact]
++    public async Task Cache_read_failures_fail_open_as_misses()
++    {
++        var distributedCache = new RecordingDistributedCache
++        {
++            ThrowOnGet = true
++        };
++        var cache = CreateCache(distributedCache);
++
++        var result = await cache.TryGetAsync(Guid.NewGuid(), CancellationToken.None);
++
++        Assert.Null(result);
++    }
++
++    [Fact]
++    public async Task Cache_write_and_invalidation_failures_do_not_throw()
++    {
++        var distributedCache = new RecordingDistributedCache
++        {
++            ThrowOnSet = true,
++            ThrowOnRemove = true
++        };
++        var cache = CreateCache(distributedCache);
++        var companyId = Guid.NewGuid();
++
++        await cache.SetAsync(CreateSnapshot(companyId, "Tenant A"), CancellationToken.None);
++        await cache.InvalidateAsync(companyId, CancellationToken.None);
++    }
++
++    [Fact]
++    public async Task Cache_invalidation_removes_only_the_target_tenant()
++    {
++        var distributedCache = new RecordingDistributedCache();
++        var cache = CreateCache(distributedCache);
++        var companyA = Guid.NewGuid();
++        var companyB = Guid.NewGuid();
++
++        await cache.SetAsync(CreateSnapshot(companyA, "Tenant A"), CancellationToken.None);
++        await cache.SetAsync(CreateSnapshot(companyB, "Tenant B"), CancellationToken.None);
++
++        await cache.InvalidateAsync(companyA, CancellationToken.None);
++
++        Assert.Null(await cache.TryGetAsync(companyA, CancellationToken.None));
++        Assert.NotNull(await cache.TryGetAsync(companyB, CancellationToken.None));
++    }
++
++    private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>
++        new(
++            distributedCache,
++            Options.Create(new ExecutiveCockpitDashboardCacheOptions
++            {
++                Enabled = true,
++                KeyPrefix = "vc:executive-cockpit",
++                KeyVersion = "tests-v1",
++                TtlSeconds = 60
++            }),
++            NullLogger<ExecutiveCockpitDashboardCache>.Instance);
++
++    private static CachedExecutiveCockpitDashboardDto CreateSnapshot(Guid companyId, string companyName)
++    {
++        var now = DateTime.UtcNow;
++        var dashboard = new ExecutiveCockpitDashboardDto(
++            companyId,
++            companyName,
++            now,
++            null,
++            [],
++            null,
++            new ExecutiveCockpitPendingApprovalsDto(0, [], $"/approvals?companyId={companyId}&status=pending"),
++            [],
++            [],
++            [],
++            new ExecutiveCockpitSetupStateDto(false, false, false, 0, 0, 0, true),
++            new ExecutiveCockpitEmptyStateFlagsDto(true, true, true, true, true, true));
++
++        return new CachedExecutiveCockpitDashboardDto(companyId, now, dashboard);
++    }
++
++    private sealed class RecordingDistributedCache : IDistributedCache
++    {
++        private readonly ConcurrentDictionary<string, byte[]> _entries = new(StringComparer.Ordinal);
++        private readonly ConcurrentQueue<string> _setKeys = new();
++
++        public bool ThrowOnGet { get; init; }
++        public bool ThrowOnSet { get; init; }
++        public bool ThrowOnRemove { get; init; }
++        public IReadOnlyList<string> SetKeys => _setKeys.ToArray();
++
++        public byte[]? Get(string key)
++        {
++            if (ThrowOnGet)
++            {
++                throw new InvalidOperationException("Configured cache get failure.");
++            }
++
++            return _entries.TryGetValue(key, out var value) ? value.ToArray() : null;
++        }
++
++        public Task<byte[]?> GetAsync(string key, CancellationToken token = default)
++        {
++            token.ThrowIfCancellationRequested();
++            return Task.FromResult(Get(key));
++        }
++
++        public void Set(string key, byte[] value, DistributedCacheEntryOptions options)
++        {
++            if (ThrowOnSet)
++            {
++                throw new InvalidOperationException("Configured cache set failure.");
++            }
++
++            _entries[key] = value.ToArray();
++            _setKeys.Enqueue(key);
++        }
++
++        public Task SetAsync(
++            string key,
++            byte[] value,
++            DistributedCacheEntryOptions options,
++            CancellationToken token = default)
++        {
++            token.ThrowIfCancellationRequested();
++            Set(key, value, options);
++            return Task.CompletedTask;
++        }
++
++        public void Refresh(string key)
++        {
++        }
++
++        public Task RefreshAsync(string key, CancellationToken token = default)
++        {
++            token.ThrowIfCancellationRequested();
++            return Task.CompletedTask;
++        }
++
++        public void Remove(string key)
++        {
++            if (ThrowOnRemove)
++            {
++                throw new InvalidOperationException("Configured cache remove failure.");
++            }
++
++            _entries.TryRemove(key, out _);
++        }
++
++        public Task RemoveAsync(string key, CancellationToken token = default)
++        {
++            token.ThrowIfCancellationRequested();
++            Remove(key);
++            return Task.CompletedTask;
++        }
++    }
++}
+END_OF_PATCH

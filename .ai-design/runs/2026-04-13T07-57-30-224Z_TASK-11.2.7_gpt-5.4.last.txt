@@ -1,0 +1,274 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+index 4f3b2c1..b29c9ad 100644
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -9,6 +9,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     private const int DescriptionMaxLength = 4000;
+     private const int ActorTypeMaxLength = 64;
+     private const int RationaleSummaryMaxLength = 2000;
++    private const int CorrelationIdMaxLength = 128;
+ 
+     private WorkTask()
+     {
+@@ -29,7 +30,8 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         Guid? workflowInstanceId = null,
+         IDictionary<string, JsonNode?>? outputPayload = null,
+         string? rationaleSummary = null,
+-        decimal? confidenceScore = null)
++        decimal? confidenceScore = null,
++        string? correlationId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -77,6 +79,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         OutputPayload = CloneNodes(outputPayload);
+         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
+         ConfidenceScore = confidenceScore;
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
+         WorkflowInstanceId = workflowInstanceId;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+@@ -101,6 +104,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     public Dictionary<string, JsonNode?> OutputPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public string? RationaleSummary { get; private set; }
+     public decimal? ConfidenceScore { get; private set; }
++    public string? CorrelationId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? CompletedUtc { get; private set; }
+@@ -145,6 +149,12 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public void SetCorrelationId(string? correlationId)
++    {
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void UpdateStatus(
+         WorkTaskStatus status,
+         IDictionary<string, JsonNode?>? outputPayload = null,
+diff --git a/src/VirtualCompany.Application/Tasks/TaskContracts.cs b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+index 89df03a..d52f624 100644
+--- a/src/VirtualCompany.Application/Tasks/TaskContracts.cs
++++ b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+@@ -15,7 +15,8 @@ public sealed record CreateTaskCommand(
+     Guid? WorkflowInstanceId = null,
+     Dictionary<string, JsonNode?>? OutputPayload = null,
+     string? RationaleSummary = null,
+-    decimal? ConfidenceScore = null);
++    decimal? ConfidenceScore = null,
++    string? CorrelationId = null);
+ 
+ public sealed record CreateSubtaskCommand(
+     string Type,
+@@ -28,7 +29,8 @@ public sealed record CreateSubtaskCommand(
+     Guid? WorkflowInstanceId = null,
+     Dictionary<string, JsonNode?>? OutputPayload = null,
+     string? RationaleSummary = null,
+-    decimal? ConfidenceScore = null);
++    decimal? ConfidenceScore = null,
++    string? CorrelationId = null);
+ 
+ public sealed record UpdateTaskStatusCommand(
+     string Status,
+@@ -80,7 +82,8 @@ public sealed record TaskDetailDto(
+     DateTime UpdatedAt,
+     DateTime? CompletedAt,
+     TaskAgentSummaryDto? AssignedAgent,
+-    TaskParentSummaryDto? ParentTask);
++    TaskParentSummaryDto? ParentTask,
++    string? CorrelationId = null);
+ 
+ public sealed record TaskListItemDto(
+     Guid Id,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+index 2e30f6d..2caa648 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -70,7 +70,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+             command.WorkflowInstanceId,
+             command.OutputPayload,
+             command.RationaleSummary,
+-            command.ConfidenceScore);
++            command.ConfidenceScore,
++            command.CorrelationId);
+         task.SetDueDate(command.DueAt);
+ 
+         _dbContext.WorkTasks.Add(task);
+@@ -100,7 +101,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+             command.WorkflowInstanceId,
+             command.OutputPayload,
+             command.RationaleSummary,
+-            command.ConfidenceScore);
++            command.ConfidenceScore,
++            command.CorrelationId);
+ 
+         return await CreateTaskAsync(companyId, createCommand, cancellationToken);
+     }
+@@ -271,7 +273,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+             task.UpdatedUtc,
+             task.CompletedUtc,
+             task.AssignedAgent is null ? null : ToAgentSummaryDto(task.AssignedAgent),
+-            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()));
++            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()),
++            task.CorrelationId);
+ 
+     private static TaskListItemDto ToListItemDto(WorkTask task) =>
+         new(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 0c2b60b..0bb54b3 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -15,6 +15,7 @@ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Observability;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+@@ -173,6 +174,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 await PersistTaskResultAsync(task.Id, result, cancellationToken);
+             }
+             await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
++            _dbContext.ChangeTracker.DetectChanges();
++
+             await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+             return result;
+@@ -300,7 +303,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             task.UpdatedUtc,
+             task.CompletedUtc,
+             task.AssignedAgent is null ? null : new TaskAgentSummaryDto(task.AssignedAgent.Id, task.AssignedAgent.DisplayName, task.AssignedAgent.Status.ToStorageValue()),
+-            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()));
++            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()),
++            task.CorrelationId);
+     }
+ 
+     private async Task<CompanyRuntimeContext> GetCompanyAsync(Guid companyId, CancellationToken cancellationToken)
+@@ -403,6 +407,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ? WorkTaskStatus.AwaitingApproval
+             : WorkTaskStatus.Completed;
+ 
++        task.SetCorrelationId(result.CorrelationId);
+         task.UpdateStatus(taskStatus, result.TaskArtifact?.OutputPayload ?? result.StructuredOutput, result.RationaleSummary, result.ConfidenceScore);
+     }
+ 
+@@ -625,7 +630,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences)
+     {
+-        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        var output = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["schemaVersion"] = JsonValue.Create("2026-04-13"),
+             ["orchestrationId"] = JsonValue.Create(context.OrchestrationId.ToString("N")),
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 2bbef2a..a1e9f42 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -512,6 +512,7 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEv
+             .IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -855,13 +856,13 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.AgentId).IsRequired();
+         builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+-        builder.Property(x => x.ActionType)
+         builder.Property(x => x.TaskId);
+         builder.Property(x => x.WorkflowInstanceId);
+         builder.Property(x => x.CorrelationId).HasMaxLength(128);
++        builder.Property(x => x.ActionType)
+             .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+@@ -937,6 +938,7 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.Property(x => x.RationaleSummary).HasColumnName("rationale_summary").HasMaxLength(2000);
+         builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("numeric(5,4)");
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+@@ -947,6 +949,7 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.HasIndex(x => new { x.CompanyId, x.DueUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ParentTaskId });
+         builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413133000_AddOrchestrationCorrelationIds.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413133000_AddOrchestrationCorrelationIds.cs
+new file mode 100644
+index 0000000..63efcb6
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413133000_AddOrchestrationCorrelationIds.cs
+@@ -0,0 +1,58 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddOrchestrationCorrelationIds : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "correlation_id",
++            table: "tasks",
++            type: "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tasks_company_id_correlation_id",
++            table: "tasks",
++            columns: new[] { "company_id", "correlation_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_CorrelationId",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "CorrelationId" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_context_retrievals_CompanyId_CorrelationId",
++            table: "context_retrievals",
++            columns: new[] { "CompanyId", "CorrelationId" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_context_retrievals_CompanyId_CorrelationId",
++            table: "context_retrievals");
++
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_CorrelationId",
++            table: "audit_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_tasks_company_id_correlation_id",
++            table: "tasks");
++
++        migrationBuilder.DropColumn(
++            name: "correlation_id",
++            table: "tasks");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 8d3ef44..0cfc59a 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -99,6 +99,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
+         Assert.Equal(WorkTaskStatus.Completed, task.Status);
++        Assert.Equal("orch-test-correlation", task.CorrelationId);
+         Assert.Equal("orch-test-correlation", task.OutputPayload["correlationId"]!.GetValue<string>());
+         Assert.Equal(seed.AgentId.ToString("N"), task.OutputPayload["agentId"]!.GetValue<string>());
+         Assert.NotNull(task.RationaleSummary);
+END_OF_PATCH

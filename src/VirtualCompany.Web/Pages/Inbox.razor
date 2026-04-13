@@ -1,0 +1,286 @@
+@page "/inbox"
+@inject InboxApiClient InboxApiClient
+@inject ApprovalApiClient ApprovalApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.Components
+
+<PageTitle>Inbox</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Inbox</h1>
+        <p class="text-body-secondary mb-0">Loading notifications...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <h1>Choose a company inbox</h1>
+                <p class="lead mb-3">Notifications and approvals are scoped to a company workspace.</p>
+
+                @if (ActiveMemberships.Count > 0)
+                {
+                    <div class="template-grid mt-4">
+                        @foreach (var membership in ActiveMemberships)
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@($"/inbox?companyId={membership.CompanyId}")">
+                                <strong>@membership.CompanyName</strong>
+                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
+                }
+            </div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Inbox</span>
+                <h1>@(companyAccess?.CompanyName ?? "Notifications")</h1>
+                <p class="text-body-secondary mb-0">@UnreadSummary</p>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+
+                <div class="mt-4">
+                    <h2 class="h5">Pending approvals</h2>
+                    @if (inbox.PendingApprovals.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No approvals are waiting for you.</p>
+                    }
+                    else
+                    {
+                        <div class="list-group">
+                            @foreach (var approval in inbox.PendingApprovals)
+                            {
+                                <div class="list-group-item">
+                                    <div class="d-flex w-100 justify-content-between gap-3">
+                                        <div>
+                                            <strong>@approval.ApprovalType approval</strong>
+                                            <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
+                                            <div class="small mt-2">@approval.AffectedDataSummary</div>
+                                            <div class="small mt-1">Requested by @approval.RequestedByActorType @approval.RequestedByActorId.ToString("N")</div>
+                                            <div class="small mt-1">Approver: @FormatApprover(approval)</div>
+                                            @if (!string.IsNullOrWhiteSpace(approval.ThresholdSummary))
+                                            {
+                                                <div class="small mt-1">@approval.ThresholdSummary</div>
+                                            }
+                                        </div>
+                                        <span class="badge text-bg-warning align-self-start">@approval.Status</span>
+                                    </div>
+                                    @if (approval.CurrentStep is not null)
+                                    {
+                                        <div class="mt-3">
+                                            <textarea class="form-control mb-2" rows="2" placeholder="Decision comment" @bind="approvalComments[approval.Id]"></textarea>
+                                            <div class="dashboard-actions">
+                                                <button class="btn btn-primary" @onclick='() => DecideAsync(approval, "approve")' disabled="@isDeciding">Approve</button>
+                                                <button class="btn btn-outline-secondary" @onclick='() => DecideAsync(approval, "reject")' disabled="@isDeciding">Reject</button>
+                                                <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}&approvalId={approval.Id}")">Open detail</a>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="mt-4">
+                    <h2 class="h5">Notifications</h2>
+                    @if (inbox.Notifications.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No notifications.</p>
+                    }
+                    else
+                    {
+                        <div class="list-group">
+                            @foreach (var notification in inbox.Notifications)
+                            {
+                                <div class="@NotificationClass(notification)">
+                                    <div class="d-flex w-100 justify-content-between gap-3">
+                                        <div>
+                                            <strong>@notification.Title</strong>
+                                            <div class="text-body-secondary small mt-1">@notification.Body</div>
+                                            <div class="small mt-2">@notification.CreatedAt.ToLocalTime().ToString("g")</div>
+                                        </div>
+                                        <div class="text-end">
+                                            <span class="@PriorityBadgeClass(notification.Priority)">@notification.Priority</span>
+                                            <span class="badge text-bg-light ms-1">@notification.Status</span>
+                                        </div>
+                                    </div>
+                                    <div class="dashboard-actions mt-3">
+                                        @if (IsUnread(notification))
+                                        {
+                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "read")'>Mark read</button>
+                                        }
+                                        else if (!IsActioned(notification))
+                                        {
+                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "unread")'>Mark unread</button>
+                                        }
+                                        @if (!IsActioned(notification))
+                                        {
+                                            <button class="btn btn-outline-secondary btn-sm" @onclick='() => SetNotificationStatusAsync(notification, "actioned")'>Mark actioned</button>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(notification.ActionUrl))
+                                        {
+                                            <a class="btn btn-outline-secondary btn-sm" href="@notification.ActionUrl">Open</a>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "approvalId")]
+    public Guid? ApprovalId { get; set; }
+
+    private bool isLoading = true;
+    private bool isDeciding;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private InboxViewModel inbox = new();
+    private string? errorMessage;
+    private readonly Dictionary<Guid, string?> approvalComments = [];
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    private string UnreadSummary =>
+        $"{inbox.UnreadCount} unread notification(s), {inbox.PendingApprovalCount} approval(s) waiting for you.";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is not Guid companyId)
+            {
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/inbox?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                }
+
+                return;
+            }
+
+            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+            inbox = await InboxApiClient.GetInboxAsync(companyId);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            inbox = new InboxViewModel();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task DecideAsync(ApprovalInboxItemViewModel approval, string decision)
+    {
+        if (CompanyId is not Guid companyId || approval.CurrentStep is null)
+        {
+            return;
+        }
+
+        isDeciding = true;
+        errorMessage = null;
+        try
+        {
+            approvalComments.TryGetValue(approval.Id, out var comment);
+            await ApprovalApiClient.DecideAsync(
+                companyId,
+                approval.Id,
+                new ApprovalDecisionRequest
+                {
+                    ApprovalId = approval.Id,
+                    StepId = approval.CurrentStep.Id,
+                    Decision = decision,
+                    Comment = comment
+                });
+            inbox = await InboxApiClient.GetInboxAsync(companyId);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isDeciding = false;
+        }
+    }
+
+    private async Task SetNotificationStatusAsync(NotificationListItemViewModel notification, string status)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        var updated = await InboxApiClient.SetStatusAsync(companyId, notification.Id, status);
+        var index = inbox.Notifications.FindIndex(x => x.Id == updated.Id);
+        if (index >= 0)
+        {
+            inbox.Notifications[index] = updated;
+        }
+    }
+
+    private static bool IsUnread(NotificationListItemViewModel notification) =>
+        string.Equals(notification.Status, "unread", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsActioned(NotificationListItemViewModel notification) =>
+        string.Equals(notification.Status, "actioned", StringComparison.OrdinalIgnoreCase);
+
+    private static string NotificationClass(NotificationListItemViewModel notification) =>
+        IsUnread(notification) ? "list-group-item border-start border-4 border-primary" : "list-group-item";
+
+    private static string PriorityBadgeClass(string priority) =>
+        priority.ToLowerInvariant() switch
+        {
+            "critical" => "badge text-bg-danger",
+            "high" => "badge text-bg-warning",
+            _ => "badge text-bg-light"
+        };
+
+    private static string FormatApprover(ApprovalInboxItemViewModel approval)
+    {
+        if (approval.RequiredUserId is Guid requiredUserId)
+        {
+            return $"user {requiredUserId:N}";
+        }
+
+        return !string.IsNullOrWhiteSpace(approval.RequiredRole) ? $"role {approval.RequiredRole}" : FormatStepApprover(approval.CurrentStep);
+    }
+
+    private static string FormatStepApprover(ApprovalStepViewModel? step) =>
+        step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
+}

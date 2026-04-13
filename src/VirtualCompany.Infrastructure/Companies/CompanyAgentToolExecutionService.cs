@@ -48,17 +48,24 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     {
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
-        var correlationId = CreateCorrelationId();
+        var correlationId = CreateCorrelationId(command.CorrelationId);
+        var startedAtUtc = DateTime.UtcNow;
         var executionId = Guid.NewGuid();
+        var actionType = ToolActionTypeValues.Parse(command.ActionType);
+        var actionTypeValue = actionType.ToStorageValue();
 
         var attempt = new ToolExecutionAttempt(
             executionId,
             companyId,
             agentId,
             command.ToolName,
-            ToolActionTypeValues.Parse(command.ActionType),
+            actionType,
             command.Scope,
-            command.RequestPayload);
+            command.RequestPayload,
+            command.TaskId,
+            command.WorkflowInstanceId,
+            correlationId,
+            startedAtUtc);
 
         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
         var policyRequest = new PolicyEvaluationRequest(
@@ -73,7 +80,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             CloneNodes(runtimeProfile.ApprovalThresholds),
             CloneNodes(runtimeProfile.EscalationRules),
             command.ToolName,
-            command.ActionType,
+            actionType,
             command.Scope,
             CloneNodes(command.RequestPayload),
             command.ThresholdCategory,
@@ -89,7 +96,16 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var serializedDecision = SerializeDecision(decision);
         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
         {
-            attempt.MarkDenied(serializedDecision);
+            var callerMessage = BuildCallerMessage(decision);
+            var denial = ToolExecutionDenialDto.FromDecision(decision, callerMessage);
+            var structuredResult = ToolExecutionResult.Failed(
+                command.ToolName,
+                actionType,
+                ToolExecutionStatus.Denied.ToStorageValue(),
+                "policy_denied",
+                callerMessage,
+                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, userFacingMessage: callerMessage));
+            attempt.MarkDenied(serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
 
             await _auditEventWriter.WriteAsync(
                 new AuditEventWriteRequest(
@@ -113,8 +129,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 attempt.Status.ToStorageValue(),
                 null,
                 decision,
-                null,
-                BuildCallerMessage(decision));
+                structuredResult.ToStructuredPayload(),
+                callerMessage,
+                Denial: denial);
         }
 
         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
@@ -126,16 +143,24 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 attempt.Id,
                 membership.UserId,
                 command.ToolName,
-                ToolActionTypeValues.Parse(command.ActionType),
+                actionType,
                 TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
                 BuildThresholdContext(command, decision),
                 serializedDecision,
                 null);
             var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, membership.UserId);
             approvalRequest.SetDecisionChain(decisionChain);
+            var structuredResult = ToolExecutionResult.Failed(
+                command.ToolName,
+                actionType,
+                ToolExecutionStatus.AwaitingApproval.ToStorageValue(),
+                "approval_required",
+                BuildCallerMessage(decision),
+                CloneNodes(decisionChain),
+                BuildExecutionResultMetadata(command, decision, correlationId, executionId, approvalRequest.Id));
 
             _dbContext.ApprovalRequests.Add(approvalRequest);
-            attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision);
+            attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision, structuredResult.ToStructuredPayload(), DateTime.UtcNow);
 
             await _auditEventWriter.WriteAsync(
                 new AuditEventWriteRequest(
@@ -159,24 +184,61 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 attempt.Status.ToStorageValue(),
                 approvalRequest.Id,
                 decision,
-                null,
-                BuildCallerMessage(decision),
+                structuredResult.ToStructuredPayload(),
+                structuredResult.Summary,
                 CloneNodes(decisionChain));
         }
 
-        var result = await _companyToolExecutor.ExecuteAsync(
+        try
+        {
+            var result = await _companyToolExecutor.ExecuteAsync(
             new ToolExecutionRequest(
                 companyId,
                 agentId,
                 command.ToolName,
-                command.ActionType,
+                actionType,
                 command.Scope,
-                CloneNodes(command.RequestPayload)),
+                CloneNodes(command.RequestPayload),
+                command.TaskId,
+                command.WorkflowInstanceId,
+                correlationId,
+                executionId),
             cancellationToken);
+            result = NormalizeStructuredResult(result, command);
 
-        attempt.MarkExecuted(serializedDecision, result.Payload);
+            if (string.Equals(result.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            {
+                attempt.MarkDenied(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
 
-        await _auditEventWriter.WriteAsync(
+                await _auditEventWriter.WriteAsync(
+                new AuditEventWriteRequest(
+                    companyId,
+                    AuditActorTypes.Agent,
+                    agentId,
+                    AuditEventActions.AgentToolExecutionDenied,
+                    AuditTargetTypes.AgentToolExecution,
+                    attempt.Id.ToString("N"),
+                    AuditEventOutcomes.Denied,
+                    DataSources: ["agent_execution", "policy_guardrail", "tool_registry"],
+                    CorrelationId: correlationId,
+                    RationaleSummary: result.Summary,
+                    Metadata: BuildAuditMetadata(command, decision)),
+                cancellationToken);
+
+                await _dbContext.SaveChangesAsync(cancellationToken);
+
+                return new ExecuteAgentToolResultDto(
+                attempt.Id,
+                attempt.Status.ToStorageValue(),
+                null,
+                decision,
+                result.ToStructuredPayload(),
+                result.Summary);
+            }
+
+            attempt.MarkExecuted(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
+
+            await _auditEventWriter.WriteAsync(
             new AuditEventWriteRequest(
                 companyId,
                 AuditActorTypes.User,
@@ -191,15 +253,52 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 Metadata: BuildAuditMetadata(command, decision)),
             cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
 
-        return new ExecuteAgentToolResultDto(
+            return new ExecuteAgentToolResultDto(
             attempt.Id,
             attempt.Status.ToStorageValue(),
             null,
             decision,
-            CloneNodes(result.Payload),
+            result.ToStructuredPayload(),
             result.Summary);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var failedResult = ToolExecutionResult.Failed(
+                command.ToolName,
+                actionType,
+                ToolExecutionStatus.Failed.ToStorageValue(),
+                "tool_execution_failed",
+                "The tool execution failed before a structured successful response was produced.",
+                metadata: BuildExecutionResultMetadata(command, decision, correlationId, executionId, exceptionType: ex.GetType().Name));
+            attempt.MarkFailed(serializedDecision, failedResult.ToStructuredPayload(), DateTime.UtcNow);
+
+            await _auditEventWriter.WriteAsync(
+                new AuditEventWriteRequest(
+                    companyId,
+                    AuditActorTypes.User,
+                    membership.UserId,
+                    AuditEventActions.AgentToolExecutionExecuted,
+                    AuditTargetTypes.AgentToolExecution,
+                    attempt.Id.ToString("N"),
+                    AuditEventOutcomes.Failed,
+                    DataSources: ["agent_execution", "policy_guardrail", "http_request"],
+                    CorrelationId: correlationId,
+                    RationaleSummary: failedResult.Summary,
+                    Metadata: BuildAuditMetadata(command, decision)),
+                cancellationToken);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return new ExecuteAgentToolResultDto(
+                attempt.Id,
+                attempt.Status.ToStorageValue(),
+                null,
+                decision,
+                failedResult.ToStructuredPayload(),
+                failedResult.Summary);
+        }
     }
 
     private async Task<VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext> RequireMembershipAsync(
@@ -223,7 +322,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             ["toolName"] = command.ToolName,
-            ["actionType"] = command.ActionType,
+            ["actionType"] = ToolActionTypeValues.Parse(command.ActionType).ToStorageValue(),
             ["scope"] = command.Scope,
             ["policyOutcome"] = decision.Outcome,
             ["approvalRequired"] = decision.ApprovalRequired ? "true" : "false",
@@ -283,7 +382,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
 
         thresholdContext["toolName"] = JsonValue.Create(command.ToolName);
-        thresholdContext["actionType"] = JsonValue.Create(command.ActionType);
+        thresholdContext["actionType"] = JsonValue.Create(ToolActionTypeValues.Parse(command.ActionType).ToStorageValue());
 
         if (!string.IsNullOrWhiteSpace(command.Scope))
         {
@@ -344,7 +443,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 ["approvalRequestId"] = approvalRequestId,
                 ["requestedByUserId"] = requestedByUserId,
                 ["toolName"] = command.ToolName,
-                ["actionType"] = command.ActionType,
+                ["actionType"] = ToolActionTypeValues.Parse(command.ActionType).ToStorageValue(),
                 ["scope"] = command.Scope,
                 ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
             }
@@ -380,6 +479,56 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
     private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision) =>
         ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision);
+
+    private static ToolExecutionResult NormalizeStructuredResult(ToolExecutionResult result, ExecuteAgentToolCommand command)
+    {
+        var actionType = ToolActionTypeValues.Parse(command.ActionType);
+
+        if (result.Payload is null)
+        {
+            return ToolExecutionResult.Failed(
+                command.ToolName,
+                actionType,
+                ToolExecutionStatus.Failed.ToStorageValue(),
+                "unstructured_tool_response",
+                "The tool executor returned no structured payload.");
+        }
+
+        ToolActionTypeValues.EnsureSupported(result.ActionType, nameof(result.ActionType));
+        return result with
+        {
+            ToolName = string.IsNullOrWhiteSpace(result.ToolName) ? command.ToolName : result.ToolName.Trim(),
+            Status = string.IsNullOrWhiteSpace(result.Status) ? ToolExecutionStatus.Failed.ToStorageValue() : result.Status.Trim(),
+            Payload = CloneNodes(result.Payload),
+            Metadata = CloneNodes(result.Metadata)
+        };
+    }
+
+    private static Dictionary<string, JsonNode?> BuildExecutionResultMetadata(
+        ExecuteAgentToolCommand command,
+        ToolExecutionDecisionDto decision,
+        string correlationId,
+        Guid executionId,
+        Guid? approvalRequestId = null,
+        string? userFacingMessage = null,
+        string? exceptionType = null)
+    {
+        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["correlationId"] = JsonValue.Create(correlationId),
+            ["executionId"] = JsonValue.Create(executionId),
+            ["primaryReasonCode"] = string.IsNullOrWhiteSpace(GetPrimaryReasonCode(decision)) ? null : JsonValue.Create(GetPrimaryReasonCode(decision)),
+            ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
+            ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+            ["policyOutcome"] = JsonValue.Create(decision.Outcome),
+            ["policyDecisionSchemaVersion"] = JsonValue.Create(decision.SchemaVersion),
+            ["approvalRequestId"] = approvalRequestId.HasValue ? JsonValue.Create(approvalRequestId.Value) : null,
+            ["exceptionType"] = string.IsNullOrWhiteSpace(exceptionType) ? null : JsonValue.Create(exceptionType)
+        };
+        metadata["userFacingMessage"] = string.IsNullOrWhiteSpace(userFacingMessage) ? null : JsonValue.Create(userFacingMessage.Trim());
+
+        return metadata;
+    }
 
     private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?> nodes)
     {
@@ -455,8 +604,15 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
 
-    private string CreateCorrelationId() =>
-        string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
+    private string CreateCorrelationId(string? requestedCorrelationId)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
+        {
+            return requestedCorrelationId.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
             ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : _correlationContextAccessor.CorrelationId!;
+    }
 }

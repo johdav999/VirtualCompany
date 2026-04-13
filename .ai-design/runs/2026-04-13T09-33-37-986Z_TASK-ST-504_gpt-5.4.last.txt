@@ -1,0 +1,1191 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 3a8f7a1..7b8d9c2 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -77,4 +77,10 @@ public static class AuditEventActions
+     public const string DirectChatTaskCreated = "direct_chat.task.created";
+     public const string DirectChatTaskLinked = "direct_chat.task.linked";
+     public const string SingleAgentTaskOrchestrationExecuted = "single_agent_task.orchestration.executed";
++    public const string MultiAgentCollaborationStarted = "multi_agent.collaboration.started";
++    public const string MultiAgentCollaborationPlanCreated = "multi_agent.collaboration.plan_created";
++    public const string MultiAgentWorkerSubtaskCreated = "multi_agent.worker_subtask.created";
++    public const string MultiAgentWorkerCompleted = "multi_agent.worker.completed";
++    public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
++    public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
+ }
+diff --git a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+new file mode 100644
+index 0000000..2d2f4ef
+--- /dev/null
++++ b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+@@ -0,0 +1,114 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Orchestration;
++
++public sealed record StartMultiAgentCollaborationCommand(
++    Guid CompanyId = default,
++    string Objective = "",
++    Guid CoordinatorAgentId = default,
++    IReadOnlyList<WorkerSubtaskRequest>? Workers = null,
++    Guid? InitiatingActorId = null,
++    string? InitiatingActorType = null,
++    Guid? WorkflowInstanceId = null,
++    string? CorrelationId = null,
++    CollaborationLimitRequest? Limits = null,
++    Dictionary<string, JsonNode?>? InputPayload = null);
++
++public sealed record WorkerSubtaskRequest(
++    Guid AgentId = default,
++    string Objective = "",
++    string? Instructions = null);
++
++public sealed record CollaborationLimitRequest(
++    int? MaxWorkers = null,
++    int? MaxDepth = null,
++    int? MaxRuntimeSeconds = null);
++
++public sealed record CollaborationPlanDto(
++    Guid PlanId,
++    Guid CompanyId,
++    Guid ParentTaskId,
++    Guid CoordinatorAgentId,
++    string Objective,
++    CollaborationLimitDto Limits,
++    IReadOnlyList<CollaborationStepDto> Steps,
++    string Status,
++    string CorrelationId);
++
++public sealed record CollaborationLimitDto(
++    int MaxWorkers,
++    int MaxDepth,
++    int MaxRuntimeSeconds);
++
++public sealed record CollaborationStepDto(
++    Guid StepId,
++    int Sequence,
++    Guid ParentTaskId,
++    Guid? SubtaskId,
++    Guid AssignedAgentId,
++    string Objective,
++    string? Instructions,
++    int DelegationDepth,
++    string Status,
++    string? RationaleSummary);
++
++public sealed record AgentContributionDto(
++    Guid AgentId,
++    Guid SubtaskId,
++    int Sequence,
++    string Status,
++    string Output,
++    string? RationaleSummary,
++    decimal? ConfidenceScore,
++    string CorrelationId);
++
++public sealed record MultiAgentCollaborationResultDto(
++    Guid PlanId,
++    Guid CompanyId,
++    Guid ParentTaskId,
++    Guid CoordinatorAgentId,
++    string Status,
++    string FinalResponse,
++    IReadOnlyList<AgentContributionDto> Contributions,
++    IReadOnlyList<CollaborationStepDto> Steps,
++    IReadOnlyList<Guid> FailedSubtaskIds,
++    Dictionary<string, JsonNode?> StructuredOutput,
++    string CorrelationId);
++
++public sealed class MultiAgentCollaborationOptions
++{
++    public const string SectionName = "Orchestration:MultiAgentCollaboration";
++
++    public int MaxWorkers { get; set; } = 5;
++    public int MaxDepth { get; set; } = 1;
++    public int MaxRuntimeSeconds { get; set; } = 60;
++}
++
++public interface IMultiAgentCoordinator
++{
++    Task<MultiAgentCollaborationResultDto> ExecuteAsync(
++        StartMultiAgentCollaborationCommand command,
++        CancellationToken cancellationToken);
++}
++
++public sealed class MultiAgentCollaborationValidationException : Exception
++{
++    public MultiAgentCollaborationValidationException(IDictionary<string, string[]> errors)
++        : base("Multi-agent collaboration validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public static class MultiAgentCollaborationStatusValues
++{
++    public const string Planned = "planned";
++    public const string InProgress = "in_progress";
++    public const string Completed = "completed";
++    public const string Partial = "partial";
++    public const string Failed = "failed";
++}
++
++public static class MultiAgentCollaborationTaskTypes
++{
++    public const string Parent = "manager_worker_collaboration";
++    public const string WorkerSubtask = "manager_worker_subtask";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+new file mode 100644
+index 0000000..2f8e7d4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+@@ -0,0 +1,431 @@
++using System.Diagnostics;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
++{
++    private const int RationaleMaxLength = 2000;
++
++    private readonly ICompanyTaskCommandService _taskCommands;
++    private readonly ICompanyTaskQueryService _taskQueries;
++    private readonly IAgentAssignmentGuard _agentAssignmentGuard;
++    private readonly ISingleAgentOrchestrationService _singleAgentOrchestrationService;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly MultiAgentCollaborationOptions _options;
++
++    public MultiAgentCoordinator(
++        ICompanyTaskCommandService taskCommands,
++        ICompanyTaskQueryService taskQueries,
++        IAgentAssignmentGuard agentAssignmentGuard,
++        ISingleAgentOrchestrationService singleAgentOrchestrationService,
++        IAuditEventWriter auditEventWriter,
++        IOptions<MultiAgentCollaborationOptions> options)
++    {
++        _taskCommands = taskCommands;
++        _taskQueries = taskQueries;
++        _agentAssignmentGuard = agentAssignmentGuard;
++        _singleAgentOrchestrationService = singleAgentOrchestrationService;
++        _auditEventWriter = auditEventWriter;
++        _options = options.Value;
++    }
++
++    public async Task<MultiAgentCollaborationResultDto> ExecuteAsync(
++        StartMultiAgentCollaborationCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++
++        var startedUtc = DateTime.UtcNow;
++        var correlationId = EnsureCorrelationId(command.CorrelationId);
++        var workers = command.Workers ?? Array.Empty<WorkerSubtaskRequest>();
++        var limits = ResolveLimits(command.Limits);
++        Validate(command, workers, limits);
++
++        using var runtimeBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
++        runtimeBudget.CancelAfter(TimeSpan.FromSeconds(limits.MaxRuntimeSeconds));
++
++        await _agentAssignmentGuard.EnsureAgentCanReceiveNewTasksAsync(
++            command.CompanyId,
++            command.CoordinatorAgentId,
++            nameof(command.CoordinatorAgentId),
++            runtimeBudget.Token);
++
++        foreach (var worker in workers)
++        {
++            await _agentAssignmentGuard.EnsureAgentCanReceiveNewTasksAsync(
++                command.CompanyId,
++                worker.AgentId,
++                $"{nameof(command.Workers)}.{worker.AgentId:N}",
++                runtimeBudget.Token);
++        }
++
++        var planId = Guid.NewGuid();
++        var parentTask = await _taskCommands.CreateTaskAsync(
++            command.CompanyId,
++            new CreateTaskCommand(
++                MultiAgentCollaborationTaskTypes.Parent,
++                BuildParentTitle(command.Objective),
++                command.Objective,
++                WorkTaskPriority.Normal.ToStorageValue(),
++                null,
++                command.CoordinatorAgentId,
++                BuildParentInputPayload(command, planId, limits, correlationId, workers),
++                null,
++                command.WorkflowInstanceId,
++                null,
++                null,
++                null,
++                correlationId),
++            runtimeBudget.Token);
++
++        await WriteAuditAsync(
++            command.CompanyId,
++            AuditEventActions.MultiAgentCollaborationStarted,
++            AuditEventOutcomes.Pending,
++            AuditActorTypes.Agent,
++            command.CoordinatorAgentId,
++            parentTask.Id,
++            "Manager-worker collaboration started with an explicit bounded plan.",
++            correlationId,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["planId"] = planId.ToString("N"),
++                ["workerCount"] = workers.Count.ToString(),
++                ["maxWorkers"] = limits.MaxWorkers.ToString(),
++                ["maxDepth"] = limits.MaxDepth.ToString()
++            },
++            runtimeBudget.Token);
++
++        var plannedSteps = workers
++            .Select((worker, index) => new CollaborationStepDto(
++                Guid.NewGuid(),
++                index + 1,
++                parentTask.Id,
++                null,
++                worker.AgentId,
++                NormalizeRequired(worker.Objective),
++                NormalizeOptional(worker.Instructions),
++                1,
++                MultiAgentCollaborationStatusValues.Planned,
++                null))
++            .ToList();
++
++        var initialPlan = new CollaborationPlanDto(
++            planId,
++            command.CompanyId,
++            parentTask.Id,
++            command.CoordinatorAgentId,
++            NormalizeRequired(command.Objective),
++            limits,
++            plannedSteps,
++            MultiAgentCollaborationStatusValues.Planned,
++            correlationId);
++
++        await WriteAuditAsync(
++            command.CompanyId,
++            AuditEventActions.MultiAgentCollaborationPlanCreated,
++            AuditEventOutcomes.Succeeded,
++            AuditActorTypes.Agent,
++            command.CoordinatorAgentId,
++            parentTask.Id,
++            "Explicit manager-worker plan created before worker execution.",
++            correlationId,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["planId"] = planId.ToString("N"),
++                ["stepCount"] = plannedSteps.Count.ToString()
++            },
++            runtimeBudget.Token);
++
++        var executableSteps = new List<CollaborationStepDto>(plannedSteps.Count);
++        foreach (var step in plannedSteps)
++        {
++            var childTask = await _taskCommands.CreateSubtaskAsync(
++                command.CompanyId,
++                parentTask.Id,
++                new CreateSubtaskCommand(
++                    MultiAgentCollaborationTaskTypes.WorkerSubtask,
++                    BuildWorkerTitle(step.Sequence, step.Objective),
++                    step.Instructions ?? step.Objective,
++                    WorkTaskPriority.Normal.ToStorageValue(),
++                    null,
++                    step.AssignedAgentId,
++                    BuildWorkerInputPayload(command, initialPlan, step),
++                    command.WorkflowInstanceId,
++                    null,
++                    null,
++                    null,
++                    BuildWorkerCorrelationId(correlationId, step.Sequence)),
++                runtimeBudget.Token);
++
++            var executableStep = step with
++            {
++                SubtaskId = childTask.Id,
++                Status = MultiAgentCollaborationStatusValues.InProgress
++            };
++            executableSteps.Add(executableStep);
++
++            await WriteAuditAsync(
++                command.CompanyId,
++                AuditEventActions.MultiAgentWorkerSubtaskCreated,
++                AuditEventOutcomes.Succeeded,
++                AuditActorTypes.Agent,
++                command.CoordinatorAgentId,
++                childTask.Id,
++                "Worker subtask created and linked to the manager parent task.",
++                correlationId,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["planId"] = planId.ToString("N"),
++                    ["parentTaskId"] = parentTask.Id.ToString("N"),
++                    ["assignedAgentId"] = step.AssignedAgentId.ToString("N"),
++                    ["sequence"] = step.Sequence.ToString(),
++                    ["delegationDepth"] = step.DelegationDepth.ToString()
++                },
++                runtimeBudget.Token);
++        }
++
++        var contributions = new List<AgentContributionDto>();
++        var finalSteps = new List<CollaborationStepDto>(executableSteps.Count);
++        foreach (var step in executableSteps)
++        {
++            runtimeBudget.Token.ThrowIfCancellationRequested();
++
++            if (!step.SubtaskId.HasValue)
++            {
++                throw new InvalidOperationException("Worker execution requires persisted child subtasks.");
++            }
++
++            try
++            {
++                var workerResult = await _singleAgentOrchestrationService.ExecuteAsync(
++                    new SingleAgentOrchestrationRequest(
++                        command.CompanyId,
++                        step.SubtaskId.Value,
++                        step.AssignedAgentId,
++                        command.InitiatingActorId,
++                        command.InitiatingActorType ?? AuditActorTypes.User,
++                        BuildWorkerCorrelationId(correlationId, step.Sequence),
++                        MultiAgentCollaborationTaskTypes.WorkerSubtask),
++                    runtimeBudget.Token);
++
++                var contribution = new AgentContributionDto(
++                    step.AssignedAgentId,
++                    step.SubtaskId.Value,
++                    step.Sequence,
++                    workerResult.Status,
++                    workerResult.UserFacingOutput,
++                    workerResult.RationaleSummary,
++                    workerResult.ConfidenceScore,
++                    workerResult.CorrelationId);
++                contributions.Add(contribution);
++                finalSteps.Add(step with
++                {
++                    Status = ResolveStepStatus(workerResult.Status),
++                    RationaleSummary = workerResult.RationaleSummary
++                });
++
++                await WriteAuditAsync(
++                    command.CompanyId,
++                    AuditEventActions.MultiAgentWorkerCompleted,
++                    AuditEventOutcomes.Succeeded,
++                    AuditActorTypes.Agent,
++                    step.AssignedAgentId,
++                    step.SubtaskId.Value,
++                    workerResult.RationaleSummary,
++                    correlationId,
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["planId"] = planId.ToString("N"),
++                        ["parentTaskId"] = parentTask.Id.ToString("N"),
++                        ["workerCorrelationId"] = workerResult.CorrelationId,
++                        ["workerStatus"] = workerResult.Status
++                    },
++                    runtimeBudget.Token);
++            }
++            catch (Exception ex) when (ex is not OperationCanceledException)
++            {
++                var failureSummary = Trim($"Worker subtask failed safely: {ex.Message}", RationaleMaxLength);
++                await _taskCommands.UpdateStatusAsync(
++                    command.CompanyId,
++                    step.SubtaskId.Value,
++                    new UpdateTaskStatusCommand(
++                        WorkTaskStatus.Failed.ToStorageValue(),
++                        BuildFailurePayload(planId, parentTask.Id, step, failureSummary, correlationId),
++                        failureSummary,
++                        0m),
++                    runtimeBudget.Token);
++
++                var contribution = new AgentContributionDto(
++                    step.AssignedAgentId,
++                    step.SubtaskId.Value,
++                    step.Sequence,
++                    OrchestrationStatusValues.Failed,
++                    failureSummary,
++                    failureSummary,
++                    0m,
++                    BuildWorkerCorrelationId(correlationId, step.Sequence));
++                contributions.Add(contribution);
++                finalSteps.Add(step with
++                {
++                    Status = MultiAgentCollaborationStatusValues.Failed,
++                    RationaleSummary = failureSummary
++                });
++
++                await WriteAuditAsync(
++                    command.CompanyId,
++                    AuditEventActions.MultiAgentWorkerFailed,
++                    AuditEventOutcomes.Failed,
++                    AuditActorTypes.Agent,
++                    step.AssignedAgentId,
++                    step.SubtaskId.Value,
++                    failureSummary,
++                    correlationId,
++                    new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["planId"] = planId.ToString("N"),
++                        ["parentTaskId"] = parentTask.Id.ToString("N"),
++                        ["errorType"] = ex.GetType().Name
++                    },
++                    runtimeBudget.Token);
++            }
++        }
++
++        var status = ResolveCollaborationStatus(contributions);
++        var finalResponse = BuildFinalResponse(command.Objective, contributions);
++        var structuredOutput = BuildFinalOutput(
++            command,
++            planId,
++            parentTask.Id,
++            limits,
++            finalSteps,
++            contributions,
++            status,
++            finalResponse,
++            correlationId,
++            startedUtc);
++
++        await _taskCommands.UpdateStatusAsync(
++            command.CompanyId,
++            parentTask.Id,
++            new UpdateTaskStatusCommand(
++                string.Equals(status, MultiAgentCollaborationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
++                    ? WorkTaskStatus.Failed.ToStorageValue()
++                    : WorkTaskStatus.Completed.ToStorageValue(),
++                structuredOutput,
++                BuildParentRationale(contributions, status),
++                contributions.Count == 0 ? 0m : contributions.Average(x => x.ConfidenceScore ?? 0.5m)),
++            runtimeBudget.Token);
++
++        await WriteAuditAsync(
++            command.CompanyId,
++            AuditEventActions.MultiAgentCollaborationConsolidated,
++            string.Equals(status, MultiAgentCollaborationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
++                ? AuditEventOutcomes.Failed
++                : AuditEventOutcomes.Succeeded,
++            AuditActorTypes.Agent,
++            command.CoordinatorAgentId,
++            parentTask.Id,
++            BuildParentRationale(contributions, status),
++            correlationId,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["planId"] = planId.ToString("N"),
++                ["status"] = status,
++                ["contributionCount"] = contributions.Count.ToString(),
++                ["failedContributionCount"] = contributions.Count(IsFailed).ToString()
++            },
++            runtimeBudget.Token);
++
++        return new MultiAgentCollaborationResultDto(
++            planId,
++            command.CompanyId,
++            parentTask.Id,
++            command.CoordinatorAgentId,
++            status,
++            finalResponse,
++            contributions.OrderBy(x => x.Sequence).ToList(),
++            finalSteps.OrderBy(x => x.Sequence).ToList(),
++            contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList(),
++            structuredOutput,
++            correlationId);
++    }
++
++    private CollaborationLimitDto ResolveLimits(CollaborationLimitRequest? requested)
++    {
++        var configuredMaxWorkers = Math.Max(1, _options.MaxWorkers);
++        var configuredMaxDepth = Math.Clamp(_options.MaxDepth, 1, 1);
++        var configuredMaxRuntimeSeconds = Math.Max(1, _options.MaxRuntimeSeconds);
++
++        return new CollaborationLimitDto(
++            Math.Clamp(requested?.MaxWorkers ?? configuredMaxWorkers, 1, configuredMaxWorkers),
++            Math.Clamp(requested?.MaxDepth ?? configuredMaxDepth, 1, configuredMaxDepth),
++            Math.Clamp(requested?.MaxRuntimeSeconds ?? configuredMaxRuntimeSeconds, 1, configuredMaxRuntimeSeconds));
++    }
++
++    private void Validate(
++        StartMultiAgentCollaborationCommand command,
++        IReadOnlyList<WorkerSubtaskRequest> workers,
++        CollaborationLimitDto limits)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        if (command.CompanyId == Guid.Empty)
++        {
++            AddError(errors, nameof(command.CompanyId), "CompanyId is required.");
++        }
++
++        if (command.CoordinatorAgentId == Guid.Empty)
++        {
++            AddError(errors, nameof(command.CoordinatorAgentId), "CoordinatorAgentId is required.");
++        }
++
++        if (string.IsNullOrWhiteSpace(command.Objective))
++        {
++            AddError(errors, nameof(command.Objective), "Objective is required.");
++        }
++
++        if (workers.Count == 0)
++        {
++            AddError(errors, nameof(command.Workers), "An explicit collaboration plan with at least one worker subtask is required.");
++        }
++
++        if (workers.Count > limits.MaxWorkers)
++        {
++            AddError(errors, nameof(command.Workers), $"Worker fan-out cannot exceed {limits.MaxWorkers}.");
++        }
++
++        if (limits.MaxDepth != 1)
++        {
++            AddError(errors, nameof(command.Limits), "Manager-worker collaboration depth must be exactly 1.");
++        }
++
++        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        for (var i = 0; i < workers.Count; i++)
++        {
++            var worker = workers[i];
++            if (worker.AgentId == Guid.Empty)
++            {
++                AddError(errors, $"{nameof(command.Workers)}[{i}].{nameof(worker.AgentId)}", "Worker AgentId is required.");
++            }
++
++            if (worker.AgentId == command.CoordinatorAgentId)
++            {
++                AddError(errors, $"{nameof(command.Workers)}[{i}].{nameof(worker.AgentId)}", "Coordinator agents cannot self-assign worker subtasks.");
++            }
++
++            if (string.IsNullOrWhiteSpace(worker.Objective))
++            {
++                AddError(errors, $"{nameof(command.Workers)}[{i}].{nameof(worker.Objective)}", "Worker objective is required.");
++            }
++
++            var duplicateKey = $"{worker.AgentId:N}:{NormalizeRequired(worker.Objective)}";
++            if (!seen.Add(duplicateKey))
++            {
++                AddError(errors, nameof(command.Workers), "The same agent cannot be assigned duplicate identical worker objectives.");
++            }
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new MultiAgentCollaborationValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static Dictionary<string, JsonNode?> BuildParentInputPayload(
++        StartMultiAgentCollaborationCommand command,
++        Guid planId,
++        CollaborationLimitDto limits,
++        string correlationId,
++        IReadOnlyList<WorkerSubtaskRequest> workers)
++    {
++        var payload = CloneNodes(command.InputPayload);
++        payload["schemaVersion"] = JsonValue.Create("2026-04-13");
++        payload["collaborationRole"] = JsonValue.Create("manager");
++        payload["planId"] = JsonValue.Create(planId.ToString("N"));
++        payload["objective"] = JsonValue.Create(NormalizeRequired(command.Objective));
++        payload["coordinatorAgentId"] = JsonValue.Create(command.CoordinatorAgentId.ToString("N"));
++        payload["correlationId"] = JsonValue.Create(correlationId);
++        payload["limits"] = JsonSerializer.SerializeToNode(limits);
++        payload["plannedWorkers"] = JsonSerializer.SerializeToNode(workers.Select((worker, index) => new
++        {
++            sequence = index + 1,
++            agentId = worker.AgentId,
++            objective = NormalizeRequired(worker.Objective),
++            instructions = NormalizeOptional(worker.Instructions),
++            delegationDepth = 1
++        }).ToList());
++        return payload;
++    }
++
++    private static Dictionary<string, JsonNode?> BuildWorkerInputPayload(
++        StartMultiAgentCollaborationCommand command,
++        CollaborationPlanDto plan,
++        CollaborationStepDto step)
++    {
++        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
++            ["collaborationRole"] = JsonValue.Create("worker_subtask"),
++            ["planId"] = JsonValue.Create(plan.PlanId.ToString("N")),
++            ["parentTaskId"] = JsonValue.Create(plan.ParentTaskId.ToString("N")),
++            ["coordinatorAgentId"] = JsonValue.Create(plan.CoordinatorAgentId.ToString("N")),
++            ["objective"] = JsonValue.Create(step.Objective),
++            ["instructions"] = JsonValue.Create(step.Instructions ?? step.Objective),
++            ["delegationDepth"] = JsonValue.Create(step.DelegationDepth),
++            ["allowFurtherDelegation"] = JsonValue.Create(false),
++            ["sourceObjective"] = JsonValue.Create(command.Objective),
++            ["plan"] = JsonSerializer.SerializeToNode(plan)
++        };
++    }
++
++    private static Dictionary<string, JsonNode?> BuildFailurePayload(
++        Guid planId,
++        Guid parentTaskId,
++        CollaborationStepDto step,
++        string failureSummary,
++        string correlationId) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
++            ["planId"] = JsonValue.Create(planId.ToString("N")),
++            ["parentTaskId"] = JsonValue.Create(parentTaskId.ToString("N")),
++            ["agentId"] = JsonValue.Create(step.AssignedAgentId.ToString("N")),
++            ["sequence"] = JsonValue.Create(step.Sequence),
++            ["status"] = JsonValue.Create(MultiAgentCollaborationStatusValues.Failed),
++            ["rationaleSummary"] = JsonValue.Create(failureSummary),
++            ["correlationId"] = JsonValue.Create(correlationId)
++        };
++
++    private static Dictionary<string, JsonNode?> BuildFinalOutput(
++        StartMultiAgentCollaborationCommand command,
++        Guid planId,
++        Guid parentTaskId,
++        CollaborationLimitDto limits,
++        IReadOnlyList<CollaborationStepDto> steps,
++        IReadOnlyList<AgentContributionDto> contributions,
++        string status,
++        string finalResponse,
++        string correlationId,
++        DateTime startedUtc) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
++            ["planId"] = JsonValue.Create(planId.ToString("N")),
++            ["parentTaskId"] = JsonValue.Create(parentTaskId.ToString("N")),
++            ["coordinatorAgentId"] = JsonValue.Create(command.CoordinatorAgentId.ToString("N")),
++            ["objective"] = JsonValue.Create(command.Objective),
++            ["status"] = JsonValue.Create(status),
++            ["finalResponse"] = JsonValue.Create(finalResponse),
++            ["limits"] = JsonSerializer.SerializeToNode(limits),
++            ["steps"] = JsonSerializer.SerializeToNode(steps.OrderBy(x => x.Sequence).ToList()),
++            ["contributions"] = JsonSerializer.SerializeToNode(contributions.OrderBy(x => x.Sequence).ToList()),
++            ["failedSubtaskIds"] = JsonSerializer.SerializeToNode(contributions.Where(IsFailed).Select(x => x.SubtaskId).ToList()),
++            ["correlationId"] = JsonValue.Create(correlationId),
++            ["startedAtUtc"] = JsonValue.Create(startedUtc),
++            ["completedAtUtc"] = JsonValue.Create(DateTime.UtcNow),
++            ["shared_engine"] = JsonValue.Create("multi_agent_coordinator")
++        };
++
++    private Task WriteAuditAsync(
++        Guid companyId,
++        string action,
++        string outcome,
++        string actorType,
++        Guid? actorId,
++        Guid taskId,
++        string? rationale,
++        string correlationId,
++        IReadOnlyDictionary<string, string?> metadata,
++        CancellationToken cancellationToken) =>
++        _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                actorType,
++                actorId,
++                action,
++                AuditTargetTypes.WorkTask,
++                taskId.ToString("N"),
++                outcome,
++                rationale,
++                ["multi_agent_coordinator", "single_agent_orchestration", "tasks"],
++                metadata,
++                correlationId,
++                DateTime.UtcNow),
++            cancellationToken);
++
++    private static string BuildFinalResponse(string objective, IReadOnlyList<AgentContributionDto> contributions)
++    {
++        var completed = contributions.Where(x => !IsFailed(x)).OrderBy(x => x.Sequence).ToList();
++        var failed = contributions.Where(IsFailed).OrderBy(x => x.Sequence).ToList();
++        var builder = new StringBuilder();
++        builder.Append("Manager-worker collaboration result for: ");
++        builder.AppendLine(objective.Trim());
++
++        if (completed.Count == 0)
++        {
++            builder.AppendLine("No worker completed successfully.");
++        }
++        else
++        {
++            foreach (var contribution in completed)
++            {
++                builder.Append("Agent ");
++                builder.Append(contribution.AgentId.ToString("N"));
++                builder.Append(": ");
++                builder.AppendLine(Trim(contribution.Output, 700));
++            }
++        }
++
++        if (failed.Count > 0)
++        {
++            builder.Append("Failed worker subtasks: ");
++            builder.AppendLine(string.Join(", ", failed.Select(x => x.SubtaskId.ToString("N"))));
++        }
++
++        return Trim(builder.ToString(), 4000);
++    }
++
++    private static string BuildParentRationale(IReadOnlyList<AgentContributionDto> contributions, string status) =>
++        Trim($"Consolidated {contributions.Count} bounded worker contribution(s) with status '{status}'. No recursive worker delegation was allowed.", RationaleMaxLength);
++
++    private static string ResolveCollaborationStatus(IReadOnlyList<AgentContributionDto> contributions)
++    {
++        if (contributions.Count == 0 || contributions.All(IsFailed))
++        {
++            return MultiAgentCollaborationStatusValues.Failed;
++        }
++
++        return contributions.Any(IsFailed)
++            ? MultiAgentCollaborationStatusValues.Partial
++            : MultiAgentCollaborationStatusValues.Completed;
++    }
++
++    private static string ResolveStepStatus(string workerStatus) =>
++        string.Equals(workerStatus, OrchestrationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
++            ? MultiAgentCollaborationStatusValues.Failed
++            : MultiAgentCollaborationStatusValues.Completed;
++
++    private static bool IsFailed(AgentContributionDto contribution) =>
++        string.Equals(contribution.Status, OrchestrationStatusValues.Failed, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(contribution.Status, MultiAgentCollaborationStatusValues.Failed, StringComparison.OrdinalIgnoreCase);
++
++    private static string BuildParentTitle(string objective) =>
++        Trim($"Manager-worker collaboration: {NormalizeRequired(objective)}", 200);
++
++    private static string BuildWorkerTitle(int sequence, string objective) =>
++        Trim($"Worker {sequence}: {NormalizeRequired(objective)}", 200);
++
++    private static string BuildWorkerCorrelationId(string correlationId, int sequence) =>
++        $"{correlationId}:worker:{sequence}";
++
++    private static string EnsureCorrelationId(string? requestedCorrelationId) =>
++        string.IsNullOrWhiteSpace(requestedCorrelationId)
++            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
++            : requestedCorrelationId.Trim();
++
++    private static string NormalizeRequired(string value) =>
++        value.Trim();
++
++    private static string? NormalizeOptional(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static string Trim(string value, int maxLength)
++    {
++        var normalized = value.ReplaceLineEndings(" ").Trim();
++        return normalized.Length <= maxLength ? normalized : string.Concat(normalized.AsSpan(0, maxLength - 3), "...");
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 42b7c5d..a47b3a0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -80,6 +80,10 @@ public static class DependencyInjection
+         services.AddOptions<GroundedContextRetrievalCacheOptions>()
+             .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
+ 
++        services.AddOptions<MultiAgentCollaborationOptions>()
++            .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
++            .PostConfigure(options => options.MaxDepth = 1);
++
+         var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
+         if (!string.IsNullOrWhiteSpace(redisConnectionString))
+         {
+@@ -176,6 +180,7 @@ public static class DependencyInjection
+         services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
+         services.AddScoped<ISingleAgentOrchestrationResolver, SingleAgentOrchestrationResolver>();
+         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
++        services.AddScoped<IMultiAgentCoordinator, MultiAgentCoordinator>();
+         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+diff --git a/src/VirtualCompany.Api/Controllers/TasksController.cs b/src/VirtualCompany.Api/Controllers/TasksController.cs
+index 8f6d9bc..e45bda9 100644
+--- a/src/VirtualCompany.Api/Controllers/TasksController.cs
++++ b/src/VirtualCompany.Api/Controllers/TasksController.cs
+@@ -17,6 +17,7 @@ public sealed class TasksController : ControllerBase
+     private readonly ICompanyTaskCommandService _taskCommands;
+     private readonly ICompanyTaskQueryService _taskQueries;
+     private readonly ISingleAgentOrchestrationService _orchestrationService;
++    private readonly IMultiAgentCoordinator _multiAgentCoordinator;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+ 
+     public TasksController(
+@@ -24,11 +25,13 @@ public sealed class TasksController : ControllerBase
+         ICompanyTaskQueryService taskQueries,
+         ISingleAgentOrchestrationService orchestrationService,
++        IMultiAgentCoordinator multiAgentCoordinator,
+         ICorrelationContextAccessor correlationContextAccessor)
+     {
+         _taskCommands = taskCommands;
+         _taskQueries = taskQueries;
+         _orchestrationService = orchestrationService;
++        _multiAgentCoordinator = multiAgentCoordinator;
+         _correlationContextAccessor = correlationContextAccessor;
+     }
+ 
+@@ -158,6 +161,33 @@ public sealed class TasksController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("manager-worker-collaborations")]
++    public async Task<ActionResult<MultiAgentCollaborationResultDto>> StartManagerWorkerCollaborationAsync(
++        Guid companyId,
++        [FromBody] StartMultiAgentCollaborationCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _multiAgentCoordinator.ExecuteAsync(
++                command with
++                {
++                    CompanyId = companyId,
++                    CorrelationId = ResolveCorrelationId(command.CorrelationId)
++                },
++                cancellationToken);
++
++            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = result.ParentTaskId }, result);
++        }
++        catch (MultiAgentCollaborationValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (AgentAssignmentValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPatch("{taskId:guid}/assignment")]
+     public async Task<ActionResult<TaskCommandResultDto>> ReassignAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+new file mode 100644
+index 0000000..626d83c
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+@@ -0,0 +1,256 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public MultiAgentCollaborationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++        _factory.ToolExecutor.Reset();
++    }
++
++    [Fact]
++    public async Task Manager_worker_collaboration_creates_linked_subtasks_and_consolidates_attribution()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations", new
++        {
++            objective = "Prepare a cross-functional launch readiness answer.",
++            coordinatorAgentId = seed.CoordinatorAgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "mw-collaboration-001",
++            limits = new
++            {
++                maxWorkers = 2,
++                maxDepth = 1,
++                maxRuntimeSeconds = 30
++            },
++            workers = new[]
++            {
++                new
++                {
++                    agentId = seed.FinanceAgentId,
++                    objective = "Summarize launch budget readiness.",
++                    instructions = "Use the finance view only."
++                },
++                new
++                {
++                    agentId = seed.OperationsAgentId,
++                    objective = "Summarize operations readiness.",
++                    instructions = "Use the operations view only."
++                }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<MultiAgentCollaborationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal(seed.CoordinatorAgentId, payload.CoordinatorAgentId);
++        Assert.Equal("completed", payload.Status);
++        Assert.Equal("mw-collaboration-001", payload.CorrelationId);
++        Assert.Equal(2, payload.Contributions.Count);
++        Assert.All(payload.Contributions, contribution =>
++        {
++            Assert.NotEqual(Guid.Empty, contribution.SubtaskId);
++            Assert.False(string.IsNullOrWhiteSpace(contribution.RationaleSummary));
++            Assert.Contains(contribution.AgentId, new[] { seed.FinanceAgentId, seed.OperationsAgentId });
++        });
++        Assert.Contains(seed.FinanceAgentId.ToString("N"), payload.FinalResponse);
++        Assert.Contains(seed.OperationsAgentId.ToString("N"), payload.FinalResponse);
++        Assert.Equal(2, payload.Steps.Count);
++        Assert.All(payload.Steps, step =>
++        {
++            Assert.Equal(payload.ParentTaskId, step.ParentTaskId);
++            Assert.True(step.SubtaskId.HasValue);
++            Assert.Equal(1, step.DelegationDepth);
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var parent = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == payload.ParentTaskId);
++        Assert.Equal(MultiAgentCollaborationTaskTypes.Parent, parent.Type);
++        Assert.Equal(seed.CoordinatorAgentId, parent.AssignedAgentId);
++        Assert.Equal(WorkTaskStatus.Completed, parent.Status);
++        Assert.Equal("mw-collaboration-001", parent.CorrelationId);
++        Assert.Equal(payload.PlanId.ToString("N"), parent.OutputPayload["planId"]!.GetValue<string>());
++        Assert.True(parent.OutputPayload.ContainsKey("contributions"));
++        Assert.DoesNotContain("chain-of-thought", parent.RationaleSummary ?? string.Empty, StringComparison.OrdinalIgnoreCase);
++
++        var subtasks = await dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x => x.ParentTaskId == payload.ParentTaskId)
++            .OrderBy(x => x.CreatedUtc)
++            .ToListAsync();
++        Assert.Equal(2, subtasks.Count);
++        Assert.All(subtasks, subtask =>
++        {
++            Assert.Equal(MultiAgentCollaborationTaskTypes.WorkerSubtask, subtask.Type);
++            Assert.Equal(WorkTaskStatus.Completed, subtask.Status);
++            Assert.Equal(payload.ParentTaskId.ToString("N"), subtask.InputPayload["parentTaskId"]!.GetValue<string>());
++            Assert.False(subtask.InputPayload["allowFurtherDelegation"]!.GetValue<bool>());
++        });
++
++        var auditActions = await dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == seed.CompanyId && x.CorrelationId == "mw-collaboration-001")
++            .Select(x => x.Action)
++            .ToListAsync();
++        Assert.Contains(AuditEventActions.MultiAgentCollaborationStarted, auditActions);
++        Assert.Contains(AuditEventActions.MultiAgentCollaborationPlanCreated, auditActions);
++        Assert.Contains(AuditEventActions.MultiAgentWorkerSubtaskCreated, auditActions);
++        Assert.Contains(AuditEventActions.MultiAgentWorkerCompleted, auditActions);
++        Assert.Contains(AuditEventActions.MultiAgentCollaborationConsolidated, auditActions);
++    }
++
++    [Fact]
++    public async Task Manager_worker_collaboration_enforces_fanout_and_depth_limits()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations", new
++        {
++            objective = "Invalid deep collaboration.",
++            coordinatorAgentId = seed.CoordinatorAgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "mw-collaboration-invalid",
++            limits = new
++            {
++                maxWorkers = 1,
++                maxDepth = 1,
++                maxRuntimeSeconds = 30
++            },
++            workers = new[]
++            {
++                new { agentId = seed.FinanceAgentId, objective = "Finance view." },
++                new { agentId = seed.OperationsAgentId, objective = "Operations view." }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var body = await response.Content.ReadAsStringAsync();
++        Assert.Contains("Worker fan-out cannot exceed", body);
++    }
++
++    [Fact]
++    public async Task Manager_worker_collaboration_rejects_self_assignment_cycle()
++    {
++        var seed = await SeedScenarioAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations", new
++        {
++            objective = "Invalid recursive collaboration.",
++            coordinatorAgentId = seed.CoordinatorAgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "mw-collaboration-cycle",
++            workers = new[]
++            {
++                new { agentId = seed.CoordinatorAgentId, objective = "Coordinator should not self-assign." }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var body = await response.Content.ReadAsStringAsync();
++        Assert.Contains("Coordinator agents cannot self-assign", body);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder-multi");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder-multi@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder Multi");
++        return client;
++    }
++
++    private async Task<SeededCollaborationScenario> SeedScenarioAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var coordinatorAgentId = Guid.NewGuid();
++        var financeAgentId = Guid.NewGuid();
++        var operationsAgentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder-multi@example.com", "Founder Multi", "dev-header", "founder-multi"));
++            dbContext.Companies.Add(new Company(companyId, "Collaboration Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(CreateAgent(coordinatorAgentId, companyId, "Coordinator", "General Management", "Coordinate bounded collaboration."));
++            dbContext.Agents.Add(CreateAgent(financeAgentId, companyId, "Finance Worker", "Finance", "Assess finance readiness."));
++            dbContext.Agents.Add(CreateAgent(operationsAgentId, companyId, "Operations Worker", "Operations", "Assess operations readiness."));
++            return Task.CompletedTask;
++        });
++
++        return new SeededCollaborationScenario(companyId, userId, coordinatorAgentId, financeAgentId, operationsAgentId);
++    }
++
++    private static Agent CreateAgent(Guid agentId, Guid companyId, string displayName, string department, string roleBrief) =>
++        new(
++            agentId,
++            companyId,
++            displayName.ToLowerInvariant().Replace(' ', '-'),
++            displayName,
++            displayName,
++            department,
++            null,
++            AgentSeniority.Senior,
++            AgentStatus.Active,
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            objectives: Payload(("primary", new JsonArray(JsonValue.Create(roleBrief)))),
++            kpis: Payload(("targets", new JsonArray(JsonValue.Create("readiness")))),
++            tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            scopes: Payload(("read", new JsonArray(JsonValue.Create("launch")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
++            roleBrief: roleBrief);
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record SeededCollaborationScenario(Guid CompanyId, Guid UserId, Guid CoordinatorAgentId, Guid FinanceAgentId, Guid OperationsAgentId);
++
++    private sealed class MultiAgentCollaborationResponse
++    {
++        public Guid PlanId { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid ParentTaskId { get; set; }
++        public Guid CoordinatorAgentId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string FinalResponse { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
++        public List<ContributionResponse> Contributions { get; set; } = [];
++        public List<StepResponse> Steps { get; set; } = [];
++    }
++
++    private sealed class ContributionResponse
++    {
++        public Guid AgentId { get; set; }
++        public Guid SubtaskId { get; set; }
++        public int Sequence { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string Output { get; set; } = string.Empty;
++        public string? RationaleSummary { get; set; }
++    }
++
++    private sealed class StepResponse
++    {
++        public int Sequence { get; set; }
++        public Guid ParentTaskId { get; set; }
++        public Guid? SubtaskId { get; set; }
++        public Guid AssignedAgentId { get; set; }
++        public int DelegationDepth { get; set; }
++        public string Status { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

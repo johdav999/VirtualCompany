@@ -1,0 +1,94 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 7d6f1c9..f1e7b2a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -88,7 +88,6 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
+             .OrderBy(x => x.CreatedUtc)
+-            .Take(5)
+             .Select(x => new
+             {
+                 x.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+index e1477bb..e7e2c89 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -58,16 +58,23 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardC
+             return;
+         }
+ 
+-        await _distributedCache.SetAsync(
+-            BuildCacheKey(snapshot.CompanyId),
+-            JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions),
+-            new DistributedCacheEntryOptions
+-            {
+-                AbsoluteExpirationRelativeToNow = TimeToLive
+-            },
+-            cancellationToken);
++        try
++        {
++            await _distributedCache.SetAsync(
++                BuildCacheKey(snapshot.CompanyId),
++                JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions),
++                new DistributedCacheEntryOptions
++                {
++                    AbsoluteExpirationRelativeToNow = TimeToLive
++                },
++                cancellationToken);
++        }
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            _logger.LogWarning(ex, "Failed to cache executive cockpit dashboard for company {CompanyId}.", snapshot.CompanyId);
++        }
+     }
+ 
+     public static string BuildCacheKey(Guid companyId) =>
+         $"vc:executive-cockpit:{CacheKeyVersion}:{companyId:N}";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c3b55bb..4c3c30d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -8,7 +8,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Cockpit;
+-using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Briefings;
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 24bb87b..3b2c2a2 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -144,11 +144,6 @@ else
+                 }
+             </div>
+ 
+-            @if (CompanyId is Guid selectedCompanyId)
+-            {
+-                <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
+-            }
+-
+             <div class="wizard-card wizard-card--compact">
+                 <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+                 @if (showStarterGuidance)
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index f0d0727..9943da8 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -60,11 +60,6 @@ builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+-builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
+-    sp.GetRequiredService<HttpClient>(),
+-    ShouldUseOfflineMode(
+-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+END_OF_PATCH

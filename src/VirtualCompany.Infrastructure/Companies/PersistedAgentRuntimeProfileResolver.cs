@@ -43,6 +43,7 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             agent.Seniority.ToStorageValue(),
             agent.Status.ToStorageValue(),
             agent.RoleBrief,
+            CloneNodes(agent.Personality),
             CloneNodes(agent.Objectives),
             CloneNodes(agent.Kpis),
             CloneNodes(agent.Tools),

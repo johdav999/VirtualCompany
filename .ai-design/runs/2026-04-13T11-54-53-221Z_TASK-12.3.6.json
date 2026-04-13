@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.3.6",
+  "promptPath": ".ai-design/prompts/TASK-12.3.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:54:53.221Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-54-53-221Z_TASK-12.3.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-54-53-221Z_TASK-12.3.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:57:07.924Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "void Notification_priority_sort_preserves_existing_tenant_scope()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var matching = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal, companyId);\n+        var otherCompanyApproval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High, Guid.NewGuid());\n+\n+        var ordered = new[] { otherCompanyApproval, matching }\n+            .AsQueryable()\n+            .Where(x => x.CompanyId == companyId)\n+            .ApplyInboxOrdering()\n+            .ToList();\n+\n+        var item = Assert.Single(ordered);\n+        Assert.Same(matching, item);\n+    }\n+\n     [Fact]\n     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n     {\n         var userId = Guid.NewGuid();\n@@ -95,13 +135,17 @@ public sealed class NotificationInboxTests\n         Assert.Contains(userId.ToString(\"N\"), notification.DedupeKey);\n     }\n \n-    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>\n+    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority, Guid? companyId = null) =>\n         new(\n             Guid.NewGuid(),\n-            Guid.NewGuid(),\n+            companyId ?? Guid.NewGuid(),\n             Guid.NewGuid(),\n             type,\n             priority,\n             type.ToStorageValue(),\n             \"Notification body.\",\n             type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n             Guid.NewGuid(),\n             \"/inbox\",\n             \"{}\",\n             $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n+\n+    private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>\n+        typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "riority_sort_preserves_existing_tenant_scope()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var matching = CreateNotification(CompanyNotificationType.BriefingAvailable, CompanyNotificationPriority.Normal, companyId);\n+        var otherCompanyApproval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High, Guid.NewGuid());\n+\n+        var ordered = new[] { otherCompanyApproval, matching }\n+            .AsQueryable()\n+            .Where(x => x.CompanyId == companyId)\n+            .ApplyInboxOrdering()\n+            .ToList();\n+\n+        var item = Assert.Single(ordered);\n+        Assert.Same(matching, item);\n+    }\n+\n     [Fact]\n     public void Notification_dedupe_key_preserves_recipient_specific_delivery_key()\n     {\n         var userId = Guid.NewGuid();\n@@ -95,13 +135,17 @@ public sealed class NotificationInboxTests\n         Assert.Contains(userId.ToString(\"N\"), notification.DedupeKey);\n     }\n \n-    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority) =>\n+    private static CompanyNotification CreateNotification(CompanyNotificationType type, CompanyNotificationPriority priority, Guid? companyId = null) =>\n         new(\n             Guid.NewGuid(),\n-            Guid.NewGuid(),\n+            companyId ?? Guid.NewGuid(),\n             Guid.NewGuid(),\n             type,\n             priority,\n             type.ToStorageValue(),\n             \"Notification body.\",\n             type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n             Guid.NewGuid(),\n             \"/inbox\",\n             \"{}\",\n             $\"{type.ToStorageValue()}:{Guid.NewGuid():N}\");\n+\n+    private static void SetCreatedUtc(CompanyNotification notification, DateTime createdUtc) =>\n+        typeof(CompanyNotification).GetProperty(nameof(CompanyNotification.CreatedUtc))!.SetValue(notification, createdUtc);\n }\nEND_OF_PATCH\ntokens used\n48,344\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.2",
+  "promptPath": ".ai-design/prompts/TASK-12.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:13:18.878Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-13-18-878Z_TASK-12.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-13-18-878Z_TASK-12.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:14:55.339Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "lts.TotalCount);\n+        Assert.Equal(3, workflowResults.TotalCount);\n+        Assert.Equal(3, dateResults.TotalCount);\n+        var item = Assert.Single(combinedResults.Items);\n+        Assert.Equal(matchingEventId, item.Id);\n+    }\n+\n+    [Fact]\n+    public async Task ListAsync_rejects_invalid_date_range()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext(companyId);\n+        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));\n+\n+        await Assert.ThrowsAsync<ArgumentException>(() => service.ListAsync(\n+            companyId,\n+            new AuditHistoryFilter(FromUtc: new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), ToUtc: new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None));\n+    }\n+\n     [Fact]\n     public async Task GetAsync_does_not_return_cross_tenant_audit_events()\n     {\n@@ -129,6 +214,26 @@ public sealed class AuditQueryServiceTests\n         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"chainOfThought\", StringComparison.OrdinalIgnoreCase));\n     }\n \n+    private static AuditEvent CreateAuditEvent(\n+        Guid id,\n+        Guid companyId,\n+        Guid agentId,\n+        string targetType,\n+        Guid targetId,\n+        DateTime occurredUtc,\n+        IReadOnlyDictionary<string, string?>? metadata = null) =>\n+        new(\n+            id,\n+            companyId,\n+            AuditActorTypes.Agent,\n+            agentId,\n+            AuditEventActions.SingleAgentTaskOrchestrationExecuted,\n+            targetType,\n+            targetId.ToString(),\n+            AuditEventOutcomes.Succeeded,\n+            \"Concise operational summary.\",\n+            metadata: metadata,\n+            occurredUtc: occurredUtc);\n+\n     private static VirtualCompanyDbContext CreateDbContext(Guid companyId)\n     {\n         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()\nEND_OF_PATCH\n",
+  "stderrTail": "       Assert.Equal(3, workflowResults.TotalCount);\n+        Assert.Equal(3, dateResults.TotalCount);\n+        var item = Assert.Single(combinedResults.Items);\n+        Assert.Equal(matchingEventId, item.Id);\n+    }\n+\n+    [Fact]\n+    public async Task ListAsync_rejects_invalid_date_range()\n+    {\n+        var companyId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext(companyId);\n+        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));\n+\n+        await Assert.ThrowsAsync<ArgumentException>(() => service.ListAsync(\n+            companyId,\n+            new AuditHistoryFilter(FromUtc: new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc), ToUtc: new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc)),\n+            CancellationToken.None));\n+    }\n+\n     [Fact]\n     public async Task GetAsync_does_not_return_cross_tenant_audit_events()\n     {\n@@ -129,6 +214,26 @@ public sealed class AuditQueryServiceTests\n         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains(\"chainOfThought\", StringComparison.OrdinalIgnoreCase));\n     }\n \n+    private static AuditEvent CreateAuditEvent(\n+        Guid id,\n+        Guid companyId,\n+        Guid agentId,\n+        string targetType,\n+        Guid targetId,\n+        DateTime occurredUtc,\n+        IReadOnlyDictionary<string, string?>? metadata = null) =>\n+        new(\n+            id,\n+            companyId,\n+            AuditActorTypes.Agent,\n+            agentId,\n+            AuditEventActions.SingleAgentTaskOrchestrationExecuted,\n+            targetType,\n+            targetId.ToString(),\n+            AuditEventOutcomes.Succeeded,\n+            \"Concise operational summary.\",\n+            metadata: metadata,\n+            occurredUtc: occurredUtc);\n+\n     private static VirtualCompanyDbContext CreateDbContext(Guid companyId)\n     {\n         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()\nEND_OF_PATCH\ntokens used\n51,590\n",
+  "verbosityMode": "summary"
+}

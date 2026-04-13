@@ -1,0 +1,336 @@
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index b1312fd..cbf74d1 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -107,7 +107,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             new Dictionary<string, string?>(auditEvent.Metadata, StringComparer.OrdinalIgnoreCase),
+             linkedApprovals,
+             linkedToolExecutions,
+-            BuildAffectedEntities(auditEvent, related));
++            BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions));
+     }
+ 
+     private void EnsureTenant(Guid companyId)
+@@ -353,7 +353,11 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             .ToList();
+     }
+ 
+-    private static IReadOnlyList<AuditEntityReferenceDto> BuildAffectedEntities(AuditEvent auditEvent, RelatedReferenceSet related)
++    private static IReadOnlyList<AuditEntityReferenceDto> BuildAffectedEntities(
++        AuditEvent auditEvent,
++        RelatedReferenceSet related,
++        IReadOnlyCollection<AuditApprovalReferenceDto>? linkedApprovals = null,
++        IReadOnlyCollection<AuditToolExecutionReferenceDto>? linkedToolExecutions = null)
+     {
+         var entities = new List<AuditEntityReferenceDto>
+         {
+@@ -368,6 +372,24 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         AddMetadataEntity(auditEvent, related, entities, "approvalRequestId", AuditTargetTypes.ApprovalRequest);
+         AddMetadataEntity(auditEvent, related, entities, "toolExecutionId", AuditTargetTypes.AgentToolExecution);
+ 
++        foreach (var approval in linkedApprovals ?? [])
++        {
++            entities.Add(new AuditEntityReferenceDto(
++                AuditTargetTypes.ApprovalRequest,
++                approval.Id.ToString(),
++                null));
++            entities.Add(new AuditEntityReferenceDto(
++                approval.TargetEntityType,
++                approval.TargetEntityId.ToString(),
++                ResolveEntityLabel(approval.TargetEntityType, approval.TargetEntityId.ToString(), related)));
++        }
++
++        foreach (var execution in linkedToolExecutions ?? [])
++        {
++            entities.Add(new AuditEntityReferenceDto(AuditTargetTypes.AgentToolExecution, execution.Id.ToString(), null));
++            entities.Add(new AuditEntityReferenceDto(AuditTargetTypes.Agent, execution.AgentId.ToString(), execution.AgentLabel));
++            AddKnownEntity(entities, related, AuditTargetTypes.WorkTask, execution.TaskId);
++            AddKnownEntity(entities, related, AuditTargetTypes.WorkflowInstance, execution.WorkflowInstanceId);
++        }
++
+         return entities
+             .Where(x => !string.IsNullOrWhiteSpace(x.EntityId))
+             .GroupBy(x => $"{x.EntityType}:{x.EntityId}", StringComparer.OrdinalIgnoreCase)
+@@ -439,6 +461,19 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         {
+             entities.Add(new AuditEntityReferenceDto(entityType, value, ResolveEntityLabel(entityType, value, related)));
+         }
++    }
++
++    private static void AddKnownEntity(
++        List<AuditEntityReferenceDto> entities,
++        RelatedReferenceSet related,
++        string entityType,
++        Guid? entityId)
++    {
++        if (entityId is not Guid id)
++        {
++            return;
++        }
++
++        entities.Add(new AuditEntityReferenceDto(entityType, id.ToString(), ResolveEntityLabel(entityType, id.ToString(), related)));
+     }
+ 
+     private static string? ResolveActorLabel(AuditEvent auditEvent, RelatedReferenceSet related) =>
+diff --git a/src/VirtualCompany.Web/Pages/AuditDetail.razor b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+index 9a5bdc7..19ab74b 100644
+--- a/src/VirtualCompany.Web/Pages/AuditDetail.razor
++++ b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+@@ -78,78 +78,66 @@ else if (detail is not null)
+                 }
+             </div>
+ 
+-            <div class="wizard-card wizard-card--compact">
+-                <h2 class="h5">Linked approvals</h2>
+-                @if (detail.LinkedApprovals.Count == 0)
+-                {
+-                    <p class="text-body-secondary mb-0">No linked approvals were found.</p>
+-                }
+-                else
+-                {
++            @if (detail.LinkedApprovals.Count > 0)
++            {
++                <div class="wizard-card wizard-card--compact">
++                    <h2 class="h5">Linked approvals</h2>
+                     <div class="list-group">
+                         @foreach (var approval in detail.LinkedApprovals)
+                         {
+                             <div class="list-group-item">
+                                 <div class="d-flex justify-content-between gap-3">
+                                     <strong>@approval.ApprovalType approval</strong>
+                                     <span class="badge text-bg-light">@approval.Status</span>
+                                 </div>
+-                                <div class="text-body-secondary small mt-1">@approval.TargetEntityType: @approval.TargetEntityId</div>
++                                <div class="text-body-secondary small mt-1">Target: @approval.TargetEntityType @approval.TargetEntityId</div>
++                                <div class="text-body-secondary small">Created: @approval.CreatedAt.ToLocalTime().ToString("g")</div>
++                                @if (approval.DecidedAt is DateTime decidedAt)
++                                {
++                                    <div class="text-body-secondary small">Decided: @decidedAt.ToLocalTime().ToString("g")</div>
++                                }
+                                 @if (!string.IsNullOrWhiteSpace(approval.DecisionSummary))
+                                 {
+                                     <div class="mt-2">@approval.DecisionSummary</div>
+                                 }
+                             </div>
+                         }
+                     </div>
+-                }
+-            </div>
++                </div>
++            }
+ 
+-            <div class="wizard-card wizard-card--compact">
+-                <h2 class="h5">Linked tool executions</h2>
+-                @if (detail.LinkedToolExecutions.Count == 0)
+-                {
+-                    <p class="text-body-secondary mb-0">No linked tool executions were found.</p>
+-                }
+-                else
+-                {
++            @if (detail.LinkedToolExecutions.Count > 0)
++            {
++                <div class="wizard-card wizard-card--compact">
++                    <h2 class="h5">Linked tool executions</h2>
+                     <div class="list-group">
+                         @foreach (var execution in detail.LinkedToolExecutions)
+                         {
+                             <div class="list-group-item">
+                                 <div class="d-flex justify-content-between gap-3">
+-                                    <strong>@execution.ToolName</strong>
++                                    <strong>@execution.ToolName <span class="text-body-secondary">/@execution.ActionType</span></strong>
+                                     <span class="badge text-bg-light">@execution.Status</span>
+                                 </div>
+                                 <div class="text-body-secondary small mt-1">
+-                                    @execution.ActionType by @(execution.AgentLabel ?? execution.AgentId.ToString()) at @execution.StartedAt.ToLocalTime().ToString("g")
++                                    @(execution.AgentLabel ?? execution.AgentId.ToString()) started @execution.StartedAt.ToLocalTime().ToString("g")
+                                 </div>
+-                                @if (execution.TaskId is Guid taskId)
++                                @if (execution.CompletedAt is DateTime completedAt)
+                                 {
+-                                    <div class="small mt-2">Task: @taskId</div>
++                                    <div class="text-body-secondary small">Completed: @completedAt.ToLocalTime().ToString("g")</div>
+                                 }
+-                                @if (execution.WorkflowInstanceId is Guid workflowId)
++                                @if (execution.TaskId is Guid taskId || execution.WorkflowInstanceId is Guid workflowId)
+                                 {
+-                                    <div class="small">Workflow: @workflowId</div>
++                                    <div class="small mt-2">@((execution.TaskId is Guid t ? $"Task: {t}" : string.Empty)) @((execution.WorkflowInstanceId is Guid w ? $"Workflow: {w}" : string.Empty))</div>
+                                 }
+                             </div>
+                         }
+                     </div>
+-                }
+-            </div>
++                </div>
++            }
+ 
+-            <div class="wizard-card wizard-card--compact">
+-                <h2 class="h5">Affected entities</h2>
+-                @if (detail.AffectedEntities.Count == 0)
+-                {
+-                    <p class="text-body-secondary mb-0">No affected entity references were recorded.</p>
+-                }
+-                else
+-                {
++            @if (detail.AffectedEntities.Count > 0)
++            {
++                <div class="wizard-card wizard-card--compact">
++                    <h2 class="h5">Affected entities</h2>
+                     <div class="d-flex flex-wrap gap-2">
+                         @foreach (var entity in detail.AffectedEntities)
+                         {
+                             <span class="badge text-bg-light">@entity.EntityType: @(entity.Label ?? entity.EntityId)</span>
+                         }
+                     </div>
+-                }
+-            </div>
++                </div>
++            }
+         </div>
+     </section>
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index 12ceec5..c18ad94 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+@@ -222,6 +223,108 @@ public sealed class AuditQueryServiceTests
+         Assert.Contains(detail.SourceReferences, source =>
+             source.Type == "document" &&
+             source.Reference == "kb://runbook-1");
++        Assert.Empty(detail.LinkedApprovals);
++        Assert.Empty(detail.LinkedToolExecutions);
+         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
+     }
+ 
++    [Fact]
++    public async Task GetAsync_returns_linked_approvals_tool_executions_and_affected_entities_for_action_detail()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var executionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        var now = new DateTime(2026, 4, 13, 9, 30, 0, DateTimeKind.Utc);
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.AddRange(new Company(companyId, "Acme"), new Company(otherCompanyId, "Other"));
++        dbContext.Agents.Add(new Agent(agentId, companyId, "finance", "Finance Agent", "Finance", "Finance", null, AgentSeniority.Mid));
++        dbContext.WorkTasks.Add(new WorkTask(
++            taskId,
++            companyId,
++            "approval",
++            "Approve vendor payment",
++            null,
++            WorkTaskPriority.High,
++            agentId,
++            null,
++            AuditActorTypes.Agent,
++            agentId,
++            workflowInstanceId: workflowInstanceId,
++            correlationId: "corr-audit-detail"));
++
++        var execution = new ToolExecutionAttempt(
++            executionId,
++            companyId,
++            agentId,
++            "payments",
++            ToolActionType.Execute,
++            "finance.payments",
++            taskId: taskId,
++            workflowInstanceId: workflowInstanceId,
++            correlationId: "corr-audit-detail",
++            startedAtUtc: now);
++        var approval = ApprovalRequest.CreateForTarget(
++            approvalId,
++            companyId,
++            ApprovalTargetEntityType.Action,
++            executionId,
++            AuditActorTypes.Agent,
++            agentId,
++            "threshold",
++            Payload(("amount", JsonValue.Create(25000))),
++            "owner",
++            null,
++            []);
++        execution.MarkAwaitingApproval(approvalId, Payload(("outcome", JsonValue.Create("require_approval"))), completedAtUtc: now.AddMinutes(1));
++        dbContext.ToolExecutionAttempts.Add(execution);
++        dbContext.ApprovalRequests.Add(approval);
++        dbContext.ToolExecutionAttempts.Add(new ToolExecutionAttempt(
++            Guid.NewGuid(),
++            otherCompanyId,
++            Guid.NewGuid(),
++            "payments",
++            ToolActionType.Execute,
++            "finance.payments",
++            taskId: taskId,
++            workflowInstanceId: workflowInstanceId,
++            correlationId: "corr-audit-detail",
++            startedAtUtc: now));
++        dbContext.ApprovalRequests.Add(ApprovalRequest.CreateForTarget(
++            Guid.NewGuid(),
++            otherCompanyId,
++            ApprovalTargetEntityType.Action,
++            executionId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            "threshold",
++            Payload(("amount", JsonValue.Create(25000))),
++            "owner",
++            null,
++            []));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            companyId,
++            AuditActorTypes.Agent,
++            agentId,
++            AuditEventActions.AgentToolExecutionApprovalRequested,
++            AuditTargetTypes.AgentToolExecution,
++            executionId.ToString(),
++            AuditEventOutcomes.Pending,
++            "The payment exceeded the approval threshold.",
++            metadata: new Dictionary<string, string?>
++            {
++                ["taskId"] = taskId.ToString(),
++                ["workflowInstanceId"] = workflowInstanceId.ToString(),
++                ["approvalRequestId"] = approvalId.ToString()
++            },
++            correlationId: "corr-audit-detail",
++            occurredUtc: now));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);
++
++        var linkedApproval = Assert.Single(detail.LinkedApprovals);
++        Assert.Equal(approvalId, linkedApproval.Id);
++        Assert.Equal("threshold", linkedApproval.ApprovalType);
++        var linkedExecution = Assert.Single(detail.LinkedToolExecutions);
++        Assert.Equal(executionId, linkedExecution.Id);
++        Assert.Equal("payments", linkedExecution.ToolName);
++        Assert.Equal("Finance Agent", linkedExecution.AgentLabel);
++        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.WorkTask && entity.EntityId == taskId.ToString());
++        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.AgentToolExecution && entity.EntityId == executionId.ToString());
++        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.ApprovalRequest && entity.EntityId == approvalId.ToString());
++    }
++
+     private static AuditEvent CreateAuditEvent(
+         Guid id,
+         Guid companyId,
+@@ -260,5 +363,9 @@ public sealed class AuditQueryServiceTests
+         public ResolvedCompanyMembershipContext? Membership => null;
+         public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
+         public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
+     }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] values) =>
++        values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+ }
+END_OF_PATCH

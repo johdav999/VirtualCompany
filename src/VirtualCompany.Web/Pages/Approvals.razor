@@ -1,5 +1,6 @@
 @page "/approvals"
 @inject ApprovalApiClient ApprovalApiClient
+@inject InboxApiClient InboxApiClient
 @inject OnboardingApiClient OnboardingApiClient
 @inject NavigationManager Navigation
 @using Microsoft.AspNetCore.Components
@@ -55,6 +56,27 @@ else
                 <h1>@(companyAccess?.CompanyName ?? "Approvals")</h1>
                 <p class="text-body-secondary mb-0">Review the rationale and affected data before deciding.</p>
 
+                <form class="agent-filter-bar mt-4" method="get">
+                    <input type="hidden" name="companyId" value="@CompanyId" />
+                    @if (ApprovalId is Guid approvalId)
+                    {
+                        <input type="hidden" name="approvalId" value="@approvalId" />
+                    }
+                    <div>
+                        <label class="form-label" for="approval-status-filter">Status</label>
+                        <select id="approval-status-filter" class="form-select" name="status">
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All approvals</option>
+                            <option value="pending" selected="@IsSelected(Status, "pending")">Pending</option>
+                            <option value="approved" selected="@IsSelected(Status, "approved")">Approved</option>
+                            <option value="rejected" selected="@IsSelected(Status, "rejected")">Rejected</option>
+                        </select>
+                    </div>
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="submit">Apply filter</button>
+                        <a class="btn btn-outline-secondary" href="@($"/approvals?companyId={CompanyId}")">Clear</a>
+                    </div>
+                </form>
+
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
                     <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
@@ -77,6 +99,8 @@ else
                                         <strong>@approval.ApprovalType approval</strong>
                                         <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
                                         <div class="small mt-2">@approval.AffectedDataSummary</div>
+                                        <div class="small mt-1">Requested by @approval.RequestedByActorType @approval.RequestedByActorId.ToString("N")</div>
+                                        <div class="small mt-1">Approver: @FormatApprover(approval)</div>
                                     </div>
                                     <span class="badge text-bg-light align-self-start">@approval.Status</span>
                                 </div>
@@ -102,6 +126,12 @@ else
                         <dd>@selectedApproval.CreatedAt.ToLocalTime().ToString("g")</dd>
                         <dt>Target</dt>
                         <dd>@selectedApproval.TargetEntityType</dd>
+                        <dt>Target id</dt>
+                        <dd>@selectedApproval.TargetEntityId.ToString("N")</dd>
+                        <dt>Requested by</dt>
+                        <dd>@selectedApproval.RequestedByActorType @selectedApproval.RequestedByActorId.ToString("N")</dd>
+                        <dt>Required approver</dt>
+                        <dd>@FormatApprover(selectedApproval)</dd>
                     </dl>
 
                     <h3 class="h6">Rationale</h3>
@@ -172,6 +202,9 @@ else
     [SupplyParameterFromQuery(Name = "approvalId")]
     public Guid? ApprovalId { get; set; }
 
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? Status { get; set; }
+
     private bool isLoading = true;
     private bool isDeciding;
     private CurrentUserContextViewModel? currentUser;
@@ -205,10 +238,7 @@ else
             }
 
             companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
-            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
-            selectedApproval = ApprovalId is Guid approvalId
-                ? await ApprovalApiClient.GetAsync(companyId, approvalId)
-                : approvals.FirstOrDefault();
+            await LoadApprovalInboxAsync(companyId);
         }
         catch (OnboardingApiException ex)
         {
@@ -229,7 +259,7 @@ else
             return;
         }
 
-        selectedApproval = await ApprovalApiClient.GetAsync(companyId, approvalId);
+        selectedApproval = IsPendingInboxFilter ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId) : await ApprovalApiClient.GetAsync(companyId, approvalId);
         decisionComment = null;
         Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
     }
@@ -256,7 +286,7 @@ else
                     Comment = decisionComment
                 });
             selectedApproval = result.Approval;
-            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
+            await LoadApprovalInboxAsync(companyId);
         }
         catch (OnboardingApiException ex)
         {
@@ -268,11 +298,76 @@ else
         }
     }
 
+    private async Task LoadApprovalInboxAsync(Guid companyId)
+    {
+        if (IsPendingInboxFilter)
+        {
+            var inbox = await InboxApiClient.GetInboxAsync(companyId);
+            approvals = inbox.PendingApprovals.Select(ToApprovalRequestViewModel).ToList();
+            selectedApproval = ApprovalId is Guid approvalId
+                ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId)
+                : approvals.FirstOrDefault();
+            return;
+        }
+
+        approvals = (await ApprovalApiClient.ListAsync(companyId, StatusOrDefault)).ToList();
+        selectedApproval = ApprovalId is Guid selectedApprovalId
+            ? await ApprovalApiClient.GetAsync(companyId, selectedApprovalId)
+            : approvals.FirstOrDefault();
+    }
+
+    private static ApprovalRequestViewModel ToApprovalRequestViewModel(ApprovalInboxItemViewModel item) =>
+        new()
+        {
+            Id = item.Id,
+            TargetEntityType = item.TargetEntityType,
+            TargetEntityId = item.TargetEntityId,
+            ApprovalType = item.ApprovalType,
+            Status = item.Status,
+            RationaleSummary = item.RationaleSummary,
+            RequestedByActorType = item.RequestedByActorType,
+            RequestedByActorId = item.RequestedByActorId,
+            RequiredRole = item.RequiredRole,
+            RequiredUserId = item.RequiredUserId,
+            AffectedDataSummary = item.AffectedDataSummary,
+            ThresholdSummary = item.ThresholdSummary,
+            CurrentStep = item.CurrentStep,
+            CreatedAt = item.CreatedAt
+        };
+
     private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
         selectedApproval?.Id == approval.Id
             ? "list-group-item list-group-item-action active"
             : "list-group-item list-group-item-action";
 
+    private string? StatusOrDefault =>
+        string.IsNullOrWhiteSpace(Status)
+            ? "pending"
+            : Status.Trim();
+
+    private bool IsPendingInboxFilter => string.Equals(StatusOrDefault, "pending", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSelected(string? currentValue, string expectedValue) =>
+        string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+
     private static bool IsPending(ApprovalRequestViewModel approval) =>
         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatApprover(ApprovalRequestViewModel approval)
+    {
+        if (approval.RequiredUserId is Guid requiredUserId)
+        {
+            return $"user {requiredUserId:N}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(approval.RequiredRole))
+        {
+            return $"role {approval.RequiredRole}";
+        }
+
+        return FormatStepApprover(approval.CurrentStep);
+    }
+
+    private static string FormatStepApprover(ApprovalStepViewModel? step) =>
+        step is null ? "current approver" : $"{step.ApproverType} {step.ApproverRef}";
 }

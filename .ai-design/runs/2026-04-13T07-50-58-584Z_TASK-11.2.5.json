@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.2.5",
+  "promptPath": ".ai-design/prompts/TASK-11.2.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T07:50:58.584Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T07-50-58-584Z_TASK-11.2.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T07-50-58-584Z_TASK-11.2.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T07:54:41.441Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "e.Body);\n         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey(\"agent_role_brief\"));\n         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey(\"agent_personality_summary\"));\n+        Assert.Equal(\"single_agent_orchestration\", payload.AgentMessage.StructuredPayload[\"shared_engine\"]!.GetValue<string>());\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 6d44a1a..0d208f6 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -6,11 +6,13 @@ using Microsoft.EntityFrameworkCore;\n using Microsoft.Extensions.DependencyInjection;\n using VirtualCompany.Application.Auditing;\n using VirtualCompany.Application.Auth;\n+using VirtualCompany.Application.Orchestration;\n using VirtualCompany.Domain.Entities;\n using VirtualCompany.Domain.Enums;\n using VirtualCompany.Infrastructure.Auth;\n using VirtualCompany.Infrastructure.Persistence;\n using Xunit;\n+using VirtualCompany.Infrastructure.Companies;\n \n namespace VirtualCompany.Api.Tests;\n \n@@ -121,6 +123,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicat\n         Assert.Equal(\"allow\", attempt.PolicyDecision[\"outcome\"]!.GetValue<string>());\n     }\n \n+    [Fact]\n+    public void Single_agent_entry_points_resolve_one_shared_orchestration_engine()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+\n+        var services = scope.ServiceProvider.GetServices<ISingleAgentOrchestrationService>().ToList();\n+\n+        var service = Assert.Single(services);\n+        Assert.IsType<SingleAgentOrchestrationService>(service);\n+        Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\n",
+  "stderrTail": "ssert.True(payload.AgentMessage.StructuredPayload.ContainsKey(\"agent_role_brief\"));\n         Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey(\"agent_personality_summary\"));\n+        Assert.Equal(\"single_agent_orchestration\", payload.AgentMessage.StructuredPayload[\"shared_engine\"]!.GetValue<string>());\n     }\n \n     [Fact]\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 6d44a1a..0d208f6 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -6,11 +6,13 @@ using Microsoft.EntityFrameworkCore;\n using Microsoft.Extensions.DependencyInjection;\n using VirtualCompany.Application.Auditing;\n using VirtualCompany.Application.Auth;\n+using VirtualCompany.Application.Orchestration;\n using VirtualCompany.Domain.Entities;\n using VirtualCompany.Domain.Enums;\n using VirtualCompany.Infrastructure.Auth;\n using VirtualCompany.Infrastructure.Persistence;\n using Xunit;\n+using VirtualCompany.Infrastructure.Companies;\n \n namespace VirtualCompany.Api.Tests;\n \n@@ -121,6 +123,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicat\n         Assert.Equal(\"allow\", attempt.PolicyDecision[\"outcome\"]!.GetValue<string>());\n     }\n \n+    [Fact]\n+    public void Single_agent_entry_points_resolve_one_shared_orchestration_engine()\n+    {\n+        using var scope = _factory.Services.CreateScope();\n+\n+        var services = scope.ServiceProvider.GetServices<ISingleAgentOrchestrationService>().ToList();\n+\n+        var service = Assert.Single(services);\n+        Assert.IsType<SingleAgentOrchestrationService>(service);\n+        Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\ntokens used\n75,209\n",
+  "verbosityMode": "summary"
+}

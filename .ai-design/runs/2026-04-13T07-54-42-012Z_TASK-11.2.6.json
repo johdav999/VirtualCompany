@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.2.6",
+  "promptPath": ".ai-design/prompts/TASK-11.2.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T07:54:42.012Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T07-54-42-012Z_TASK-11.2.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T07-54-42-012Z_TASK-11.2.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T07:57:29.464Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ion\";\n+        var resolver = scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationResolver>();\n+\n+        var result = await resolver.ResolveAsync(\n+            new OrchestrationRequest(\n+                seed.CompanyId,\n+                AgentId: seed.AgentId,\n+                UserInput: \"Summarize this account.\"),\n+            CancellationToken.None);\n+\n+        Assert.True(result.Succeeded);\n+        Assert.False(string.IsNullOrWhiteSpace(result.CorrelationId));\n+        Assert.NotEqual(\"ambient-http-correlation\", result.CorrelationId);\n+        Assert.Equal(result.CorrelationId, result.RuntimeContext!.Actor.CorrelationId);\n+    }\n+\n     [Fact]\n     public async Task ResolveAsync_rejects_non_executable_agent_status()\n     {\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -10,6 +10,7 @@ using VirtualCompany.Domain.Entities;\n using VirtualCompany.Domain.Enums;\n using VirtualCompany.Infrastructure.Auth;\n using VirtualCompany.Infrastructure.Persistence;\n+using VirtualCompany.Infrastructure.Observability;\n using Xunit;\n using VirtualCompany.Infrastructure.Companies;\n@@ -136,6 +137,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         var service = Assert.Single(services);\n         Assert.IsType<SingleAgentOrchestrationService>(service);\n         Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());\n+\n+        var constructor = Assert.Single(typeof(SingleAgentOrchestrationService).GetConstructors());\n+        Assert.DoesNotContain(constructor.GetParameters(), parameter => parameter.ParameterType == typeof(ICorrelationContextAccessor));\n     }\n \n     private HttpClient CreateAuthenticatedClient()\nEND_OF_PATCH\n",
+  "stderrTail": "resolver = scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationResolver>();\n+\n+        var result = await resolver.ResolveAsync(\n+            new OrchestrationRequest(\n+                seed.CompanyId,\n+                AgentId: seed.AgentId,\n+                UserInput: \"Summarize this account.\"),\n+            CancellationToken.None);\n+\n+        Assert.True(result.Succeeded);\n+        Assert.False(string.IsNullOrWhiteSpace(result.CorrelationId));\n+        Assert.NotEqual(\"ambient-http-correlation\", result.CorrelationId);\n+        Assert.Equal(result.CorrelationId, result.RuntimeContext!.Actor.CorrelationId);\n+    }\n+\n     [Fact]\n     public async Task ResolveAsync_rejects_non_executable_agent_status()\n     {\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -10,6 +10,7 @@ using VirtualCompany.Domain.Entities;\n using VirtualCompany.Domain.Enums;\n using VirtualCompany.Infrastructure.Auth;\n using VirtualCompany.Infrastructure.Persistence;\n+using VirtualCompany.Infrastructure.Observability;\n using Xunit;\n using VirtualCompany.Infrastructure.Companies;\n@@ -136,6 +137,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         var service = Assert.Single(services);\n         Assert.IsType<SingleAgentOrchestrationService>(service);\n         Assert.Same(service, scope.ServiceProvider.GetRequiredService<ISingleAgentOrchestrationService>());\n+\n+        var constructor = Assert.Single(typeof(SingleAgentOrchestrationService).GetConstructors());\n+        Assert.DoesNotContain(constructor.GetParameters(), parameter => parameter.ParameterType == typeof(ICorrelationContextAccessor));\n     }\n \n     private HttpClient CreateAuthenticatedClient()\nEND_OF_PATCH\ntokens used\n78,288\n",
+  "verbosityMode": "summary"
+}

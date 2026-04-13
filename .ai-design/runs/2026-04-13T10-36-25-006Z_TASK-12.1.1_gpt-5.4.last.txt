@@ -1,0 +1,1297 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+new file mode 100644
+index 0000000..22e1e84
+--- /dev/null
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -0,0 +1,95 @@
++namespace VirtualCompany.Application.Cockpit;
++
++public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
++
++public sealed record ExecutiveCockpitDashboardDto(
++    Guid CompanyId,
++    string CompanyName,
++    DateTime GeneratedAtUtc,
++    DateTime? CacheTimestampUtc,
++    ExecutiveCockpitDailyBriefingDto? DailyBriefing,
++    ExecutiveCockpitPendingApprovalsDto PendingApprovals,
++    IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
++    IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
++    IReadOnlyList<ExecutiveCockpitActivityItemDto> RecentActivity,
++    ExecutiveCockpitEmptyStateFlagsDto EmptyStateFlags);
++
++public sealed record ExecutiveCockpitDailyBriefingDto(
++    Guid Id,
++    string Title,
++    string Summary,
++    DateTime GeneratedUtc,
++    string? Route);
++
++public sealed record ExecutiveCockpitPendingApprovalsDto(
++    int TotalCount,
++    IReadOnlyList<ExecutiveCockpitApprovalItemDto> Items,
++    string Route);
++
++public sealed record ExecutiveCockpitApprovalItemDto(
++    Guid Id,
++    string ApprovalType,
++    string TargetEntityType,
++    Guid TargetEntityId,
++    string Status,
++    string Summary,
++    DateTime CreatedUtc,
++    string Route);
++
++public sealed record ExecutiveCockpitAlertDto(
++    Guid Id,
++    string Severity,
++    string Title,
++    string Summary,
++    string SourceType,
++    Guid? SourceId,
++    DateTime OccurredUtc,
++    string? Route);
++
++public sealed record ExecutiveCockpitDepartmentKpiDto(
++    string Department,
++    int ActiveAgents,
++    int OpenTasks,
++    int CompletedTasksLast7Days,
++    int PendingApprovals,
++    int ActiveWorkflows,
++    string Route);
++
++public sealed record ExecutiveCockpitActivityItemDto(
++    Guid Id,
++    string ActivityType,
++    string Title,
++    string Summary,
++    DateTime OccurredUtc,
++    string? Route);
++
++public sealed record ExecutiveCockpitEmptyStateFlagsDto(
++    bool NoAgents,
++    bool NoWorkflows,
++    bool NoKnowledge,
++    bool NoRecentActivity,
++    bool NoPendingApprovals,
++    bool NoAlerts);
++
++public interface IExecutiveCockpitDashboardService
++{
++    Task<ExecutiveCockpitDashboardDto> GetAsync(
++        GetExecutiveCockpitDashboardQuery query,
++        CancellationToken cancellationToken);
++}
++
++public interface IExecutiveCockpitDashboardCache
++{
++    Task<CachedExecutiveCockpitDashboardDto?> TryGetAsync(
++        Guid companyId,
++        CancellationToken cancellationToken);
++
++    Task SetAsync(
++        CachedExecutiveCockpitDashboardDto snapshot,
++        CancellationToken cancellationToken);
++}
++
++public sealed record CachedExecutiveCockpitDashboardDto(
++    Guid CompanyId,
++    DateTime CachedAtUtc,
++    ExecutiveCockpitDashboardDto Dashboard);
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+new file mode 100644
+index 0000000..ab1fa0f
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -0,0 +1,40 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/executive-cockpit")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class ExecutiveCockpitController : ControllerBase
++{
++    private readonly IExecutiveCockpitDashboardService _dashboardService;
++
++    public ExecutiveCockpitController(IExecutiveCockpitDashboardService dashboardService)
++    {
++        _dashboardService = dashboardService;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<ExecutiveCockpitDashboardDto>> GetAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _dashboardService.GetAsync(new GetExecutiveCockpitDashboardQuery(companyId), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+new file mode 100644
+index 0000000..53b1890
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -0,0 +1,331 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDashboardService
++{
++    private static readonly TimeSpan CacheFreshness = TimeSpan.FromSeconds(60);
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IExecutiveCockpitDashboardCache _cache;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyExecutiveCockpitDashboardService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IExecutiveCockpitDashboardCache cache,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _cache = cache;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<ExecutiveCockpitDashboardDto> GetAsync(
++        GetExecutiveCockpitDashboardQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var cached = await _cache.TryGetAsync(query.CompanyId, cancellationToken);
++        if (cached is not null && cached.CachedAtUtc >= nowUtc.Subtract(CacheFreshness))
++        {
++            return cached.Dashboard with
++            {
++                CacheTimestampUtc = cached.CachedAtUtc
++            };
++        }
++
++        var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
++        await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, nowUtc, dashboard), cancellationToken);
++        return dashboard;
++    }
++
++    private async Task<ExecutiveCockpitDashboardDto> BuildAsync(
++        Guid companyId,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken)
++            ?? throw new KeyNotFoundException("Company not found.");
++
++        var dailyBriefing = await _dbContext.CompanyBriefings
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.BriefingType == CompanyBriefingType.Daily)
++            .OrderByDescending(x => x.GeneratedUtc)
++            .Select(x => new ExecutiveCockpitDailyBriefingDto(
++                x.Id,
++                x.Title,
++                FirstParagraph(x.SummaryBody, 420),
++                x.GeneratedUtc,
++                $"/briefing-preferences?companyId={companyId}"))
++            .FirstOrDefaultAsync(cancellationToken);
++
++        var pendingApprovalRows = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .OrderBy(x => x.CreatedUtc)
++            .Take(5)
++            .Select(x => new
++            {
++                x.Id,
++                x.ApprovalType,
++                x.TargetEntityType,
++                x.TargetEntityId,
++                x.Status,
++                x.CreatedUtc
++            })
++            .ToListAsync(cancellationToken);
++
++        var pendingApprovalCount = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .CountAsync(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
++
++        var pendingApprovals = new ExecutiveCockpitPendingApprovalsDto(
++            pendingApprovalCount,
++            pendingApprovalRows
++                .Select(x => new ExecutiveCockpitApprovalItemDto(
++                    x.Id,
++                    x.ApprovalType,
++                    x.TargetEntityType,
++                    x.TargetEntityId,
++                    x.Status.ToStorageValue(),
++                    $"Review {x.ApprovalType} approval for {x.TargetEntityType}.",
++                    x.CreatedUtc,
++                    $"/approvals?companyId={companyId}&approvalId={x.Id}"))
++                .ToList(),
++            $"/approvals?companyId={companyId}");
++
++        var workflowAlerts = await _dbContext.WorkflowExceptions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(5)
++            .Select(x => new ExecutiveCockpitAlertDto(
++                x.Id,
++                "high",
++                x.Title,
++                x.Details,
++                "workflow_exception",
++                x.Id,
++                x.OccurredUtc,
++                $"/workflows?companyId={companyId}"))
++            .ToListAsync(cancellationToken);
++
++        var taskAlerts = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(Math.Max(0, 5 - workflowAlerts.Count))
++            .Select(x => new ExecutiveCockpitAlertDto(
++                x.Id,
++                x.Status == WorkTaskStatus.Failed ? "high" : "medium",
++                x.Title,
++                $"Task is {x.Status.ToStorageValue()}.",
++                "task",
++                x.Id,
++                x.UpdatedUtc,
++                null))
++            .ToListAsync(cancellationToken);
++
++        var alerts = workflowAlerts.Concat(taskAlerts)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(5)
++            .ToList();
++
++        var agents = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new { x.Id, x.Department, x.Status })
++            .ToListAsync(cancellationToken);
++
++        var agentDepartmentById = agents.ToDictionary(
++            x => x.Id,
++            x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department.Trim());
++
++        var tasks = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new { x.Id, x.AssignedAgentId, x.Status, x.CompletedUtc })
++            .ToListAsync(cancellationToken);
++
++        var taskAssignedAgentById = tasks
++            .Where(x => x.AssignedAgentId.HasValue)
++            .ToDictionary(x => x.Id, x => x.AssignedAgentId!.Value);
++
++        var approvalRows = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .Select(x => new { x.AgentId, x.TargetEntityType, x.TargetEntityId })
++            .ToListAsync(cancellationToken);
++
++        var approvalAgentIds = approvalRows
++            .Select(x =>
++                x.AgentId != Guid.Empty
++                    ? x.AgentId
++                    : taskAssignedAgentById.TryGetValue(x.TargetEntityId, out var taskAgentId) ? taskAgentId : Guid.Empty)
++            .Where(x => x != Guid.Empty)
++            .ToList();
++
++        var workflowDepartments = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Active)
++            .Select(x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department!)
++            .ToListAsync(cancellationToken);
++
++        var departments = agents.Select(x => string.IsNullOrWhiteSpace(x.Department) ? "Unassigned" : x.Department.Trim())
++            .Concat(workflowDepartments)
++            .DefaultIfEmpty("Company")
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        // V1 KPI cards are derived from operational data until a dedicated analytics projection exists.
++        var departmentKpis = departments
++            .Select(department =>
++            {
++                var departmentAgentIds = agentDepartmentById
++                    .Where(x => string.Equals(x.Value, department, StringComparison.OrdinalIgnoreCase))
++                    .Select(x => x.Key)
++                    .ToHashSet();
++
++                var departmentTasks = tasks
++                    .Where(x => x.AssignedAgentId.HasValue && departmentAgentIds.Contains(x.AssignedAgentId.Value))
++                    .ToList();
++
++                return new ExecutiveCockpitDepartmentKpiDto(
++                    department,
++                    agents.Count(x => string.Equals(x.Department, department, StringComparison.OrdinalIgnoreCase) && x.Status == AgentStatus.Active),
++                    departmentTasks.Count(x => x.Status is not WorkTaskStatus.Completed and not WorkTaskStatus.Failed),
++                    departmentTasks.Count(x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= nowUtc.AddDays(-7)),
++                    approvalAgentIds.Count(agentId => departmentAgentIds.Contains(agentId)),
++                    workflowDepartments.Count(x => string.Equals(x, department, StringComparison.OrdinalIgnoreCase)),
++                    $"/agents?companyId={companyId}&department={Uri.EscapeDataString(department)}");
++            })
++            .ToList();
++
++        var recentActivity = await BuildRecentActivityAsync(companyId, cancellationToken);
++
++        var noWorkflows = !await _dbContext.WorkflowDefinitions
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(x => x.CompanyId == companyId, cancellationToken) &&
++            !await _dbContext.WorkflowInstances
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        var noKnowledge = !await _dbContext.CompanyKnowledgeDocuments
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        var emptyStates = new ExecutiveCockpitEmptyStateFlagsDto(
++            agents.Count == 0,
++            noWorkflows,
++            noKnowledge,
++            recentActivity.Count == 0,
++            pendingApprovals.TotalCount == 0,
++            alerts.Count == 0);
++
++        return new ExecutiveCockpitDashboardDto(
++            companyId,
++            company.Name,
++            nowUtc,
++            null,
++            dailyBriefing,
++            pendingApprovals,
++            alerts,
++            departmentKpis,
++            recentActivity,
++            emptyStates);
++    }
++
++    private async Task<IReadOnlyList<ExecutiveCockpitActivityItemDto>> BuildRecentActivityAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var auditItems = await _dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(8)
++            .Select(x => new ExecutiveCockpitActivityItemDto(
++                x.Id,
++                "audit",
++                x.Action,
++                string.IsNullOrWhiteSpace(x.RationaleSummary) ? $"{x.TargetType} {x.Outcome}" : x.RationaleSummary!,
++                x.OccurredUtc,
++                null))
++            .ToListAsync(cancellationToken);
++
++        var taskItems = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(8)
++            .Select(x => new ExecutiveCockpitActivityItemDto(
++                x.Id,
++                "task",
++                x.Title,
++                $"Task {x.Status.ToStorageValue()}.",
++                x.UpdatedUtc,
++                null))
++            .ToListAsync(cancellationToken);
++
++        var workflowItems = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(8)
++            .Select(x => new ExecutiveCockpitActivityItemDto(
++                x.Id,
++                "workflow",
++                x.Definition.Name,
++                $"Workflow {x.State.ToStorageValue()}.",
++                x.UpdatedUtc,
++                $"/workflows?companyId={companyId}"))
++            .ToListAsync(cancellationToken);
++
++        return auditItems
++            .Concat(taskItems)
++            .Concat(workflowItems)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(10)
++            .ToList();
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static string FirstParagraph(string value, int maxLength)
++    {
++        var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
++        return paragraph.Length <= maxLength ? paragraph : paragraph[..maxLength].TrimEnd() + "...";
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+new file mode 100644
+index 0000000..3fa51ef
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -0,0 +1,83 @@
++using System.Text.Json;
++using Microsoft.Extensions.Caching.Distributed;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Cockpit;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCache
++{
++    private const string CacheKeyVersion = "v1";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly TimeSpan TimeToLive = TimeSpan.FromMinutes(2);
++
++    private readonly IDistributedCache _distributedCache;
++    private readonly ILogger<ExecutiveCockpitDashboardCache> _logger;
++
++    public ExecutiveCockpitDashboardCache(
++        IDistributedCache distributedCache,
++        ILogger<ExecutiveCockpitDashboardCache> logger)
++    {
++        _distributedCache = distributedCache;
++        _logger = logger;
++    }
++
++    public async Task<CachedExecutiveCockpitDashboardDto?> TryGetAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        var cacheKey = BuildCacheKey(companyId);
++        try
++        {
++            var payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++            if (payload is null || payload.Length == 0)
++            {
++                return null;
++            }
++
++            var snapshot = JsonSerializer.Deserialize<CachedExecutiveCockpitDashboardDto>(payload, SerializerOptions);
++            if (snapshot is null ||
++                snapshot.CompanyId != companyId ||
++                snapshot.Dashboard.CompanyId != companyId)
++            {
++                await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
++                return null;
++            }
++
++            return snapshot;
++        }
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            _logger.LogWarning(ex, "Ignoring malformed executive cockpit dashboard cache entry for company {CompanyId}.", companyId);
++            try
++            {
++                await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
++            }
++            catch (Exception) when (!cancellationToken.IsCancellationRequested)
++            {
++            }
++
++            return null;
++        }
++    }
++
++    public async Task SetAsync(CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken)
++    {
++        if (snapshot.CompanyId == Guid.Empty || snapshot.Dashboard.CompanyId != snapshot.CompanyId)
++        {
++            return;
++        }
++
++        await _distributedCache.SetAsync(
++            BuildCacheKey(snapshot.CompanyId),
++            JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions),
++            new DistributedCacheEntryOptions
++            {
++                AbsoluteExpirationRelativeToNow = TimeToLive
++            },
++            cancellationToken);
++    }
++
++    private static string BuildCacheKey(Guid companyId) =>
++        $"vc:executive-cockpit:{CacheKeyVersion}:{companyId:N}";
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9b03aa8..e822dd5 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Context;
+@@ -180,6 +181,8 @@ public static class DependencyInjection
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
++        services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+new file mode 100644
+index 0000000..cbe1281
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -0,0 +1,186 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class ExecutiveCockpitApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public ExecutiveCockpitApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<ExecutiveCockpitDashboardViewModel?> GetAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<ExecutiveCockpitDashboardViewModel?>(OfflineDashboard(companyId));
++        }
++
++        return GetCoreAsync(companyId, cancellationToken);
++    }
++
++    private async Task<ExecutiveCockpitDashboardViewModel?> GetCoreAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/executive-cockpit", cancellationToken);
++            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
++            {
++                return null;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<ExecutiveCockpitDashboardViewModel>(SerializerOptions, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static ExecutiveCockpitDashboardViewModel OfflineDashboard(Guid companyId) =>
++        new()
++        {
++            CompanyId = companyId,
++            CompanyName = "Offline workspace",
++            GeneratedAtUtc = DateTime.UtcNow,
++            PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
++            {
++                TotalCount = 0,
++                Route = $"/approvals?companyId={companyId}"
++            },
++            DepartmentKpis =
++            [
++                new ExecutiveCockpitDepartmentKpiViewModel
++                {
++                    Department = "Company",
++                    Route = $"/agents?companyId={companyId}"
++                }
++            ],
++            EmptyStateFlags = new ExecutiveCockpitEmptyStateFlagsViewModel
++            {
++                NoAgents = true,
++                NoWorkflows = true,
++                NoKnowledge = true,
++                NoRecentActivity = true,
++                NoPendingApprovals = true,
++                NoAlerts = true
++            }
++        };
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class ExecutiveCockpitDashboardViewModel
++{
++    public Guid CompanyId { get; set; }
++    public string CompanyName { get; set; } = string.Empty;
++    public DateTime GeneratedAtUtc { get; set; }
++    public DateTime? CacheTimestampUtc { get; set; }
++    public ExecutiveCockpitDailyBriefingViewModel? DailyBriefing { get; set; }
++    public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
++    public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
++    public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
++    public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
++    public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
++}
++
++public sealed class ExecutiveCockpitDailyBriefingViewModel
++{
++    public Guid Id { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public DateTime GeneratedUtc { get; set; }
++    public string? Route { get; set; }
++}
++
++public sealed class ExecutiveCockpitPendingApprovalsViewModel
++{
++    public int TotalCount { get; set; }
++    public List<ExecutiveCockpitApprovalItemViewModel> Items { get; set; } = [];
++    public string Route { get; set; } = "/approvals";
++}
++
++public sealed class ExecutiveCockpitApprovalItemViewModel
++{
++    public Guid Id { get; set; }
++    public string ApprovalType { get; set; } = string.Empty;
++    public string TargetEntityType { get; set; } = string.Empty;
++    public Guid TargetEntityId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public DateTime CreatedUtc { get; set; }
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitAlertViewModel
++{
++    public Guid Id { get; set; }
++    public string Severity { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public string SourceType { get; set; } = string.Empty;
++    public Guid? SourceId { get; set; }
++    public DateTime OccurredUtc { get; set; }
++    public string? Route { get; set; }
++}
++
++public sealed class ExecutiveCockpitDepartmentKpiViewModel
++{
++    public string Department { get; set; } = string.Empty;
++    public int ActiveAgents { get; set; }
++    public int OpenTasks { get; set; }
++    public int CompletedTasksLast7Days { get; set; }
++    public int PendingApprovals { get; set; }
++    public int ActiveWorkflows { get; set; }
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class ExecutiveCockpitActivityItemViewModel
++{
++    public Guid Id { get; set; }
++    public string ActivityType { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public DateTime OccurredUtc { get; set; }
++    public string? Route { get; set; }
++}
++
++public sealed class ExecutiveCockpitEmptyStateFlagsViewModel
++{
++    public bool NoAgents { get; set; }
++    public bool NoWorkflows { get; set; }
++    public bool NoKnowledge { get; set; }
++    public bool NoRecentActivity { get; set; }
++    public bool NoPendingApprovals { get; set; }
++    public bool NoAlerts { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+new file mode 100644
+index 0000000..dd7125a
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -0,0 +1,214 @@
++@inject ExecutiveCockpitApiClient ApiClient
++
++<section class="cockpit-panel">
++    @if (isLoading)
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <p class="text-body-secondary mb-0">Loading company-wide dashboard...</p>
++        </div>
++    }
++    else if (!string.IsNullOrWhiteSpace(errorMessage))
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <div class="alert alert-danger mb-0">@errorMessage</div>
++        </div>
++    }
++    else if (dashboard is null)
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h2 class="h5">Executive cockpit</h2>
++            <p class="text-body-secondary mb-0">Dashboard access is not available for this company.</p>
++        </div>
++    }
++    else
++    {
++        <div class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <div class="cockpit-card__header">
++                <div>
++                    <span class="dashboard-kicker">Executive cockpit</span>
++                    <h2 class="h4 mt-2 mb-1">@ResolvedCompanyName</h2>
++                    <p class="text-body-secondary mb-0">Generated @dashboard.GeneratedAtUtc.ToLocalTime():g</p>
++                </div>
++                <div class="dashboard-actions">
++                    <a class="btn btn-outline-primary" href="@AgentsPath">Agents</a>
++                    <a class="btn btn-outline-primary" href="@WorkflowsPath">Workflows</a>
++                    <a class="btn btn-outline-primary" href="@ApprovalsPath">Approvals</a>
++                </div>
++            </div>
++        </div>
++
++        <article class="wizard-card wizard-card--compact cockpit-card">
++            <h3 class="h5">Daily briefing</h3>
++            @if (dashboard.DailyBriefing is null)
++            {
++                <p class="text-body-secondary mb-0">No daily briefing has been generated yet. Generate a briefing after agents, workflows, or approvals start producing activity.</p>
++            }
++            else
++            {
++                <strong>@dashboard.DailyBriefing.Title</strong>
++                <div class="text-body-secondary">@dashboard.DailyBriefing.GeneratedUtc.ToLocalTime():g</div>
++                <p class="mt-2">@dashboard.DailyBriefing.Summary</p>
++                <a href="@(dashboard.DailyBriefing.Route ?? BriefingPreferencesPath)">Briefing delivery</a>
++            }
++        </article>
++
++        <article class="wizard-card wizard-card--compact cockpit-card">
++            <div class="cockpit-card__header">
++                <h3 class="h5 mb-0">Pending approvals</h3>
++                <a href="@dashboard.PendingApprovals.Route">Open approvals</a>
++            </div>
++            @if (dashboard.EmptyStateFlags.NoPendingApprovals)
++            {
++                <p class="text-body-secondary mb-0">No approvals are waiting. New guarded actions appear here when they need a decision.</p>
++            }
++            else
++            {
++                <p class="text-body-secondary">@dashboard.PendingApprovals.TotalCount pending approval@(dashboard.PendingApprovals.TotalCount == 1 ? string.Empty : "s")</p>
++                <div class="activity-list">
++                    @foreach (var approval in dashboard.PendingApprovals.Items)
++                    {
++                        <a class="activity-item text-decoration-none text-reset" href="@approval.Route">
++                            <strong>@approval.ApprovalType approval</strong>
++                            <div class="text-body-secondary">@approval.Summary</div>
++                            <small>@approval.CreatedUtc.ToLocalTime():g</small>
++                        </a>
++                    }
++                </div>
++            }
++        </article>
++
++        <article class="wizard-card wizard-card--compact cockpit-card">
++            <h3 class="h5">Alerts</h3>
++            @if (dashboard.EmptyStateFlags.NoAlerts)
++            {
++                <p class="text-body-secondary mb-0">No active alerts. Blocked tasks and workflow exceptions will surface here.</p>
++            }
++            else
++            {
++                <div class="activity-list">
++                    @foreach (var alert in dashboard.Alerts)
++                    {
++                        <a class="activity-item text-decoration-none text-reset" href="@(alert.Route ?? DashboardPath)">
++                            <span class="badge text-bg-warning">@alert.Severity</span>
++                            <strong class="d-block mt-2">@alert.Title</strong>
++                            <div class="text-body-secondary">@alert.Summary</div>
++                            <small>@alert.OccurredUtc.ToLocalTime():g</small>
++                        </a>
++                    }
++                </div>
++            }
++        </article>
++
++        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h3 class="h5">Department KPIs</h3>
++            <div class="cockpit-kpi-grid">
++                @foreach (var kpi in dashboard.DepartmentKpis)
++                {
++                    <a class="summary-pill text-decoration-none text-reset" href="@kpi.Route">
++                        <strong>@kpi.Department</strong>
++                        <dl class="cockpit-kpi-list mb-0 mt-3">
++                            <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
++                            <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
++                            <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
++                            <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
++                            <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
++                        </dl>
++                    </a>
++                }
++            </div>
++        </article>
++
++        <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++            <h3 class="h5">Recent activity</h3>
++            @if (dashboard.EmptyStateFlags.NoRecentActivity)
++            {
++                <p class="text-body-secondary mb-0">No recent activity yet. Start by hiring agents, running workflows, uploading knowledge, or creating tasks.</p>
++            }
++            else
++            {
++                <div class="activity-list">
++                    @foreach (var item in dashboard.RecentActivity)
++                    {
++                        <a class="activity-item text-decoration-none text-reset" href="@(item.Route ?? DashboardPath)">
++                            <strong>@item.Title</strong>
++                            <div class="text-body-secondary">@item.Summary</div>
++                            <small>@item.ActivityType | @item.OccurredUtc.ToLocalTime():g</small>
++                        </a>
++                    }
++                </div>
++            }
++        </article>
++
++        @if (dashboard.EmptyStateFlags.NoAgents || dashboard.EmptyStateFlags.NoWorkflows || dashboard.EmptyStateFlags.NoKnowledge)
++        {
++            <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
++                <h3 class="h5">Setup guidance</h3>
++                <div class="cockpit-empty-grid">
++                    @if (dashboard.EmptyStateFlags.NoAgents)
++                    {
++                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@AgentsPath">
++                            <strong>Hire agents</strong>
++                            <p class="text-body-secondary mb-0">Add the first agents so tasks, approvals, and department KPIs have owners.</p>
++                        </a>
++                    }
++                    @if (dashboard.EmptyStateFlags.NoWorkflows)
++                    {
++                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@WorkflowsPath">
++                            <strong>Define workflows</strong>
++                            <p class="text-body-secondary mb-0">Create or enable workflows so company processes can be tracked here.</p>
++                        </a>
++                    }
++                    @if (dashboard.EmptyStateFlags.NoKnowledge)
++                    {
++                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@AgentsPath">
++                            <strong>Add knowledge</strong>
++                            <p class="text-body-secondary mb-0">Upload company documents when the knowledge setup flow is available.</p>
++                        </a>
++                    }
++                </div>
++            </article>
++        }
++    }
++</section>
++
++@code {
++    [Parameter]
++    public Guid CompanyId { get; set; }
++
++    [Parameter]
++    public string? CompanyName { get; set; }
++
++    private bool isLoading = true;
++    private string? errorMessage;
++    private ExecutiveCockpitDashboardViewModel? dashboard;
++
++    private string DashboardPath => $"/dashboard?companyId={CompanyId}";
++    private string AgentsPath => $"/agents?companyId={CompanyId}";
++    private string WorkflowsPath => $"/workflows?companyId={CompanyId}";
++    private string ApprovalsPath => $"/approvals?companyId={CompanyId}";
++    private string BriefingPreferencesPath => $"/briefing-preferences?companyId={CompanyId}";
++    private string ResolvedCompanyName => !string.IsNullOrWhiteSpace(CompanyName)
++        ? CompanyName!
++        : dashboard?.CompanyName ?? "Workspace dashboard";
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        dashboard = null;
++
++        try
++        {
++            dashboard = await ApiClient.GetAsync(CompanyId);
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index e812421..aa2b72f 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -47,6 +47,11 @@ builder.Services.AddScoped(sp => new ApprovalApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index 6b2bca5..0367ddc 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -104,6 +104,11 @@ else
+                 }
+             </div>
+ 
++            @if (CompanyId is Guid selectedCompanyId)
++            {
++                <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
++            }
++
+             <div class="wizard-card wizard-card--compact">
+                 <h2 class="h5">@((showStarterGuidance ? "Next recommended steps" : "Workspace context"))</h2>
+                 @if (showStarterGuidance)
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 0f15cbd..bd9fbe9 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -212,6 +212,14 @@ code {
+     .wizard-steps {
+         grid-template-columns: repeat(2, minmax(0, 1fr));
+     }
++
++    .cockpit-panel {
++        grid-template-columns: 1fr;
++    }
++
++    .cockpit-card__header {
++        flex-direction: column;
++    }
+ }
+ 
+ @media (max-width: 575.98px) {
+@@ -445,6 +453,61 @@ code {
+     gap: 0.75rem;
+ }
+ 
++.cockpit-panel {
++    display: grid;
++    gap: 1rem;
++    grid-column: 1 / -1;
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++}
++
++.cockpit-card {
++    min-width: 0;
++}
++
++.cockpit-card--wide {
++    grid-column: 1 / -1;
++}
++
++.cockpit-card__header {
++    align-items: flex-start;
++    display: flex;
++    gap: 1rem;
++    justify-content: space-between;
++}
++
++.cockpit-kpi-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++}
++
++.cockpit-kpi-list {
++    display: grid;
++    gap: 0.65rem;
++}
++
++.cockpit-kpi-list div {
++    align-items: center;
++    display: flex;
++    justify-content: space-between;
++}
++
++.cockpit-kpi-list dt,
++.cockpit-kpi-list dd {
++    margin: 0;
++}
++
++.cockpit-kpi-list dt {
++    color: #475569;
++    font-weight: 600;
++}
++
++.cockpit-empty-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++}
++
+ .activity-item {
+     background: #f8fafc;
+     border: 1px solid rgba(15, 23, 42, 0.08);
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+new file mode 100644
+index 0000000..81918ae
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -0,0 +1,161 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ExecutiveCockpitDashboardIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Dashboard_returns_empty_state_flags_for_sparse_workspace()
++    {
++        var companyId = await SeedSparseCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<ExecutiveCockpitDashboardResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.Equal(companyId, dashboard!.CompanyId);
++        Assert.True(dashboard.EmptyStateFlags.NoAgents);
++        Assert.True(dashboard.EmptyStateFlags.NoWorkflows);
++        Assert.True(dashboard.EmptyStateFlags.NoKnowledge);
++        Assert.True(dashboard.EmptyStateFlags.NoRecentActivity);
++        Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);
++        Assert.True(dashboard.EmptyStateFlags.NoAlerts);
++    }
++
++    [Fact]
++    public async Task Dashboard_is_tenant_scoped_and_populates_operational_sections()
++    {
++        var seed = await SeedCockpitCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<ExecutiveCockpitDashboardResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.Equal(seed.CompanyId, dashboard!.CompanyId);
++        Assert.NotNull(dashboard.DailyBriefing);
++        Assert.Equal(1, dashboard.PendingApprovals.TotalCount);
++        Assert.Contains(dashboard.PendingApprovals.Items, x => x.Id == seed.ApprovalId);
++        Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId);
++        Assert.Contains(dashboard.DepartmentKpis, x => x.Department == "Operations" && x.ActiveAgents == 1);
++        Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId);
++        Assert.DoesNotContain(dashboard.PendingApprovals.Items, x => x.Id == seed.OtherCompanyApprovalId);
++
++        var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/executive-cockpit");
++        Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "cockpit-founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "cockpit-founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Cockpit Founder");
++        return client;
++    }
++
++    private async Task<Guid> SeedSparseCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "cockpit-founder@example.com", "Cockpit Founder", "dev-header", "cockpit-founder"));
++            dbContext.Companies.Add(new Company(companyId, "Sparse Cockpit Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return companyId;
++    }
++
++    private async Task<CockpitSeed> SeedCockpitCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var workflowExceptionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++        var otherCompanyApprovalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "cockpit-founder@example.com", "Cockpit Founder", "dev-header", "cockpit-founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "Cockpit Company"), new Company(otherCompanyId, "Other Cockpit Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(workflowDefinitionId, companyId, "cockpit-test", "Cockpit test", "Operations", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))));
++            dbContext.WorkflowInstances.Add(new WorkflowInstance(workflowInstanceId, companyId, workflowDefinitionId, null));
++            dbContext.WorkflowExceptions.Add(new WorkflowException(workflowExceptionId, companyId, workflowInstanceId, workflowDefinitionId, "review", WorkflowExceptionType.Blocked, "Workflow blocked", "Review the blocked workflow."));
++
++            var task = new WorkTask(taskId, companyId, "ops", "Complete founder report", null, WorkTaskPriority.High, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
++            task.UpdateStatus(WorkTaskStatus.InProgress);
++            dbContext.WorkTasks.Add(task);
++
++            dbContext.ApprovalRequests.AddRange(
++                ApprovalRequest.CreateForTarget(approvalId, companyId, ApprovalTargetEntityType.Task, taskId, "agent", agentId, "threshold", Payload(("amount", JsonValue.Create(25000))), "owner", null, []),
++                ApprovalRequest.CreateForTarget(otherCompanyApprovalId, otherCompanyId, ApprovalTargetEntityType.Task, Guid.NewGuid(), "agent", Guid.NewGuid(), "threshold", Payload(("amount", JsonValue.Create(50000))), "owner", null, []));
++
++            dbContext.CompanyBriefings.Add(new CompanyBriefing(Guid.NewGuid(), companyId, CompanyBriefingType.Daily, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, "Daily briefing", "Founder briefing summary.", [], []));
++            return Task.CompletedTask;
++        });
++
++        return new CockpitSeed(companyId, otherCompanyId, approvalId, otherCompanyApprovalId, workflowExceptionId, taskId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties) =>
++        properties.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private sealed record CockpitSeed(Guid CompanyId, Guid OtherCompanyId, Guid ApprovalId, Guid OtherCompanyApprovalId, Guid WorkflowExceptionId, Guid TaskId);
++
++    private sealed class ExecutiveCockpitDashboardResponse
++    {
++        public Guid CompanyId { get; set; }
++        public ExecutiveCockpitDailyBriefingResponse? DailyBriefing { get; set; }
++        public ExecutiveCockpitPendingApprovalsResponse PendingApprovals { get; set; } = new();
++        public List<ExecutiveCockpitAlertResponse> Alerts { get; set; } = [];
++        public List<ExecutiveCockpitDepartmentKpiResponse> DepartmentKpis { get; set; } = [];
++        public List<ExecutiveCockpitActivityResponse> RecentActivity { get; set; } = [];
++        public ExecutiveCockpitEmptyStateFlagsResponse EmptyStateFlags { get; set; } = new();
++    }
++
++    private sealed class ExecutiveCockpitDailyBriefingResponse { public Guid Id { get; set; } }
++    private sealed class ExecutiveCockpitPendingApprovalsResponse { public int TotalCount { get; set; } public List<ExecutiveCockpitApprovalResponse> Items { get; set; } = []; }
++    private sealed class ExecutiveCockpitApprovalResponse { public Guid Id { get; set; } }
++    private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } }
++    private sealed class ExecutiveCockpitDepartmentKpiResponse { public string Department { get; set; } = string.Empty; public int ActiveAgents { get; set; } }
++    private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } }
++    private sealed class ExecutiveCockpitEmptyStateFlagsResponse
++    {
++        public bool NoAgents { get; set; }
++        public bool NoWorkflows { get; set; }
++        public bool NoKnowledge { get; set; }
++        public bool NoRecentActivity { get; set; }
++        public bool NoPendingApprovals { get; set; }
++        public bool NoAlerts { get; set; }
++    }
++}
+END_OF_PATCH

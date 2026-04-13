@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.5.4",
+  "promptPath": ".ai-design/prompts/TASK-11.5.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T10:16:16.047Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T10-16-16-047Z_TASK-11.5.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T10-16-16-047Z_TASK-11.5.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T10:19:40.729Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "yMembershipStatus.Active));\n+            return Task.CompletedTask;\n+        });\n+\n+        return new TwoCompanyPreferenceSeed(companyAId, companyBId);\n+    }\n+\n     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)\n     {\n         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);\n@@ -309,6 +465,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA\n \n     private sealed record EmptyBriefingSeed(Guid CompanyId);\n \n+    private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);\n+\n     private sealed record BriefingSeed(\n         Guid CompanyId,\n         Guid OtherCompanyId,\n@@ -338,11 +496,25 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA\n \n     private sealed class BriefingGenerationResponse\n     {\n         public CompanyBriefingResponse Briefing { get; set; } = new();\n+        public int NotificationsCreated { get; set; }\n     }\n \n     private sealed class DashboardBriefingCardResponse\n     {\n         public CompanyBriefingResponse? Daily { get; set; }\n         public CompanyBriefingResponse? Weekly { get; set; }\n     }\n+\n+    private sealed class BriefingPreferenceResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public Guid UserId { get; set; }\n+        public bool InAppEnabled { get; set; }\n+        public bool MobileEnabled { get; set; }\n+        public bool DailyEnabled { get; set; }\n+        public bool WeeklyEnabled { get; set; }\n+        public TimeOnly PreferredDeliveryTime { get; set; }\n+        public string? PreferredTimezone { get; set; }\n+        public DateTime? UpdatedUtc { get; set; }\n+    }\n \n     private sealed class CompanyBriefingResponse\n     {\n+        public Guid Id { get; set; }\n         public Guid CompanyId { get; set; }\n         public Guid? MessageId { get; set; }\n         public string SummaryBody { get; set; } = string.Empty;\nEND_OF_PATCH\n",
+  "stderrTail": "tive));\n+            return Task.CompletedTask;\n+        });\n+\n+        return new TwoCompanyPreferenceSeed(companyAId, companyBId);\n+    }\n+\n     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)\n     {\n         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);\n@@ -309,6 +465,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA\n \n     private sealed record EmptyBriefingSeed(Guid CompanyId);\n \n+    private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);\n+\n     private sealed record BriefingSeed(\n         Guid CompanyId,\n         Guid OtherCompanyId,\n@@ -338,11 +496,25 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA\n \n     private sealed class BriefingGenerationResponse\n     {\n         public CompanyBriefingResponse Briefing { get; set; } = new();\n+        public int NotificationsCreated { get; set; }\n     }\n \n     private sealed class DashboardBriefingCardResponse\n     {\n         public CompanyBriefingResponse? Daily { get; set; }\n         public CompanyBriefingResponse? Weekly { get; set; }\n     }\n+\n+    private sealed class BriefingPreferenceResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public Guid UserId { get; set; }\n+        public bool InAppEnabled { get; set; }\n+        public bool MobileEnabled { get; set; }\n+        public bool DailyEnabled { get; set; }\n+        public bool WeeklyEnabled { get; set; }\n+        public TimeOnly PreferredDeliveryTime { get; set; }\n+        public string? PreferredTimezone { get; set; }\n+        public DateTime? UpdatedUtc { get; set; }\n+    }\n \n     private sealed class CompanyBriefingResponse\n     {\n+        public Guid Id { get; set; }\n         public Guid CompanyId { get; set; }\n         public Guid? MessageId { get; set; }\n         public string SummaryBody { get; set; } = string.Empty;\nEND_OF_PATCH\ntokens used\n125,949\n",
+  "verbosityMode": "summary"
+}

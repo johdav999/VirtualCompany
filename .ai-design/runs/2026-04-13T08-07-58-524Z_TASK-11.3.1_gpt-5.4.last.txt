@@ -1,0 +1,279 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 62f0e12..b1cb71f 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -256,6 +256,8 @@ public sealed class AgentToolPermissionsInput
+ {
+     public List<string> Allowed { get; set; } = [];
+     public List<string> Denied { get; set; } = [];
++    public List<string> Actions { get; set; } = [];
++    public List<string> DeniedActions { get; set; } = [];
+ 
+     [JsonExtensionData]
+     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 982c147..8a55b94 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -243,6 +243,7 @@ public static class PolicyDecisionReasonCodes
+     public const string ToolNotConfigured = "tool_not_configured";
+     public const string ToolExplicitlyDenied = "tool_explicitly_denied";
+     public const string ToolNotPermitted = "tool_not_permitted";
++    public const string ToolActionNotPermitted = "tool_action_not_permitted";
+     public const string TenantScopeViolation = "tenant_scope_violation";
+     public const string DataScopeViolation = "data_scope_violation";
+     public const string ScopeNotPermitted = "scope_not_permitted";
+diff --git a/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+index a682c49..e81bb62 100644
+--- a/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
++++ b/src/VirtualCompany.Application/Agents/AgentOperatingProfileJsonMapper.cs
+@@ -30,7 +30,9 @@ public static class AgentOperatingProfileJsonMapper
+         var payload = CreateNodeMap();
+         AddArrayIfPresent(payload, "allowed", input.Allowed);
+         AddArrayIfPresent(payload, "denied", input.Denied);
+-        AddExtensionData(payload, input.AdditionalProperties, "allowed", "denied");
++        AddArrayIfPresent(payload, "actions", input.Actions);
++        AddArrayIfPresent(payload, "deniedActions", input.DeniedActions);
++        AddExtensionData(payload, input.AdditionalProperties, "allowed", "denied", "actions", "deniedActions");
+         return payload;
+     }
+ 
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+index c9d5a7a..5b1d2a2 100644
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -24,7 +24,9 @@ public static class UpdateAgentOperatingProfileCommandValidator
+     private static readonly HashSet<string> SupportedToolPermissionActions = new(StringComparer.OrdinalIgnoreCase)
+     {
+         "allowed",
+-        "denied"
++        "denied",
++        "actions",
++        "deniedActions"
+     };
+ 
+     private static readonly HashSet<string> SupportedDataScopeActions = new(StringComparer.OrdinalIgnoreCase)
+@@ -176,6 +178,8 @@ public static class UpdateAgentOperatingProfileCommandValidator
+ 
+         var allowed = ValidateIdentifierArray(errors, $"{key}.allowed", payload, "allowed");
+         var denied = ValidateIdentifierArray(errors, $"{key}.denied", payload, "denied");
++        var allowedActions = ValidateIdentifierArray(errors, $"{key}.actions", payload, "actions");
++        var deniedActions = ValidateIdentifierArray(errors, $"{key}.deniedActions", payload, "deniedActions");
+ 
+         if (allowed.Count == 0 && denied.Count == 0)
+         {
+@@ -189,6 +193,21 @@ public static class UpdateAgentOperatingProfileCommandValidator
+             AddError(errors, $"{key}.allowed", "The same tool cannot be both allowed and denied.");
+             AddError(errors, $"{key}.denied", "The same tool cannot be both allowed and denied.");
+         }
++
++        var actionOverlaps = allowedActions.Intersect(deniedActions, StringComparer.OrdinalIgnoreCase).ToArray();
++        if (actionOverlaps.Length > 0)
++        {
++            AddError(errors, $"{key}.actions", "The same action type cannot be both allowed and denied.");
++            AddError(errors, $"{key}.deniedActions", "The same action type cannot be both allowed and denied.");
++        }
++
++        foreach (var action in allowedActions.Concat(deniedActions))
++        {
++            if (!ToolActionTypeValues.TryParse(action, out _))
++            {
++                AddError(errors, $"{key}.actions", ToolActionTypeValues.BuildValidationMessage(action));
++            }
++        }
+     }
+ 
+     private static void ValidateDataScopes(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+index 6f8f5a2..57dce7c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PolicyGuardrailEngine.cs
+@@ -85,7 +85,9 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ 
+         var toolName = request.ToolName.Trim();
+         var normalizedScope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
++        var normalizedAction = actionType.ToStorageValue();
+         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
+-            !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _))
++            !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _) ||
++            !TryGetIdentifierSet(request.ToolPermissions, "actions", out var allowedActions, out var allowedActionsExists) ||
++            !TryGetIdentifierSet(request.ToolPermissions, "deniedActions", out var deniedActions, out _))
+         {
+             metadata["toolPolicyState"] = JsonValue.Create("invalid");
+             return Deny(
+@@ -114,6 +116,17 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+                 thresholdEvaluations);
+         }
+ 
++        if (allowedActions.Overlaps(deniedActions))
++        {
++            metadata["actionPolicyState"] = JsonValue.Create("ambiguous");
++            return Deny(
++                request,
++                normalizedAction,
++                [PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration],
++                "Tool action permissions are ambiguous because the same action is both allowed and denied.",
++                metadata,
++                thresholdEvaluations);
++        }
++
+         if (deniedTools.Contains(toolName))
+         {
+             metadata["toolPolicyState"] = JsonValue.Create("configured");
+@@ -138,6 +151,30 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+ 
+         metadata["toolPolicyState"] = JsonValue.Create("configured");
+         metadata["toolAllowed"] = JsonValue.Create(true);
++        metadata["actionPolicyState"] = JsonValue.Create(allowedActionsExists ? "configured" : "not_configured");
++
++        if (deniedActions.Contains(normalizedAction))
++        {
++            metadata["actionAllowed"] = JsonValue.Create(false);
++            return Deny(
++                request,
++                normalizedAction,
++                [PolicyDecisionReasonCodes.ToolActionNotPermitted],
++                "The requested action type is explicitly denied for this agent.",
++                metadata,
++                thresholdEvaluations);
++        }
++
++        if (allowedActionsExists && !allowedActions.Contains(normalizedAction))
++        {
++            metadata["actionAllowed"] = JsonValue.Create(false);
++            return Deny(
++                request,
++                normalizedAction,
++                [PolicyDecisionReasonCodes.ToolActionNotPermitted],
++                "The requested action type is outside the agent's allowed tool action scope.",
++                metadata,
++                thresholdEvaluations);
++        }
++
++        metadata["actionAllowed"] = JsonValue.Create(true);
+ 
+         if (!TryResolveScopePolicyBucket(request.DataScopes, actionType, out var requiredScopeBucket, out var scopes, out var scopeConfigState))
+         {
+@@ -879,7 +916,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyDecisionReasonCodes.InvalidActionType => "action",
+         PolicyDecisionReasonCodes.InvalidAutonomyLevel or PolicyDecisionReasonCodes.AutonomyLevelBlocksAction or PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval => "autonomy",
+         PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.InvalidPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration => "policy_configuration",
+-        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted => "tool",
++        PolicyDecisionReasonCodes.ToolNotConfigured or PolicyDecisionReasonCodes.ToolExplicitlyDenied or PolicyDecisionReasonCodes.ToolNotPermitted or PolicyDecisionReasonCodes.ToolActionNotPermitted => "tool",
+         PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.DataScopeViolation => "scope",
+         PolicyDecisionReasonCodes.ApprovalRequiredByPolicy or PolicyDecisionReasonCodes.ApprovalRouteMissing or PolicyDecisionReasonCodes.ApprovalRequired => "approval",
+         PolicyDecisionReasonCodes.ThresholdContextMissing or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "threshold",
+@@ -903,6 +940,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
+         PolicyDecisionReasonCodes.ToolNotConfigured => "The requested tool identity is missing or invalid.",
+         PolicyDecisionReasonCodes.ToolExplicitlyDenied => "The tool is explicitly denied.",
+         PolicyDecisionReasonCodes.ToolNotPermitted => "The tool is outside the allowed tool set.",
++        PolicyDecisionReasonCodes.ToolActionNotPermitted => "The requested action type is outside the allowed tool action set.",
+         PolicyDecisionReasonCodes.ScopeNotPermitted => "The requested scope is not permitted.",
+         PolicyDecisionReasonCodes.DataScopeViolation => "The requested scope violates the configured data boundary.",
+         PolicyDecisionReasonCodes.AutonomyLevelBlocksAction => "The autonomy level blocks this action.",
+diff --git a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+index d5eaf44..e3702ff 100644
+--- a/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PolicyGuardrailEngineTests.cs
+@@ -73,6 +73,35 @@ public sealed class PolicyGuardrailEngineTests
+         Assert.Contains(PolicyDecisionReasonCodes.InvalidActionType, decision.ReasonCodes);
+     }
+ 
++    [Fact]
++    public void Evaluate_denies_when_configured_action_scope_does_not_allow_requested_action()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            toolPermissions: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("erp"))),
++                ("actions", new JsonArray(JsonValue.Create("read"), JsonValue.Create("recommend"))))));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains(PolicyDecisionReasonCodes.ToolActionNotPermitted, decision.ReasonCodes);
++        Assert.Equal("configured", decision.Metadata["actionPolicyState"]!.GetValue<string>());
++        Assert.False(decision.Metadata["actionAllowed"]!.GetValue<bool>());
++    }
++
++    [Fact]
++    public void Evaluate_denies_when_configured_action_scope_is_ambiguous()
++    {
++        var decision = _engine.Evaluate(CreateRequest(
++            autonomyLevel: "level_2",
++            toolName: "erp",
++            actionType: "execute",
++            scope: "payments",
++            toolPermissions: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("erp"))),
++                ("actions", new JsonArray(JsonValue.Create("execute"))),
++                ("deniedActions", new JsonArray(JsonValue.Create("execute"))))));
++
++        Assert.Equal("deny", decision.Outcome);
++        Assert.Contains(PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration, decision.ReasonCodes);
++        Assert.Equal("ambiguous", decision.Metadata["actionPolicyState"]!.GetValue<string>());
++    }
++
+     [Fact]
+     public void Evaluate_denies_when_autonomy_level_is_missing_or_invalid()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 46c9ab1..97a541d 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -374,6 +374,54 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.NotNull(attempt.ExecutedUtc);
+     }
+ 
++    [Fact]
++    public async Task Action_scope_denial_is_blocked_before_tool_executor_runs_and_persists_policy_decision()
++    {
++        var seed = await SeedAgentAsync(
++            autonomyLevel: AgentAutonomyLevel.Level2,
++            tools: Payload(
++                ("allowed", new JsonArray(JsonValue.Create("erp"))),
++                ("actions", new JsonArray(JsonValue.Create("read"), JsonValue.Create("recommend")))),
++            scopes: Payload(
++                ("read", new JsonArray(JsonValue.Create("finance"))),
++                ("recommend", new JsonArray(JsonValue.Create("finance"))),
++                ("execute", new JsonArray(JsonValue.Create("payments")))),
++            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 5000 })),
++            escalationRules: Payload(("critical", new JsonArray(JsonValue.Create("over_limit"))), ("escalateTo", JsonValue.Create("founder"))));
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
++        {
++            toolName = "erp",
++            actionType = "execute",
++            scope = "payments",
++            requestPayload = new { expenseId = "exp-action-scope" }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("denied", payload!.Status);
++        Assert.Equal("deny", payload.PolicyDecision.Outcome);
++        Assert.Contains(PolicyDecisionReasonCodes.ToolActionNotPermitted, payload.PolicyDecision.ReasonCodes);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
++        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
++        Assert.Equal("tool_action_not_permitted", attempt.PolicyDecision["reasons"]![0]!["code"]!.GetValue<string>());
++        Assert.Equal("configured", attempt.PolicyDecision["metadata"]!["actionPolicyState"]!.GetValue<string>());
++        Assert.False(attempt.PolicyDecision["metadata"]!["actionAllowed"]!.GetValue<bool>());
++        Assert.False(attempt.ResultPayload["success"]!.GetValue<bool>());
++        Assert.Equal("policy_denied", attempt.ResultPayload["errorCode"]!.GetValue<string>());
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+END_OF_PATCH

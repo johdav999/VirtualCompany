@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.4.1",
+  "promptPath": ".ai-design/prompts/TASK-11.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T09:38:19.961Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T09-38-19-961Z_TASK-11.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T09-38-19-961Z_TASK-11.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T09:41:06.802Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "-nested\",\n+            inputPayload = new Dictionary<string, object?>\n+            {\n+                [\"collaborationRole\"] = \"worker_subtask\",\n+                [\"delegationDepth\"] = 1,\n+                [\"allowFurtherDelegation\"] = false\n+            },\n+            workers = new[]\n+            {\n+                new { agentId = seed.OperationsAgentId, objective = \"Operations view.\" }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Worker subtasks cannot start nested manager-worker coordination.\", body);\n+        Assert.Contains(\"Further delegation is disabled for this task context.\", body);\n+    }\n+\n+    [Fact]\n+    public async Task Manager_worker_collaboration_rejects_duplicate_worker_agent_assignments()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations\", new\n+        {\n+            objective = \"Invalid duplicate assignment.\",\n+            coordinatorAgentId = seed.CoordinatorAgentId,\n+            initiatingActorId = seed.UserId,\n+            initiatingActorType = \"user\",\n+            correlationId = \"mw-collaboration-duplicate-agent\",\n+            workers = new[]\n+            {\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance budget view.\" },\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance risk view.\" }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Each worker agent can be assigned at most one planned subtask.\", body);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\n",
+  "stderrTail": "    inputPayload = new Dictionary<string, object?>\n+            {\n+                [\"collaborationRole\"] = \"worker_subtask\",\n+                [\"delegationDepth\"] = 1,\n+                [\"allowFurtherDelegation\"] = false\n+            },\n+            workers = new[]\n+            {\n+                new { agentId = seed.OperationsAgentId, objective = \"Operations view.\" }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Worker subtasks cannot start nested manager-worker coordination.\", body);\n+        Assert.Contains(\"Further delegation is disabled for this task context.\", body);\n+    }\n+\n+    [Fact]\n+    public async Task Manager_worker_collaboration_rejects_duplicate_worker_agent_assignments()\n+    {\n+        var seed = await SeedScenarioAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations\", new\n+        {\n+            objective = \"Invalid duplicate assignment.\",\n+            coordinatorAgentId = seed.CoordinatorAgentId,\n+            initiatingActorId = seed.UserId,\n+            initiatingActorType = \"user\",\n+            correlationId = \"mw-collaboration-duplicate-agent\",\n+            workers = new[]\n+            {\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance budget view.\" },\n+                new { agentId = seed.FinanceAgentId, objective = \"Finance risk view.\" }\n+            }\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var body = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"Each worker agent can be assigned at most one planned subtask.\", body);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\nEND_OF_PATCH\ntokens used\n85,384\n",
+  "verbosityMode": "summary"
+}

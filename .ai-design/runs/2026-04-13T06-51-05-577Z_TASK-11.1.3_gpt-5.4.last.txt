@@ -1,0 +1,416 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 4d3d2f1..8d78c4a 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -197,6 +197,7 @@ public sealed record AgentRuntimeProfileDto(
+     string Seniority,
+     string Status,
+     string? RoleBrief,
++    Dictionary<string, JsonNode?> Personality,
+     Dictionary<string, JsonNode?> Objectives,
+     Dictionary<string, JsonNode?> Kpis,
+     Dictionary<string, JsonNode?> ToolPermissions,
+diff --git a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+index 9071273..cb38cc2 100644
+--- a/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
++++ b/src/VirtualCompany.Application/Chat/DirectChatContracts.cs
+@@ -71,6 +71,13 @@ public sealed record CreateTaskFromChatResultDto(
+     Guid ConversationId,
+     Guid? SourceMessageId);
+ 
++public sealed record DirectAgentChatOrchestrationRequest(
++    Guid CompanyId,
++    Guid ConversationId,
++    Guid AgentId,
++    Guid UserId,
++    string HumanMessage);
++
+ public sealed record DirectAgentChatReply(
+     string MessageText,
+     string? RationaleSummary,
+@@ -87,7 +94,7 @@ public interface ICompanyDirectChatService
+ 
+ public interface IDirectAgentChatOrchestrator
+ {
+-    Task<DirectAgentChatReply> GenerateReplyAsync(Guid companyId, Guid conversationId, Guid agentId, Guid userId, string humanMessage, CancellationToken cancellationToken);
++    Task<DirectAgentChatReply> GenerateReplyAsync(DirectAgentChatOrchestrationRequest request, CancellationToken cancellationToken);
+ }
+ 
+ public sealed class DirectChatValidationException : Exception
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+index 0c63f03..10b6462 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDirectChatService.cs
+@@ -132,12 +132,13 @@ public sealed class CompanyDirectChatService : ICompanyDirectChatService
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         var reply = await _orchestrator.GenerateReplyAsync(
+-            companyId,
+-            conversation.Id,
+-            agentId,
+-            membership.UserId,
+-            command.Body,
+-            cancellationToken);
++            new DirectAgentChatOrchestrationRequest(
++                companyId,
++                conversation.Id,
++                agentId,
++                membership.UserId,
++                command.Body),
++            cancellationToken).ConfigureAwait(false);
+ 
+         var agentPayload = CloneNodes(reply.StructuredPayload);
+         if (!string.IsNullOrWhiteSpace(reply.RationaleSummary))
+@@ -379,16 +380,17 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+     }
+ 
+     public async Task<DirectAgentChatReply> GenerateReplyAsync(
+-        Guid companyId,
+-        Guid conversationId,
+-        Guid agentId,
+-        Guid userId,
+-        string humanMessage,
++        DirectAgentChatOrchestrationRequest request,
+         CancellationToken cancellationToken)
+     {
+-        var profile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
++        ArgumentNullException.ThrowIfNull(request);
++
++        var profile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
++            request.CompanyId,
++            request.AgentId,
++            cancellationToken);
+         var history = await _dbContext.Messages
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId)
++            .Where(x => x.CompanyId == request.CompanyId && x.ConversationId == request.ConversationId)
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(12)
+             .OrderBy(x => x.CreatedUtc)
+@@ -400,10 +402,10 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+             groundedContext = await _groundedPromptContextService.PrepareAsync(
+                 new GroundedPromptContextRequest(
+-                    companyId,
+-                    agentId,
+-                    humanMessage,
+-                    userId,
++                    request.CompanyId,
++                    request.AgentId,
++                    request.HumanMessage,
++                    request.UserId,
+                     Limits: new RetrievalSourceLimitOptions(3, 3, 3, 2),
+                     RetrievalPurpose: "direct_agent_chat"),
+                 cancellationToken);
+@@ -413,7 +415,7 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+             groundedContext = null;
+         }
+ 
+-        var reply = BuildPersonaGroundedReply(profile, groundedContext, history, humanMessage);
++        var reply = BuildPersonaGroundedReply(profile, groundedContext, history, request.HumanMessage);
+         var rationale = "Used the selected agent profile, role brief, scoped context counts, and recent direct-chat history. Raw reasoning was not generated or exposed.";
+         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -421,6 +423,19 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+             ["agent_role_name"] = JsonValue.Create(profile.RoleName),
+             ["rationale_summary"] = JsonValue.Create(rationale)
+         };
++        if (!string.IsNullOrWhiteSpace(profile.RoleBrief))
++        {
++            payload["agent_role_brief"] = JsonValue.Create(profile.RoleBrief);
++        }
++
++        var personalitySummary = ExtractSummary(profile.Personality);
++        if (!string.IsNullOrWhiteSpace(personalitySummary))
++        {
++            payload["agent_personality_summary"] = JsonValue.Create(personalitySummary);
++        }
++        if (profile.DataScopes.Count > 0)
++        {
++            payload["agent_data_scope_count"] = JsonValue.Create(profile.DataScopes.Count);
++        }
+ 
+         if (groundedContext is not null)
+         {
+@@ -452,10 +467,11 @@ public sealed class DirectAgentChatOrchestrator : IDirectAgentChatOrchestrator
+             builder.Append(' ');
+         }
+ 
+-        var personalitySummary = ExtractSummary(profile.Objectives) ?? ExtractSummary(profile.Kpis);
++        var personalitySummary = ExtractSummary(profile.Personality);
+         if (!string.IsNullOrWhiteSpace(personalitySummary))
+         {
+-            builder.Append(Trim(personalitySummary, 160));
++            builder.Append("My persona is ");
++            builder.Append(Trim(personalitySummary, 160));
+             builder.Append(' ');
+         }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+index 5f3d4f5..49a5807 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+@@ -45,6 +45,7 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
+             agent.Seniority.ToStorageValue(),
+             agent.Status.ToStorageValue(),
+             agent.RoleBrief,
++            CloneNodes(agent.Personality),
+             CloneNodes(agent.Objectives),
+             CloneNodes(agent.Kpis),
+             CloneNodes(agent.Tools),
+diff --git a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+index 6d7ee69..d580fc9 100644
+--- a/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DirectChatIntegrationTests.cs
+@@ -1,3 +1,4 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -184,6 +185,119 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         Assert.NotEqual(default, messages[1].CreatedUtc);
+     }
+ 
++    [Fact]
++    public async Task Sending_direct_agent_message_uses_selected_agent_persona_and_role_brief()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var sendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("Use the direct chat runtime profile."));
++
++        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
++
++        var payload = await sendResponse.Content.ReadFromJsonAsync<SendDirectAgentMessageResponse>();
++        Assert.NotNull(payload);
++        Assert.Contains("Active Agent here (Operations Lead).", payload!.AgentMessage.Body);
++        Assert.Contains("Keeps operational triage crisp and tenant-safe.", payload.AgentMessage.Body);
++        Assert.Contains("calm systems thinker", payload.AgentMessage.Body);
++        Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey("agent_role_brief"));
++        Assert.True(payload.AgentMessage.StructuredPayload.ContainsKey("agent_personality_summary"));
++    }
++
++    [Fact]
++    public async Task Sending_direct_agent_message_passes_selected_agent_scope_to_retrieval()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var openResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var conversation = await openResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(conversation);
++
++        var sendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("Use finance scoped memory."));
++
++        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var retrieval = await dbContext.ContextRetrievals
++            .IgnoreQueryFilters()
++            .OrderByDescending(x => x.CreatedUtc)
++            .FirstAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.AgentId == seed.AgentId &&
++                x.ActorUserId == seed.UserId &&
++                x.RetrievalPurpose == "direct_agent_chat");
++
++        var sourceIds = await dbContext.ContextRetrievalSources
++            .IgnoreQueryFilters()
++            .Where(x => x.RetrievalId == retrieval.Id && x.SourceType == GroundedContextSourceTypes.MemoryItem)
++            .Select(x => x.SourceEntityId)
++            .ToListAsync();
++
++        Assert.Contains(seed.ScopedMemoryId.ToString("N"), sourceIds);
++        Assert.DoesNotContain(seed.OutOfScopeMemoryId.ToString("N"), sourceIds);
++    }
++
++    [Fact]
++    public async Task Sending_direct_agent_message_produces_different_runtime_output_for_different_agents()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var firstOpenResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/conversations/direct",
++            new { seed.AgentId });
++        var firstConversation = await firstOpenResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(firstConversation);
++
++        var secondOpenResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/agents/{seed.SecondAgentId}/conversations/direct",
++            new { AgentId = seed.SecondAgentId });
++        var secondConversation = await secondOpenResponse.Content.ReadFromJsonAsync<DirectConversationResponse>();
++        Assert.NotNull(secondConversation);
++
++        var firstSendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{firstConversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("How should I prepare?"));
++        var secondSendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{secondConversation!.Id}/messages",
++            new SendDirectAgentMessageCommand("How should I prepare?"));
++
++        Assert.Equal(HttpStatusCode.OK, firstSendResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondSendResponse.StatusCode);
++
++        var firstPayload = await firstSendResponse.Content.ReadFromJsonAsync<SendDirectAgentMessageResponse>();
++        var secondPayload = await secondSendResponse.Content.ReadFromJsonAsync<SendDirectAgentMessageResponse>();
++        Assert.NotNull(firstPayload);
++        Assert.NotNull(secondPayload);
++        Assert.NotEqual(firstPayload!.AgentMessage.Body, secondPayload!.AgentMessage.Body);
++        Assert.Contains("Active Agent here (Operations Lead).", firstPayload.AgentMessage.Body);
++        Assert.Contains("Strategy Agent here (Strategy Lead).", secondPayload.AgentMessage.Body);
++        Assert.Contains("calm systems thinker", firstPayload.AgentMessage.Body);
++        Assert.Contains("market-focused strategist", secondPayload.AgentMessage.Body);
++    }
++
++    [Fact]
++    public async Task Sending_direct_agent_message_rejects_conversation_agent_mismatch()
++    {
++        var seed = await SeedDirectChatAsync(AgentStatus.Active);
++        var mismatchedConversationId = Guid.NewGuid();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Conversations.Add(new Conversation(
++                mismatchedConversationId,
++                seed.CompanyId,
++                ChatChannelTypes.DirectAgent,
++                "Mismatched direct chat",
++                seed.UserId,
++                seed.OtherCompanyAgentId));
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Chat User");
++        var sendResponse = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/conversations/{mismatchedConversationId}/messages",
++            new SendDirectAgentMessageCommand("This should not reach the wrong agent."));
++
++        Assert.Equal(HttpStatusCode.NotFound, sendResponse.StatusCode);
++    }
++
+     [Fact]
+     public async Task Getting_direct_agent_messages_returns_chronological_page()
+     {
+@@ -299,6 +413,8 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         var agentId = Guid.NewGuid();
+         var otherCompanyAgentId = Guid.NewGuid();
++        var secondAgentId = Guid.NewGuid();
++        var scopedMemoryId = Guid.NewGuid();
++        var outOfScopeMemoryId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+         {
+@@ -333,7 +449,20 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+                     "Operations",
+                     null,
+                     AgentSeniority.Lead,
+-                    agentStatus),
++                    agentStatus,
++                    personality: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["summary"] = JsonValue.Create("calm systems thinker")
++                    },
++                    scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["read"] = new JsonArray(JsonValue.Create("finance"))
++                    },
++                    roleBrief: "Keeps operational triage crisp and tenant-safe."),
++                new Agent(
++                    secondAgentId,
++                    companyId,
++                    "strategy",
++                    "Strategy Agent",
++                    "Strategy Lead",
++                    "Strategy",
++                    null,
++                    AgentSeniority.Senior,
++                    AgentStatus.Active,
++                    personality: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["summary"] = JsonValue.Create("market-focused strategist")
++                    },
++                    scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["read"] = new JsonArray(JsonValue.Create("sales"))
++                    },
++                    roleBrief: "Frames choices around positioning, timing, and tradeoffs."),
+                 new Agent(
+                     otherCompanyAgentId,
+                     otherCompanyId,
+@@ -344,7 +473,28 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+                     null,
+                     AgentSeniority.Lead,
+                     AgentStatus.Active));
++
++            dbContext.MemoryItems.AddRange(
++                new MemoryItem(
++                    scopedMemoryId,
++                    companyId,
++                    agentId,
++                    MemoryType.Fact,
++                    "Finance scoped memory for direct chat runtime.",
++                    null,
++                    null,
++                    0.95m,
++                    DateTime.UtcNow.AddHours(-1),
++                    null,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["scope"] = JsonValue.Create("finance")
++                    }),
++                new MemoryItem(
++                    outOfScopeMemoryId,
++                    companyId,
++                    agentId,
++                    MemoryType.Fact,
++                    "HR scoped memory must not be available to the finance-scoped agent.",
++                    null,
++                    null,
++                    0.99m,
++                    DateTime.UtcNow.AddHours(-1),
++                    null,
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["scope"] = JsonValue.Create("hr")
++                    }));
+ 
+             return Task.CompletedTask;
+         });
+@@ -358,7 +508,10 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+             otherSubject,
+             otherEmail,
+             agentId,
+-            otherCompanyAgentId);
++            otherCompanyAgentId,
++            secondAgentId,
++            scopedMemoryId,
++            outOfScopeMemoryId);
+     }
+ 
+     private sealed record DirectChatSeed(
+@@ -370,7 +523,10 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplication
+         string OtherSubject,
+         string OtherEmail,
+         Guid AgentId,
+-        Guid OtherCompanyAgentId);
++        Guid OtherCompanyAgentId,
++        Guid SecondAgentId,
++        Guid ScopedMemoryId,
++        Guid OutOfScopeMemoryId);
+ 
+     private sealed class DirectConversationResponse
+     {
+END_OF_PATCH

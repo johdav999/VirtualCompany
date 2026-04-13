@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Infrastructure.Observability;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -15,13 +17,22 @@ public sealed class TasksController : ControllerBase
 {
     private readonly ICompanyTaskCommandService _taskCommands;
     private readonly ICompanyTaskQueryService _taskQueries;
+    private readonly ISingleAgentOrchestrationService _orchestrationService;
+    private readonly IMultiAgentCoordinator _multiAgentCoordinator;
+    private readonly ICorrelationContextAccessor _correlationContextAccessor;
 
     public TasksController(
         ICompanyTaskCommandService taskCommands,
-        ICompanyTaskQueryService taskQueries)
+        ICompanyTaskQueryService taskQueries,
+        ISingleAgentOrchestrationService orchestrationService,
+        IMultiAgentCoordinator multiAgentCoordinator,
+        ICorrelationContextAccessor correlationContextAccessor)
     {
         _taskCommands = taskCommands;
         _taskQueries = taskQueries;
+        _orchestrationService = orchestrationService;
+        _multiAgentCoordinator = multiAgentCoordinator;
+        _correlationContextAccessor = correlationContextAccessor;
     }
 
     [HttpPost]
@@ -155,6 +166,81 @@ public sealed class TasksController : ControllerBase
         }
     }
 
+    [HttpPost("{taskId:guid}/execute")]
+    public async Task<ActionResult<OrchestrationResult>> ExecuteAsync(
+        Guid companyId,
+        Guid taskId,
+        [FromBody] ExecuteSingleAgentTaskCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _orchestrationService.ExecuteAsync(
+                new SingleAgentOrchestrationRequest(
+                    companyId,
+                    taskId,
+                    command.AgentId,
+                    command.InitiatingActorId,
+                    command.InitiatingActorType,
+                    ResolveCorrelationId(command.CorrelationId),
+                    command.Intent,
+                    command.ToolInvocations),
+                cancellationToken));
+        }
+        catch (OrchestrationValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (AgentExecutionValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("manager-worker-collaborations")]
+    public async Task<ActionResult<MultiAgentCollaborationResultDto>> StartManagerWorkerCollaborationAsync(
+        Guid companyId,
+        [FromBody] StartMultiAgentCollaborationCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _multiAgentCoordinator.ExecuteAsync(
+                command with
+                {
+                    CompanyId = companyId,
+                    CorrelationId = ResolveCorrelationId(command.CorrelationId)
+                },
+                cancellationToken);
+
+            return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = result.ParentTaskId }, result);
+        }
+        catch (MultiAgentCollaborationValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (AgentAssignmentValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
     [HttpPatch("{taskId:guid}/assignment")]
     public async Task<ActionResult<TaskCommandResultDto>> ReassignAsync(
         Guid companyId,
@@ -190,4 +276,17 @@ public sealed class TasksController : ControllerBase
             Title = "Validation failed",
             Status = StatusCodes.Status400BadRequest
         });
+
+    private string ResolveCorrelationId(string? requestedCorrelationId) =>
+        string.IsNullOrWhiteSpace(requestedCorrelationId)
+            ? _correlationContextAccessor.CorrelationId ?? HttpContext.TraceIdentifier
+            : requestedCorrelationId.Trim();
 }
+
+public sealed record ExecuteSingleAgentTaskCommand(
+    Guid? AgentId = null,
+    Guid? InitiatingActorId = null,
+    string? InitiatingActorType = null,
+    string? CorrelationId = null,
+    string? Intent = null,
+    IReadOnlyList<ToolInvocationRequest>? ToolInvocations = null);

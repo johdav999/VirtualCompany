@@ -1,0 +1,471 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AuditEvent.cs b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+index 2a6fb54..24bb0a9 100644
+--- a/src/VirtualCompany.Domain/Entities/AuditEvent.cs
++++ b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+@@ -8,6 +8,12 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+ {
+     private AuditEvent()
+     {
++        Metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    private const string AgentActorType = "agent";
++    private const string AgentTargetType = "agent";
++    private const string AgentToolExecutionTargetType = "agent_tool_execution";
++    private const string ApprovalRequestTargetType = "approval_request";
++    private const string WorkflowInstanceTargetType = "workflow_instance";
++    private const string WorkTaskTargetType = "work_task";
+-    }
+ 
+     public AuditEvent(
+         Guid id,
+@@ -54,6 +60,11 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         DataSourcesUsed = NormalizeDataSourcesUsed(dataSourcesUsed);
+         Metadata = NormalizeMetadata(metadata);
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        RelatedAgentId = ResolveActorAgentId() ?? ResolveRelatedId(AgentTargetType, "agentId");
++        RelatedTaskId = ResolveRelatedId(WorkTaskTargetType, "taskId", "workTaskId");
++        RelatedWorkflowInstanceId = ResolveRelatedId(WorkflowInstanceTargetType, "workflowInstanceId");
++        RelatedApprovalRequestId = ResolveRelatedId(ApprovalRequestTargetType, "approvalRequestId");
++        RelatedToolExecutionAttemptId = ResolveRelatedId(AgentToolExecutionTargetType, "toolExecutionId", "toolExecutionAttemptId");
+         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
+     }
+ 
+@@ -72,6 +83,11 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+     public List<AuditDataSourceUsed> DataSourcesUsed { get; private set; } = [];
+     public Dictionary<string, string?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public string? CorrelationId { get; private set; }
++    public Guid? RelatedAgentId { get; private set; }
++    public Guid? RelatedTaskId { get; private set; }
++    public Guid? RelatedWorkflowInstanceId { get; private set; }
++    public Guid? RelatedApprovalRequestId { get; private set; }
++    public Guid? RelatedToolExecutionAttemptId { get; private set; }
+     public DateTime OccurredUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+@@ -189,4 +205,29 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+ 
+         return normalized;
+     }
++
++    private Guid? ResolveActorAgentId() =>
++        ActorId.HasValue && string.Equals(ActorType, AgentActorType, StringComparison.OrdinalIgnoreCase)
++            ? ActorId.Value
++            : null;
++
++    private Guid? ResolveRelatedId(string targetType, params string[] metadataKeys)
++    {
++        if (string.Equals(TargetType, targetType, StringComparison.OrdinalIgnoreCase) &&
++            Guid.TryParse(TargetId, out var targetId))
++        {
++            return targetId;
++        }
++
++        foreach (var metadataKey in metadataKeys)
++        {
++            if (Metadata.TryGetValue(metadataKey, out var value) &&
++                Guid.TryParse(value, out var metadataId))
++            {
++                return metadataId;
++            }
++        }
++
++        return null;
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 4c2e5d7..c303f17 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -54,6 +54,29 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             query = query.Where(x => x.OccurredUtc <= toUtc);
+         }
+ 
++        if (filter.AgentId is Guid agentId)
++        {
++            var agentTargetId = agentId.ToString();
++            query = query.Where(x =>
++                x.RelatedAgentId == agentId ||
++                (x.ActorId == agentId && x.ActorType == AuditActorTypes.Agent) ||
++                (x.TargetType == AuditTargetTypes.Agent && x.TargetId == agentTargetId));
++        }
++
++        if (filter.TaskId is Guid taskId)
++        {
++            var taskTargetId = taskId.ToString();
++            query = query.Where(x =>
++                x.RelatedTaskId == taskId ||
++                (x.TargetType == AuditTargetTypes.WorkTask && x.TargetId == taskTargetId));
++        }
++
++        if (filter.WorkflowInstanceId is Guid workflowInstanceId)
++        {
++            var workflowTargetId = workflowInstanceId.ToString();
++            query = query.Where(x =>
++                x.RelatedWorkflowInstanceId == workflowInstanceId ||
++                (x.TargetType == AuditTargetTypes.WorkflowInstance && x.TargetId == workflowTargetId));
++        }
++
+         var candidateEvents = await query
+             .OrderByDescending(x => x.OccurredUtc)
+             .ToListAsync(cancellationToken);
+@@ -143,6 +166,21 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+                 agentIds.Add(actorId);
+             }
+ 
++            if (auditEvent.RelatedAgentId is Guid relatedAgentId)
++            {
++                agentIds.Add(relatedAgentId);
++            }
++
++            if (auditEvent.RelatedTaskId is Guid relatedTaskId)
++            {
++                taskIds.Add(relatedTaskId);
++            }
++
++            if (auditEvent.RelatedWorkflowInstanceId is Guid relatedWorkflowInstanceId)
++            {
++                workflowIds.Add(relatedWorkflowInstanceId);
++            }
++
+             AddIfTargetGuid(auditEvent, AuditTargetTypes.Agent, agentIds);
+             AddIfTargetGuid(auditEvent, AuditTargetTypes.WorkTask, taskIds);
+             AddIfTargetGuid(auditEvent, AuditTargetTypes.WorkflowInstance, workflowIds);
+@@ -190,6 +228,16 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         var targetIds = new HashSet<Guid>();
+         var toolExecutionIds = new HashSet<Guid>();
+ 
++        if (auditEvent.RelatedApprovalRequestId is Guid relatedApprovalRequestId)
++        {
++            approvalIds.Add(relatedApprovalRequestId);
++        }
++
++        if (auditEvent.RelatedToolExecutionAttemptId is Guid relatedToolExecutionAttemptId)
++        {
++            toolExecutionIds.Add(relatedToolExecutionAttemptId);
++        }
++
+         if (Guid.TryParse(auditEvent.TargetId, out var targetGuid))
+         {
+             targetIds.Add(targetGuid);
+@@ -242,6 +290,26 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         var workflowIds = new HashSet<Guid>();
+         var approvalIds = new HashSet<Guid>();
+ 
++        if (auditEvent.RelatedToolExecutionAttemptId is Guid relatedToolExecutionAttemptId)
++        {
++            toolExecutionIds.Add(relatedToolExecutionAttemptId);
++        }
++
++        if (auditEvent.RelatedTaskId is Guid relatedTaskId)
++        {
++            taskIds.Add(relatedTaskId);
++        }
++
++        if (auditEvent.RelatedWorkflowInstanceId is Guid relatedWorkflowInstanceId)
++        {
++            workflowIds.Add(relatedWorkflowInstanceId);
++        }
++
++        if (auditEvent.RelatedApprovalRequestId is Guid relatedApprovalRequestId)
++        {
++            approvalIds.Add(relatedApprovalRequestId);
++        }
++
+         if (Guid.TryParse(auditEvent.TargetId, out var targetGuid))
+         {
+             if (string.Equals(auditEvent.TargetType, AuditTargetTypes.AgentToolExecution, StringComparison.OrdinalIgnoreCase))
+@@ -383,6 +451,11 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             new(auditEvent.TargetType, auditEvent.TargetId, ResolveTargetLabel(auditEvent, related))
+         };
+ 
++        AddKnownEntity(entities, related, AuditTargetTypes.Agent, auditEvent.RelatedAgentId);
++        AddKnownEntity(entities, related, AuditTargetTypes.WorkTask, auditEvent.RelatedTaskId);
++        AddKnownEntity(entities, related, AuditTargetTypes.WorkflowInstance, auditEvent.RelatedWorkflowInstanceId);
++        AddKnownEntity(entities, related, AuditTargetTypes.ApprovalRequest, auditEvent.RelatedApprovalRequestId);
++        AddKnownEntity(entities, related, AuditTargetTypes.AgentToolExecution, auditEvent.RelatedToolExecutionAttemptId);
+         AddMetadataEntity(auditEvent, related, entities, "agentId", AuditTargetTypes.Agent);
+         AddMetadataEntity(auditEvent, related, entities, "taskId", AuditTargetTypes.WorkTask);
+         AddMetadataEntity(auditEvent, related, entities, "workTaskId", AuditTargetTypes.WorkTask);
+@@ -420,18 +493,21 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+     private static bool MatchesAgentFilter(AuditEvent auditEvent, Guid? agentId) =>
+         !agentId.HasValue ||
+         (auditEvent.ActorId == agentId.Value && IsAgentActor(auditEvent.ActorType)) ||
++        auditEvent.RelatedAgentId == agentId.Value ||
+         TargetEquals(auditEvent, AuditTargetTypes.Agent, agentId.Value) ||
+         MetadataEquals(auditEvent, "agentId", agentId.Value);
+ 
+     private static bool MatchesTaskFilter(AuditEvent auditEvent, Guid? taskId) =>
+         !taskId.HasValue ||
++        auditEvent.RelatedTaskId == taskId.Value ||
+         TargetEquals(auditEvent, AuditTargetTypes.WorkTask, taskId.Value) ||
+         MetadataEquals(auditEvent, "taskId", taskId.Value) ||
+         MetadataEquals(auditEvent, "workTaskId", taskId.Value);
+ 
+     private static bool MatchesWorkflowFilter(AuditEvent auditEvent, Guid? workflowInstanceId) =>
+         !workflowInstanceId.HasValue ||
++        auditEvent.RelatedWorkflowInstanceId == workflowInstanceId.Value ||
+         TargetEquals(auditEvent, AuditTargetTypes.WorkflowInstance, workflowInstanceId.Value) ||
+         MetadataEquals(auditEvent, "workflowInstanceId", workflowInstanceId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 55a9a3b..f1b7f40 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -25,8 +25,8 @@ internal static class CompanyJsonColumnConfiguration
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+-    private const string JsonObjectDefaultSql = "'{}'";
+-    private const string JsonArrayDefaultSql = "'[]'";
++    private const string JsonObjectDefaultSql = "N'{}'";
++    private const string JsonArrayDefaultSql = "N'[]'";
+ 
+     public static PropertyBuilder<T> HasJsonConversion<T>(this PropertyBuilder<T> propertyBuilder)
+         where T : class, new()
+@@ -42,7 +42,7 @@ internal static class CompanyJsonColumnConfiguration
+             value => StringComparer.Ordinal.GetHashCode(Serialize(value)),
+             value => DeserializeOrDefault<T>(Serialize(value)));
+ 
+-        propertyBuilder.HasColumnType("jsonb");
++        propertyBuilder.HasColumnType("nvarchar(max)");
+         propertyBuilder.HasConversion(converter);
+         propertyBuilder.Metadata.SetValueComparer(comparer);
+         return propertyBuilder;
+@@ -514,9 +514,19 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEve
+             .HasColumnName("metadata_json")
+             .HasJsonConversion<Dictionary<string, string?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.RelatedAgentId);
++        builder.Property(x => x.RelatedTaskId);
++        builder.Property(x => x.RelatedWorkflowInstanceId);
++        builder.Property(x => x.RelatedApprovalRequestId);
++        builder.Property(x => x.RelatedToolExecutionAttemptId);
++
+         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ActorType, x.ActorId });
+         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedAgentId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedTaskId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedWorkflowInstanceId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedApprovalRequestId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedToolExecutionAttemptId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+ 
+         builder.HasOne(x => x.Company)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs
+index bd2a345..1fd7423 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413190000_AddAuditEventStructuredDataSources.cs
+@@ -12,10 +12,105 @@ public partial class AddAuditEventStructuredDataSources : Migration
+         migrationBuilder.AddColumn<string>(
+             name: "data_sources_used_json",
+             table: "audit_events",
+-            type: "jsonb",
++            type: "nvarchar(max)",
+             nullable: false,
+-            defaultValueSql: "'[]'");
++            defaultValueSql: "N'[]'");
+ 
++        migrationBuilder.AddColumn<Guid>(
++            name: "RelatedAgentId",
++            table: "audit_events",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "RelatedTaskId",
++            table: "audit_events",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "RelatedWorkflowInstanceId",
++            table: "audit_events",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "RelatedApprovalRequestId",
++            table: "audit_events",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "RelatedToolExecutionAttemptId",
++            table: "audit_events",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.Sql("""
++            UPDATE audit_events
++            SET RelatedAgentId = COALESCE(
++                CASE WHEN ActorType = N'agent' THEN ActorId ELSE NULL END,
++                CASE WHEN TargetType = N'agent' THEN TRY_CONVERT(uniqueidentifier, TargetId) ELSE NULL END,
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.agentId')))
++            """);
++
++        migrationBuilder.Sql("""
++            UPDATE audit_events
++            SET RelatedTaskId = COALESCE(
++                CASE WHEN TargetType = N'work_task' THEN TRY_CONVERT(uniqueidentifier, TargetId) ELSE NULL END,
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.taskId')),
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.workTaskId')))
++            """);
++
++        migrationBuilder.Sql("""
++            UPDATE audit_events
++            SET RelatedWorkflowInstanceId = COALESCE(
++                CASE WHEN TargetType = N'workflow_instance' THEN TRY_CONVERT(uniqueidentifier, TargetId) ELSE NULL END,
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.workflowInstanceId')))
++            """);
++
++        migrationBuilder.Sql("""
++            UPDATE audit_events
++            SET RelatedApprovalRequestId = COALESCE(
++                CASE WHEN TargetType = N'approval_request' THEN TRY_CONVERT(uniqueidentifier, TargetId) ELSE NULL END,
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.approvalRequestId')))
++            """);
++
++        migrationBuilder.Sql("""
++            UPDATE audit_events
++            SET RelatedToolExecutionAttemptId = COALESCE(
++                CASE WHEN TargetType = N'agent_tool_execution' THEN TRY_CONVERT(uniqueidentifier, TargetId) ELSE NULL END,
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.toolExecutionId')),
++                TRY_CONVERT(uniqueidentifier, JSON_VALUE(metadata_json, '$.toolExecutionAttemptId')))
++            """);
++
+         migrationBuilder.CreateIndex(
+             name: "IX_audit_events_CompanyId_ActorType_ActorId",
+             table: "audit_events",
+             columns: new[] { "CompanyId", "ActorType", "ActorId" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedAgentId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedAgentId", "OccurredUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedTaskId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedTaskId", "OccurredUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedWorkflowInstanceId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedWorkflowInstanceId", "OccurredUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedApprovalRequestId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedApprovalRequestId", "OccurredUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedToolExecutionAttemptId_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedToolExecutionAttemptId", "OccurredUtc" });
+     }
+ 
+     protected override void Down(MigrationBuilder migrationBuilder)
+@@ -25,8 +120,38 @@ public partial class AddAuditEventStructuredDataSources : Migration
+             name: "IX_audit_events_CompanyId_ActorType_ActorId",
+             table: "audit_events");
+ 
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedAgentId_OccurredUtc",
++            table: "audit_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedTaskId_OccurredUtc",
++            table: "audit_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedWorkflowInstanceId_OccurredUtc",
++            table: "audit_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedApprovalRequestId_OccurredUtc",
++            table: "audit_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedToolExecutionAttemptId_OccurredUtc",
++            table: "audit_events");
++
+         migrationBuilder.DropColumn(
+             name: "data_sources_used_json",
+             table: "audit_events");
++
++        migrationBuilder.DropColumn(name: "RelatedAgentId", table: "audit_events");
++
++        migrationBuilder.DropColumn(name: "RelatedTaskId", table: "audit_events");
++
++        migrationBuilder.DropColumn(name: "RelatedWorkflowInstanceId", table: "audit_events");
++
++        migrationBuilder.DropColumn(name: "RelatedApprovalRequestId", table: "audit_events");
++
++        migrationBuilder.DropColumn(name: "RelatedToolExecutionAttemptId", table: "audit_events");
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index d53b9bb..bff1095 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -52,6 +52,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                         .HasColumnName("data_sources_json")
+                         .HasDefaultValueSql("N'[]'");
+ 
++                    b.Property<string>("DataSourcesUsed")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("data_sources_used_json")
++                        .HasDefaultValueSql("N'[]'");
++
+                     b.Property<string>("Metadata")
+                         .IsRequired()
+                         .ValueGeneratedOnAdd()
+@@ -66,6 +73,21 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                         .HasMaxLength(64)
+                         .HasColumnType("nvarchar(64)");
+ 
++                    b.Property<Guid?>("RelatedAgentId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<Guid?>("RelatedApprovalRequestId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<Guid?>("RelatedTaskId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<Guid?>("RelatedToolExecutionAttemptId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<Guid?>("RelatedWorkflowInstanceId")
++                        .HasColumnType("uniqueidentifier");
++
+                     b.Property<string>("RationaleSummary")
+                         .HasMaxLength(512)
+                         .HasColumnType("nvarchar(512)");
+@@ -82,10 +104,22 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+                     b.HasKey("Id");
+ 
++                    b.HasIndex("CompanyId", "ActorType", "ActorId");
++
++                    b.HasIndex("CompanyId", "CorrelationId");
++
+                     b.HasIndex("CompanyId", "OccurredUtc");
+ 
++                    b.HasIndex("CompanyId", "RelatedAgentId", "OccurredUtc");
++
++                    b.HasIndex("CompanyId", "RelatedApprovalRequestId", "OccurredUtc");
++
++                    b.HasIndex("CompanyId", "RelatedTaskId", "OccurredUtc");
++
++                    b.HasIndex("CompanyId", "RelatedToolExecutionAttemptId", "OccurredUtc");
++
++                    b.HasIndex("CompanyId", "RelatedWorkflowInstanceId", "OccurredUtc");
++
+                     b.HasIndex("CompanyId", "TargetType", "TargetId", "OccurredUtc");
+ 
+                     b.ToTable("audit_events", (string)null);
+END_OF_PATCH

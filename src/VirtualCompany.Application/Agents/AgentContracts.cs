@@ -194,6 +194,7 @@ public sealed record AgentRuntimeProfileDto(
     string Seniority,
     string Status,
     string? RoleBrief,
+    Dictionary<string, JsonNode?> Personality,
     Dictionary<string, JsonNode?> Objectives,
     Dictionary<string, JsonNode?> Kpis,
     Dictionary<string, JsonNode?> ToolPermissions,
@@ -256,6 +257,8 @@ public sealed class AgentToolPermissionsInput
 {
     public List<string> Allowed { get; set; } = [];
     public List<string> Denied { get; set; } = [];
+    public List<string> Actions { get; set; } = [];
+    public List<string> DeniedActions { get; set; } = [];
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }

@@ -39,6 +39,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
+                [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
@@ -66,10 +67,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICompanyInvitationSender>();
             services.AddSingleton<TestCompanyInvitationSender>();
-            services.RemoveAll<ICompanyToolExecutor>();
+            services.RemoveAll<IInternalCompanyToolContract>();
             services.AddSingleton<TestCompanyToolExecutor>();
+            services.AddSingleton<IInternalCompanyToolContract>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
 
-            services.AddSingleton<ICompanyToolExecutor>(provider => provider.GetRequiredService<TestCompanyToolExecutor>());
             services.RemoveAll<ICompanyDocumentStorage>();
             services.AddSingleton<TestCompanyDocumentStorage>();
             services.AddSingleton<ICompanyDocumentStorage>(provider => provider.GetRequiredService<TestCompanyDocumentStorage>());
@@ -173,11 +174,11 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         }
     }
 
-    public sealed class TestCompanyToolExecutor : ICompanyToolExecutor
+    public sealed class TestCompanyToolExecutor : IInternalCompanyToolContract
     {
-        private readonly ConcurrentQueue<ToolExecutionRequest> _requests = new();
+        private readonly ConcurrentQueue<InternalToolExecutionRequest> _requests = new();
 
-        public IReadOnlyList<ToolExecutionRequest> Requests => _requests.ToArray();
+        public IReadOnlyList<InternalToolExecutionRequest> Requests => _requests.ToArray();
         public int ExecutionCount => _requests.Count;
 
         public void Reset()
@@ -187,7 +188,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             }
         }
 
-        public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request, CancellationToken cancellationToken)
+        public Task<InternalToolExecutionResponse> ExecuteAsync(InternalToolExecutionRequest request, CancellationToken cancellationToken)
         {
             _requests.Enqueue(request);
 
@@ -196,12 +197,20 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 ["toolName"] = JsonValue.Create(request.ToolName),
                 ["actionType"] = JsonValue.Create(request.ActionType),
                 ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? null : JsonValue.Create(request.Scope),
+                ["companyId"] = JsonValue.Create(request.CompanyId),
+                ["agentId"] = JsonValue.Create(request.AgentId),
+                ["executionId"] = JsonValue.Create(request.ExecutionId),
                 ["executed"] = JsonValue.Create(true)
             };
 
-            return Task.FromResult(new ToolExecutionResult(
-                $"Executed '{request.ToolName}' in the test tool executor.",
-                payload));
+            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["contractName"] = JsonValue.Create(nameof(TestCompanyToolExecutor)),
+                ["companyId"] = JsonValue.Create(request.CompanyId),
+                ["executionId"] = JsonValue.Create(request.ExecutionId)
+            };
+
+            return Task.FromResult(InternalToolExecutionResponse.Succeeded("Test tool execution completed.", payload, metadata));
         }
     }
 

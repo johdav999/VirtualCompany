@@ -74,6 +74,19 @@ public sealed class OnboardingApiClient
             ? Task.FromResult(OfflineStore.GetDashboardEntry(companyId))
             : GetDashboardEntryCoreAsync(companyId, cancellationToken);
 
+    public Task<DashboardBriefingCardViewModel?> GetLatestBriefingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<DashboardBriefingCardViewModel?>(new DashboardBriefingCardViewModel())
+            : GetLatestBriefingsCoreAsync(companyId, cancellationToken);
+
+    public Task<BriefingPreferenceViewModel?> GetBriefingPreferencesAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult<BriefingPreferenceViewModel?>(new BriefingPreferenceViewModel { CompanyId = companyId, InAppEnabled = true, DailyEnabled = true, WeeklyEnabled = true })
+            : GetBriefingPreferencesCoreAsync(companyId, cancellationToken);
+
+    public Task<BriefingPreferenceViewModel> UpdateBriefingPreferencesAsync(Guid companyId, BriefingPreferenceUpdateRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<BriefingPreferenceViewModel>(HttpMethod.Put, $"api/companies/{companyId}/briefings/preferences", request, cancellationToken);
+
     private async Task<IReadOnlyList<OnboardingTemplateViewModel>> GetTemplatesCoreAsync(CancellationToken cancellationToken)
     {
         try
@@ -179,14 +192,18 @@ public sealed class OnboardingApiClient
     {
         try
         {
-            var response = await _httpClient.GetAsync($"api/companies/{companyId}/access", cancellationToken);
+            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/access", cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden ||
                 response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 return null;
             }
 
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await CreateExceptionAsync(response, cancellationToken);
+            }
+
             return await response.Content.ReadFromJsonAsync<CompanyAccessViewModel>(SerializerOptions, cancellationToken);
         }
         catch (HttpRequestException ex)
@@ -199,15 +216,62 @@ public sealed class OnboardingApiClient
     {
         try
         {
-            var response = await _httpClient.GetAsync($"api/companies/{companyId}/dashboard-entry", cancellationToken);
+            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/dashboard-entry", cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden ||
                 response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 return null;
             }
 
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await CreateExceptionAsync(response, cancellationToken);
+            }
+
             return await response.Content.ReadFromJsonAsync<CompanyDashboardEntryViewModel>(SerializerOptions, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateNetworkException(ex);
+        }
+    }
+
+    private async Task<DashboardBriefingCardViewModel?> GetLatestBriefingsCoreAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/briefings/latest", cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Forbidden || response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await CreateExceptionAsync(response, cancellationToken);
+            }
+
+            return await response.Content.ReadFromJsonAsync<DashboardBriefingCardViewModel>(SerializerOptions, cancellationToken);
+        }
+        catch (HttpRequestException ex) { throw CreateNetworkException(ex); }
+    }
+
+    private async Task<BriefingPreferenceViewModel?> GetBriefingPreferencesCoreAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/briefings/preferences", cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Forbidden || response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await CreateExceptionAsync(response, cancellationToken);
+            }
+
+            return await response.Content.ReadFromJsonAsync<BriefingPreferenceViewModel>(SerializerOptions, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
@@ -851,6 +915,58 @@ public sealed class CompanyDashboardEntryViewModel
     public bool ShowStarterGuidance { get; set; }
     public DateTime? OnboardingCompletedUtc { get; set; }
     public List<string> StarterGuidance { get; set; } = [];
+}
+
+public sealed class DashboardBriefingCardViewModel
+{
+    public CompanyBriefingViewModel? Daily { get; set; }
+    public CompanyBriefingViewModel? Weekly { get; set; }
+}
+
+public sealed class CompanyBriefingViewModel
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string BriefingType { get; set; } = string.Empty;
+    public DateTime PeriodStartUtc { get; set; }
+    public DateTime PeriodEndUtc { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string SummaryBody { get; set; } = string.Empty;
+    public List<BriefingSourceReferenceViewModel> SourceReferences { get; set; } = [];
+    public Guid? MessageId { get; set; }
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class BriefingSourceReferenceViewModel
+{
+    public string EntityType { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public string Label { get; set; } = string.Empty;
+    public string? Status { get; set; }
+    public string? Route { get; set; }
+}
+
+public sealed class BriefingPreferenceViewModel
+{
+    public Guid CompanyId { get; set; }
+    public Guid UserId { get; set; }
+    public bool InAppEnabled { get; set; }
+    public bool MobileEnabled { get; set; }
+    public bool DailyEnabled { get; set; }
+    public bool WeeklyEnabled { get; set; }
+    public TimeOnly PreferredDeliveryTime { get; set; } = new(8, 0);
+    public string? PreferredTimezone { get; set; }
+    public DateTime? UpdatedUtc { get; set; }
+}
+
+public sealed class BriefingPreferenceUpdateRequest
+{
+    public bool InAppEnabled { get; set; }
+    public bool MobileEnabled { get; set; }
+    public bool DailyEnabled { get; set; }
+    public bool WeeklyEnabled { get; set; }
+    public TimeOnly? PreferredDeliveryTime { get; set; }
+    public string? PreferredTimezone { get; set; }
 }
 
 public sealed class CurrentUserContextViewModel

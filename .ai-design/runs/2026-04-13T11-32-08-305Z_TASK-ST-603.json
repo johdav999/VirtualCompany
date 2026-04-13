@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-603",
+  "promptPath": ".ai-design/prompts/TASK-ST-603.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:32:08.305Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-32-08-305Z_TASK-ST-603_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-32-08-305Z_TASK-ST-603.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:39:07.913Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "oval.Id, out var comment);\n+            await ApprovalApiClient.DecideAsync(\n+                companyId,\n+                approval.Id,\n+                new ApprovalDecisionRequest\n+                {\n+                    ApprovalId = approval.Id,\n+                    StepId = approval.CurrentStep.Id,\n+                    Decision = decision,\n+                    Comment = comment\n+                });\n+            inbox = await InboxApiClient.GetInboxAsync(companyId);\n+        }\n+        catch (OnboardingApiException ex)\n+        {\n+            errorMessage = ex.Message;\n+        }\n+        finally\n+        {\n+            isDeciding = false;\n+        }\n+    }\n+\n+    private async Task SetNotificationStatusAsync(NotificationListItemViewModel notification, string status)\n+    {\n+        if (CompanyId is not Guid companyId)\n+        {\n+            return;\n+        }\n+\n+        var updated = await InboxApiClient.SetStatusAsync(companyId, notification.Id, status);\n+        var index = inbox.Notifications.FindIndex(x => x.Id == updated.Id);\n+        if (index >= 0)\n+        {\n+            inbox.Notifications[index] = updated;\n+        }\n+    }\n+\n+    private static bool IsUnread(NotificationListItemViewModel notification) =>\n+        string.Equals(notification.Status, \"unread\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static bool IsActioned(NotificationListItemViewModel notification) =>\n+        string.Equals(notification.Status, \"actioned\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string NotificationClass(NotificationListItemViewModel notification) =>\n+        IsUnread(notification) ? \"list-group-item border-start border-4 border-primary\" : \"list-group-item\";\n+\n+    private static string PriorityBadgeClass(string priority) =>\n+        priority.ToLowerInvariant() switch\n+        {\n+            \"critical\" => \"badge text-bg-danger\",\n+            \"high\" => \"badge text-bg-warning\",\n+            _ => \"badge text-bg-light\"\n+        };\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ment);\n+            await ApprovalApiClient.DecideAsync(\n+                companyId,\n+                approval.Id,\n+                new ApprovalDecisionRequest\n+                {\n+                    ApprovalId = approval.Id,\n+                    StepId = approval.CurrentStep.Id,\n+                    Decision = decision,\n+                    Comment = comment\n+                });\n+            inbox = await InboxApiClient.GetInboxAsync(companyId);\n+        }\n+        catch (OnboardingApiException ex)\n+        {\n+            errorMessage = ex.Message;\n+        }\n+        finally\n+        {\n+            isDeciding = false;\n+        }\n+    }\n+\n+    private async Task SetNotificationStatusAsync(NotificationListItemViewModel notification, string status)\n+    {\n+        if (CompanyId is not Guid companyId)\n+        {\n+            return;\n+        }\n+\n+        var updated = await InboxApiClient.SetStatusAsync(companyId, notification.Id, status);\n+        var index = inbox.Notifications.FindIndex(x => x.Id == updated.Id);\n+        if (index >= 0)\n+        {\n+            inbox.Notifications[index] = updated;\n+        }\n+    }\n+\n+    private static bool IsUnread(NotificationListItemViewModel notification) =>\n+        string.Equals(notification.Status, \"unread\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static bool IsActioned(NotificationListItemViewModel notification) =>\n+        string.Equals(notification.Status, \"actioned\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string NotificationClass(NotificationListItemViewModel notification) =>\n+        IsUnread(notification) ? \"list-group-item border-start border-4 border-primary\" : \"list-group-item\";\n+\n+    private static string PriorityBadgeClass(string priority) =>\n+        priority.ToLowerInvariant() switch\n+        {\n+            \"critical\" => \"badge text-bg-danger\",\n+            \"high\" => \"badge text-bg-warning\",\n+            _ => \"badge text-bg-light\"\n+        };\n+}\nEND_OF_PATCH\ntokens used\n116,519\n",
+  "verbosityMode": "summary"
+}

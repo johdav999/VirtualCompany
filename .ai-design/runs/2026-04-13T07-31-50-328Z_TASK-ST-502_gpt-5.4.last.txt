@@ -1,0 +1,1328 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+new file mode 100644
+index 0000000..11e7101
+--- /dev/null
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -0,0 +1,181 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Tasks;
++
++namespace VirtualCompany.Application.Orchestration;
++
++public sealed record SingleAgentOrchestrationRequest(
++    Guid CompanyId,
++    Guid TaskId,
++    Guid? AgentId = null,
++    Guid? InitiatingActorId = null,
++    string? InitiatingActorType = null,
++    string? CorrelationId = null,
++    string? Intent = null,
++    IReadOnlyList<ToolInvocationRequest>? ToolInvocations = null);
++
++public sealed record SingleAgentRuntimeContext(
++    Guid OrchestrationId,
++    string CorrelationId,
++    TaskDetailDto Task,
++    AgentRuntimeProfileDto Agent,
++    CompanyRuntimeContext Company,
++    GroundedPromptContextDto? GroundedContext,
++    IReadOnlyList<ToolMetadataDto> AvailableTools,
++    string Intent);
++
++public sealed record CompanyRuntimeContext(
++    Guid CompanyId,
++    string Name,
++    string? Industry,
++    string? BusinessType,
++    string? Timezone,
++    string? Currency,
++    string? Language,
++    string? ComplianceRegion);
++
++public sealed record ToolMetadataDto(
++    string Name,
++    IReadOnlyList<string> SupportedActions,
++    IReadOnlyList<string> Scopes,
++    IReadOnlyDictionary<string, JsonNode?> PolicyMetadata);
++
++public sealed record PromptBuildRequest(SingleAgentRuntimeContext RuntimeContext);
++
++public sealed record PromptBuildResult(
++    Guid PromptId,
++    string CorrelationId,
++    IReadOnlyList<PromptMessageDto> Messages,
++    Dictionary<string, JsonNode?> Payload,
++    IReadOnlyList<string> SourceReferenceIds,
++    DateTime BuiltAtUtc);
++
++public sealed record PromptMessageDto(
++    string Role,
++    string Name,
++    string Content,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record ToolInvocationRequest(
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    Dictionary<string, JsonNode?>? RequestPayload = null,
++    string? ThresholdCategory = null,
++    string? ThresholdKey = null,
++    decimal? ThresholdValue = null,
++    bool SensitiveAction = false);
++
++public sealed record ToolInvocationResult(
++    Guid ExecutionId,
++    string ToolName,
++    string ActionType,
++    string? Scope,
++    string Status,
++    Guid? ApprovalRequestId,
++    ToolExecutionDecisionDto PolicyDecision,
++    Dictionary<string, JsonNode?>? ResultPayload,
++    string Message,
++    DateTime StartedAtUtc,
++    DateTime CompletedAtUtc,
++    string CorrelationId);
++
++public sealed record OrchestrationArtifact(
++    string ArtifactType,
++    string Name,
++    Dictionary<string, JsonNode?> Payload);
++
++public sealed record OrchestrationMetadata(
++    Guid OrchestrationId,
++    Guid PromptId,
++    Guid CompanyId,
++    Guid TaskId,
++    Guid AgentId,
++    string CorrelationId,
++    string Intent,
++    DateTime StartedAtUtc,
++    DateTime CompletedAtUtc,
++    IReadOnlyDictionary<string, string?> AuditMetadata);
++
++public sealed record OrchestrationResult(
++    Guid OrchestrationId,
++    Guid CompanyId,
++    Guid TaskId,
++    Guid AgentId,
++    string Status,
++    string UserFacingOutput,
++    Dictionary<string, JsonNode?> StructuredOutput,
++    string? RationaleSummary,
++    decimal? ConfidenceScore,
++    IReadOnlyList<ToolInvocationResult> ToolExecutions,
++    IReadOnlyList<OrchestrationArtifact> Artifacts,
++    OrchestrationMetadata Metadata,
++    string CorrelationId,
++    string? FailureReason = null);
++
++public sealed record OrchestrationAuditWriteRequest(
++    SingleAgentRuntimeContext RuntimeContext,
++    PromptBuildResult Prompt,
++    OrchestrationResult Result);
++
++public interface ISingleAgentOrchestrationService
++{
++    Task<OrchestrationResult> ExecuteAsync(
++        SingleAgentOrchestrationRequest request,
++        CancellationToken cancellationToken);
++}
++
++public interface IPromptBuilder
++{
++    PromptBuildResult Build(PromptBuildRequest request);
++}
++
++public interface IToolExecutor
++{
++    Task<ToolInvocationResult> ExecuteAsync(
++        SingleAgentRuntimeContext runtimeContext,
++        ToolInvocationRequest request,
++        CancellationToken cancellationToken);
++}
++
++public interface IOrchestrationAuditWriter
++{
++    Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken);
++}
++
++public sealed class OrchestrationValidationException : Exception
++{
++    public OrchestrationValidationException(IDictionary<string, string[]> errors)
++        : base("Orchestration validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public static class OrchestrationStatusValues
++{
++    public const string Completed = "completed";
++    public const string Failed = "failed";
++    public const string AwaitingApproval = "awaiting_approval";
++}
++
++public static class OrchestrationIntentValues
++{
++    public const string ExecuteTask = "execute_task";
++}
++
++public static class PromptRoles
++{
++    public const string System = "system";
++    public const string User = "user";
++    public const string Tool = "tool";
++}
++
++public static class OrchestrationArtifactTypes
++{
++    public const string Prompt = "prompt";
++    public const string TaskOutput = "task_output";
++    public const string ToolExecution = "tool_execution";
++    public const string ContextReferences = "context_references";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+new file mode 100644
+index 0000000..f0ab29d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -0,0 +1,530 @@
++using System.Diagnostics;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
++    private readonly IGroundedPromptContextService _groundedPromptContextService;
++    private readonly IPromptBuilder _promptBuilder;
++    private readonly IToolExecutor _toolExecutor;
++    private readonly IOrchestrationAuditWriter _auditWriter;
++    private readonly ICorrelationContextAccessor _correlationContextAccessor;
++
++    public SingleAgentOrchestrationService(
++        VirtualCompanyDbContext dbContext,
++        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
++        IGroundedPromptContextService groundedPromptContextService,
++        IPromptBuilder promptBuilder,
++        IToolExecutor toolExecutor,
++        IOrchestrationAuditWriter auditWriter,
++        ICorrelationContextAccessor correlationContextAccessor)
++    {
++        _dbContext = dbContext;
++        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
++        _groundedPromptContextService = groundedPromptContextService;
++        _promptBuilder = promptBuilder;
++        _toolExecutor = toolExecutor;
++        _auditWriter = auditWriter;
++        _correlationContextAccessor = correlationContextAccessor;
++    }
++
++    public async Task<OrchestrationResult> ExecuteAsync(
++        SingleAgentOrchestrationRequest request,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        Validate(request);
++
++        var startedAtUtc = DateTime.UtcNow;
++        var previousCorrelationId = _correlationContextAccessor.CorrelationId;
++        var correlationId = EnsureCorrelationId(request.CorrelationId);
++        _correlationContextAccessor.CorrelationId = correlationId;
++
++        try
++        {
++            var task = await GetTaskAsync(request.CompanyId, request.TaskId, cancellationToken);
++            var agentId = ResolveAgentId(request, task);
++            var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(request.CompanyId, agentId, cancellationToken);
++            var company = await GetCompanyAsync(request.CompanyId, cancellationToken);
++
++            if (!agent.CanReceiveAssignments)
++            {
++                throw new OrchestrationValidationException(
++                    new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        [nameof(request.AgentId)] = ["The selected agent cannot execute single-agent tasks in its current status."]
++                    });
++            }
++
++            GroundedPromptContextDto? groundedContext = null;
++            try
++            {
++                groundedContext = await _groundedPromptContextService.PrepareAsync(
++                    new GroundedPromptContextRequest(
++                        request.CompanyId,
++                        agent.Id,
++                        BuildRetrievalQuery(task),
++                        request.InitiatingActorId,
++                        task.Id,
++                        task.Title,
++                        task.Description,
++                        Limits: new RetrievalSourceLimitOptions(5, 5, 5, 3),
++                        CorrelationId: correlationId,
++                        RetrievalPurpose: "single_agent_task_execution"),
++                    cancellationToken);
++            }
++            catch (GroundedContextRetrievalValidationException)
++            {
++                groundedContext = null;
++            }
++
++            var runtimeContext = new SingleAgentRuntimeContext(
++                Guid.NewGuid(),
++                correlationId,
++                task,
++                agent,
++                company,
++                groundedContext,
++                ResolveAvailableTools(agent),
++                NormalizeIntent(request.Intent));
++
++            var prompt = _promptBuilder.Build(new PromptBuildRequest(runtimeContext));
++            var toolRequests = ResolveToolInvocations(request.ToolInvocations, task.InputPayload);
++            var toolResults = new List<ToolInvocationResult>(toolRequests.Count);
++
++            foreach (var toolRequest in toolRequests)
++            {
++                toolResults.Add(await _toolExecutor.ExecuteAsync(runtimeContext, toolRequest, cancellationToken));
++            }
++
++            var completedAtUtc = DateTime.UtcNow;
++            var status = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++                ? OrchestrationStatusValues.AwaitingApproval
++                : OrchestrationStatusValues.Completed;
++            var userFacingOutput = BuildUserFacingOutput(runtimeContext, toolResults);
++            var rationale = BuildRationaleSummary(runtimeContext, groundedContext, toolResults);
++            var confidence = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.Failed.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++                ? 0.4m
++                : 0.76m;
++            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence);
++            var artifacts = BuildArtifacts(prompt, structuredOutput, toolResults, groundedContext);
++            var metadata = BuildMetadata(runtimeContext, prompt, toolResults, startedAtUtc, completedAtUtc);
++
++            var result = new OrchestrationResult(
++                runtimeContext.OrchestrationId,
++                request.CompanyId,
++                task.Id,
++                agent.Id,
++                status,
++                userFacingOutput,
++                structuredOutput,
++                rationale,
++                confidence,
++                toolResults,
++                artifacts,
++                metadata,
++                correlationId);
++
++            await PersistTaskResultAsync(task.Id, result, cancellationToken);
++            await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            return result;
++        }
++        finally
++        {
++            _correlationContextAccessor.CorrelationId = previousCorrelationId;
++        }
++    }
++
++    private static void Validate(SingleAgentOrchestrationRequest request)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        if (request.CompanyId == Guid.Empty)
++        {
++            errors[nameof(request.CompanyId)] = ["CompanyId is required."];
++        }
++
++        if (request.TaskId == Guid.Empty)
++        {
++            errors[nameof(request.TaskId)] = ["TaskId is required."];
++        }
++
++        if (request.AgentId == Guid.Empty)
++        {
++            errors[nameof(request.AgentId)] = ["AgentId cannot be empty."];
++        }
++
++        if (request.InitiatingActorId == Guid.Empty)
++        {
++            errors[nameof(request.InitiatingActorId)] = ["InitiatingActorId cannot be empty."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new OrchestrationValidationException(errors);
++        }
++    }
++
++    private async Task<TaskDetailDto> GetTaskAsync(Guid companyId, Guid taskId, CancellationToken cancellationToken)
++    {
++        var task = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.AssignedAgent)
++            .Include(x => x.ParentTask)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken);
++
++        if (task is null)
++        {
++            throw new KeyNotFoundException("Task not found.");
++        }
++
++        return new TaskDetailDto(
++            task.Id,
++            task.CompanyId,
++            task.Type,
++            task.Title,
++            task.Description,
++            task.Priority.ToStorageValue(),
++            task.Status.ToStorageValue(),
++            task.DueUtc,
++            task.AssignedAgentId,
++            task.ParentTaskId,
++            task.WorkflowInstanceId,
++            task.CreatedByActorType,
++            task.CreatedByActorId,
++            CloneNodes(task.InputPayload),
++            CloneNodes(task.OutputPayload),
++            task.RationaleSummary,
++            task.ConfidenceScore,
++            task.CreatedUtc,
++            task.UpdatedUtc,
++            task.CompletedUtc,
++            task.AssignedAgent is null ? null : new TaskAgentSummaryDto(task.AssignedAgent.Id, task.AssignedAgent.DisplayName, task.AssignedAgent.Status.ToStorageValue()),
++            task.ParentTask is null ? null : new TaskParentSummaryDto(task.ParentTask.Id, task.ParentTask.Title, task.ParentTask.Status.ToStorageValue()));
++    }
++
++    private async Task<CompanyRuntimeContext> GetCompanyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var company = await _dbContext.Companies
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.Id == companyId, cancellationToken);
++
++        if (company is null)
++        {
++            throw new KeyNotFoundException("Company not found.");
++        }
++
++        return new CompanyRuntimeContext(
++            company.Id,
++            company.Name,
++            company.Industry,
++            company.BusinessType,
++            company.Timezone,
++            company.Currency,
++            company.Language,
++            company.ComplianceRegion);
++    }
++
++    private static Guid ResolveAgentId(SingleAgentOrchestrationRequest request, TaskDetailDto task)
++    {
++        var agentId = request.AgentId ?? task.AssignedAgentId;
++        if (agentId is null)
++        {
++            throw new OrchestrationValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [nameof(request.AgentId)] = ["AgentId is required when the task has no assigned agent."]
++                });
++        }
++
++        if (task.AssignedAgentId.HasValue && request.AgentId.HasValue && task.AssignedAgentId.Value != request.AgentId.Value)
++        {
++            throw new OrchestrationValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [nameof(request.AgentId)] = ["AgentId must match the task's assigned agent."]
++                });
++        }
++
++        return agentId.Value;
++    }
++
++    private async Task PersistTaskResultAsync(
++        Guid taskId,
++        OrchestrationResult result,
++        CancellationToken cancellationToken)
++    {
++        var task = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == result.CompanyId && x.Id == taskId, cancellationToken);
++
++        var taskStatus = string.Equals(result.Status, OrchestrationStatusValues.AwaitingApproval, StringComparison.OrdinalIgnoreCase)
++            ? WorkTaskStatus.AwaitingApproval
++            : WorkTaskStatus.Completed;
++
++        task.UpdateStatus(taskStatus, result.StructuredOutput, result.RationaleSummary, result.ConfidenceScore);
++    }
++
++    private static string NormalizeIntent(string? intent) =>
++        string.IsNullOrWhiteSpace(intent)
++            ? OrchestrationIntentValues.ExecuteTask
++            : intent.Trim();
++
++    private static string EnsureCorrelationId(string? requestedCorrelationId)
++    {
++        if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
++        {
++            return requestedCorrelationId.Trim();
++        }
++
++        return Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
++    }
++
++    private static string BuildRetrievalQuery(TaskDetailDto task) =>
++        string.IsNullOrWhiteSpace(task.Description)
++            ? task.Title
++            : $"{task.Title}\n{task.Description}";
++
++    private static IReadOnlyList<ToolMetadataDto> ResolveAvailableTools(AgentRuntimeProfileDto agent)
++    {
++        var tools = new List<ToolMetadataDto>();
++        if (agent.ToolPermissions.TryGetValue("allowed", out var allowedNode) && allowedNode is JsonArray allowedArray)
++        {
++            foreach (var item in allowedArray)
++            {
++                var name = item is JsonValue value && value.TryGetValue<string>(out var text)
++                    ? text
++                    : null;
++                if (!string.IsNullOrWhiteSpace(name))
++                {
++                    tools.Add(new ToolMetadataDto(
++                        name.Trim(),
++                        ["read", "write", "execute"],
++                        ResolveScopes(agent.DataScopes),
++                        CloneNodes(agent.ToolPermissions)));
++                }
++            }
++        }
++
++        if (tools.Count == 0)
++        {
++            foreach (var key in agent.ToolPermissions.Keys.Where(static key => !string.IsNullOrWhiteSpace(key)))
++            {
++                tools.Add(new ToolMetadataDto(key, ["read", "write", "execute"], ResolveScopes(agent.DataScopes), CloneNodes(agent.ToolPermissions)));
++            }
++        }
++
++        return tools;
++    }
++
++    private static IReadOnlyList<string> ResolveScopes(IReadOnlyDictionary<string, JsonNode?> dataScopes)
++    {
++        var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (_, node) in dataScopes)
++        {
++            if (node is JsonArray array)
++            {
++                foreach (var item in array)
++                {
++                    if (item is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text))
++                    {
++                        scopes.Add(text.Trim());
++                    }
++                }
++            }
++        }
++
++        return scopes.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
++    }
++
++    private static IReadOnlyList<ToolInvocationRequest> ResolveToolInvocations(
++        IReadOnlyList<ToolInvocationRequest>? explicitRequests,
++        IReadOnlyDictionary<string, JsonNode?> taskInputPayload)
++    {
++        if (explicitRequests is not null && explicitRequests.Count > 0)
++        {
++            return explicitRequests;
++        }
++
++        if (!taskInputPayload.TryGetValue("toolInvocations", out var invocationsNode) || invocationsNode is not JsonArray invocations)
++        {
++            return Array.Empty<ToolInvocationRequest>();
++        }
++
++        var requests = new List<ToolInvocationRequest>();
++        foreach (var item in invocations.OfType<JsonObject>())
++        {
++            var toolName = GetString(item, "toolName");
++            var actionType = GetString(item, "actionType");
++            if (string.IsNullOrWhiteSpace(toolName) || string.IsNullOrWhiteSpace(actionType))
++            {
++                continue;
++            }
++
++            requests.Add(new ToolInvocationRequest(
++                toolName,
++                actionType,
++                GetString(item, "scope"),
++                CloneObject(item["requestPayload"] as JsonObject),
++                GetString(item, "thresholdCategory"),
++                GetString(item, "thresholdKey"),
++                GetDecimal(item, "thresholdValue"),
++                GetBoolean(item, "sensitiveAction") ?? false));
++        }
++
++        return requests;
++    }
++
++    private static string BuildUserFacingOutput(
++        SingleAgentRuntimeContext context,
++        IReadOnlyList<ToolInvocationResult> toolResults)
++    {
++        var builder = new StringBuilder();
++        builder.Append(context.Agent.DisplayName);
++        builder.Append(" completed task '");
++        builder.Append(context.Task.Title);
++        builder.Append("'.");
++
++        if (toolResults.Count > 0)
++        {
++            builder.Append(' ');
++            builder.Append(toolResults.Count);
++            builder.Append(toolResults.Count == 1 ? " tool invocation was processed." : " tool invocations were processed.");
++        }
++
++        if (toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase)))
++        {
++            builder.Append(" One or more actions are awaiting approval before execution can continue.");
++        }
++
++        return builder.ToString();
++    }
++
++    private static string BuildRationaleSummary(
++        SingleAgentRuntimeContext context,
++        GroundedPromptContextDto? groundedContext,
++        IReadOnlyList<ToolInvocationResult> toolResults)
++    {
++        var sourceCount = groundedContext?.Context.Counts.SourceReferences ?? 0;
++        return $"Resolved agent '{context.Agent.DisplayName}', task intent '{context.Intent}', {sourceCount} context reference(s), and {toolResults.Count} structured tool execution result(s).";
++    }
++
++    private static Dictionary<string, JsonNode?> BuildStructuredOutput(
++        SingleAgentRuntimeContext context,
++        PromptBuildResult prompt,
++        IReadOnlyList<ToolInvocationResult> toolResults,
++        string userFacingOutput,
++        string rationale,
++        decimal confidence)
++    {
++        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
++            ["orchestrationId"] = JsonValue.Create(context.OrchestrationId.ToString("N")),
++            ["promptId"] = JsonValue.Create(prompt.PromptId.ToString("N")),
++            ["correlationId"] = JsonValue.Create(context.CorrelationId),
++            ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
++            ["agentDisplayName"] = JsonValue.Create(context.Agent.DisplayName),
++            ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
++            ["intent"] = JsonValue.Create(context.Intent),
++            ["userFacingOutput"] = JsonValue.Create(userFacingOutput),
++            ["rationaleSummary"] = JsonValue.Create(rationale),
++            ["confidenceScore"] = JsonValue.Create(confidence),
++            ["toolExecutions"] = JsonSerializer.SerializeToNode(toolResults.Select(ToToolExecutionSummary).ToList()),
++            ["sourceReferenceCount"] = JsonValue.Create(context.GroundedContext?.Context.Counts.SourceReferences ?? 0)
++        };
++    }
++
++    private static IReadOnlyList<OrchestrationArtifact> BuildArtifacts(
++        PromptBuildResult prompt,
++        Dictionary<string, JsonNode?> structuredOutput,
++        IReadOnlyList<ToolInvocationResult> toolResults,
++        GroundedPromptContextDto? groundedContext)
++    {
++        var artifacts = new List<OrchestrationArtifact>
++        {
++            new(OrchestrationArtifactTypes.Prompt, "prompt_payload", CloneNodes(prompt.Payload)),
++            new(OrchestrationArtifactTypes.TaskOutput, "task_output", CloneNodes(structuredOutput))
++        };
++
++        if (toolResults.Count > 0)
++        {
++            artifacts.Add(new OrchestrationArtifact(
++                OrchestrationArtifactTypes.ToolExecution,
++                "tool_execution_summaries",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["items"] = JsonSerializer.SerializeToNode(toolResults.Select(ToToolExecutionSummary).ToList())
++                }));
++        }
++
++        if (groundedContext is not null)
++        {
++            artifacts.Add(new OrchestrationArtifact(
++                OrchestrationArtifactTypes.ContextReferences,
++                "context_references",
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["retrievalId"] = JsonValue.Create(groundedContext.RetrievalId.ToString("N")),
++                    ["sourceReferences"] = JsonSerializer.SerializeToNode(groundedContext.Context.SourceReferences)
++                }));
++        }
++
++        return artifacts;
++    }
++
++    private static OrchestrationMetadata BuildMetadata(
++        SingleAgentRuntimeContext context,
++        PromptBuildResult prompt,
++        IReadOnlyList<ToolInvocationResult> toolResults,
++        DateTime startedAtUtc,
++        DateTime completedAtUtc)
++    {
++        return new OrchestrationMetadata(
++            context.OrchestrationId,
++            prompt.PromptId,
++            context.Company.CompanyId,
++            context.Task.Id,
++            context.Agent.Id,
++            context.CorrelationId,
++            context.Intent,
++            startedAtUtc,
++            completedAtUtc,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["toolExecutionCount"] = toolResults.Count.ToString(),
++                ["sourceReferenceCount"] = (context.GroundedContext?.Context.Counts.SourceReferences ?? 0).ToString(),
++                ["agentRoleName"] = context.Agent.RoleName,
++                ["agentAutonomyLevel"] = context.Agent.AutonomyLevel,
++                ["taskType"] = context.Task.Type,
++                ["policyInterceptionPoint"] = "tool_executor"
++            });
++    }
++
++    private static Dictionary<string, object?> ToToolExecutionSummary(ToolInvocationResult result) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["executionId"] = result.ExecutionId,
++            ["toolName"] = result.ToolName,
++            ["actionType"] = result.ActionType,
++            ["scope"] = result.Scope,
++            ["status"] = result.Status,
++            ["approvalRequestId"] = result.ApprovalRequestId,
++            ["policyOutcome"] = result.PolicyDecision.Outcome,
++            ["message"] = result.Message,
++            ["correlationId"] = result.CorrelationId,
++            ["startedAtUtc"] = result.StartedAtUtc,
++            ["completedAtUtc"] = result.CompletedAtUtc
++        };
++
++    private static string? GetString(JsonObject jsonObject, string propertyName) =>
++        jsonObject.TryGetPropertyValue(propertyName, out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var text) &&
++        !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++
++    private static decimal? GetDecimal(JsonObject jsonObject, string propertyName)
++    {
++        if (!jsonObject.TryGetPropertyValue(propertyName, out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<decimal>(out var number))
++        {
++            return number;
++        }
++
++        return value.TryGetValue<double>(out var doubleNumber) ? Convert.ToDecimal(doubleNumber) : null;
++    }
++
++    private static bool? GetBoolean(JsonObject jsonObject, string propertyName) =>
++        jsonObject.TryGetPropertyValue(propertyName, out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<bool>(out var boolean)
++            ? boolean
++            : null;
++
++    private static Dictionary<string, JsonNode?> CloneObject(JsonObject? jsonObject)
++    {
++        if (jsonObject is null)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        return jsonObject.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class StructuredPromptBuilder : IPromptBuilder
++{
++    public PromptBuildResult Build(PromptBuildRequest request)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++
++        var context = request.RuntimeContext;
++        var sourceReferenceIds = context.GroundedContext?.Context.SourceReferences
++            .Select(x => x.SourceId)
++            .Where(static x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList() ?? [];
++
++        var systemContent = BuildSystemContent(context);
++        var taskContent = BuildTaskContent(context);
++        var toolContent = BuildToolContent(context);
++        var messages = new List<PromptMessageDto>
++        {
++            new(PromptRoles.System, "agent_role", systemContent, new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
++                ["roleName"] = JsonValue.Create(context.Agent.RoleName),
++                ["autonomyLevel"] = JsonValue.Create(context.Agent.AutonomyLevel)
++            }),
++            new(PromptRoles.User, "task_input", taskContent, new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
++                ["taskType"] = JsonValue.Create(context.Task.Type),
++                ["intent"] = JsonValue.Create(context.Intent)
++            }),
++            new(PromptRoles.Tool, "available_tools", toolContent, new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["toolCount"] = JsonValue.Create(context.AvailableTools.Count)
++            })
++        };
++
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-13"),
++            ["company"] = JsonSerializer.SerializeToNode(context.Company),
++            ["agent"] = JsonSerializer.SerializeToNode(new
++            {
++                context.Agent.Id,
++                context.Agent.DisplayName,
++                context.Agent.RoleName,
++                context.Agent.Department,
++                context.Agent.Seniority,
++                context.Agent.AutonomyLevel,
++                context.Agent.RoleBrief,
++                context.Agent.Personality,
++                context.Agent.Objectives,
++                context.Agent.Kpis
++            }),
++            ["task"] = JsonSerializer.SerializeToNode(new
++            {
++                context.Task.Id,
++                context.Task.Type,
++                context.Task.Title,
++                context.Task.Description,
++                context.Task.Priority,
++                context.Task.InputPayload
++            }),
++            ["policy"] = JsonSerializer.SerializeToNode(new
++            {
++                context.Agent.ToolPermissions,
++                context.Agent.DataScopes,
++                context.Agent.ApprovalThresholds,
++                context.Agent.EscalationRules
++            }),
++            ["tools"] = JsonSerializer.SerializeToNode(context.AvailableTools),
++            ["context"] = context.GroundedContext is null ? null : JsonSerializer.SerializeToNode(context.GroundedContext.Context),
++            ["messages"] = JsonSerializer.SerializeToNode(messages),
++            ["outputContract"] = JsonSerializer.SerializeToNode(new
++            {
++                userFacingOutput = "Required concise external answer.",
++                artifacts = "Structured task, prompt, tool, and context references.",
++                auditMetadata = "Required correlation IDs and execution timestamps."
++            })
++        };
++
++        return new PromptBuildResult(
++            Guid.NewGuid(),
++            context.CorrelationId,
++            messages,
++            payload,
++            sourceReferenceIds,
++            DateTime.UtcNow);
++    }
++
++    private static string BuildSystemContent(SingleAgentRuntimeContext context)
++    {
++        var builder = new StringBuilder();
++        builder.Append("You are ");
++        builder.Append(context.Agent.DisplayName);
++        builder.Append(", ");
++        builder.Append(context.Agent.RoleName);
++        builder.Append(" for ");
++        builder.Append(context.Company.Name);
++        builder.Append('.');
++
++        if (!string.IsNullOrWhiteSpace(context.Agent.RoleBrief))
++        {
++            builder.Append(' ');
++            builder.Append(context.Agent.RoleBrief);
++        }
++
++        builder.Append(" Follow the agent profile, company context, policy constraints, and structured output contract.");
++        return builder.ToString();
++    }
++
++    private static string BuildTaskContent(SingleAgentRuntimeContext context)
++    {
++        var builder = new StringBuilder();
++        builder.Append("Intent: ");
++        builder.Append(context.Intent);
++        builder.AppendLine();
++        builder.Append("Task: ");
++        builder.Append(context.Task.Title);
++
++        if (!string.IsNullOrWhiteSpace(context.Task.Description))
++        {
++            builder.AppendLine();
++            builder.Append(context.Task.Description);
++        }
++
++        builder.AppendLine();
++        builder.Append("Input payload: ");
++        builder.Append(JsonSerializer.Serialize(context.Task.InputPayload));
++        builder.AppendLine();
++        builder.Append("Retrieved context references: ");
++        builder.Append(context.GroundedContext?.Context.Counts.SourceReferences ?? 0);
++        return builder.ToString();
++    }
++
++    private static string BuildToolContent(SingleAgentRuntimeContext context)
++    {
++        if (context.AvailableTools.Count == 0)
++        {
++            return "No tools are currently available. Future policy gating plugs in before this tool boundary.";
++        }
++
++        var summaries = context.AvailableTools.Select(tool =>
++            $"{tool.Name}: actions={string.Join(",", tool.SupportedActions)} scopes={string.Join(",", tool.Scopes)}");
++        return string.Join(Environment.NewLine, summaries);
++    }
++}
++
++public sealed class AgentToolOrchestrationExecutor : IToolExecutor
++{
++    private readonly IAgentToolExecutionService _agentToolExecutionService;
++
++    public AgentToolOrchestrationExecutor(IAgentToolExecutionService agentToolExecutionService)
++    {
++        _agentToolExecutionService = agentToolExecutionService;
++    }
++
++    public async Task<ToolInvocationResult> ExecuteAsync(
++        SingleAgentRuntimeContext runtimeContext,
++        ToolInvocationRequest request,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(runtimeContext);
++        ArgumentNullException.ThrowIfNull(request);
++
++        var startedAtUtc = DateTime.UtcNow;
++        var result = await _agentToolExecutionService.ExecuteAsync(
++            runtimeContext.Company.CompanyId,
++            runtimeContext.Agent.Id,
++            new ExecuteAgentToolCommand(
++                request.ToolName,
++                request.ActionType,
++                request.Scope,
++                request.RequestPayload,
++                request.ThresholdCategory,
++                request.ThresholdKey,
++                request.ThresholdValue,
++                request.SensitiveAction),
++            cancellationToken);
++
++        return new ToolInvocationResult(
++            result.ExecutionId,
++            request.ToolName,
++            request.ActionType,
++            request.Scope,
++            result.Status,
++            result.ApprovalRequestId,
++            result.PolicyDecision,
++            result.ExecutionResult,
++            result.Message,
++            startedAtUtc,
++            DateTime.UtcNow,
++            runtimeContext.CorrelationId);
++    }
++}
++
++public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
++{
++    private readonly IAuditEventWriter _auditEventWriter;
++
++    public OrchestrationAuditWriter(IAuditEventWriter auditEventWriter)
++    {
++        _auditEventWriter = auditEventWriter;
++    }
++
++    public Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++
++        return _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                request.RuntimeContext.Company.CompanyId,
++                string.IsNullOrWhiteSpace(request.Result.Metadata.AuditMetadata.GetValueOrDefault("actorType"))
++                    ? AuditActorTypes.Agent
++                    : request.Result.Metadata.AuditMetadata["actorType"]!,
++                request.RuntimeContext.Agent.Id,
++                AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++                AuditTargetTypes.WorkTask,
++                request.RuntimeContext.Task.Id.ToString("N"),
++                string.Equals(request.Result.Status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase)
++                    ? AuditEventOutcomes.Succeeded
++                    : AuditEventOutcomes.Pending,
++                request.Result.RationaleSummary,
++                ["single_agent_orchestration", "prompt_builder", "tool_executor"],
++                new Dictionary<string, string?>(request.Result.Metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
++                {
++                    ["orchestrationId"] = request.Result.OrchestrationId.ToString("N"),
++                    ["promptId"] = request.Prompt.PromptId.ToString("N"),
++                    ["correlationId"] = request.Result.CorrelationId,
++                    ["status"] = request.Result.Status
++                },
++                request.Result.CorrelationId,
++                request.Result.Metadata.CompletedAtUtc),
++            cancellationToken);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2d7cb03..9d5b62f 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -16,6 +16,7 @@ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Chat;
+ using StackExchange.Redis;
+ using VirtualCompany.Application.ExecutionExceptions;
++using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+@@ -165,6 +166,10 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
++        services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
++        services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();
++        services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
++        services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
+         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 2d4e42a..e4c3f81 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -76,4 +76,5 @@ public static class AuditEventActions
+     public const string ExecutionExceptionCreated = "execution.exception.created";
+     public const string DirectChatTaskCreated = "direct_chat.task.created";
+     public const string DirectChatTaskLinked = "direct_chat.task.linked";
++    public const string SingleAgentTaskOrchestrationExecuted = "single_agent_task.orchestration.executed";
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/TasksController.cs b/src/VirtualCompany.Api/Controllers/TasksController.cs
+index 361c881..ba258ab 100644
+--- a/src/VirtualCompany.Api/Controllers/TasksController.cs
++++ b/src/VirtualCompany.Api/Controllers/TasksController.cs
+@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -14,12 +15,15 @@ public sealed class TasksController : ControllerBase
+ {
+     private readonly ICompanyTaskCommandService _taskCommands;
+     private readonly ICompanyTaskQueryService _taskQueries;
++    private readonly ISingleAgentOrchestrationService _orchestrationService;
+ 
+     public TasksController(
+         ICompanyTaskCommandService taskCommands,
+-        ICompanyTaskQueryService taskQueries)
++        ICompanyTaskQueryService taskQueries,
++        ISingleAgentOrchestrationService orchestrationService)
+     {
+         _taskCommands = taskCommands;
+         _taskQueries = taskQueries;
++        _orchestrationService = orchestrationService;
+     }
+ 
+     [HttpPost]
+@@ -130,6 +134,39 @@ public sealed class TasksController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("{taskId:guid}/execute")]
++    public async Task<ActionResult<OrchestrationResult>> ExecuteAsync(
++        Guid companyId,
++        Guid taskId,
++        [FromBody] ExecuteSingleAgentTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _orchestrationService.ExecuteAsync(
++                new SingleAgentOrchestrationRequest(
++                    companyId,
++                    taskId,
++                    command.AgentId,
++                    command.InitiatingActorId,
++                    command.InitiatingActorType,
++                    command.CorrelationId,
++                    command.Intent,
++                    command.ToolInvocations),
++                cancellationToken));
++        }
++        catch (OrchestrationValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (AgentExecutionValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPatch("{taskId:guid}/assignment")]
+     public async Task<ActionResult<TaskCommandResultDto>> ReassignAsync(
+         Guid companyId,
+@@ -158,4 +195,12 @@ public sealed class TasksController : ControllerBase
+             Status = StatusCodes.Status400BadRequest
+         });
+ }
++
++public sealed record ExecuteSingleAgentTaskCommand(
++    Guid? AgentId = null,
++    Guid? InitiatingActorId = null,
++    string? InitiatingActorType = null,
++    string? CorrelationId = null,
++    string? Intent = null,
++    IReadOnlyList<ToolInvocationRequest>? ToolInvocations = null);
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+new file mode 100644
+index 0000000..b434d91
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -0,0 +1,174 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public SingleAgentOrchestrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++        _factory.ToolExecutor.Reset();
++    }
++
++    [Fact]
++    public async Task Task_execute_endpoint_uses_shared_orchestration_pipeline_and_persists_metadata()
++    {
++        var seed = await SeedTaskAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{seed.TaskId}/execute", new
++        {
++            agentId = seed.AgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "orch-test-correlation",
++            intent = "execute_task",
++            toolInvocations = new[]
++            {
++                new
++                {
++                    toolName = "erp",
++                    actionType = "execute",
++                    scope = "payments",
++                    requestPayload = new { invoiceId = "inv-100" },
++                    thresholdCategory = "approval",
++                    thresholdKey = "expenseUsd",
++                    thresholdValue = 100,
++                    sensitiveAction = false
++                }
++            }
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<OrchestrationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.CompanyId, payload!.CompanyId);
++        Assert.Equal(seed.TaskId, payload.TaskId);
++        Assert.Equal(seed.AgentId, payload.AgentId);
++        Assert.Equal("completed", payload.Status);
++        Assert.Equal("orch-test-correlation", payload.CorrelationId);
++        Assert.Contains("Nora Ledger completed task", payload.UserFacingOutput);
++        Assert.Single(payload.ToolExecutions);
++        Assert.Equal("executed", payload.ToolExecutions[0].Status);
++        Assert.Equal("orch-test-correlation", payload.ToolExecutions[0].CorrelationId);
++        Assert.Equal(1, _factory.ToolExecutor.ExecutionCount);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
++        Assert.Equal(WorkTaskStatus.Completed, task.Status);
++        Assert.Equal("orch-test-correlation", task.OutputPayload["correlationId"]!.GetValue<string>());
++        Assert.Equal(seed.AgentId.ToString("N"), task.OutputPayload["agentId"]!.GetValue<string>());
++        Assert.NotNull(task.RationaleSummary);
++        Assert.True(task.ConfidenceScore > 0);
++
++        var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.SingleAgentTaskOrchestrationExecuted &&
++            x.TargetId == seed.TaskId.ToString("N"));
++
++        Assert.Equal("orch-test-correlation", auditEvent.CorrelationId);
++        Assert.Equal(payload.OrchestrationId.ToString("N"), auditEvent.Metadata["orchestrationId"]);
++        Assert.Equal(seed.AgentId, auditEvent.ActorId);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        return client;
++    }
++
++    private async Task<SeededTask> SeedTaskAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "finance",
++                "Nora Ledger",
++                "Finance Manager",
++                "Finance",
++                null,
++                AgentSeniority.Senior,
++                AgentStatus.Active,
++                autonomyLevel: AgentAutonomyLevel.Level2,
++                objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++                kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++                tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
++                scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
++                thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
++                escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
++                roleBrief: "Execute finance operations through approved tools."));
++            dbContext.WorkTasks.Add(new WorkTask(
++                taskId,
++                companyId,
++                "finance_execution",
++                "Pay approved invoice",
++                "Run the approved payment action with tenant-scoped context.",
++                WorkTaskPriority.Normal,
++                agentId,
++                null,
++                "user",
++                userId,
++                Payload(("invoiceId", JsonValue.Create("inv-100")))));
++            return Task.CompletedTask;
++        });
++
++        return new SeededTask(companyId, userId, agentId, taskId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record SeededTask(Guid CompanyId, Guid UserId, Guid AgentId, Guid TaskId);
++
++    private sealed class OrchestrationResponse
++    {
++        public Guid OrchestrationId { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid TaskId { get; set; }
++        public Guid AgentId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string UserFacingOutput { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
++        public List<ToolInvocationResponse> ToolExecutions { get; set; } = [];
++    }
++
++    private sealed class ToolInvocationResponse
++    {
++        public Guid ExecutionId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
++        public JsonElement? ResultPayload { get; set; }
++    }
++}
+END_OF_PATCH

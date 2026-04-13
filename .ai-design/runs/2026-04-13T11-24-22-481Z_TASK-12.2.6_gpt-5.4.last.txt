@@ -1,0 +1,850 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -69,7 +69,14 @@ public sealed record AuditSafeExplanationDto(
+     IReadOnlyList<string> DataSources);
+ 
+ public sealed record AuditSourceReferenceDto(
++    // Label is the concise user-facing text used by audit and explainability views.
+     string Label,
+     string? Reference,
+-    string? Type = null);
++    string? Type = null,
++    string? SourceType = null,
++    string? DisplayName = null,
++    string? SecondaryText = null,
++    string? EntityType = null,
++    string? EntityId = null,
++    string? Snippet = null);
+ 
+ public sealed record AuditApprovalReferenceDto(
+diff --git a/src/VirtualCompany.Application/Auditing/AuditSourceReferenceDisplayFormatter.cs b/src/VirtualCompany.Application/Auditing/AuditSourceReferenceDisplayFormatter.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Application/Auditing/AuditSourceReferenceDisplayFormatter.cs
+@@ -0,0 +1,152 @@
++using System.Text.RegularExpressions;
++using VirtualCompany.Application.Context;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Auditing;
++
++public static partial class AuditSourceReferenceDisplayFormatter
++{
++    private const int LabelMaxLength = 160;
++    private const int SecondaryMaxLength = 220;
++    private const int SnippetMaxLength = 220;
++
++    public static AuditSourceReferenceDto Format(
++        AuditDataSourceUsed source,
++        string? resolvedDisplayName = null,
++        string? resolvedSecondaryText = null)
++    {
++        ArgumentNullException.ThrowIfNull(source);
++
++        var sourceType = NormalizeSourceType(source.SourceType);
++        var entityType = NormalizeEntityType(sourceType);
++        var displayName = FirstNonEmpty(source.DisplayName, resolvedDisplayName);
++        var readableType = ToReadableType(sourceType);
++        var fallbackName = BuildUnavailableLabel(readableType, source.SourceId);
++        var primaryName = NormalizeText(displayName, LabelMaxLength) ?? fallbackName;
++        var label = PrefixLabel(readableType, primaryName);
++        var secondaryText = NormalizeText(
++            FirstNonEmpty(resolvedSecondaryText, BuildSecondaryText(source, sourceType, readableType, primaryName)),
++            SecondaryMaxLength);
++
++        return new AuditSourceReferenceDto(
++            label,
++            source.SourceId,
++            sourceType,
++            sourceType,
++            primaryName,
++            secondaryText,
++            entityType,
++            source.SourceId,
++            NormalizeText(source.Reference, SnippetMaxLength));
++    }
++
++    public static AuditSourceReferenceDto FormatLegacyDataSource(string source)
++    {
++        var label = NormalizeText(source, LabelMaxLength) ?? "Data source";
++        return new AuditSourceReferenceDto(
++            label,
++            null,
++            "data_source",
++            "data_source",
++            label,
++            null,
++            null,
++            null,
++            null);
++    }
++
++    public static AuditSourceReferenceDto FormatMetadata(string key, string value)
++    {
++        var label = ToDisplayName(key);
++        var secondary = IsLikelyOpaque(value)
++            ? null
++            : NormalizeText(value, SecondaryMaxLength);
++
++        return new AuditSourceReferenceDto(
++            label,
++            value,
++            "metadata",
++            "metadata",
++            label,
++            secondary,
++            null,
++            null,
++            null);
++    }
++
++    public static string BuildExplanationLabel(AuditDataSourceUsed source, string? resolvedDisplayName = null) =>
++        Format(source, resolvedDisplayName).Label;
++
++    private static string? BuildSecondaryText(
++        AuditDataSourceUsed source,
++        string sourceType,
++        string readableType,
++        string primaryName)
++    {
++        if (string.IsNullOrWhiteSpace(source.Reference) || IsLikelyOpaque(source.Reference))
++        {
++            return sourceType switch
++            {
++                GroundedContextSourceTypes.KnowledgeChunk => "Section excerpt",
++                "document_chunk" => "Section excerpt",
++                "knowledge_document" or "document" or "company_document" => "Knowledge document",
++                GroundedContextSourceTypes.RecentTask or "task" or "work_task" => "Task record",
++                "workflow" or "workflow_instance" => "Workflow record",
++                GroundedContextSourceTypes.ApprovalRequest => "Approval record",
++                "tool_execution" or "tool_execution_attempt" or "agent_tool_execution" => "Tool execution record",
++                "message" or "conversation" or "conversation_task_link" => "Conversation record",
++                _ => null
++            };
++        }
++
++        var reference = NormalizeText(source.Reference, SecondaryMaxLength);
++        if (string.IsNullOrWhiteSpace(reference) ||
++            string.Equals(reference, primaryName, StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(reference, source.SourceId, StringComparison.OrdinalIgnoreCase))
++        {
++            return null;
++        }
++
++        return reference;
++    }
++
++    private static string PrefixLabel(string readableType, string primaryName) =>
++        primaryName.StartsWith($"{readableType}:", StringComparison.OrdinalIgnoreCase)
++            ? primaryName
++            : $"{readableType}: {primaryName}";
++
++    private static string BuildUnavailableLabel(string readableType, string? sourceId) =>
++        string.IsNullOrWhiteSpace(sourceId)
++            ? $"{readableType} (unavailable)"
++            : $"{readableType} (deleted or inaccessible)";
++
++    private static string NormalizeSourceType(string? sourceType) =>
++        string.IsNullOrWhiteSpace(sourceType)
++            ? "data_source"
++            : CollapseWhitespace(sourceType.Trim()).ToLowerInvariant();
++
++    private static string NormalizeEntityType(string sourceType) =>
++        sourceType switch
++        {
++            GroundedContextSourceTypes.KnowledgeChunk or "document_chunk" => "knowledge_chunk",
++            "knowledge_document" or "document" or "company_document" => AuditTargetTypes.CompanyDocument,
++            GroundedContextSourceTypes.RecentTask or "task" => AuditTargetTypes.WorkTask,
++            "workflow" => AuditTargetTypes.WorkflowInstance,
++            "tool_execution" or "tool_execution_attempt" => AuditTargetTypes.AgentToolExecution,
++            _ => sourceType
++        };
++
++    private static string ToReadableType(string sourceType) =>
++        sourceType switch
++        {
++            GroundedContextSourceTypes.KnowledgeChunk or "document_chunk" => "Document",
++            "knowledge_document" or "document" or "company_document" => "Document",
++            GroundedContextSourceTypes.MemoryItem or "memory" => "Memory",
++            GroundedContextSourceTypes.RecentTask or "task" or "work_task" => "Task",
++            "workflow" or "workflow_instance" => "Workflow",
++            GroundedContextSourceTypes.ApprovalRequest => "Approval",
++            "tool_execution" or "tool_execution_attempt" or "agent_tool_execution" => "Tool execution",
++            "message" => "Message",
++            "conversation" or "conversation_task_link" => "Conversation",
++            "integration_record" or "integration-originated-record" => "Integration record",
++            GroundedContextSourceTypes.AgentRecord => "Agent record",
++            GroundedContextSourceTypes.CompanyRecord => "Company record",
++            _ => ToDisplayName(sourceType)
++        };
++
++    private static bool IsLikelyOpaque(string value)
++    {
++        var trimmed = value.Trim();
++        return Guid.TryParse(trimmed, out _) ||
++               trimmed.StartsWith("kb://", StringComparison.OrdinalIgnoreCase) ||
++               trimmed.StartsWith("s3://", StringComparison.OrdinalIgnoreCase) ||
++               trimmed.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
++               trimmed.StartsWith("chunk:", StringComparison.OrdinalIgnoreCase) ||
++               trimmed.StartsWith("/", StringComparison.Ordinal) ||
++               trimmed.Contains('\\', StringComparison.Ordinal) ||
++               trimmed.Contains("/documents/", StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static string? NormalizeText(string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var compact = CollapseWhitespace(value.Trim());
++        return compact.Length <= maxLength
++            ? compact
++            : compact[..maxLength].TrimEnd(' ', '.', ',', ';', ':') + ".";
++    }
++
++    private static string? FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
++
++    private static string ToDisplayName(string value)
++    {
++        var spaced = SnakeCaseRegex().Replace(value, " ");
++        spaced = PascalCaseRegex().Replace(spaced, "$1 $2");
++        return string.Join(
++            " ",
++            spaced.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++                .Select(word => string.Concat(char.ToUpperInvariant(word[0]), word.AsSpan(1).ToString().ToLowerInvariant())));
++    }
++
++    private static string CollapseWhitespace(string value) => WhitespaceRegex().Replace(value, " ");
++
++    [GeneratedRegex(@"[\-_]+")]
++    private static partial Regex SnakeCaseRegex();
++
++    [GeneratedRegex(@"([a-z])([A-Z])")]
++    private static partial Regex PascalCaseRegex();
++
++    [GeneratedRegex(@"\s+")]
++    private static partial Regex WhitespaceRegex();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -1,6 +1,7 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Context;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -112,7 +113,7 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         var related = await LoadRelatedReferencesAsync(companyId, [auditEvent], cancellationToken);
+         var linkedApprovals = await LoadLinkedApprovalsAsync(companyId, auditEvent, cancellationToken);
+         var linkedToolExecutions = await LoadLinkedToolExecutionsAsync(companyId, auditEvent, cancellationToken);
+-        var sourceReferences = BuildSourceReferences(auditEvent);
++        var sourceReferences = BuildSourceReferences(auditEvent, related);
+ 
+         return new AuditDetailDto(
+             auditEvent.Id,
+@@ -160,6 +161,13 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         var agentIds = new HashSet<Guid>();
+         var taskIds = new HashSet<Guid>();
+         var workflowIds = new HashSet<Guid>();
++        var documentIds = new HashSet<Guid>();
++        var knowledgeChunkIds = new HashSet<Guid>();
++        var memoryIds = new HashSet<Guid>();
++        var approvalIds = new HashSet<Guid>();
++        var toolExecutionIds = new HashSet<Guid>();
++        var conversationIds = new HashSet<Guid>();
++        var messageIds = new HashSet<Guid>();
+ 
+         foreach (var auditEvent in auditEvents)
+         {
+@@ -189,9 +197,35 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             AddMetadataGuid(auditEvent, "taskId", taskIds);
+             AddMetadataGuid(auditEvent, "workTaskId", taskIds);
+             AddMetadataGuid(auditEvent, "workflowInstanceId", workflowIds);
++            AddMetadataGuid(auditEvent, "documentId", documentIds);
++            AddMetadataGuid(auditEvent, "knowledgeDocumentId", documentIds);
++            AddMetadataGuid(auditEvent, "knowledgeChunkId", knowledgeChunkIds);
++            AddMetadataGuid(auditEvent, "memoryId", memoryIds);
++            AddMetadataGuid(auditEvent, "approvalRequestId", approvalIds);
++            AddMetadataGuid(auditEvent, "toolExecutionId", toolExecutionIds);
++            AddMetadataGuid(auditEvent, "toolExecutionAttemptId", toolExecutionIds);
++            AddMetadataGuid(auditEvent, "conversationId", conversationIds);
++            AddMetadataGuid(auditEvent, "messageId", messageIds);
++
++            foreach (var source in auditEvent.DataSourcesUsed)
++            {
++                AddSourceGuid(source.SourceType, source.SourceId, agentIds, taskIds, workflowIds, documentIds, knowledgeChunkIds, memoryIds, approvalIds, toolExecutionIds, conversationIds, messageIds);
++                AddSourceGuid(source.SourceType, source.Reference, agentIds, taskIds, workflowIds, documentIds, knowledgeChunkIds, memoryIds, approvalIds, toolExecutionIds, conversationIds, messageIds);
++
++                if (source.Reference is not null && source.Reference.Contains("documentId=", StringComparison.OrdinalIgnoreCase))
++                {
++                    AddReferenceQueryStringGuid(source.Reference, "documentId", documentIds);
++                }
++            }
+         }
+ 
+         var agents = agentIds.Count == 0
+@@ -219,7 +253,70 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+                     x => $"{x.Definition.Name} ({x.State.ToStorageValue()})",
+                     cancellationToken);
+ 
+-        return new RelatedReferenceSet(agents, tasks, workflows);
++        var documents = documentIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.CompanyKnowledgeDocuments
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && documentIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => x.Title, cancellationToken);
++
++        var knowledgeChunks = knowledgeChunkIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.CompanyKnowledgeChunks
++                .AsNoTracking()
++                .Include(x => x.Document)
++                .Where(x => x.CompanyId == companyId && knowledgeChunkIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => $"{x.Document.Title} - chunk {x.ChunkIndex + 1}", cancellationToken);
++
++        var memories = memoryIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.MemoryItems
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && memoryIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => $"Memory: {x.MemoryType.ToStorageValue()}", cancellationToken);
++
++        var approvals = approvalIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.ApprovalRequests
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && approvalIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => $"{x.ApprovalType} approval ({x.Status.ToStorageValue()})", cancellationToken);
++
++        var toolExecutions = toolExecutionIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.ToolExecutionAttempts
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && toolExecutionIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, x => $"{x.ToolName} {x.ActionType.ToStorageValue()} ({x.Status.ToStorageValue()})", cancellationToken);
++
++        var conversations = conversationIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.Conversations
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && conversationIds.Contains(x.Id))
++                .ToDictionaryAsync(
++                    x => x.Id,
++                    x => string.IsNullOrWhiteSpace(x.Subject) ? $"{x.ChannelType} conversation" : x.Subject,
++                    cancellationToken);
++
++        var messages = messageIds.Count == 0
++            ? new Dictionary<Guid, string>()
++            : await _dbContext.Messages
++                .AsNoTracking()
++                .Include(x => x.Conversation)
++                .Where(x => x.CompanyId == companyId && messageIds.Contains(x.Id))
++                .ToDictionaryAsync(
++                    x => x.Id,
++                    x => string.IsNullOrWhiteSpace(x.Conversation.Subject)
++                        ? "Conversation message"
++                        : $"Message in {x.Conversation.Subject}",
++                    cancellationToken);
++
++        return new RelatedReferenceSet(
++            agents,
++            tasks,
++            workflows,
++            documents,
++            knowledgeChunks,
++            memories,
++            approvals,
++            toolExecutions,
++            conversations,
++            messages);
+     }
+ 
+     private async Task<IReadOnlyList<AuditApprovalReferenceDto>> LoadLinkedApprovalsAsync(
+@@ -407,38 +504,36 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         SafeAuditExplanationMapper.Build(
+             auditEvent.Action,
+             auditEvent.Outcome,
+             auditEvent.RationaleSummary,
+             sourceReferences?.Select(source => source.Label)
+-                ?? auditEvent.DataSources.Concat(auditEvent.DataSourcesUsed.Select(GetDataSourceLabel)));
++                ?? auditEvent.DataSources.Concat(auditEvent.DataSourcesUsed.Select(source => ResolveSourceLabel(source, RelatedReferenceSet.Empty))));
+ 
+-    private static IReadOnlyList<AuditSourceReferenceDto> BuildSourceReferences(AuditEvent auditEvent)
++    private static IReadOnlyList<AuditSourceReferenceDto> BuildSourceReferences(AuditEvent auditEvent, RelatedReferenceSet related)
+     {
+         var references = auditEvent.DataSources
+-            .Select(x => new AuditSourceReferenceDto(x, x, "data_source"))
++            .Select(AuditSourceReferenceDisplayFormatter.FormatLegacyDataSource)
+             .ToList();
+ 
+-        references.AddRange(auditEvent.DataSourcesUsed.Select(source => new AuditSourceReferenceDto(
+-            string.IsNullOrWhiteSpace(source.DisplayName) ? source.SourceType : source.DisplayName,
+-            string.IsNullOrWhiteSpace(source.Reference)
+-                ? source.SourceId
+-                : source.Reference,
+-            source.SourceType)));
++        references.AddRange(auditEvent.DataSourcesUsed.Select(source =>
++            AuditSourceReferenceDisplayFormatter.Format(
++                source,
++                ResolveSourceLabel(source, related),
++                ResolveSourceContext(source, related))));
+ 
+         foreach (var key in new[] { "sourceReference", "sourceRef", "documentTitle", "policyVersion" })
+         {
+             if (auditEvent.Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+             {
+-                references.Add(new AuditSourceReferenceDto(ToDisplayName(key), value, "metadata"));
++                references.Add(AuditSourceReferenceDisplayFormatter.FormatMetadata(ToDisplayName(key), value));
+             }
+         }
+ 
+         return references
+-            .GroupBy(x => $"{x.Type}:{x.Label}:{x.Reference}", StringComparer.OrdinalIgnoreCase)
++            .GroupBy(x => $"{x.Type}:{x.Label}:{x.EntityId}:{x.SecondaryText}", StringComparer.OrdinalIgnoreCase)
+             .Select(x => x.First())
+             .ToList();
+     }
+ 
+-    private static string GetDataSourceLabel(AuditDataSourceUsed source) =>
+-        !string.IsNullOrWhiteSpace(source.DisplayName)
+-            ? source.DisplayName
+-            : !string.IsNullOrWhiteSpace(source.Reference) ? source.Reference
+-            : source.SourceType;
++    private static string ResolveSourceLabel(AuditDataSourceUsed source, RelatedReferenceSet related) =>
++        !string.IsNullOrWhiteSpace(source.DisplayName)
++            ? source.DisplayName
++            : ResolveSourceLabel(source.SourceType, source.SourceId, related)
++                ?? ResolveSourceLabel(source.SourceType, source.Reference, related)
++                ?? AuditSourceReferenceDisplayFormatter.BuildExplanationLabel(source);
+ 
+     private static IReadOnlyList<AuditEntityReferenceDto> BuildAffectedEntities(
+         AuditEvent auditEvent,
+@@ -603,13 +698,102 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+         }
+     }
+ 
++    private static void AddSourceGuid(
++        string sourceType,
++        string? sourceId,
++        ISet<Guid> agentIds,
++        ISet<Guid> taskIds,
++        ISet<Guid> workflowIds,
++        ISet<Guid> documentIds,
++        ISet<Guid> knowledgeChunkIds,
++        ISet<Guid> memoryIds,
++        ISet<Guid> approvalIds,
++        ISet<Guid> toolExecutionIds,
++        ISet<Guid> conversationIds,
++        ISet<Guid> messageIds)
++    {
++        if (!Guid.TryParse(sourceId, out var id))
++        {
++            return;
++        }
++
++        switch (sourceType)
++        {
++            case AuditTargetTypes.Agent:
++            case GroundedContextSourceTypes.AgentRecord:
++                agentIds.Add(id);
++                break;
++            case AuditTargetTypes.WorkTask:
++            case "task":
++            case GroundedContextSourceTypes.RecentTask:
++                taskIds.Add(id);
++                break;
++            case AuditTargetTypes.WorkflowInstance:
++            case "workflow":
++                workflowIds.Add(id);
++                break;
++            case AuditTargetTypes.CompanyDocument:
++            case "document":
++            case "knowledge_document":
++                documentIds.Add(id);
++                break;
++            case GroundedContextSourceTypes.KnowledgeChunk:
++            case "document_chunk":
++                knowledgeChunkIds.Add(id);
++                break;
++            case AuditTargetTypes.MemoryItem:
++            case "memory":
++            case GroundedContextSourceTypes.MemoryItem:
++                memoryIds.Add(id);
++                break;
++            case AuditTargetTypes.ApprovalRequest:
++            case GroundedContextSourceTypes.ApprovalRequest:
++                approvalIds.Add(id);
++                break;
++            case AuditTargetTypes.AgentToolExecution:
++            case "tool_execution":
++            case "tool_execution_attempt":
++                toolExecutionIds.Add(id);
++                break;
++            case "conversation":
++                conversationIds.Add(id);
++                break;
++            case "message":
++                messageIds.Add(id);
++                break;
++        }
++    }
++
++    private static void AddReferenceQueryStringGuid(string reference, string key, ISet<Guid> ids)
++    {
++        var token = $"{key}=";
++        var index = reference.IndexOf(token, StringComparison.OrdinalIgnoreCase);
++        if (index < 0)
++        {
++            return;
++        }
++
++        var valueStart = index + token.Length;
++        var valueEnd = reference.IndexOfAny(['&', '#', ' '], valueStart);
++        var value = valueEnd < 0
++            ? reference[valueStart..]
++            : reference[valueStart..valueEnd];
++
++        if (Guid.TryParse(value, out var id))
++        {
++            ids.Add(id);
++        }
++    }
++
+     private static void AddMetadataEntity(
+         AuditEvent auditEvent,
+         RelatedReferenceSet related,
+         List<AuditEntityReferenceDto> entities,
+         string key,
+         string entityType)
+@@ -644,6 +828,42 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+     private static string? ResolveTargetLabel(AuditEvent auditEvent, RelatedReferenceSet related) =>
+         ResolveEntityLabel(auditEvent.TargetType, auditEvent.TargetId, related);
+ 
++    private static string? ResolveSourceLabel(string sourceType, string? sourceId, RelatedReferenceSet related)
++    {
++        if (!Guid.TryParse(sourceId, out var id))
++        {
++            return null;
++        }
++
++        return sourceType switch
++        {
++            AuditTargetTypes.Agent or GroundedContextSourceTypes.AgentRecord => related.Agents.GetValueOrDefault(id),
++            AuditTargetTypes.WorkTask or "task" or GroundedContextSourceTypes.RecentTask => related.Tasks.GetValueOrDefault(id),
++            AuditTargetTypes.WorkflowInstance or "workflow" => related.Workflows.GetValueOrDefault(id),
++            AuditTargetTypes.CompanyDocument or "document" or "knowledge_document" => related.Documents.GetValueOrDefault(id),
++            GroundedContextSourceTypes.KnowledgeChunk or "document_chunk" => related.KnowledgeChunks.GetValueOrDefault(id),
++            AuditTargetTypes.MemoryItem or "memory" or GroundedContextSourceTypes.MemoryItem => related.Memories.GetValueOrDefault(id),
++            AuditTargetTypes.ApprovalRequest or GroundedContextSourceTypes.ApprovalRequest => related.Approvals.GetValueOrDefault(id),
++            AuditTargetTypes.AgentToolExecution or "tool_execution" or "tool_execution_attempt" => related.ToolExecutions.GetValueOrDefault(id),
++            "conversation" => related.Conversations.GetValueOrDefault(id),
++            "message" => related.Messages.GetValueOrDefault(id),
++            _ => null
++        };
++    }
++
++    private static string? ResolveSourceContext(AuditDataSourceUsed source, RelatedReferenceSet related)
++    {
++        if (string.Equals(source.SourceType, GroundedContextSourceTypes.KnowledgeChunk, StringComparison.OrdinalIgnoreCase) &&
++            Guid.TryParse(source.SourceId, out var chunkId) &&
++            related.KnowledgeChunks.TryGetValue(chunkId, out var chunkLabel))
++        {
++            return chunkLabel;
++        }
++
++        return string.IsNullOrWhiteSpace(source.Reference)
++            ? null
++            : source.Reference;
++    }
++
+     private static string? ResolveEntityLabel(string entityType, string entityId, RelatedReferenceSet related)
+     {
+         if (!Guid.TryParse(entityId, out var id))
+@@ -662,6 +882,31 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             return related.Workflows.GetValueOrDefault(id);
+         }
+ 
++        if (string.Equals(entityType, AuditTargetTypes.ApprovalRequest, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Approvals.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, AuditTargetTypes.AgentToolExecution, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.ToolExecutions.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, AuditTargetTypes.CompanyDocument, StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Documents.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, "conversation", StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Conversations.GetValueOrDefault(id);
++        }
++
++        if (string.Equals(entityType, "message", StringComparison.OrdinalIgnoreCase))
++        {
++            return related.Messages.GetValueOrDefault(id);
++        }
++
+         return null;
+     }
+ 
+@@ -675,7 +920,22 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             : character.ToString()));
+ 
+     private sealed record RelatedReferenceSet(
+         IReadOnlyDictionary<Guid, string> Agents,
+         IReadOnlyDictionary<Guid, string> Tasks,
+-        IReadOnlyDictionary<Guid, string> Workflows);
++        IReadOnlyDictionary<Guid, string> Workflows,
++        IReadOnlyDictionary<Guid, string> Documents,
++        IReadOnlyDictionary<Guid, string> KnowledgeChunks,
++        IReadOnlyDictionary<Guid, string> Memories,
++        IReadOnlyDictionary<Guid, string> Approvals,
++        IReadOnlyDictionary<Guid, string> ToolExecutions,
++        IReadOnlyDictionary<Guid, string> Conversations,
++        IReadOnlyDictionary<Guid, string> Messages)
++    {
++        public static RelatedReferenceSet Empty { get; } = new(
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>(),
++            new Dictionary<Guid, string>());
++    }
+ }
+diff --git a/src/VirtualCompany.Web/Pages/AuditDetail.razor b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/AuditDetail.razor
++++ b/src/VirtualCompany.Web/Pages/AuditDetail.razor
+@@ -84,9 +84,9 @@ else if (detail is not null)
+                         {
+                             <li class="mb-2">
+                                 <strong>@source.Label</strong>
+-                                @if (!string.IsNullOrWhiteSpace(source.Reference) && source.Reference != source.Label)
++                                @if (!string.IsNullOrWhiteSpace(source.SecondaryText))
+                                 {
+-                                    <span class="text-body-secondary"> - @source.Reference</span>
++                                    <span class="text-body-secondary"> - @source.SecondaryText</span>
+                                 }
+                             </li>
+                         }
+diff --git a/src/VirtualCompany.Web/Services/AuditApiClient.cs b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/AuditApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AuditApiClient.cs
+@@ -181,7 +181,7 @@ public sealed class AuditApiClient
+                 Outcome = "pending",
+                 DataSources = ["approval thresholds", "policy guardrails"]
+             },
+-            SourceReferences = [new() { Label = "policyVersion", Reference = "task_8_3_7", Type = "metadata" }],
++            SourceReferences = [new() { Label = "Policy Version", Reference = "task_8_3_7", Type = "metadata", SourceType = "metadata", DisplayName = "Policy Version" }],
+             OccurredAt = DateTime.UtcNow.AddMinutes(-20),
+             CorrelationId = "offline-audit-demo",
+             Metadata = new Dictionary<string, string?> { ["taskId"] = "9bc83a53-7716-48cd-8150-f9b4b4926e39" },
+@@ -285,6 +285,12 @@ public sealed class AuditSourceReferenceViewModel
+     public string Label { get; set; } = string.Empty;
+     public string? Reference { get; set; }
+     public string? Type { get; set; }
++    public string? SourceType { get; set; }
++    public string? DisplayName { get; set; }
++    public string? SecondaryText { get; set; }
++    public string? EntityType { get; set; }
++    public string? EntityId { get; set; }
++    public string? Snippet { get; set; }
+ }
+ 
+ public sealed class AuditApprovalReferenceViewModel
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Application.Context;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -203,6 +204,8 @@ public sealed class AuditQueryServiceTests
+         Assert.Equal("succeeded", detail.Explanation.Outcome);
+         Assert.Contains("Runbook", detail.Explanation.DataSources);
+         Assert.Contains(detail.SourceReferences, source =>
++            source.Label == "Document: Runbook" &&
++            source.DisplayName == "Runbook" &&
+             source.Type == "document" &&
+             source.Reference == "kb://runbook-1");
+         Assert.Empty(detail.LinkedApprovals);
+@@ -346,6 +349,92 @@ public sealed class AuditQueryServiceTests
+         Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.ApprovalRequest && entity.EntityId == approvalId.ToString());
+     }
+ 
++    [Fact]
++    public async Task GetAsync_returns_human_readable_source_references_without_displaying_opaque_ids()
++    {
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var chunkId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++        var toolExecutionId = Guid.NewGuid();
++        var conversationId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Acme"));
++        dbContext.Agents.Add(new Agent(agentId, companyId, "finance", "Finance Agent", "Finance", "Finance", null, AgentSeniority.Mid));
++        var document = new CompanyKnowledgeDocument(
++            documentId,
++            companyId,
++            "Employee Onboarding SOP",
++            CompanyKnowledgeDocumentType.Policy,
++            "tenant/acme/private/opaque-file.pdf",
++            "s3://tenant/acme/private/opaque-file.pdf",
++            "onboarding.pdf",
++            "application/pdf",
++            ".pdf",
++            1200,
++            accessScope: CompanyKnowledgeDocumentAccessScope.CompanyWide(companyId));
++        var chunk = new CompanyKnowledgeChunk(
++            chunkId,
++            companyId,
++            documentId,
++            1,
++            2,
++            "New hire equipment requests require manager approval.",
++            "embedding",
++            "test",
++            "test-model",
++            null,
++            3,
++            sourceReference: "chunk:2");
++        var task = new WorkTask(
++            taskId,
++            companyId,
++            "operations",
++            "Investigate failed invoice sync",
++            null,
++            WorkTaskPriority.Medium,
++            agentId,
++            null,
++            AuditActorTypes.Agent,
++            agentId,
++            workflowInstanceId: workflowInstanceId);
++        var workflowDefinition = new WorkflowDefinition(
++            workflowDefinitionId,
++            companyId,
++            "FIN-DAILY",
++            "Daily finance reconciliation",
++            "Finance",
++            WorkflowTriggerType.Manual,
++            1,
++            new Dictionary<string, JsonNode?> { ["steps"] = new JsonArray() });
++        var workflow = new WorkflowInstance(workflowInstanceId, companyId, workflowDefinitionId, null);
++        var approval = ApprovalRequest.CreateForTarget(
++            approvalId,
++            companyId,
++            ApprovalTargetEntityType.Task,
++            taskId,
++            AuditActorTypes.Agent,
++            agentId,
++            "spend threshold override",
++            Payload(("amount", JsonValue.Create(5000))),
++            "owner",
++            null,
++            []);
++        var execution = new ToolExecutionAttempt(
++            toolExecutionId,
++            companyId,
++            agentId,
++            "invoice_sync",
++            ToolActionType.Execute,
++            "finance.invoices",
++            taskId: taskId,
++            workflowInstanceId: workflowInstanceId);
++        var conversation = new Conversation(conversationId, companyId, "support", "Support inbox", Guid.NewGuid(), agentId);
++
++        dbContext.CompanyKnowledgeDocuments.Add(document);
++        dbContext.CompanyKnowledgeChunks.Add(chunk);
++        dbContext.WorkTasks.Add(task);
++        dbContext.WorkflowDefinitions.Add(workflowDefinition);
++        dbContext.WorkflowInstances.Add(workflow);
++        dbContext.ApprovalRequests.Add(approval);
++        dbContext.ToolExecutionAttempts.Add(execution);
++        dbContext.Conversations.Add(conversation);
++        dbContext.AuditEvents.Add(new AuditEvent(
++            auditEventId,
++            companyId,
++            AuditActorTypes.Agent,
++            agentId,
++            AuditEventActions.SingleAgentTaskOrchestrationExecuted,
++            AuditTargetTypes.WorkTask,
++            taskId.ToString(),
++            AuditEventOutcomes.Succeeded,
++            "Completed using approved company sources.",
++            dataSourcesUsed:
++            [
++                new AuditDataSourceUsed(GroundedContextSourceTypes.KnowledgeChunk, chunkId.ToString(), Reference: "s3://tenant/acme/private/chunk-vector-2"),
++                new AuditDataSourceUsed(AuditTargetTypes.WorkTask, taskId.ToString()),
++                new AuditDataSourceUsed(AuditTargetTypes.WorkflowInstance, workflowInstanceId.ToString()),
++                new AuditDataSourceUsed(AuditTargetTypes.ApprovalRequest, approvalId.ToString()),
++                new AuditDataSourceUsed(AuditTargetTypes.AgentToolExecution, toolExecutionId.ToString()),
++                new AuditDataSourceUsed("conversation", conversationId.ToString())
++            ]));
++        await dbContext.SaveChangesAsync();
++
++        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
++
++        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);
++
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Document: Employee Onboarding SOP - chunk 3");
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Task: Investigate failed invoice sync");
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Workflow: Daily finance reconciliation (started)");
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Approval: spend threshold override approval (pending)");
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Tool execution: invoice_sync execute (started)");
++        Assert.Contains(detail.SourceReferences, source => source.Label == "Conversation: Support inbox");
++        Assert.DoesNotContain(detail.SourceReferences, source => source.Label.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));
++        Assert.DoesNotContain(detail.SourceReferences, source => source.SecondaryText?.Contains("s3://", StringComparison.OrdinalIgnoreCase) == true);
++        Assert.DoesNotContain(detail.Explanation.DataSources, source => source.Contains(chunkId.ToString(), StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public void AuditSourceReferenceDisplayFormatter_uses_safe_fallback_for_missing_or_restricted_sources()
++    {
++        var missing = AuditSourceReferenceDisplayFormatter.Format(new AuditDataSourceUsed(
++            GroundedContextSourceTypes.KnowledgeChunk,
++            Guid.NewGuid().ToString(),
++            Reference: "chunk:47"));
++
++        Assert.Equal("Document: Document (deleted or inaccessible)", missing.Label);
++        Assert.Equal("Section excerpt", missing.SecondaryText);
++        Assert.DoesNotContain("chunk:47", missing.Label, StringComparison.OrdinalIgnoreCase);
++    }
++
+     private static AuditEvent CreateAuditEvent(
+         Guid id,
+         Guid companyId,
+END_OF_PATCH

@@ -1,0 +1,476 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0b1a7a1..2f5d9d4 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -78,6 +78,7 @@ public static class AuditEventActions
+     public const string MultiAgentCollaborationStarted = "multi_agent.collaboration.started";
+     public const string MultiAgentCollaborationPlanCreated = "multi_agent.collaboration.plan_created";
+     public const string MultiAgentWorkerSubtaskCreated = "multi_agent.worker_subtask.created";
++    public const string MultiAgentCollaborationGuardrailDenied = "multi_agent.collaboration.guardrail_denied";
+     public const string MultiAgentWorkerCompleted = "multi_agent.worker.completed";
+     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
+     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
+diff --git a/src/VirtualCompany.Application/Orchestration/BoundedCollaborationPolicy.cs b/src/VirtualCompany.Application/Orchestration/BoundedCollaborationPolicy.cs
+new file mode 100644
+index 0000000..7d6b1d0
+--- /dev/null
++++ b/src/VirtualCompany.Application/Orchestration/BoundedCollaborationPolicy.cs
+@@ -0,0 +1,69 @@
++namespace VirtualCompany.Application.Orchestration;
++
++public sealed record BoundedCollaborationPolicy(
++    int MaxFanOut,
++    int MaxDepth,
++    TimeSpan MaxRuntime,
++    int MaxTotalSteps)
++{
++    public static BoundedCollaborationPolicy FromLimits(CollaborationLimitDto limits) =>
++        new(limits.MaxWorkers, limits.MaxDepth, TimeSpan.FromSeconds(limits.MaxRuntimeSeconds), limits.MaxTotalSteps);
++
++    public BoundedCollaborationDecision Evaluate(BoundedCollaborationExecutionState state)
++    {
++        if (state.RequestedFanOut > MaxFanOut)
++        {
++            return BoundedCollaborationDecision.Denied(
++                MultiAgentCollaborationTerminationReasons.FanOutExceeded,
++                "fan_out",
++                MaxFanOut,
++                state.RequestedFanOut,
++                $"Worker fan-out cannot exceed {MaxFanOut}.");
++        }
++
++        if (state.CurrentDepth > MaxDepth)
++        {
++            return BoundedCollaborationDecision.Denied(
++                MultiAgentCollaborationTerminationReasons.DepthLimitExceeded,
++                "depth",
++                MaxDepth,
++                state.CurrentDepth,
++                $"Delegation depth cannot exceed {MaxDepth}.");
++        }
++
++        if (state.ExecutedSteps > MaxTotalSteps)
++        {
++            return BoundedCollaborationDecision.Denied(
++                MultiAgentCollaborationTerminationReasons.StepLimitExceeded,
++                "step_count",
++                MaxTotalSteps,
++                state.ExecutedSteps,
++                $"Collaboration step count cannot exceed {MaxTotalSteps}.");
++        }
++
++        if (state.Elapsed >= MaxRuntime)
++        {
++            return BoundedCollaborationDecision.Denied(
++                MultiAgentCollaborationTerminationReasons.RuntimeBudgetExceeded,
++                "runtime",
++                (int)MaxRuntime.TotalSeconds,
++                (int)Math.Ceiling(state.Elapsed.TotalSeconds),
++                $"Collaboration runtime budget of {(int)MaxRuntime.TotalSeconds} second(s) was exhausted.");
++        }
++
++        return BoundedCollaborationDecision.Allowed();
++    }
++}
++
++public sealed record BoundedCollaborationExecutionState(
++    int RequestedFanOut,
++    int CurrentDepth,
++    int ExecutedSteps,
++    DateTime StartedAtUtc)
++{
++    public TimeSpan Elapsed => DateTime.UtcNow - StartedAtUtc;
++}
++
++public sealed record BoundedCollaborationDecision(
++    bool Allowed,
++    string? TerminationReason,
++    string? LimitType,
++    int? ConfiguredThreshold,
++    int? ObservedValue,
++    string? Rationale)
++{
++    public static BoundedCollaborationDecision Allowed() => new(true, null, null, null, null, null);
++
++    public static BoundedCollaborationDecision Denied(
++        string terminationReason,
++        string limitType,
++        int configuredThreshold,
++        int observedValue,
++        string rationale) =>
++        new(false, terminationReason, limitType, configuredThreshold, observedValue, rationale);
++}
+diff --git a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+index 5c14e70..95b810e 100644
+--- a/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+@@ -87,10 +87,10 @@ public sealed class MultiAgentCollaborationOptions
+ {
+     public const string SectionName = "Orchestration:MultiAgentCollaboration";
+ 
+-    public int MaxWorkers { get; set; } = 5;
++    public int MaxWorkers { get; set; } = 3;
+     public int MaxDepth { get; set; } = 1;
+-    public int MaxRuntimeSeconds { get; set; } = 60;
+-    public int MaxTotalSteps { get; set; } = 10;
++    public int MaxRuntimeSeconds { get; set; } = 45;
++    public int MaxTotalSteps { get; set; } = 6;
+ }
+ 
+ public interface IMultiAgentCoordinator
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index f9e1a1b..2d04d83 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -88,7 +88,13 @@ public static class DependencyInjection
+ 
+         services.AddOptions<MultiAgentCollaborationOptions>()
+             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
+-            .PostConfigure(options => options.MaxDepth = 1);
++            .PostConfigure(options =>
++            {
++                options.MaxWorkers = options.MaxWorkers > 0 ? options.MaxWorkers : 3;
++                options.MaxDepth = 1;
++                options.MaxRuntimeSeconds = options.MaxRuntimeSeconds > 0 ? options.MaxRuntimeSeconds : 45;
++                options.MaxTotalSteps = options.MaxTotalSteps > 0 ? options.MaxTotalSteps : 6;
++            });
+ 
+         var redisConnectionString = configuration[$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"];
+         if (!string.IsNullOrWhiteSpace(redisConnectionString))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+index 167a6f5..ae435a9 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+@@ -50,10 +50,20 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+         var startedUtc = DateTime.UtcNow;
+         var correlationId = EnsureCorrelationId(command.CorrelationId);
+         var limits = ResolveLimits(command.Limits);
+-        ValidateCoordinatorRequest(command, limits);
++        IReadOnlyList<WorkerSubtaskRequest> workers;
++        try
++        {
++            ValidateCoordinatorRequest(command, limits);
++            workers = command.Workers ?? Array.Empty<WorkerSubtaskRequest>();
++            ValidatePlan(command, workers, limits, startedUtc);
++        }
++        catch (MultiAgentCollaborationValidationException ex)
++        {
++            await WriteGuardrailDeniedAuditAsync(command, limits, correlationId, ex, cancellationToken);
++            throw;
++        }
++
++        var boundedPolicy = BoundedCollaborationPolicy.FromLimits(limits);
+         var deadlineUtc = startedUtc.AddSeconds(limits.MaxRuntimeSeconds);
+-        var workers = command.Workers ?? Array.Empty<WorkerSubtaskRequest>();
+-        ValidatePlan(command, workers, limits);
+ 
+         using var runtimeBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+         runtimeBudget.CancelAfter(TimeSpan.FromSeconds(limits.MaxRuntimeSeconds));
+@@ -110,7 +120,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 ["workerCount"] = workers.Count.ToString(),
+                 ["maxWorkers"] = limits.MaxWorkers.ToString(),
+                 ["maxDepth"] = limits.MaxDepth.ToString(),
+-                ["maxTotalSteps"] = limits.MaxTotalSteps.ToString()
++                ["maxTotalSteps"] = limits.MaxTotalSteps.ToString(),
++                ["maxRuntimeSeconds"] = limits.MaxRuntimeSeconds.ToString()
+             },
+             cancellationToken);
+ 
+@@ -158,8 +169,18 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 ["planId"] = planId.ToString("N"),
+                 ["stepCount"] = plannedSteps.Count.ToString()
+             },
+-            cancellationToken);
++            cancellationToken);
+ 
++        var creationDecision = boundedPolicy.Evaluate(new BoundedCollaborationExecutionState(
++            workers.Count,
++            plannedSteps.Count == 0 ? 0 : plannedSteps.Max(x => x.DelegationDepth),
++            plannedSteps.Count,
++            startedUtc));
++        if (!creationDecision.Allowed)
++        {
++            throw new InvalidOperationException(creationDecision.Rationale);
++        }
++
+         var executableSteps = new List<CollaborationStepDto>(plannedSteps.Count);
+         foreach (var step in plannedSteps)
+         {
+@@ -219,7 +240,15 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             runtimeBudget.Token.ThrowIfCancellationRequested();
+             if (executedStepCount >= limits.MaxTotalSteps)
+             {
++                var stepDecision = boundedPolicy.Evaluate(new BoundedCollaborationExecutionState(workers.Count, step.DelegationDepth, executedStepCount + 1, startedUtc));
+                 terminationReason = MultiAgentCollaborationTerminationReasons.StepLimitExceeded;
++                await WriteBoundedDecisionAuditAsync(
++                    command,
++                    planId,
++                    parentTask.Id,
++                    step.SubtaskId ?? parentTask.Id,
++                    stepDecision,
++                    correlationId,
++                    runtimeBudget.Token);
+                 finalSteps.Add(step with
+                 {
+                     Status = MultiAgentCollaborationStatusValues.Blocked,
+@@ -328,6 +357,20 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                         ["terminationReason"] = terminationReason,
+                         ["nonRetryable"] = "true"
+                     },
++                    cancellationToken);
++
++                await WriteBoundedDecisionAuditAsync(
++                    command,
++                    planId,
++                    parentTask.Id,
++                    step.SubtaskId.Value,
++                    BoundedCollaborationDecision.Denied(
++                        MultiAgentCollaborationTerminationReasons.RuntimeBudgetExceeded,
++                        "runtime",
++                        limits.MaxRuntimeSeconds,
++                        Math.Max(limits.MaxRuntimeSeconds, (int)Math.Ceiling((DateTime.UtcNow - startedUtc).TotalSeconds)),
++                        failureSummary),
++                    correlationId,
+                     cancellationToken);
+                 break;
+             }
+@@ -446,7 +489,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 structuredOutput,
+                 BuildParentRationale(contributions, status),
+                 contributions.Count == 0 ? 0m : contributions.Average(x => x.ConfidenceScore ?? 0.5m)),
+-            runtimeBudget.Token);
++            cancellationToken);
+ 
+         await WriteAuditAsync(
+             command.CompanyId,
+@@ -473,7 +516,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 ["terminationReason"] = terminationReason,
+                 ["actualStepCount"] = executedStepCount.ToString()
+             },
+-            runtimeBudget.Token);
++            cancellationToken);
+ 
+         return new MultiAgentCollaborationResultDto(
+             planId,
+@@ -500,8 +543,9 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+     private CollaborationLimitDto ResolveLimits(CollaborationLimitRequest? requested)
+     {
+         var configuredMaxWorkers = Math.Max(1, _options.MaxWorkers);
++        var configuredMaxTotalSteps = Math.Max(configuredMaxWorkers, _options.MaxTotalSteps);
+         var configuredMaxDepth = Math.Clamp(_options.MaxDepth, 1, 1);
+         var configuredMaxRuntimeSeconds = Math.Max(1, _options.MaxRuntimeSeconds);
+-        var configuredMaxTotalSteps = Math.Max(1, _options.MaxTotalSteps);
+ 
+         return new CollaborationLimitDto(
+             Math.Clamp(requested?.MaxWorkers ?? configuredMaxWorkers, 1, configuredMaxWorkers),
+@@ -599,7 +643,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+     private static void ValidatePlan(
+         StartMultiAgentCollaborationCommand command,
+         IReadOnlyList<WorkerSubtaskRequest> workers,
+-        CollaborationLimitDto limits)
++        CollaborationLimitDto limits,
++        DateTime startedUtc)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+ 
+@@ -624,6 +669,16 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+             AddError(errors, nameof(command.Workers), $"Collaboration step count cannot exceed {limits.MaxTotalSteps}.");
+         }
+ 
++        var boundedPolicy = BoundedCollaborationPolicy.FromLimits(limits);
++        var decision = boundedPolicy.Evaluate(new BoundedCollaborationExecutionState(
++            workers.Count,
++            workers.Count == 0 ? 0 : 1,
++            workers.Count,
++            startedUtc));
++        if (!decision.Allowed && !string.Equals(decision.TerminationReason, MultiAgentCollaborationTerminationReasons.RuntimeBudgetExceeded, StringComparison.OrdinalIgnoreCase))
++        {
++            AddError(errors, nameof(command.Workers), decision.Rationale ?? "The requested manager-worker collaboration exceeds its bounded execution policy.");
++        }
++
+         var seenAgentIds = new HashSet<Guid>();
+         for (var i = 0; i < workers.Count; i++)
+         {
+@@ -836,6 +891,90 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 DateTime.UtcNow),
+             cancellationToken);
+ 
++    private async Task WriteGuardrailDeniedAuditAsync(
++        StartMultiAgentCollaborationCommand command,
++        CollaborationLimitDto limits,
++        string correlationId,
++        MultiAgentCollaborationValidationException exception,
++        CancellationToken cancellationToken)
++    {
++        if (command.CompanyId == Guid.Empty)
++        {
++            return;
++        }
++
++        var decision = ClassifyValidationGuardrail(exception, limits, command.Workers?.Count ?? 0);
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["terminationReason"] = decision.TerminationReason,
++            ["limitType"] = decision.LimitType,
++            ["configuredThreshold"] = decision.ConfiguredThreshold?.ToString(),
++            ["observedValue"] = decision.ObservedValue?.ToString(),
++            ["maxWorkers"] = limits.MaxWorkers.ToString(),
++            ["maxDepth"] = limits.MaxDepth.ToString(),
++            ["maxRuntimeSeconds"] = limits.MaxRuntimeSeconds.ToString(),
++            ["maxTotalSteps"] = limits.MaxTotalSteps.ToString(),
++            ["validationErrors"] = string.Join(" | ", exception.Errors.SelectMany(x => x.Value))
++        };
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                command.CompanyId,
++                string.IsNullOrWhiteSpace(command.InitiatingActorType) ? AuditActorTypes.Agent : command.InitiatingActorType!,
++                command.InitiatingActorId ?? command.CoordinatorAgentId,
++                AuditEventActions.MultiAgentCollaborationGuardrailDenied,
++                AuditTargetTypes.LinkedEntity,
++                $"multi_agent_collaboration:{correlationId}",
++                AuditEventOutcomes.Denied,
++                decision.Rationale ?? "Manager-worker collaboration was denied by bounded execution policy.",
++                ["multi_agent_coordinator", "bounded_collaboration_policy"],
++                metadata,
++                correlationId,
++                DateTime.UtcNow),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private Task WriteBoundedDecisionAuditAsync(
++        StartMultiAgentCollaborationCommand command,
++        Guid planId,
++        Guid parentTaskId,
++        Guid targetTaskId,
++        BoundedCollaborationDecision decision,
++        string correlationId,
++        CancellationToken cancellationToken)
++    {
++        if (decision.Allowed)
++        {
++            return Task.CompletedTask;
++        }
++
++        return WriteAuditAsync(
++            command.CompanyId,
++            AuditEventActions.MultiAgentCollaborationGuardrailDenied,
++            AuditEventOutcomes.Denied,
++            AuditActorTypes.Agent,
++            command.CoordinatorAgentId,
++            targetTaskId,
++            decision.Rationale,
++            correlationId,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["planId"] = planId.ToString("N"),
++                ["parentTaskId"] = parentTaskId.ToString("N"),
++                ["terminationReason"] = decision.TerminationReason,
++                ["limitType"] = decision.LimitType,
++                ["configuredThreshold"] = decision.ConfiguredThreshold?.ToString(),
++                ["observedValue"] = decision.ObservedValue?.ToString()
++            },
++            cancellationToken);
++    }
++
++    private static BoundedCollaborationDecision ClassifyValidationGuardrail(
++        MultiAgentCollaborationValidationException exception,
++        CollaborationLimitDto limits,
++        int workerCount)
++    {
++        var messages = exception.Errors.SelectMany(x => x.Value).ToList();
++        if (messages.Any(x => x.Contains("fan-out", StringComparison.OrdinalIgnoreCase)))
++        {
++            return BoundedCollaborationDecision.Denied(MultiAgentCollaborationTerminationReasons.FanOutExceeded, "fan_out", limits.MaxWorkers, workerCount, $"Worker fan-out cannot exceed {limits.MaxWorkers}.");
++        }
++
++        if (messages.Any(x => x.Contains("depth", StringComparison.OrdinalIgnoreCase) || x.Contains("nested", StringComparison.OrdinalIgnoreCase) || x.Contains("Further delegation", StringComparison.OrdinalIgnoreCase)))
++        {
++            return BoundedCollaborationDecision.Denied(MultiAgentCollaborationTerminationReasons.DepthLimitExceeded, "depth", limits.MaxDepth, limits.MaxDepth + 1, $"Delegation depth cannot exceed {limits.MaxDepth}.");
++        }
++
++        if (messages.Any(x => x.Contains("step", StringComparison.OrdinalIgnoreCase)))
++        {
++            return BoundedCollaborationDecision.Denied(MultiAgentCollaborationTerminationReasons.StepLimitExceeded, "step_count", limits.MaxTotalSteps, workerCount, $"Collaboration step count cannot exceed {limits.MaxTotalSteps}.");
++        }
++
++        if (messages.Any(x => x.Contains("runtime", StringComparison.OrdinalIgnoreCase)))
++        {
++            return BoundedCollaborationDecision.Denied(MultiAgentCollaborationTerminationReasons.RuntimeBudgetExceeded, "runtime", limits.MaxRuntimeSeconds, 0, $"Collaboration runtime budget must be between 1 and {limits.MaxRuntimeSeconds} second(s).");
++        }
++
++        return BoundedCollaborationDecision.Denied(MultiAgentCollaborationTerminationReasons.PlanInvalid, "explicit_plan", 1, workerCount, "Manager-worker collaboration was denied because the explicit bounded plan was invalid.");
++    }
++
+     private static string BuildFinalResponse(string objective, IReadOnlyList<AgentContributionDto> contributions)
+     {
+         var completed = contributions.Where(x => !IsFailed(x)).OrderBy(x => x.Sequence).ToList();
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 0a6cb15..4514f41 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -58,6 +58,12 @@
+     "DefaultLockLeaseSeconds": 120,
+     "DefaultExecutionStateTtlSeconds": 3600
+   },
++  "Orchestration": {
++    "MultiAgentCollaboration": {
++      "MaxWorkers": 3,
++      "MaxDepth": 1,
++      "MaxRuntimeSeconds": 45,
++      "MaxTotalSteps": 6
++    }
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index c87bb70..f71e323 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -53,6 +53,12 @@
+     "DefaultLockLeaseSeconds": 120,
+     "DefaultExecutionStateTtlSeconds": 3600
+   },
++  "Orchestration": {
++    "MultiAgentCollaboration": {
++      "MaxWorkers": 3,
++      "MaxDepth": 1,
++      "MaxRuntimeSeconds": 45,
++      "MaxTotalSteps": 6
++    }
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+index 6d7817a..f4a5a34 100644
+--- a/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+@@ -185,6 +185,22 @@ public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicat
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+         var body = await response.Content.ReadAsStringAsync();
+         Assert.Contains("Worker fan-out cannot exceed", body);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var auditEvent = await dbContext.AuditEvents
++            .AsNoTracking()
++            .SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.CorrelationId == "mw-collaboration-invalid" &&
++                x.Action == AuditEventActions.MultiAgentCollaborationGuardrailDenied);
++
++        Assert.Equal(AuditEventOutcomes.Denied, auditEvent.Outcome);
++        Assert.Equal(MultiAgentCollaborationTerminationReasons.FanOutExceeded, auditEvent.Metadata["terminationReason"]);
++        Assert.Equal("fan_out", auditEvent.Metadata["limitType"]);
++        Assert.Equal("1", auditEvent.Metadata["configuredThreshold"]);
++        Assert.Equal("2", auditEvent.Metadata["observedValue"]);
+     }
+ 
+     [Fact]
+END_OF_PATCH

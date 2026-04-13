@@ -1,0 +1,574 @@
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 6c7e0f1..1f0b2d4 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -79,6 +79,12 @@ public sealed class OnboardingApiClient
+             ? Task.FromResult<DashboardBriefingCardViewModel?>(new DashboardBriefingCardViewModel())
+             : GetLatestBriefingsCoreAsync(companyId, cancellationToken);
+ 
++    public Task<BriefingPreferenceViewModel?> GetBriefingPreferencesAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult<BriefingPreferenceViewModel?>(new BriefingPreferenceViewModel { CompanyId = companyId, InAppEnabled = true, MobileEnabled = false, DailyEnabled = true, WeeklyEnabled = true })
++            : GetBriefingPreferencesCoreAsync(companyId, cancellationToken);
++
+     public Task<BriefingPreferenceViewModel> UpdateBriefingPreferencesAsync(Guid companyId, BriefingPreferenceUpdateRequest request, CancellationToken cancellationToken = default) =>
+         SendAsync<BriefingPreferenceViewModel>(HttpMethod.Put, $"api/companies/{companyId}/briefings/preferences", request, cancellationToken);
+ 
+@@ -225,6 +231,24 @@ public sealed class OnboardingApiClient
+         catch (HttpRequestException ex) { throw CreateNetworkException(ex); }
+     }
+ 
++    private async Task<BriefingPreferenceViewModel?> GetBriefingPreferencesCoreAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var response = await _httpClient.GetAsync($"api/companies/{companyId}/briefings/preferences", cancellationToken);
++            if (response.StatusCode == System.Net.HttpStatusCode.Forbidden || response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
++            {
++                return null;
++            }
++
++            response.EnsureSuccessStatusCode();
++            return await response.Content.ReadFromJsonAsync<BriefingPreferenceViewModel>(SerializerOptions, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
+     private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
+     {
+         try
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 23a4c1d..7a1e804 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -33,6 +33,12 @@
+                 <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="briefing-preferences">
++                <span class="bi bi-bell" aria-hidden="true"></span> Briefing delivery
++            </NavLink>
++        </div>
+     </nav>
+ </div>
+ 
+diff --git a/src/VirtualCompany.Web/Pages/BriefingPreferences.razor b/src/VirtualCompany.Web/Pages/BriefingPreferences.razor
+new file mode 100644
+index 0000000..3a4c7fd
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/BriefingPreferences.razor
+@@ -0,0 +1,151 @@
++@page "/briefing-preferences"
++@inject OnboardingApiClient ApiClient
++@inject NavigationManager Navigation
++@using Microsoft.AspNetCore.Components
++
++<PageTitle>Briefing Delivery</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Briefing delivery</h1>
++        <p class="text-body-secondary mb-0">Loading delivery preferences...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Briefing delivery</span>
++                <h1>Choose a company</h1>
++                <p class="lead mb-3">Briefing delivery preferences are scoped to your user account in a company workspace.</p>
++
++                @if (ActiveMemberships.Count > 0)
++                {
++                    <div class="template-grid mt-4">
++                        @foreach (var membership in ActiveMemberships)
++                        {
++                            <a class="template-card text-decoration-none text-reset" href="@($"/briefing-preferences?companyId={membership.CompanyId}")">
++                                <strong>@membership.CompanyName</strong>
++                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
++                            </a>
++                        }
++                    </div>
++                }
++                else
++                {
++                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++            </div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Briefing delivery</span>
++                <h1>@(companyAccess?.CompanyName ?? "Briefing delivery")</h1>
++                <p class="text-body-secondary mb-0">Choose where daily briefings and executive summaries should notify you.</p>
++
++                @if (!string.IsNullOrWhiteSpace(successMessage))
++                {
++                    <div class="alert alert-success mt-4 mb-0">@successMessage</div>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++
++                <EditForm Model="form" OnValidSubmit="SaveAsync" class="mt-4">
++                    <div class="form-check form-switch mb-3">
++                        <InputCheckbox id="in-app-enabled" class="form-check-input" @bind-Value="form.InAppEnabled" />
++                        <label class="form-check-label" for="in-app-enabled">
++                            In-app notifications
++                        </label>
++                        <div class="form-text">Create briefing notifications in the workspace inbox.</div>
++                    </div>
++
++                    <div class="form-check form-switch mb-3">
++                        <InputCheckbox id="mobile-enabled" class="form-check-input" @bind-Value="form.MobileEnabled" />
++                        <label class="form-check-label" for="mobile-enabled">
++                            Mobile notifications
++                        </label>
++                        <div class="form-text">Queue briefing delivery for the mobile notification path when available.</div>
++                    </div>
++
++                    <div class="dashboard-actions mt-4">
++                        <button class="btn btn-primary" type="submit" disabled="@isSaving">Save preferences</button>
++                        <a class="btn btn-outline-secondary" href="@DashboardPath">Back to dashboard</a>
++                    </div>
++                </EditForm>
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                <h2 class="h5">Current scope</h2>
++                <dl class="kv-list mb-0">
++                    <dt>Category</dt>
++                    <dd>Daily briefing and executive summary</dd>
++                    <dt>Default</dt>
++                    <dd>In-app on, mobile off</dd>
++                    <dt>Cadence</dt>
++                    <dd>@(form.DailyEnabled ? "Daily on" : "Daily off") / @(form.WeeklyEnabled ? "Weekly on" : "Weekly off")</dd>
++                </dl>
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    private bool isLoading = true;
++    private bool isSaving;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private BriefingPreferenceForm form = new();
++    private string? errorMessage;
++    private string? successMessage;
++    private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            currentUser = await ApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is not Guid companyId)
++            {
++                if (currentUser?.ActiveCompany is not null)
++                {
++                    Navigation.NavigateTo($"/briefing-preferences?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                }
++
++                return;
++            }
++
++            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
++            var preferences = companyAccess is null ? null : await ApiClient.GetBriefingPreferencesAsync(companyId);
++            form = BriefingPreferenceForm.From(preferences);
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            companyAccess = null;
++            form = new BriefingPreferenceForm();
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task SaveAsync()
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        isSaving = true;
++        errorMessage = null;
++        successMessage = null;
++
++        try
++        {
++            var saved = await ApiClient.UpdateBriefingPreferencesAsync(companyId, form.ToRequest());
++            form = BriefingPreferenceForm.From(saved);
++            successMessage = "Briefing delivery preferences saved.";
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSaving = false;
++        }
++    }
++
++    private sealed class BriefingPreferenceForm
++    {
++        public bool InAppEnabled { get; set; } = true;
++        public bool MobileEnabled { get; set; }
++        public bool DailyEnabled { get; set; } = true;
++        public bool WeeklyEnabled { get; set; } = true;
++        public TimeOnly? PreferredDeliveryTime { get; set; } = new(8, 0);
++        public string? PreferredTimezone { get; set; }
++
++        public static BriefingPreferenceForm From(BriefingPreferenceViewModel? preferences) =>
++            preferences is null
++                ? new BriefingPreferenceForm()
++                : new BriefingPreferenceForm
++                {
++                    InAppEnabled = preferences.InAppEnabled,
++                    MobileEnabled = preferences.MobileEnabled,
++                    DailyEnabled = preferences.DailyEnabled,
++                    WeeklyEnabled = preferences.WeeklyEnabled,
++                    PreferredDeliveryTime = preferences.PreferredDeliveryTime,
++                    PreferredTimezone = preferences.PreferredTimezone
++                };
++
++        public BriefingPreferenceUpdateRequest ToRequest() =>
++            new()
++            {
++                InAppEnabled = InAppEnabled,
++                MobileEnabled = MobileEnabled,
++                DailyEnabled = DailyEnabled,
++                WeeklyEnabled = WeeklyEnabled,
++                PreferredDeliveryTime = PreferredDeliveryTime,
++                PreferredTimezone = PreferredTimezone
++            };
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index a118e0c..e9fdb7e 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -169,6 +169,145 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
+     }
+ 
++    [Fact]
++    public async Task Get_preferences_returns_deterministic_defaults_when_no_record_exists()
++    {
++        var seed = await SeedEmptyCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/briefings/preferences");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var preferences = await response.Content.ReadFromJsonAsync<BriefingPreferenceResponse>();
++
++        Assert.NotNull(preferences);
++        Assert.Equal(seed.CompanyId, preferences!.CompanyId);
++        Assert.True(preferences.InAppEnabled);
++        Assert.False(preferences.MobileEnabled);
++        Assert.True(preferences.DailyEnabled);
++        Assert.True(preferences.WeeklyEnabled);
++        Assert.Null(preferences.UpdatedUtc);
++    }
++
++    [Fact]
++    public async Task Update_preferences_persists_for_current_user_only()
++    {
++        var seed = await SeedEmptyCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences", new
++        {
++            inAppEnabled = false,
++            mobileEnabled = true,
++            dailyEnabled = true,
++            weeklyEnabled = false
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var preferences = await response.Content.ReadFromJsonAsync<BriefingPreferenceResponse>();
++
++        Assert.NotNull(preferences);
++        Assert.False(preferences!.InAppEnabled);
++        Assert.True(preferences.MobileEnabled);
++        Assert.True(preferences.DailyEnabled);
++        Assert.False(preferences.WeeklyEnabled);
++        Assert.NotNull(preferences.UpdatedUtc);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var persisted = await dbContext.CompanyBriefingDeliveryPreferences
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.UserId == preferences.UserId);
++
++        Assert.False(persisted.InAppEnabled);
++        Assert.True(persisted.MobileEnabled);
++        Assert.True(persisted.DailyEnabled);
++        Assert.False(persisted.WeeklyEnabled);
++    }
++
++    [Fact]
++    public async Task Preferences_are_tenant_scoped_for_same_user_memberships()
++    {
++        var seed = await SeedUserWithTwoCompanyMembershipsAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var firstUpdate = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyAId}/briefings/preferences", new
++        {
++            inAppEnabled = false,
++            mobileEnabled = true,
++            dailyEnabled = true,
++            weeklyEnabled = true
++        });
++        var secondUpdate = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyBId}/briefings/preferences", new
++        {
++            inAppEnabled = true,
++            mobileEnabled = false,
++            dailyEnabled = false,
++            weeklyEnabled = true
++        });
++
++        Assert.Equal(HttpStatusCode.OK, firstUpdate.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, secondUpdate.StatusCode);
++
++        var firstRead = await client.GetFromJsonAsync<BriefingPreferenceResponse>($"/api/companies/{seed.CompanyAId}/briefings/preferences");
++        var secondRead = await client.GetFromJsonAsync<BriefingPreferenceResponse>($"/api/companies/{seed.CompanyBId}/briefings/preferences");
++
++        Assert.NotNull(firstRead);
++        Assert.NotNull(secondRead);
++        Assert.Equal(seed.CompanyAId, firstRead!.CompanyId);
++        Assert.False(firstRead.InAppEnabled);
++        Assert.True(firstRead.MobileEnabled);
++        Assert.True(firstRead.DailyEnabled);
++        Assert.Equal(seed.CompanyBId, secondRead!.CompanyId);
++        Assert.True(secondRead.InAppEnabled);
++        Assert.False(secondRead.MobileEnabled);
++        Assert.False(secondRead.DailyEnabled);
++    }
++
++    [Fact]
++    public async Task Generate_suppresses_in_app_notification_when_preference_disables_in_app()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var preferenceResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences", new
++        {
++            inAppEnabled = false,
++            mobileEnabled = true,
++            dailyEnabled = true,
++            weeklyEnabled = true
++        });
++        Assert.Equal(HttpStatusCode.OK, preferenceResponse.StatusCode);
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal(1, result!.NotificationsCreated);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var notifications = await dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
++            .ToListAsync();
++
++        Assert.Single(notifications);
++        Assert.Equal(CompanyNotificationChannel.Mobile, notifications[0].Channel);
++    }
++
++    [Fact]
++    public async Task Generate_suppresses_mobile_notification_when_preference_disables_mobile()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var preferenceResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences", new
++        {
++            inAppEnabled = true,
++            mobileEnabled = false,
++            dailyEnabled = true,
++            weeklyEnabled = true
++        });
++        Assert.Equal(HttpStatusCode.OK, preferenceResponse.StatusCode);
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal(1, result!.NotificationsCreated);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var notifications = await dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
++            .ToListAsync();
++
++        Assert.Single(notifications);
++        Assert.Equal(CompanyNotificationChannel.InApp, notifications[0].Channel);
++    }
++
++    [Fact]
++    public async Task Generate_creates_both_delivery_paths_when_both_channels_are_enabled()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var preferenceResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences", new
++        {
++            inAppEnabled = true,
++            mobileEnabled = true,
++            dailyEnabled = true,
++            weeklyEnabled = true
++        });
++        Assert.Equal(HttpStatusCode.OK, preferenceResponse.StatusCode);
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal(2, result!.NotificationsCreated);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var channels = await dbContext.CompanyNotifications
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
++            .Select(x => x.Channel)
++            .ToListAsync();
++
++        Assert.Contains(CompanyNotificationChannel.InApp, channels);
++        Assert.Contains(CompanyNotificationChannel.Mobile, channels);
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+@@ -296,6 +435,23 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+             otherCompanyApprovalId);
+     }
+ 
++    private async Task<TwoCompanyPreferenceSeed> SeedUserWithTwoCompanyMembershipsAsync()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(new Company(companyAId, "Preference Company A"), new Company(companyBId, "Preference Company B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new TwoCompanyPreferenceSeed(companyAId, companyBId);
++    }
++
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
+     {
+         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+@@ -309,6 +465,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+ 
+     private sealed record EmptyBriefingSeed(Guid CompanyId);
+ 
++    private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);
++
+     private sealed record BriefingSeed(
+         Guid CompanyId,
+         Guid OtherCompanyId,
+@@ -338,11 +496,25 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+ 
+     private sealed class BriefingGenerationResponse
+     {
+         public CompanyBriefingResponse Briefing { get; set; } = new();
++        public int NotificationsCreated { get; set; }
+     }
+ 
+     private sealed class DashboardBriefingCardResponse
+     {
+         public CompanyBriefingResponse? Daily { get; set; }
+         public CompanyBriefingResponse? Weekly { get; set; }
+     }
++
++    private sealed class BriefingPreferenceResponse
++    {
++        public Guid CompanyId { get; set; }
++        public Guid UserId { get; set; }
++        public bool InAppEnabled { get; set; }
++        public bool MobileEnabled { get; set; }
++        public bool DailyEnabled { get; set; }
++        public bool WeeklyEnabled { get; set; }
++        public TimeOnly PreferredDeliveryTime { get; set; }
++        public string? PreferredTimezone { get; set; }
++        public DateTime? UpdatedUtc { get; set; }
++    }
+ 
+     private sealed class CompanyBriefingResponse
+     {
++        public Guid Id { get; set; }
+         public Guid CompanyId { get; set; }
+         public Guid? MessageId { get; set; }
+         public string SummaryBody { get; set; } = string.Empty;
+END_OF_PATCH

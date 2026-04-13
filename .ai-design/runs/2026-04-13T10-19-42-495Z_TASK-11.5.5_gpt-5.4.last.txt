@@ -1,0 +1,418 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 9f4a5b2..2a7b6e1 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -257,7 +257,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .OrderBy(x => x.Id)
+-            .Select(x => new { x.Id, x.Name, x.Timezone })
++            .Select(x => new DueCompany(x.Id, x.Name, x.Timezone))
+             .Take(Math.Max(1, command.BatchSize))
+             .ToListAsync(cancellationToken);
+ 
+@@ -351,7 +351,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(preference);
+     }
+ 
+-    private async Task<bool> IsDueForScheduledGenerationAsync(dynamic company, CompanyBriefingType briefingType, DateTime nowUtc, CancellationToken cancellationToken)
++    private async Task<bool> IsDueForScheduledGenerationAsync(DueCompany company, CompanyBriefingType briefingType, DateTime nowUtc, CancellationToken cancellationToken)
+     {
+         var activeUserIds = await _dbContext.CompanyMemberships
+             .IgnoreQueryFilters()
+@@ -373,14 +373,17 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var cadenceEnabled = activeUserIds.Any(userId =>
+         {
+             var preference = preferences.SingleOrDefault(x => x.UserId == userId);
++            if (preference?.InAppEnabled == false)
++            {
++                return false;
++            }
++
+             return briefingType == CompanyBriefingType.Daily
+                 ? preference?.DailyEnabled ?? true
+                 : preference?.WeeklyEnabled ?? true;
+         });
+ 
+-        if (!cadenceEnabled)
+-        {
+-            return false;
+-        }
++        if (!cadenceEnabled)
++        {
++            return false;
++        }
+ 
+         var deliveryTime = preferences
+-            .Where(x => briefingType == CompanyBriefingType.Daily ? x.DailyEnabled : x.WeeklyEnabled)
++            .Where(x => x.InAppEnabled && (briefingType == CompanyBriefingType.Daily ? x.DailyEnabled : x.WeeklyEnabled))
+             .Select(x => x.PreferredDeliveryTime)
+             .DefaultIfEmpty(new TimeOnly(8, 0))
+             .Min();
+@@ -430,13 +433,6 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 _dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), briefing.CompanyId, userId, briefing.Id, CompanyNotificationChannel.InApp, briefing.Title, briefing.SummaryBody));
+                 created++;
+             }
+-
+-            if (preference?.MobileEnabled == true)
+-            {
+-                _dbContext.CompanyNotifications.Add(new CompanyNotification(Guid.NewGuid(), briefing.CompanyId, userId, briefing.Id, CompanyNotificationChannel.Mobile, briefing.Title, briefing.SummaryBody));
+-                created++;
+-            }
+         }
+ 
+         return created;
+@@ -663,6 +659,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     }
+ 
+     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
++    private sealed record DueCompany(Guid Id, string Name, string? Timezone);
+     private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc);
+     private sealed record BriefingAggregate(
+         IReadOnlyList<BriefingItem> Approvals,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs
+index 91b9b71..dd6c17f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413160000_AddCompanyBriefings.cs
+@@ -13,6 +13,10 @@ public partial class AddCompanyBriefings : Migration
+     protected override void Up(MigrationBuilder migrationBuilder)
+     {
+         var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++        var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++        var string4000Type = isPostgres ? "character varying(4000)" : "nvarchar(4000)";
+         var guidType = isPostgres ? "uuid" : "uniqueidentifier";
+         var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
+         var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
+@@ -25,14 +29,14 @@ public partial class AddCompanyBriefings : Migration
+             columns: table => new
+             {
+-                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                briefing_type = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                briefing_type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
+                 period_start_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
+                 period_end_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
+-                title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                title = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
+                 summary_body = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                 structured_payload_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
+                 source_refs_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
+-                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+-                message_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                message_id = table.Column<Guid>(type: guidType, nullable: true),
+                 generated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
+                 created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
+             },
+@@ -61,16 +65,16 @@ public partial class AddCompanyBriefings : Migration
+             columns: table => new
+             {
+-                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                user_id = table.Column<Guid>(type: guidType, nullable: false),
+                 in_app_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: true),
+                 mobile_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: false),
+                 daily_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: true),
+                 weekly_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: true),
+                 preferred_delivery_time = table.Column<TimeOnly>(type: "time", nullable: false, defaultValue: new TimeOnly(8, 0)),
+-                preferred_timezone = table.Column<string>(type: isPostgres ? "character varying(100)" : "nvarchar(100)", maxLength: 100, nullable: true),
++                preferred_timezone = table.Column<string>(type: string100Type, maxLength: 100, nullable: true),
+                 created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
+                 updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
+             },
+@@ -87,16 +91,16 @@ public partial class AddCompanyBriefings : Migration
+             columns: table => new
+             {
+-                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                briefing_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+-                channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+-                title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+-                body = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
+-                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+-                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                user_id = table.Column<Guid>(type: guidType, nullable: false),
++                briefing_id = table.Column<Guid>(type: guidType, nullable: false),
++                channel = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                title = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                body = table.Column<string>(type: string4000Type, maxLength: 4000, nullable: false),
++                status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
+             },
+             constraints: table =>
+             {
+@@ -111,7 +115,7 @@ public partial class AddCompanyBriefings : Migration
+         migrationBuilder.CreateIndex("IX_company_briefings_company_id_briefing_type_generated_at", "company_briefings", new[] { "company_id", "briefing_type", "generated_at" });
+         migrationBuilder.CreateIndex("IX_company_briefings_company_id_briefing_type_period_start_at_period_end_at", "company_briefings", new[] { "company_id", "briefing_type", "period_start_at", "period_end_at" }, unique: true);
+-        migrationBuilder.CreateIndex("IX_company_briefings_message_id", "company_briefings", "message_id", unique: true, filter: "[message_id] IS NOT NULL");
++        migrationBuilder.CreateIndex("IX_company_briefings_message_id", "company_briefings", "message_id", unique: true, filter: isPostgres ? "message_id IS NOT NULL" : "[message_id] IS NOT NULL");
+         migrationBuilder.CreateIndex("IX_company_briefing_delivery_preferences_company_id_user_id", "company_briefing_delivery_preferences", new[] { "company_id", "user_id" }, unique: true);
+         migrationBuilder.CreateIndex("IX_company_briefing_delivery_preferences_user_id", "company_briefing_delivery_preferences", "user_id");
+         migrationBuilder.CreateIndex("IX_company_notifications_briefing_id", "company_notifications", "briefing_id");
+diff --git a/src/VirtualCompany.Web/Pages/BriefingPreferences.razor b/src/VirtualCompany.Web/Pages/BriefingPreferences.razor
+index 8f6ec58..1c07b5f 100644
+--- a/src/VirtualCompany.Web/Pages/BriefingPreferences.razor
++++ b/src/VirtualCompany.Web/Pages/BriefingPreferences.razor
+@@ -40,7 +40,7 @@ else
+             <div class="wizard-card dashboard-summary">
+                 <span class="dashboard-kicker">Briefing delivery</span>
+                 <h1>@(companyAccess?.CompanyName ?? "Briefing delivery")</h1>
+-                <p class="text-body-secondary mb-0">Choose where daily briefings and executive summaries should notify you.</p>
++                <p class="text-body-secondary mb-0">Choose whether daily briefings and executive summaries should appear in the workspace inbox.</p>
+ 
+                 @if (!string.IsNullOrWhiteSpace(successMessage))
+                 {
+@@ -64,15 +64,6 @@ else
+                         <div class="form-text">Create briefing notifications in the workspace inbox.</div>
+                     </div>
+ 
+-                    <div class="form-check form-switch mb-3">
+-                        <InputCheckbox id="mobile-enabled" class="form-check-input" @bind-Value="form.MobileEnabled" />
+-                        <label class="form-check-label" for="mobile-enabled">
+-                            Mobile notifications
+-                        </label>
+-                        <div class="form-text">Queue briefing delivery for the mobile notification path when available.</div>
+-                    </div>
+-
+                     <div class="dashboard-actions mt-4">
+                         <button class="btn btn-primary" type="submit" disabled="@isSaving">Save preferences</button>
+                         <a class="btn btn-outline-secondary" href="@DashboardPath">Back to dashboard</a>
+@@ -88,7 +79,7 @@ else
+                     <dt>Category</dt>
+                     <dd>Daily briefing and executive summary</dd>
+                     <dt>Default</dt>
+-                    <dd>In-app on, mobile off</dd>
++                    <dd>In-app on</dd>
+                     <dt>Cadence</dt>
+                     <dd>@(form.DailyEnabled ? "Daily on" : "Daily off") / @(form.WeeklyEnabled ? "Weekly on" : "Weekly off")</dd>
+                 </dl>
+@@ -181,7 +172,7 @@ else
+             new()
+             {
+                 InAppEnabled = InAppEnabled,
+-                MobileEnabled = MobileEnabled,
++                MobileEnabled = false,
+                 DailyEnabled = DailyEnabled,
+                 WeeklyEnabled = WeeklyEnabled,
+                 PreferredDeliveryTime = PreferredDeliveryTime,
+diff --git a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+index 4b4a5be..ccf93f2 100644
+--- a/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
++++ b/src/VirtualCompany.Web/Services/OnboardingApiClient.cs
+@@ -88,7 +88,7 @@ public sealed class OnboardingApiClient
+ 
+     public Task<BriefingPreferenceViewModel?> GetBriefingPreferencesAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+-            ? Task.FromResult<BriefingPreferenceViewModel?>(new BriefingPreferenceViewModel { CompanyId = companyId, InAppEnabled = true, MobileEnabled = false, DailyEnabled = true, WeeklyEnabled = true })
++            ? Task.FromResult<BriefingPreferenceViewModel?>(new BriefingPreferenceViewModel { CompanyId = companyId, InAppEnabled = true, DailyEnabled = true, WeeklyEnabled = true })
+             : GetBriefingPreferencesCoreAsync(companyId, cancellationToken);
+ 
+     public Task<BriefingPreferenceViewModel> UpdateBriefingPreferencesAsync(Guid companyId, BriefingPreferenceUpdateRequest request, CancellationToken cancellationToken = default) =>
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index b1b9012..2d00d77 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -262,47 +262,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+     }
+ 
+     [Fact]
+-    public async Task Generate_suppresses_in_app_notification_when_preference_disables_in_app()
+-    {
+-        var seed = await SeedBriefingCompanyAsync();
+-
+-        using var client = CreateAuthenticatedClient();
+-        var preferenceResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences", new
+-        {
+-            inAppEnabled = false,
+-            mobileEnabled = true,
+-            dailyEnabled = true,
+-            weeklyEnabled = true
+-        });
+-        Assert.Equal(HttpStatusCode.OK, preferenceResponse.StatusCode);
+-
+-        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
+-        {
+-            briefingType = "daily_briefing",
+-            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12)
+-        });
+-
+-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+-        var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
+-
+-        Assert.NotNull(result);
+-        Assert.Equal(1, result!.NotificationsCreated);
+-
+-        using var scope = _factory.Services.CreateScope();
+-        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+-        var notifications = await dbContext.CompanyNotifications
+-            .IgnoreQueryFilters()
+-            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
+-            .ToListAsync();
+-
+-        Assert.Single(notifications);
+-        Assert.Equal(CompanyNotificationChannel.Mobile, notifications[0].Channel);
+-    }
+-
+-    [Fact]
+-    public async Task Generate_suppresses_mobile_notification_when_preference_disables_mobile()
++    public async Task Generate_creates_in_app_notification_when_in_app_delivery_is_enabled()
+     {
+         var seed = await SeedBriefingCompanyAsync();
+ 
+@@ -336,7 +296,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+     }
+ 
+     [Fact]
+-    public async Task Generate_creates_both_delivery_paths_when_both_channels_are_enabled()
++    public async Task Generate_does_not_create_mobile_notification_when_mobile_preference_is_set()
+     {
+         var seed = await SeedBriefingCompanyAsync();
+ 
+@@ -358,7 +318,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         var result = await response.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
+ 
+         Assert.NotNull(result);
+-        Assert.Equal(2, result!.NotificationsCreated);
++        Assert.Equal(1, result!.NotificationsCreated);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -368,7 +328,9 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+             .Select(x => x.Channel)
+             .ToListAsync();
+ 
++        Assert.Single(channels);
+         Assert.Contains(CompanyNotificationChannel.InApp, channels);
+-        Assert.Contains(CompanyNotificationChannel.Mobile, channels);
++        Assert.DoesNotContain(CompanyNotificationChannel.Mobile, channels);
+     }
+ 
+     private HttpClient CreateAuthenticatedClient()
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+new file mode 100644
+index 0000000..cc69c51
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+@@ -0,0 +1,102 @@
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BriefingSchedulerCoordinatorTests
++{
++    [Fact]
++    public async Task Run_once_skips_generation_when_lock_is_not_acquired()
++    {
++        var service = new RecordingBriefingService();
++        var coordinator = new BriefingSchedulerCoordinator(
++            new DenyLockProvider(),
++            service,
++            Options.Create(new BriefingSchedulerOptions
++            {
++                LockKey = "test-briefing-scheduler",
++                LockTtlSeconds = 30,
++                BatchSize = 10
++            }),
++            NullLogger<BriefingSchedulerCoordinator>.Instance);
++
++        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse("2026-04-13T08:00:00Z"), CancellationToken.None);
++
++        Assert.False(result.LockAcquired);
++        Assert.Equal(0, service.CallCount);
++        Assert.Equal(0, result.BriefingsGenerated);
++    }
++
++    [Fact]
++    public async Task Run_once_invokes_due_generation_when_lock_is_acquired()
++    {
++        var service = new RecordingBriefingService(new BriefingSchedulerRunResult(true, 3, 2, 2, 0));
++        var coordinator = new BriefingSchedulerCoordinator(
++            new AllowLockProvider(),
++            service,
++            Options.Create(new BriefingSchedulerOptions
++            {
++                LockKey = "test-briefing-scheduler",
++                LockTtlSeconds = 30,
++                BatchSize = 10
++            }),
++            NullLogger<BriefingSchedulerCoordinator>.Instance);
++
++        var result = await coordinator.RunOnceAsync(DateTimeOffset.Parse("2026-04-13T08:00:00Z"), CancellationToken.None);
++
++        Assert.True(result.LockAcquired);
++        Assert.Equal(1, service.CallCount);
++        Assert.Equal(10, service.LastBatchSize);
++        Assert.Equal(2, result.BriefingsGenerated);
++        Assert.Equal(2, result.NotificationsCreated);
++    }
++
++    private sealed class RecordingBriefingService : ICompanyBriefingService
++    {
++        private readonly BriefingSchedulerRunResult _result;
++
++        public RecordingBriefingService()
++            : this(new BriefingSchedulerRunResult(true, 0, 0, 0, 0))
++        {
++        }
++
++        public RecordingBriefingService(BriefingSchedulerRunResult result) => _result = result;
++
++        public int CallCount { get; private set; }
++        public int LastBatchSize { get; private set; }
++
++        public Task<BriefingAggregateResultDto> AggregateAsync(Guid companyId, GenerateCompanyBriefingCommand command, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<CompanyBriefingGenerationResult> GenerateAsync(Guid companyId, GenerateCompanyBriefingCommand command, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)
++        {
++            CallCount++;
++            LastBatchSize = command.BatchSize;
++            return Task.FromResult(_result);
++        }
++
++        public Task<DashboardBriefingCardDto> GetLatestDashboardBriefingsAsync(Guid companyId, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<CompanyBriefingDeliveryPreferenceDto> GetDeliveryPreferenceAsync(Guid companyId, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++
++        public Task<CompanyBriefingDeliveryPreferenceDto> UpdateDeliveryPreferenceAsync(Guid companyId, UpdateCompanyBriefingDeliveryPreferenceCommand command, CancellationToken cancellationToken) =>
++            throw new NotSupportedException();
++    }
++
++    private sealed class DenyLockProvider : IDistributedLockProvider
++    {
++        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>
++            Task.FromResult<IDistributedLockHandle?>(null);
++    }
++
++    private sealed class AllowLockProvider : IDistributedLockProvider
++    {
++        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>
++            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));
++    }
++
++    private sealed record TestLockHandle(string Key) : IDistributedLockHandle
++    {
++        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
++    }
++}
+END_OF_PATCH

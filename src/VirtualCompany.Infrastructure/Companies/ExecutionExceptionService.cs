@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -13,15 +14,18 @@ public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IEx
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAuditEventWriter _auditEventWriter;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
 
     public ExecutionExceptionService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
-        IAuditEventWriter auditEventWriter)
+        IAuditEventWriter auditEventWriter,
+        ICompanyOutboxEnqueuer outboxEnqueuer)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
+        _outboxEnqueuer = outboxEnqueuer;
     }
 
     public async Task<Guid> RecordAsync(RecordExecutionExceptionRequest request, CancellationToken cancellationToken)
@@ -86,6 +90,27 @@ public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IEx
                     ["failureCode"] = record.FailureCode
                 }),
             cancellationToken);
+
+        _outboxEnqueuer.Enqueue(
+            request.CompanyId,
+            CompanyOutboxTopics.NotificationDeliveryRequested,
+            new NotificationDeliveryRequestedMessage(
+                request.CompanyId,
+                CompanyNotificationType.Escalation.ToStorageValue(),
+                severity == ExecutionExceptionSeverity.Critical ? CompanyNotificationPriority.Critical.ToStorageValue() : CompanyNotificationPriority.High.ToStorageValue(),
+                record.Title,
+                record.Summary,
+                AuditTargetTypes.ExecutionException,
+                record.Id,
+                $"/dashboard?companyId={request.CompanyId}",
+                null,
+                CompanyMembershipRole.Owner.ToStorageValue(),
+                null,
+                null,
+                $"execution-exception:{record.Id:N}",
+                null),
+            idempotencyKey: $"notification:execution-exception:{record.Id:N}",
+            causationId: record.Id.ToString("N"));
 
         return record.Id;
     }

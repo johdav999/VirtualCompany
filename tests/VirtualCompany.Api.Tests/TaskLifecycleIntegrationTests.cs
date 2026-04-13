@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -102,6 +103,89 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
         Assert.NotNull(child);
         Assert.Equal(parent.Id, child!.ParentTaskId);
         Assert.Equal("Parent", child.ParentTask!.Title);
+    }
+
+    [Fact]
+    public async Task Create_subtask_inherits_parent_workflow_and_parent_read_includes_subtasks()
+    {
+        var seed = await SeedTaskCompanyWithWorkflowAsync();
+
+        using var client = CreateAuthenticatedClient();
+        var parentResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks", new
+        {
+            type = "orchestration",
+            title = "Parent with workflow",
+            priority = "normal",
+            workflowInstanceId = seed.WorkflowInstanceId
+        });
+
+        Assert.Equal(HttpStatusCode.Created, parentResponse.StatusCode);
+        var parent = await parentResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(parent);
+
+        var childResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{parent!.Id}/subtasks", new
+        {
+            type = "orchestration",
+            title = "Worker subtask",
+            priority = "low",
+            assignedAgentId = seed.AgentId
+        });
+
+        Assert.Equal(HttpStatusCode.Created, childResponse.StatusCode);
+        var child = await childResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(child);
+
+        var detail = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{parent.Id}");
+
+        Assert.NotNull(detail);
+        Assert.Equal(seed.WorkflowInstanceId, detail!.WorkflowInstanceId);
+        var subtask = Assert.Single(detail.Subtasks);
+        Assert.Equal(parent.Id, subtask.ParentTaskId);
+        Assert.Equal(seed.AgentId, subtask.AssignedAgentId);
+        Assert.Equal(seed.WorkflowInstanceId, subtask.WorkflowInstanceId);
+        Assert.Equal("new", subtask.Status);
+    }
+
+    [Fact]
+    public async Task Create_subtask_rejects_explicit_workflow_from_another_company()
+    {
+        var seed = await SeedTaskCompanyWithCrossTenantWorkflowAsync();
+
+        using var client = CreateAuthenticatedClient();
+        var parentResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks", new
+        {
+            type = "orchestration",
+            title = "Parent",
+            priority = "normal"
+        });
+
+        Assert.Equal(HttpStatusCode.Created, parentResponse.StatusCode);
+        var parent = await parentResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(parent);
+
+        var childResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{parent!.Id}/subtasks", new
+        {
+            type = "orchestration",
+            title = "Worker subtask",
+            priority = "low",
+            assignedAgentId = seed.AgentId,
+            workflowInstanceId = seed.OtherCompanyWorkflowInstanceId
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, childResponse.StatusCode);
+        var problem = await childResponse.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+
+        Assert.NotNull(problem);
+        Assert.True(problem!.Errors.ContainsKey("WorkflowInstanceId"));
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var childCount = await dbContext.WorkTasks
+            .AsNoTracking()
+            .CountAsync(x => x.ParentTaskId == parent.Id);
+
+        Assert.Equal(0, childCount);
     }
 
     [Theory]
@@ -271,6 +355,81 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
         return new TaskSeed(companyId, agentId);
     }
 
+    private async Task<TaskWorkflowSeed> SeedTaskCompanyWithWorkflowAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        var workflowDefinitionId = Guid.NewGuid();
+        var workflowInstanceId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.Add(new Company(companyId, "Task Company"));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            dbContext.Agents.Add(new Agent(agentId, companyId, "operations", "Ops Lead", "Operations Manager", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                workflowDefinitionId,
+                companyId,
+                "task-workflow",
+                "Task Workflow",
+                "Operations",
+                WorkflowTriggerType.Manual,
+                1,
+                new Dictionary<string, JsonNode?>
+                {
+                    ["steps"] = new JsonArray()
+                }));
+            dbContext.WorkflowInstances.Add(new WorkflowInstance(
+                workflowInstanceId,
+                companyId,
+                workflowDefinitionId,
+                null));
+            return Task.CompletedTask;
+        });
+
+        return new TaskWorkflowSeed(companyId, agentId, workflowInstanceId);
+    }
+
+    private async Task<CrossTenantWorkflowSeed> SeedTaskCompanyWithCrossTenantWorkflowAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        var otherWorkflowDefinitionId = Guid.NewGuid();
+        var otherWorkflowInstanceId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.AddRange(new Company(companyId, "Task Company"), new Company(otherCompanyId, "Other Company"));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            dbContext.Agents.Add(new Agent(agentId, companyId, "operations", "Ops Lead", "Operations Manager", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                otherWorkflowDefinitionId,
+                otherCompanyId,
+                "other-workflow",
+                "Other Workflow",
+                "Operations",
+                WorkflowTriggerType.Manual,
+                1,
+                new Dictionary<string, JsonNode?>
+                {
+                    ["steps"] = new JsonArray()
+                }));
+            dbContext.WorkflowInstances.Add(new WorkflowInstance(
+                otherWorkflowInstanceId,
+                otherCompanyId,
+                otherWorkflowDefinitionId,
+                null));
+            return Task.CompletedTask;
+        });
+
+        return new CrossTenantWorkflowSeed(companyId, agentId, otherWorkflowInstanceId);
+    }
+
     private async Task<CrossTenantTaskSeed> SeedTwoCompanyTasksAsync(AgentStatus secondAgentStatus = AgentStatus.Active)
     {
         var companyId = Guid.NewGuid();
@@ -303,6 +462,8 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
     }
 
     private sealed record TaskSeed(Guid CompanyId, Guid AgentId);
+    private sealed record TaskWorkflowSeed(Guid CompanyId, Guid AgentId, Guid WorkflowInstanceId);
+    private sealed record CrossTenantWorkflowSeed(Guid CompanyId, Guid AgentId, Guid OtherCompanyWorkflowInstanceId);
     private sealed record CrossTenantTaskSeed(Guid CompanyId, Guid AgentId, Guid SecondAgentId, Guid OtherCompanyAgentId, Guid TaskId, Guid OtherCompanyTaskId);
 
     private sealed class TaskDetailResponse
@@ -313,17 +474,30 @@ public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplica
         public string Status { get; set; } = string.Empty;
         public Guid? AssignedAgentId { get; set; }
         public Guid? ParentTaskId { get; set; }
+        public Guid? WorkflowInstanceId { get; set; }
         public Dictionary<string, JsonElement> InputPayload { get; set; } = [];
         public Dictionary<string, JsonElement> OutputPayload { get; set; } = [];
         public string? RationaleSummary { get; set; }
         public decimal? ConfidenceScore { get; set; }
         public DateTime? CompletedAt { get; set; }
         public TaskParentResponse? ParentTask { get; set; }
+        public List<TaskSubtaskResponse> Subtasks { get; set; } = [];
     }
 
     private sealed class TaskParentResponse
     {
         public string Title { get; set; } = string.Empty;
+    }
+
+    private sealed class TaskSubtaskResponse
+    {
+        public Guid Id { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public Guid? AssignedAgentId { get; set; }
+        public Guid? ParentTaskId { get; set; }
+        public Guid? WorkflowInstanceId { get; set; }
+        public DateTime CreatedAt { get; set; }
     }
 
     private sealed class TaskListResponse

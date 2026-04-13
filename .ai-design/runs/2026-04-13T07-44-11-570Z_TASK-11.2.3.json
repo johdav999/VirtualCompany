@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-11.2.3",
+  "promptPath": ".ai-design/prompts/TASK-11.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T07:44:11.570Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T07-44-11-570Z_TASK-11.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T07-44-11-570Z_TASK-11.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T07:47:58.262Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ateScope();\n@@ -90,6 +94,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"orch-test-correlation\", auditEvent.CorrelationId);\n         Assert.Equal(payload.OrchestrationId.ToString(\"N\"), auditEvent.Metadata[\"orchestrationId\"]);\n         Assert.Equal(seed.AgentId, auditEvent.ActorId);\n+\n+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);\n+        Assert.Equal(seed.CompanyId, attempt.CompanyId);\n+        Assert.Equal(seed.AgentId, attempt.AgentId);\n+        Assert.Equal(seed.TaskId, attempt.TaskId);\n+        Assert.Equal(\"orch-test-correlation\", attempt.CorrelationId);\n+        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);\n+        Assert.True(attempt.StartedUtc <= attempt.CompletedUtc);\n+        Assert.NotNull(attempt.CompletedUtc);\n+        Assert.Equal(\"inv-100\", attempt.RequestPayload[\"invoiceId\"]!.GetValue<string>());\n+        Assert.True(attempt.ResultPayload[\"success\"]!.GetValue<bool>());\n+        Assert.Equal(\"allow\", attempt.PolicyDecision[\"outcome\"]!.GetValue<string>());\n     }\n \n     private HttpClient CreateAuthenticatedClient()\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -199,8 +199,7 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>\n                 [\"executed\"] = JsonValue.Create(true)\n             };\n \n-            return Task.FromResult(new ToolExecutionResult(\n-                $\"Executed '{request.ToolName}' in the test tool executor.\",\n-                payload));\n+            return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));\n         }\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "6 +94,18 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"orch-test-correlation\", auditEvent.CorrelationId);\n         Assert.Equal(payload.OrchestrationId.ToString(\"N\"), auditEvent.Metadata[\"orchestrationId\"]);\n         Assert.Equal(seed.AgentId, auditEvent.ActorId);\n+\n+        var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);\n+        Assert.Equal(seed.CompanyId, attempt.CompanyId);\n+        Assert.Equal(seed.AgentId, attempt.AgentId);\n+        Assert.Equal(seed.TaskId, attempt.TaskId);\n+        Assert.Equal(\"orch-test-correlation\", attempt.CorrelationId);\n+        Assert.Equal(ToolExecutionStatus.Executed, attempt.Status);\n+        Assert.True(attempt.StartedUtc <= attempt.CompletedUtc);\n+        Assert.NotNull(attempt.CompletedUtc);\n+        Assert.Equal(\"inv-100\", attempt.RequestPayload[\"invoiceId\"]!.GetValue<string>());\n+        Assert.True(attempt.ResultPayload[\"success\"]!.GetValue<bool>());\n+        Assert.Equal(\"allow\", attempt.PolicyDecision[\"outcome\"]!.GetValue<string>());\n     }\n \n     private HttpClient CreateAuthenticatedClient()\ndiff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n+++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs\n@@ -199,8 +199,7 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>\n                 [\"executed\"] = JsonValue.Create(true)\n             };\n \n-            return Task.FromResult(new ToolExecutionResult(\n-                $\"Executed '{request.ToolName}' in the test tool executor.\",\n-                payload));\n+            return Task.FromResult(ToolExecutionResult.Succeeded(request.ToolName, request.ActionType, payload));\n         }\n     }\nEND_OF_PATCH\ntokens used\n77,506\n",
+  "verbosityMode": "summary"
+}

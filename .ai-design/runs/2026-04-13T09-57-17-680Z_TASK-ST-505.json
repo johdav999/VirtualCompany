@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-505",
+  "promptPath": ".ai-design/prompts/TASK-ST-505.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T09:57:17.680Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T09-57-17-680Z_TASK-ST-505_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T09-57-17-680Z_TASK-ST-505.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T10:03:40.142Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "             dashboardEntry = null;\n         }\n         finally\n@@ -217,4 +257,10 @@ else\n     }\n \n     private bool IsWelcomeEntry() => string.Equals(Welcome, \"onboarding\", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, \"1\", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, \"true\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string FirstParagraph(string value)\n+    {\n+        var paragraph = value.Split('\\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;\n+        return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + \"...\";\n+    }\n }\ndiff --git a/README.md b/README.md\nindex 9f2f5ef..f8116aa 100644\n--- a/README.md\n+++ b/README.md\n@@ -131,3 +131,12 @@ Health endpoints:\n - `/health/live` verifies process liveness.\n - `/health/ready` verifies the database connection and registered dependencies needed to serve tenant traffic.\n - All health responses include the current correlation id when one is present on the request.\n+\n+## Executive Briefings\n+\n+TASK-ST-505 adds a deterministic v1 briefing pipeline. The `BriefingScheduler` hosted service scans tenant companies and generates one daily briefing and one weekly executive summary per company-period, using company timezone windows and an idempotent `(company_id, briefing_type, period_start_at, period_end_at)` key.\n+\n+Briefings aggregate pending approvals, task status highlights, open workflow exceptions, and recent agent tool execution activity. Generated output is stored in `company_briefings`, projected to the executive briefing conversation when an active user exists, and fan-out notification rows are written to `company_notifications`.\n+\n+Users can read and update in-app/mobile delivery preferences at `api/companies/{companyId}/briefings/preferences`. In-app delivery defaults on, mobile defaults off, and daily/weekly cadence preferences default on. Push provider and email dispatch are intentionally out of scope for this slice.\nEND_OF_PATCH\n",
+  "stderrTail": "rdEntry = null;\n         }\n         finally\n@@ -217,4 +257,10 @@ else\n     }\n \n     private bool IsWelcomeEntry() => string.Equals(Welcome, \"onboarding\", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, \"1\", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, \"true\", StringComparison.OrdinalIgnoreCase);\n+\n+    private static string FirstParagraph(string value)\n+    {\n+        var paragraph = value.Split('\\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;\n+        return paragraph.Length <= 320 ? paragraph : paragraph[..320].TrimEnd() + \"...\";\n+    }\n }\ndiff --git a/README.md b/README.md\nindex 9f2f5ef..f8116aa 100644\n--- a/README.md\n+++ b/README.md\n@@ -131,3 +131,12 @@ Health endpoints:\n - `/health/live` verifies process liveness.\n - `/health/ready` verifies the database connection and registered dependencies needed to serve tenant traffic.\n - All health responses include the current correlation id when one is present on the request.\n+\n+## Executive Briefings\n+\n+TASK-ST-505 adds a deterministic v1 briefing pipeline. The `BriefingScheduler` hosted service scans tenant companies and generates one daily briefing and one weekly executive summary per company-period, using company timezone windows and an idempotent `(company_id, briefing_type, period_start_at, period_end_at)` key.\n+\n+Briefings aggregate pending approvals, task status highlights, open workflow exceptions, and recent agent tool execution activity. Generated output is stored in `company_briefings`, projected to the executive briefing conversation when an active user exists, and fan-out notification rows are written to `company_notifications`.\n+\n+Users can read and update in-app/mobile delivery preferences at `api/companies/{companyId}/briefings/preferences`. In-app delivery defaults on, mobile defaults off, and daily/weekly cadence preferences default on. Push provider and email dispatch are intentionally out of scope for this slice.\nEND_OF_PATCH\ntokens used\n175,382\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-12.2.3",
+  "promptPath": ".ai-design/prompts/TASK-12.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T11:14:58.685Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T11-14-58-685Z_TASK-12.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T11-14-58-685Z_TASK-12.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T11:17:37.408Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "equestId\"] = approvalId.ToString()\n+            },\n+            correlationId: \"corr-audit-detail\",\n+            occurredUtc: now));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));\n+\n+        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);\n+\n+        var linkedApproval = Assert.Single(detail.LinkedApprovals);\n+        Assert.Equal(approvalId, linkedApproval.Id);\n+        Assert.Equal(\"threshold\", linkedApproval.ApprovalType);\n+        var linkedExecution = Assert.Single(detail.LinkedToolExecutions);\n+        Assert.Equal(executionId, linkedExecution.Id);\n+        Assert.Equal(\"payments\", linkedExecution.ToolName);\n+        Assert.Equal(\"Finance Agent\", linkedExecution.AgentLabel);\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.WorkTask && entity.EntityId == taskId.ToString());\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.AgentToolExecution && entity.EntityId == executionId.ToString());\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.ApprovalRequest && entity.EntityId == approvalId.ToString());\n+    }\n+\n     private static AuditEvent CreateAuditEvent(\n         Guid id,\n         Guid companyId,\n@@ -260,5 +363,9 @@ public sealed class AuditQueryServiceTests\n         public ResolvedCompanyMembershipContext? Membership => null;\n         public void SetCompanyId(Guid? companyId) => CompanyId = companyId;\n         public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;\n     }\n+\n+    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] values) =>\n+        values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "alId.ToString()\n+            },\n+            correlationId: \"corr-audit-detail\",\n+            occurredUtc: now));\n+        await dbContext.SaveChangesAsync();\n+\n+        var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));\n+\n+        var detail = await service.GetAsync(companyId, auditEventId, CancellationToken.None);\n+\n+        var linkedApproval = Assert.Single(detail.LinkedApprovals);\n+        Assert.Equal(approvalId, linkedApproval.Id);\n+        Assert.Equal(\"threshold\", linkedApproval.ApprovalType);\n+        var linkedExecution = Assert.Single(detail.LinkedToolExecutions);\n+        Assert.Equal(executionId, linkedExecution.Id);\n+        Assert.Equal(\"payments\", linkedExecution.ToolName);\n+        Assert.Equal(\"Finance Agent\", linkedExecution.AgentLabel);\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.WorkTask && entity.EntityId == taskId.ToString());\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.AgentToolExecution && entity.EntityId == executionId.ToString());\n+        Assert.Contains(detail.AffectedEntities, entity => entity.EntityType == AuditTargetTypes.ApprovalRequest && entity.EntityId == approvalId.ToString());\n+    }\n+\n     private static AuditEvent CreateAuditEvent(\n         Guid id,\n         Guid companyId,\n@@ -260,5 +363,9 @@ public sealed class AuditQueryServiceTests\n         public ResolvedCompanyMembershipContext? Membership => null;\n         public void SetCompanyId(Guid? companyId) => CompanyId = companyId;\n         public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;\n     }\n+\n+    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] values) =>\n+        values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);\n }\nEND_OF_PATCH\ntokens used\n60,709\n",
+  "verbosityMode": "summary"
+}

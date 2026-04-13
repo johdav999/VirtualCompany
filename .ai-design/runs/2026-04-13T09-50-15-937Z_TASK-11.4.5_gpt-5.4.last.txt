@@ -1,0 +1,206 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/MultiAgentCoordinator.cs
+@@ -91,7 +91,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 WorkTaskPriority.Normal.ToStorageValue(),
+                 null,
+                 command.CoordinatorAgentId,
+-                BuildParentInputPayload(command, planId, limits, correlationId, workers, workersWereAutoSelected),
++                BuildParentInputPayload(command, planId, limits, correlationId, workers),
+                 null,
+                 command.WorkflowInstanceId,
+                 null,
+@@ -114,7 +114,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+                 ["planId"] = planId.ToString("N"),
+                 ["workerCount"] = workers.Count.ToString(),
+                 ["maxWorkers"] = limits.MaxWorkers.ToString(),
+-                ["maxDepth"] = limits.MaxDepth.ToString()
++                ["maxDepth"] = limits.MaxDepth.ToString(),
+                 ["maxTotalSteps"] = limits.MaxTotalSteps.ToString()
+             },
+             cancellationToken);
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -314,19 +314,29 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             return request.PolicyInstructions;
+         }
+ 
++        var instructions = new List<PolicyInstruction>
++        {
++            new("default_deny", DefaultPolicyInstruction, "prompt_builder_default", 0),
++            new("tenant_scope", "Use only context scoped to the request CompanyId and selected AgentId.", "orchestration_context", 10),
++            new("tool_permissions", $"Tool permissions snapshot: {JsonSerializer.Serialize(request.RuntimeContext.Agent.ToolPermissions, JsonOptions)}", "agent_runtime_profile", 20),
++            new("data_scopes", $"Data scopes snapshot: {JsonSerializer.Serialize(request.RuntimeContext.Agent.DataScopes, JsonOptions)}", "agent_runtime_profile", 30),
++            new("approval_thresholds", $"Approval thresholds snapshot: {JsonSerializer.Serialize(request.RuntimeContext.Agent.ApprovalThresholds, JsonOptions)}", "agent_runtime_profile", 40),
++            new("escalation_rules", $"Escalation rules snapshot: {JsonSerializer.Serialize(request.RuntimeContext.Agent.EscalationRules, JsonOptions)}", "agent_runtime_profile", 50)
++        };
++
++        if (IsManagerWorkerSubtask(request.RuntimeContext))
++        {
++            instructions.Add(new PolicyInstruction(
++                "manager_worker_topology",
++                "Manager-worker collaboration topology: this worker must complete only the assigned subtask, must not message or coordinate with other workers, must not create subtasks or request further delegation, and must return concise structured findings to the manager/coordinator for consolidation.",
++                "manager_worker_collaboration",
++                60));
++        }
++
++        return instructions;
++    }
++
++    private static bool IsManagerWorkerSubtask(SingleAgentRuntimeContext context) =>
++        string.Equals(context.Task.Type, MultiAgentCollaborationTaskTypes.WorkerSubtask, StringComparison.OrdinalIgnoreCase) ||
++        TryGetString(context.Task.InputPayload, "collaborationRole", out var role) &&
++        string.Equals(role, "worker_subtask", StringComparison.OrdinalIgnoreCase);
++
+-        var agent = request.RuntimeContext.Agent;
+-        return
+-        [
+-            new("default_deny", DefaultPolicyInstruction, "prompt_builder_default", 0),
+-            new("tenant_scope", "Use only context scoped to the request CompanyId and selected AgentId.", "orchestration_context", 10),
+-            new("tool_permissions", $"Tool permissions snapshot: {JsonSerializer.Serialize(agent.ToolPermissions, JsonOptions)}", "agent_runtime_profile", 20),
+-            new("data_scopes", $"Data scopes snapshot: {JsonSerializer.Serialize(agent.DataScopes, JsonOptions)}", "agent_runtime_profile", 30),
+-            new("approval_thresholds", $"Approval thresholds snapshot: {JsonSerializer.Serialize(agent.ApprovalThresholds, JsonOptions)}", "agent_runtime_profile", 40),
+-            new("escalation_rules", $"Escalation rules snapshot: {JsonSerializer.Serialize(agent.EscalationRules, JsonOptions)}", "agent_runtime_profile", 50)
+-        ];
+-    }
+-
+     private static IEnumerable<ToolSchemaDefinition> ResolveToolSchemas(PromptBuildRequest request)
+     {
+         if (request.ToolSchemas is { Count: > 0 })
+@@ -450,6 +460,15 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             return;
+         }
+ 
++        if (IsManagerWorkerSubtask(context))
++        {
++            payload["collaborationContract"] = JsonSerializer.SerializeToNode(new
++            {
++                topology = "manager_worker",
++                allowedCommunicationPath = "manager_to_worker_to_manager",
++                workerToWorkerMessagingAllowed = false,
++                furtherDelegationAllowed = false
++            }, JsonOptions);
++        }
++
+         return new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["schemaVersion"] = JsonValue.Create("2026-04-13"),
+@@ -514,6 +533,16 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         }
+     }
+ 
++    private static bool TryGetString(IReadOnlyDictionary<string, JsonNode?> payload, string key, out string value)
++    {
++        value = string.Empty;
++        if (!payload.TryGetValue(key, out var node) || node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var parsed))
++        {
++            return false;
++        }
++
++        value = parsed;
++        return true;
++    }
++
+     private static string JoinOrNone(IEnumerable<string> values)
+     {
+         var normalized = values
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -372,7 +372,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         SingleAgentRuntimeContext context,
+         IReadOnlyList<PromptSectionDto> sections,
+         IReadOnlyList<PromptMessageDto> messages,
+@@ -381,7 +381,8 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         IReadOnlyList<ToolSchemaDefinition> toolSchemas) =>
+-        new(StringComparer.OrdinalIgnoreCase)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+             ["schemaVersion"] = JsonValue.Create("2026-04-13"),
+             ["companyId"] = JsonValue.Create(context.Company.CompanyId.ToString("N")),
+@@ -409,7 +410,20 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                 toolExecutionReferences = "Structured tool execution references when available.",
+                 rationaleSummary = "Concise explanation summary only; do not expose hidden reasoning."
+             }, JsonOptions)
+-        };
++        };
++
++        if (IsManagerWorkerSubtask(context))
++        {
++            payload["collaborationContract"] = JsonSerializer.SerializeToNode(new
++            {
++                topology = "manager_worker",
++                allowedCommunicationPath = "manager_to_worker_to_manager",
++                workerToWorkerMessagingAllowed = false,
++                furtherDelegationAllowed = false
++            }, JsonOptions);
++        }
++
++        return payload;
++    }
+ 
+     private static Guid CreateDeterministicPromptId(
+         SingleAgentRuntimeContext context,
+diff --git a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+--- a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+@@ -72,6 +72,27 @@ public sealed class PromptBuilderTests
+         Assert.Contains("agent", result.Sections[0].Metadata.Keys, StringComparer.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public void Build_includes_manager_worker_topology_for_worker_subtasks()
++    {
++        var builder = new StructuredPromptBuilder();
++        var context = CreateRuntimeContext(
++            taskType: MultiAgentCollaborationTaskTypes.WorkerSubtask,
++            inputPayload: Payload(
++                ("collaborationRole", JsonValue.Create("worker_subtask")),
++                ("allowFurtherDelegation", JsonValue.Create(false))));
++
++        var result = builder.Build(new PromptBuildRequest(context));
++
++        var policies = Assert.Single(result.Sections, x => x.Id == PromptSectionIds.Policies);
++        Assert.Contains("manager_worker_topology", policies.Content);
++        Assert.Contains("must not message or coordinate with other workers", policies.Content);
++        Assert.Contains("must not create subtasks or request further delegation", policies.Content);
++        Assert.NotNull(result.Payload["collaborationContract"]);
++        Assert.Equal("manager_worker", result.Payload["collaborationContract"]!["topology"]!.GetValue<string>());
++        Assert.Equal("manager_to_worker_to_manager", result.Payload["collaborationContract"]!["allowedCommunicationPath"]!.GetValue<string>());
++        Assert.False(result.Payload["collaborationContract"]!["workerToWorkerMessagingAllowed"]!.GetValue<bool>());
++    }
++
+     [Fact]
+     public void Build_is_deterministic_for_same_input()
+     {
+@@ -88,7 +109,9 @@ public sealed class PromptBuilderTests
+ 
+     private static SingleAgentRuntimeContext CreateRuntimeContext(
+         GroundedPromptContextDto? groundedContext = null,
+-        IReadOnlyList<ToolMetadataDto>? availableTools = null)
++        IReadOnlyList<ToolMetadataDto>? availableTools = null,
++        string taskType = "finance_execution",
++        Dictionary<string, JsonNode?>? inputPayload = null)
+     {
+         var companyId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+         var agentId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+@@ -102,7 +125,7 @@ public sealed class PromptBuilderTests
+                 taskId,
+                 companyId,
+-                "finance_execution",
++                taskType,
+                 "Pay approved invoice",
+                 "Run the approved payment action with tenant-scoped context.",
+                 "normal",
+@@ -115,7 +138,7 @@ public sealed class PromptBuilderTests
+                 null,
+                 "user",
+                 Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+-                Payload(("invoiceId", JsonValue.Create("inv-100"))),
++                inputPayload ?? Payload(("invoiceId", JsonValue.Create("inv-100"))),
+                 [],
+                 null,
+                 null,
+END_OF_PATCH

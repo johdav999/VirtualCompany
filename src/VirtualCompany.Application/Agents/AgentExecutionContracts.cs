@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Nodes;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Agents;
 
@@ -11,7 +12,10 @@ public sealed record ExecuteAgentToolCommand(
     string? ThresholdCategory,
     string? ThresholdKey,
     decimal? ThresholdValue,
-    bool SensitiveAction = false);
+    bool SensitiveAction = false,
+    Guid? TaskId = null,
+    Guid? WorkflowInstanceId = null,
+    string? CorrelationId = null);
 
 public sealed record ExecuteAgentToolResultDto(
     Guid ExecutionId,
@@ -20,7 +24,52 @@ public sealed record ExecuteAgentToolResultDto(
     ToolExecutionDecisionDto PolicyDecision,
     Dictionary<string, JsonNode?>? ExecutionResult,
     string Message,
-    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null);
+    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null,
+    ToolExecutionDenialDto? Denial = null);
+
+public sealed record ToolExecutionDenialDto(
+    string Code,
+    string UserFacingMessage,
+    IReadOnlyList<string> ReasonCodes,
+    string RationaleSummary,
+    Dictionary<string, JsonNode?> Metadata,
+    string SchemaVersion = PolicyDecisionSchemaVersions.V1)
+{
+    public static ToolExecutionDenialDto FromDecision(ToolExecutionDecisionDto decision, string userFacingMessage)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+
+        var primaryReasonCode = decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code));
+        var rationaleSummary = decision.Reasons?.FirstOrDefault(reason =>
+            string.Equals(reason.Code, primaryReasonCode, StringComparison.OrdinalIgnoreCase))?.Summary
+            ?? "Action blocked by policy before execution.";
+
+        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["policyOutcome"] = JsonValue.Create(decision.Outcome),
+            ["policyDecisionSchemaVersion"] = JsonValue.Create(decision.SchemaVersion),
+            ["primaryReasonCode"] = string.IsNullOrWhiteSpace(primaryReasonCode) ? null : JsonValue.Create(primaryReasonCode),
+            ["policyEvaluationVersion"] = string.IsNullOrWhiteSpace(decision.Audit?.PolicyVersion) ? null : JsonValue.Create(decision.Audit.PolicyVersion),
+            ["policyCorrelationId"] = string.IsNullOrWhiteSpace(decision.Audit?.CorrelationId) ? null : JsonValue.Create(decision.Audit.CorrelationId),
+            ["executionId"] = decision.Audit is null ? null : JsonValue.Create(decision.Audit.ExecutionId),
+            ["toolName"] = string.IsNullOrWhiteSpace(decision.Tool?.ToolName) ? null : JsonValue.Create(decision.Tool.ToolName),
+            ["actionType"] = string.IsNullOrWhiteSpace(decision.Tool?.ActionType) ? null : JsonValue.Create(decision.Tool.ActionType),
+            ["scope"] = string.IsNullOrWhiteSpace(decision.Tool?.Scope) ? null : JsonValue.Create(decision.Tool.Scope),
+            ["companyId"] = decision.Tenant is null ? null : JsonValue.Create(decision.Tenant.CompanyId),
+            ["agentId"] = decision.Actor is null ? null : JsonValue.Create(decision.Actor.AgentId)
+        };
+
+        return new ToolExecutionDenialDto(
+            "policy_denied",
+            string.IsNullOrWhiteSpace(userFacingMessage)
+                ? "This action was blocked by policy."
+                : userFacingMessage.Trim(),
+            decision.ReasonCodes.ToArray(),
+            rationaleSummary,
+            metadata,
+            decision.SchemaVersion);
+    }
+}
 
 public static class PolicyDecisionSchemaVersions
 {
@@ -111,7 +160,7 @@ public sealed record PolicyEvaluationRequest(
     IReadOnlyDictionary<string, JsonNode?> ApprovalThresholds,
     IReadOnlyDictionary<string, JsonNode?> EscalationRules,
     string ToolName,
-    string ActionType,
+    ToolActionType? ActionType,
     string? Scope,
     IReadOnlyDictionary<string, JsonNode?> RequestPayload,
     string? ThresholdCategory,
@@ -125,13 +174,88 @@ public sealed record ToolExecutionRequest(
     Guid CompanyId,
     Guid AgentId,
     string ToolName,
-    string ActionType,
+    ToolActionType ActionType,
     string? Scope,
-    IReadOnlyDictionary<string, JsonNode?> RequestPayload);
+    IReadOnlyDictionary<string, JsonNode?> RequestPayload,
+    Guid? TaskId = null,
+    Guid? WorkflowInstanceId = null,
+    string? CorrelationId = null,
+    Guid ExecutionId = default);
 
 public sealed record ToolExecutionResult(
-    string Summary,
-    Dictionary<string, JsonNode?> Payload);
+    bool Success,
+    string Status,
+    string ToolName,
+    ToolActionType ActionType,
+    Dictionary<string, JsonNode?> Payload,
+    string? ErrorCode = null,
+    string? ErrorMessage = null,
+    Dictionary<string, JsonNode?>? Metadata = null)
+{
+    public const string SchemaVersion = "2026-04-13";
+    public string ActionTypeValue => ActionType.ToStorageValue();
+
+    public string Summary =>
+        string.IsNullOrWhiteSpace(ErrorMessage)
+            ? $"{ToolName} {ActionTypeValue} completed with status '{Status}'."
+            : ErrorMessage!;
+
+    public Dictionary<string, JsonNode?> ToStructuredPayload()
+    {
+        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["schemaVersion"] = JsonValue.Create(SchemaVersion),
+            ["success"] = JsonValue.Create(Success),
+            ["status"] = JsonValue.Create(Status),
+            ["toolName"] = JsonValue.Create(ToolName),
+            ["actionType"] = JsonValue.Create(ActionTypeValue),
+            ["payload"] = ToJsonObject(Payload),
+            ["errorCode"] = string.IsNullOrWhiteSpace(ErrorCode) ? null : JsonValue.Create(ErrorCode),
+            ["errorMessage"] = string.IsNullOrWhiteSpace(ErrorMessage) ? null : JsonValue.Create(ErrorMessage),
+            ["metadata"] = ToJsonObject(Metadata)
+        };
+
+        foreach (var (key, value) in Payload)
+        {
+            payload.TryAdd(key, value?.DeepClone());
+        }
+
+        return payload;
+    }
+
+    public static ToolExecutionResult Succeeded(
+        string toolName,
+        ToolActionType actionType,
+        Dictionary<string, JsonNode?> payload,
+        Dictionary<string, JsonNode?>? metadata = null) =>
+        new(true, "executed", toolName, actionType, CloneNodes(payload), Metadata: CloneNodes(metadata));
+
+    public static ToolExecutionResult Failed(
+        string toolName,
+        ToolActionType actionType,
+        string status,
+        string errorCode,
+        string errorMessage,
+        Dictionary<string, JsonNode?>? payload = null,
+        Dictionary<string, JsonNode?>? metadata = null) =>
+        new(false, status, toolName, actionType, CloneNodes(payload), errorCode, errorMessage, CloneNodes(metadata));
+
+    private static JsonObject ToJsonObject(IReadOnlyDictionary<string, JsonNode?>? nodes)
+    {
+        var jsonObject = new JsonObject();
+        foreach (var (key, value) in CloneNodes(nodes))
+        {
+            jsonObject[key] = value?.DeepClone();
+        }
+
+        return jsonObject;
+    }
+
+    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
+        nodes is null || nodes.Count == 0
+            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+}
 
 public interface IPolicyGuardrailEngine
 {
@@ -184,6 +308,7 @@ public static class PolicyDecisionReasonCodes
     public const string ToolNotConfigured = "tool_not_configured";
     public const string ToolExplicitlyDenied = "tool_explicitly_denied";
     public const string ToolNotPermitted = "tool_not_permitted";
+    public const string ToolActionNotPermitted = "tool_action_not_permitted";
     public const string TenantScopeViolation = "tenant_scope_violation";
     public const string DataScopeViolation = "data_scope_violation";
     public const string ScopeNotPermitted = "scope_not_permitted";
