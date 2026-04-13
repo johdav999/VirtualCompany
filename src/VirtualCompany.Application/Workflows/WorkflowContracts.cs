@@ -144,6 +144,12 @@ public sealed record WorkflowSchedulerRunResult(
     int WorkflowsStarted,
     int Failures);
 
+public sealed record WorkflowProgressionRunResult(
+    bool LockAcquired,
+    int InstancesScanned,
+    int InstancesAdvanced,
+    int Failures);
+
 public interface ICompanyWorkflowService
 {
     Task<IReadOnlyList<WorkflowCatalogItemDto>> ListCatalogAsync(Guid companyId, CancellationToken cancellationToken);
@@ -235,6 +241,19 @@ public interface IWorkflowSchedulerCoordinator
     Task<WorkflowSchedulerRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken);
 }
 
+public interface IWorkflowProgressionService
+{
+    Task<WorkflowProgressionRunResult> RunRunnableInstancesAsync(
+        DateTime utcNow,
+        int batchSize,
+        CancellationToken cancellationToken);
+}
+
+public interface IWorkflowProgressionCoordinator
+{
+    Task<WorkflowProgressionRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken);
+}
+
 public interface IDistributedLockProvider
 {
     Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken);
@@ -257,4 +276,12 @@ public sealed class WorkflowValidationException : Exception
         Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
 
     public IReadOnlyDictionary<string, string[]> Errors { get; }
+}
+
+public sealed class WorkflowBlockedException : Exception
+{
+    public WorkflowBlockedException(string message)
+        : base(string.IsNullOrWhiteSpace(message) ? "Workflow progression is blocked and requires review." : message)
+    {
+    }
 }

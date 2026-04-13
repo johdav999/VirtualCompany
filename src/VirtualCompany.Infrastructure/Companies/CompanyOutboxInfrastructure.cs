@@ -6,6 +6,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.BackgroundExecution;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Domain.Entities;
@@ -31,12 +33,15 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ILogger<CompanyOutboxEnqueuer> _logger;
+    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
 
     public CompanyOutboxEnqueuer(
         VirtualCompanyDbContext dbContext,
+        IBackgroundExecutionIdentityFactory identityFactory,
         ILogger<CompanyOutboxEnqueuer> logger)
     {
         _dbContext = dbContext;
+        _identityFactory = identityFactory;
         _logger = logger;
     }
 
@@ -47,8 +52,13 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
         string? correlationId = null,
         DateTime? availableAtUtc = null,
         string? idempotencyKey = null,
-        string? messageType = null)
+        string? messageType = null,
+        string? causationId = null,
+        IReadOnlyDictionary<string, string?>? headers = null)
     {
+        var messageTypeValue = ResolveMessageType(payload, topic, messageType);
+        var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
+        var effectiveCorrelationId = _identityFactory.EnsureCorrelationId(correlationId);
         var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
             ? null
             : idempotencyKey.Trim();
@@ -67,11 +77,13 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
             Guid.NewGuid(),
             companyId,
             topic,
-            JsonSerializer.Serialize(payload, SerializerOptions),
-            correlationId: correlationId,
-            messageType: ResolveMessageType(payload, topic, messageType),
+            payloadJson,
+            correlationId: effectiveCorrelationId,
+            messageType: messageTypeValue,
             availableUtc: availableAtUtc,
-            idempotencyKey: normalizedIdempotencyKey);
+            idempotencyKey: normalizedIdempotencyKey,
+            causationId: causationId,
+            headersJson: SerializeHeaders(headers));
 
         _dbContext.CompanyOutboxMessages.Add(outboxMessage);
 
@@ -116,6 +128,16 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
             : typeName;
     }
 
+    private static string? SerializeHeaders(IReadOnlyDictionary<string, string?>? headers)
+    {
+        if (headers is null || headers.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Serialize(headers, SerializerOptions);
+    }
+
     private static JsonSerializerOptions CreateSerializerOptions()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -146,18 +168,30 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly ILogger<CompanyOutboxProcessor> _logger;
+    private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
         IOptions<CompanyOutboxDispatcherOptions> options,
         IBackgroundJobExecutor backgroundJobExecutor,
+        IBackgroundExecutionRecorder backgroundExecutionRecorder,
+        IBackgroundExecutionRetryPolicy retryPolicy,
+        IBackgroundExecutionIdentityFactory identityFactory,
+        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         ILogger<CompanyOutboxProcessor> logger)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
         _options = options;
         _backgroundJobExecutor = backgroundJobExecutor;
+        _backgroundExecutionRecorder = backgroundExecutionRecorder;
+        _retryPolicy = retryPolicy;
+        _identityFactory = identityFactory;
+        _companyExecutionScopeFactory = companyExecutionScopeFactory;
         _logger = logger;
     }
 
@@ -168,6 +202,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         foreach (var message in claimedMessages)
         {
+            using var tenantScope = _companyExecutionScopeFactory.BeginScope(message.CompanyId);
             using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(
                 message.Id,
                 message.CompanyId,
@@ -178,15 +213,34 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
             var attempt = message.AttemptCount + 1;
             _logger.LogInformation("Dispatching company outbox message {Topic} ({MessageType}) on attempt {Attempt}.", message.Topic, message.MessageType ?? message.Topic, attempt);
+            var dispatchIdentity = _identityFactory.FromExisting(
+                message.CompanyId,
+                message.CorrelationId ?? message.ClaimToken ?? _identityFactory.CreateCorrelationId(),
+                message.IdempotencyKey ?? _identityFactory.CreateIdempotencyKey("company-outbox-dispatch", message.CompanyId, message.Id));
+
+            var executionRecord = await _backgroundExecutionRecorder.StartAsync(
+                message.CompanyId,
+                BackgroundExecutionType.OutboxDispatch,
+                BackgroundExecutionRelatedEntityTypes.OutboxMessage,
+                message.Id.ToString("N"),
+                dispatchIdentity.CorrelationId,
+                dispatchIdentity.IdempotencyKey,
+                attempt,
+                MaxAttempts,
+                cancellationToken);
+            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
+
             var execution = await _backgroundJobExecutor.ExecuteAsync(
                 new BackgroundJobExecutionContext(
                     $"company-outbox:{message.Topic}",
                     attempt,
                     MaxAttempts,
                     message.CompanyId,
-                    message.CorrelationId ?? message.ClaimToken),
+                    dispatchIdentity.CorrelationId,
+                    dispatchIdentity.IdempotencyKey,
+                    requireCompanyContext: true),
                 innerCancellationToken => DispatchAsync(message, innerCancellationToken),
-                GetRetryDelay(attempt),
+                retryDelay,
                 cancellationToken);
 
             switch (execution.Outcome)
@@ -198,10 +252,12 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         message.Topic,
                         message.MessageType ?? message.Topic,
                         attempt);
+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
                     break;
                 case BackgroundJobExecutionOutcome.PermanentFailure:
+                case BackgroundJobExecutionOutcome.Blocked:
                 case BackgroundJobExecutionOutcome.RetryExhausted:
                     message.MarkDiscarded(ResolveFailureMessage(execution));
                     _logger.LogError(
@@ -209,6 +265,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         message.Topic,
                         message.MessageType ?? message.Topic,
                         attempt);
+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     handledCount++;
                     break;
@@ -217,11 +274,13 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                     var nextAttemptAtUtc = DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero);
                     message.ScheduleRetry(nextAttemptAtUtc, ResolveFailureMessage(execution));
                     _logger.LogWarning(
-                        "Retry scheduled for company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Next attempt at {AvailableUtc}.",
+                        "Retry scheduled for company outbox message {Topic} ({MessageType}) after attempt {Attempt}. FailureClassification: {FailureClassification}. Next attempt at {AvailableUtc}.",
                         message.Topic,
                         message.MessageType ?? message.Topic,
                         attempt,
+                        execution.FailureClassification,
                         nextAttemptAtUtc);
+                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
                     break;
                 }
@@ -234,19 +293,6 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private int BatchSize => Math.Max(1, _options.Value.BatchSize);
     private int MaxAttempts => Math.Max(1, _options.Value.MaxAttempts);
 
-    private TimeSpan GetRetryDelay(int attempt)
-    {
-        var baseDelaySeconds = Math.Max(0, _options.Value.RetryDelaySeconds);
-        if (baseDelaySeconds == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var multiplier = Math.Pow(2d, Math.Max(0, attempt - 1));
-        var delaySeconds = Math.Min(baseDelaySeconds * multiplier, TimeSpan.FromMinutes(15).TotalSeconds);
-        return TimeSpan.FromSeconds(delaySeconds);
-    }
-
     private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) => string.IsNullOrWhiteSpace(execution.ErrorMessage) ? "Unhandled company outbox processing failure." : execution.ErrorMessage;
     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.Value.ClaimTimeoutSeconds));
 
@@ -254,48 +300,54 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     {
         var utcNow = DateTime.UtcNow;
         var claimToken = Guid.NewGuid().ToString("N");
+        var claimStaleBeforeUtc = utcNow.Subtract(ClaimTimeout);
 
-        var candidates = await _dbContext.CompanyOutboxMessages
+        var candidateIds = await _dbContext.CompanyOutboxMessages
+            .AsNoTracking()
             .Where(x => x.ProcessedUtc == null &&
+                        x.Status != CompanyOutboxMessageStatus.InProgress &&
                         x.AvailableUtc <= utcNow &&
-                        (x.ClaimedUtc == null || x.ClaimedUtc <= utcNow - ClaimTimeout))
+                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
             .OrderBy(x => x.AvailableUtc)
             .ThenBy(x => x.CreatedUtc)
             .Take(BatchSize)
-            .ToListAsync(cancellationToken);
+            .Select(x => x.Id)
+            .ToArrayAsync(cancellationToken);
 
-        if (candidates.Count == 0)
+        if (candidateIds.Length == 0)
         {
             return [];
         }
 
-        foreach (var candidate in candidates)
-        {
-            candidate.TryClaim(claimToken, utcNow, ClaimTimeout);
-        }
+        // The conditional update is the outbox lease. Competing dispatchers may see
+        // the same candidate ids, but only one can move each row to InProgress.
+        await _dbContext.CompanyOutboxMessages
+            .Where(x => candidateIds.Contains(x.Id) &&
+                        x.ProcessedUtc == null &&
+                        x.Status != CompanyOutboxMessageStatus.InProgress &&
+                        x.AvailableUtc <= utcNow &&
+                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.ClaimToken, claimToken)
+                .SetProperty(x => x.ClaimedUtc, (DateTime?)utcNow)
+                .SetProperty(x => x.Status, CompanyOutboxMessageStatus.InProgress)
+                .SetProperty(x => x.LastError, (string?)null),
+                cancellationToken);
 
-        try
-        {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            _logger.LogDebug(ex, "Company outbox claim contention detected.");
-            foreach (var entry in ex.Entries)
-            {
-                entry.State = EntityState.Detached;
-            }
-
-            return [];
-        }
-
-        return candidates
-            .Where(x => string.Equals(x.ClaimToken, claimToken, StringComparison.Ordinal))
-            .ToArray();
+        return await _dbContext.CompanyOutboxMessages
+            .Where(x => x.ClaimToken == claimToken && x.Status == CompanyOutboxMessageStatus.InProgress)
+            .OrderBy(x => x.AvailableUtc)
+            .ThenBy(x => x.CreatedUtc)
+            .ToArrayAsync(cancellationToken);
     }
 
     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
     {
+        if (message.CompanyId == Guid.Empty)
+        {
+            throw new CompanyOutboxPermanentException("Company outbox message is missing tenant context.");
+        }
+
         switch (message.Topic)
         {
             case CompanyOutboxTopics.InvitationDeliveryRequested:
@@ -351,13 +403,16 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyInvitationSender _invitationSender;
     private readonly ILogger<CompanyInvitationDeliveryDispatcher> _logger;
+    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
 
     public CompanyInvitationDeliveryDispatcher(
         VirtualCompanyDbContext dbContext,
         ICompanyInvitationSender invitationSender,
+        IBackgroundExecutionIdentityFactory identityFactory,
         ILogger<CompanyInvitationDeliveryDispatcher> logger)
     {
         _dbContext = dbContext;
+        _identityFactory = identityFactory;
         _invitationSender = invitationSender;
         _logger = logger;
     }
@@ -369,9 +424,10 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
             .SingleOrDefaultAsync(x => x.CompanyId == message.CompanyId && x.Id == message.InvitationId, cancellationToken)
             ?? throw new CompanyOutboxPermanentException($"Company invitation '{message.InvitationId}' was not found.");
 
-        var correlationId = string.IsNullOrWhiteSpace(message.CorrelationId)
-            ? Guid.NewGuid().ToString("N")
-            : message.CorrelationId;
+        var correlationId = _identityFactory.EnsureCorrelationId(message.CorrelationId);
+        using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(
+            correlationId,
+            invitation.CompanyId));
 
         invitation.SyncExpiration(DateTime.UtcNow);
         if (invitation.Status != CompanyInvitationStatus.Pending)

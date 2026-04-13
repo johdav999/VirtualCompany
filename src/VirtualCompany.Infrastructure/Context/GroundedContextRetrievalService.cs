@@ -544,7 +544,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
                     ["toolName"] = x.ToolName,
                     ["approvalTarget"] = x.ApprovalTarget,
                     ["actionType"] = x.ActionType.ToStorageValue(),
-                    ["toolExecutionAttemptId"] = x.ToolExecutionAttemptId.ToString("N")
+                    ["toolExecutionAttemptId"] = x.ToolExecutionAttemptId?.ToString("N")
                 })));
 
         var ordered = items

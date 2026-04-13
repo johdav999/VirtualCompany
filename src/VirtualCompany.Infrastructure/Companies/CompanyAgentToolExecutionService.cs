@@ -129,7 +129,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 ToolActionTypeValues.Parse(command.ActionType),
                 TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
                 BuildThresholdContext(command, decision),
-                serializedDecision);
+                serializedDecision,
+                null);
+            var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, membership.UserId);
+            approvalRequest.SetDecisionChain(decisionChain);
 
             _dbContext.ApprovalRequests.Add(approvalRequest);
             attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision);
@@ -157,7 +160,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 approvalRequest.Id,
                 decision,
                 null,
-                BuildCallerMessage(decision));
+                BuildCallerMessage(decision),
+                CloneNodes(decisionChain));
         }
 
         var result = await _companyToolExecutor.ExecuteAsync(
@@ -311,6 +315,67 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
 
         return thresholdContext;
+    }
+
+    private static Dictionary<string, JsonNode?> BuildApprovalDecisionChain(
+        ExecuteAgentToolCommand command,
+        ToolExecutionDecisionDto decision,
+        Guid approvalRequestId,
+        Guid executionId,
+        Guid requestedByUserId)
+    {
+        var steps = new JsonArray
+        {
+            new JsonObject
+            {
+                ["step"] = "policy_evaluation",
+                ["outcome"] = decision.Outcome,
+                ["reasonCodes"] = JsonSerializer.SerializeToNode(decision.ReasonCodes),
+                ["evaluatedAtUtc"] = decision.Audit is null
+                    ? JsonValue.Create(DateTime.UtcNow)
+                    : JsonValue.Create(decision.Audit.EvaluatedAtUtc),
+                ["policyVersion"] = decision.Audit?.PolicyVersion,
+                ["correlationId"] = decision.Audit?.CorrelationId
+            },
+            new JsonObject
+            {
+                ["step"] = "approval_request_created",
+                ["outcome"] = "pending",
+                ["approvalRequestId"] = approvalRequestId,
+                ["requestedByUserId"] = requestedByUserId,
+                ["toolName"] = command.ToolName,
+                ["actionType"] = command.ActionType,
+                ["scope"] = command.Scope,
+                ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
+            }
+        };
+
+        var chain = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
+            ["approvalRequestId"] = JsonValue.Create(approvalRequestId),
+            ["executionId"] = JsonValue.Create(executionId),
+            ["status"] = JsonValue.Create("pending"),
+            ["currentStep"] = JsonValue.Create("approval_request_created"),
+            ["steps"] = steps
+        };
+
+        if (decision.ApprovalRequirement is not null)
+        {
+            chain["approvalRequirement"] = JsonSerializer.SerializeToNode(decision.ApprovalRequirement);
+        }
+
+        if (decision.ThresholdEvaluations is not null && decision.ThresholdEvaluations.Count > 0)
+        {
+            chain["thresholdEvaluations"] = JsonSerializer.SerializeToNode(decision.ThresholdEvaluations);
+        }
+
+        if (decision.Metadata.TryGetValue("approvalRequirementPolicy", out var approvalRequirementPolicy))
+        {
+            chain["approvalRequirementPolicy"] = approvalRequirementPolicy?.DeepClone();
+        }
+
+        return chain;
     }
 
     private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision) =>

@@ -19,7 +19,8 @@ public sealed record ExecuteAgentToolResultDto(
     Guid? ApprovalRequestId,
     ToolExecutionDecisionDto PolicyDecision,
     Dictionary<string, JsonNode?>? ExecutionResult,
-    string Message);
+    string Message,
+    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null);
 
 public static class PolicyDecisionSchemaVersions
 {
@@ -191,6 +192,10 @@ public static class PolicyDecisionReasonCodes
     public const string AutonomyLevelRequiresApproval = "autonomy_level_requires_approval";
     public const string ApprovalRouteMissing = "approval_route_missing";
     public const string ApprovalRequired = "approval_required";
+    public const string ApprovalPending = "approval_pending";
+    public const string ApprovalRejected = "approval_rejected";
+    public const string ApprovalExpired = "approval_expired";
+    public const string ApprovalCancelled = "approval_cancelled";
     public const string ThresholdContextMissing = "threshold_context_missing";
     public const string ThresholdConfigurationMissing = "threshold_configuration_missing";
     public const string ThresholdExceededRequiresApproval = "threshold_exceeded_requires_approval";

@@ -549,7 +549,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                     ["triggerSource"] = triggerSource.ToStorageValue(),
                     ["triggerRef"] = command.TriggerRef
                 },
-                CorrelationId: command.TriggerRef),
+                CorrelationId: ResolveCorrelationId(command)),
             cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -1171,6 +1171,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
 
         return false;
     }
+
+
+    private static string? ResolveCorrelationId(StartWorkflowInstanceCommand command) =>
+        TryGetString(command.InputPayload, "correlationId") ?? command.TriggerRef;
 
     private static string? TryGetString(JsonObject? jsonObject, string key)
     {

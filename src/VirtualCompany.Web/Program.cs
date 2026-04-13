@@ -42,6 +42,11 @@ builder.Services.AddScoped(sp => new WorkflowApiClient(
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new ApprovalApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 
 var app = builder.Build();
 

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.3.7",
+  "promptPath": ".ai-design/prompts/TASK-10.3.7.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T19:53:05.624Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T19-53-05-624Z_TASK-10.3.7_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T19-53-05-624Z_TASK-10.3.7.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T19:55:44.430Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ectionComment { get; set; }\n     public string RationaleSummary { get; set; } = string.Empty;\n     public string AffectedDataSummary { get; set; } = string.Empty;\n     public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];\ndiff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n@@ -102,10 +102,29 @@ public sealed class ApprovalDecisionChainTests\n \n         approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), \"no\");\n \n+        var rejectedStep = approval.Steps.Single(x => x.SequenceNo == 1);\n         Assert.Equal(ApprovalRequestStatus.Rejected, approval.Status);\n         Assert.Equal(\"no\", approval.DecisionSummary);\n+        Assert.Equal(ApprovalStepStatus.Rejected, rejectedStep.Status);\n+        Assert.Equal(\"no\", rejectedStep.Comment);\n         Assert.Null(approval.CurrentActionableStep);\n     }\n \n+    [Fact]\n+    public void Rejecting_active_step_records_trimmed_comment_in_decision_chain()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), \"  Missing invoice attachment.  \");\n+\n+        var rejectedStep = approval.Steps.Single();\n+        Assert.Equal(\"Missing invoice attachment.\", rejectedStep.Comment);\n+        Assert.Equal(\"Missing invoice attachment.\", approval.DecisionSummary);\n+\n+        var steps = Assert.IsType<JsonArray>(approval.DecisionChain[\"steps\"]);\n+        var step = Assert.IsType<JsonObject>(Assert.Single(steps));\n+        Assert.Equal(\"rejected\", step[\"status\"]!.GetValue<string>());\n+        Assert.Equal(\"Missing invoice attachment.\", step[\"comment\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Approved_approval_can_execute_guarded_action()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "; set; }\n     public string RationaleSummary { get; set; } = string.Empty;\n     public string AffectedDataSummary { get; set; } = string.Empty;\n     public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];\ndiff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n@@ -102,10 +102,29 @@ public sealed class ApprovalDecisionChainTests\n \n         approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), \"no\");\n \n+        var rejectedStep = approval.Steps.Single(x => x.SequenceNo == 1);\n         Assert.Equal(ApprovalRequestStatus.Rejected, approval.Status);\n         Assert.Equal(\"no\", approval.DecisionSummary);\n+        Assert.Equal(ApprovalStepStatus.Rejected, rejectedStep.Status);\n+        Assert.Equal(\"no\", rejectedStep.Comment);\n         Assert.Null(approval.CurrentActionableStep);\n     }\n \n+    [Fact]\n+    public void Rejecting_active_step_records_trimmed_comment_in_decision_chain()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), \"  Missing invoice attachment.  \");\n+\n+        var rejectedStep = approval.Steps.Single();\n+        Assert.Equal(\"Missing invoice attachment.\", rejectedStep.Comment);\n+        Assert.Equal(\"Missing invoice attachment.\", approval.DecisionSummary);\n+\n+        var steps = Assert.IsType<JsonArray>(approval.DecisionChain[\"steps\"]);\n+        var step = Assert.IsType<JsonObject>(Assert.Single(steps));\n+        Assert.Equal(\"rejected\", step[\"status\"]!.GetValue<string>());\n+        Assert.Equal(\"Missing invoice attachment.\", step[\"comment\"]!.GetValue<string>());\n+    }\n+\n     [Fact]\n     public void Approved_approval_can_execute_guarded_action()\n     {\nEND_OF_PATCH\ntokens used\n82,346\n",
+  "verbosityMode": "summary"
+}

@@ -76,7 +76,13 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
         return properties;
     }
 
-    public static IReadOnlyDictionary<string, object?> ForBackgroundJob(string jobName, int attempt, int maxAttempts, string correlationId, Guid? companyId = null)
+    public static IReadOnlyDictionary<string, object?> ForBackgroundJob(
+        string jobName,
+        int attempt,
+        int maxAttempts,
+        string correlationId,
+        Guid? companyId = null,
+        string? idempotencyKey = null)
     {
         var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -89,6 +95,11 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
         if (companyId.HasValue)
         {
             properties["CompanyId"] = companyId.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(idempotencyKey))
+        {
+            properties["IdempotencyKey"] = idempotencyKey;
         }
 
         return properties;

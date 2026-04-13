@@ -1,0 +1,777 @@
+diff --git a/src/VirtualCompany.Application/BackgroundExecution/BackgroundExecutionIdentity.cs b/src/VirtualCompany.Application/BackgroundExecution/BackgroundExecutionIdentity.cs
+new file mode 100644
+index 0000000..599f8d6
+--- /dev/null
++++ b/src/VirtualCompany.Application/BackgroundExecution/BackgroundExecutionIdentity.cs
+@@ -0,0 +1,52 @@
++namespace VirtualCompany.Application.BackgroundExecution;
++
++public sealed record BackgroundExecutionIdentity
++{
++    public BackgroundExecutionIdentity(Guid companyId, string correlationId, string idempotencyKey)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (string.IsNullOrWhiteSpace(correlationId))
++        {
++            throw new ArgumentException("CorrelationId is required.", nameof(correlationId));
++        }
++
++        if (string.IsNullOrWhiteSpace(idempotencyKey))
++        {
++            throw new ArgumentException("IdempotencyKey is required.", nameof(idempotencyKey));
++        }
++
++        CompanyId = companyId;
++        CorrelationId = correlationId.Trim();
++        IdempotencyKey = idempotencyKey.Trim();
++    }
++
++    public Guid CompanyId { get; }
++    public string CorrelationId { get; }
++    public string IdempotencyKey { get; }
++}
++
++public interface IBackgroundExecutionIdentityFactory
++{
++    string CreateCorrelationId();
++
++    string EnsureCorrelationId(string? correlationId);
++
++    string CreateIdempotencyKey(string operationName, params object?[] stableSegments);
++
++    BackgroundExecutionIdentity Create(
++        Guid companyId,
++        string operationName,
++        string? correlationId,
++        params object?[] stableSegments);
++
++    BackgroundExecutionIdentity FromExisting(
++        Guid companyId,
++        string correlationId,
++        string idempotencyKey);
++}
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundExecutionIdentityFactory.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundExecutionIdentityFactory.cs
+new file mode 100644
+index 0000000..fb29047
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundExecutionIdentityFactory.cs
+@@ -0,0 +1,114 @@
++using System.Globalization;
++using System.Security.Cryptography;
++using System.Text;
++using VirtualCompany.Application.BackgroundExecution;
++
++namespace VirtualCompany.Infrastructure.BackgroundJobs;
++
++public sealed class DefaultBackgroundExecutionIdentityFactory : IBackgroundExecutionIdentityFactory
++{
++    private const int IdempotencyHashLength = 32;
++    private const int OperationPrefixMaxLength = 80;
++
++    public string CreateCorrelationId() => Guid.NewGuid().ToString("N");
++
++    public string EnsureCorrelationId(string? correlationId) =>
++        string.IsNullOrWhiteSpace(correlationId)
++            ? CreateCorrelationId()
++            : correlationId.Trim();
++
++    public string CreateIdempotencyKey(string operationName, params object?[] stableSegments)
++    {
++        var normalizedOperation = NormalizeOperationName(operationName);
++        var canonicalSegments = stableSegments is { Length: > 0 }
++            ? string.Join(":", stableSegments.Select(NormalizeSegment))
++            : "_";
++        var canonicalValue = $"{normalizedOperation}:{canonicalSegments}";
++        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalValue)))
++            .ToLowerInvariant();
++
++        return $"{normalizedOperation}:{hash[..IdempotencyHashLength]}";
++    }
++
++    public BackgroundExecutionIdentity Create(
++        Guid companyId,
++        string operationName,
++        string? correlationId,
++        params object?[] stableSegments)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        var effectiveCorrelationId = EnsureCorrelationId(correlationId);
++        var segments = stableSegments is { Length: > 0 }
++            ? new object?[stableSegments.Length + 1]
++            : new object?[1];
++        segments[0] = companyId;
++
++        if (stableSegments is { Length: > 0 })
++        {
++            Array.Copy(stableSegments, 0, segments, 1, stableSegments.Length);
++        }
++
++        return new BackgroundExecutionIdentity(
++            companyId,
++            effectiveCorrelationId,
++            CreateIdempotencyKey(operationName, segments));
++    }
++
++    public BackgroundExecutionIdentity FromExisting(
++        Guid companyId,
++        string correlationId,
++        string idempotencyKey) =>
++        new(companyId, EnsureCorrelationId(correlationId), NormalizeRequired(idempotencyKey, nameof(idempotencyKey)));
++
++    private static string NormalizeOperationName(string operationName)
++    {
++        var normalized = NormalizeRequired(operationName, nameof(operationName))
++            .ToLowerInvariant();
++        var builder = new StringBuilder(normalized.Length);
++        var previousWasSeparator = false;
++
++        foreach (var character in normalized)
++        {
++            if (char.IsLetterOrDigit(character) || character is '.' or ':' or '-' or '_')
++            {
++                builder.Append(character);
++                previousWasSeparator = false;
++                continue;
++            }
++
++            if (!previousWasSeparator)
++            {
++                builder.Append('-');
++                previousWasSeparator = true;
++            }
++        }
++
++        var value = builder.ToString().Trim('-', ':', '.', '_');
++        if (value.Length == 0)
++        {
++            throw new ArgumentException("Operation name must include at least one alphanumeric character.", nameof(operationName));
++        }
++
++        return value.Length <= OperationPrefixMaxLength ? value : value[..OperationPrefixMaxLength];
++    }
++
++    private static string NormalizeSegment(object? segment) =>
++        segment switch
++        {
++            null => "_",
++            Guid value => value.ToString("N"),
++            DateTime value => (value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime()).ToString("O", CultureInfo.InvariantCulture),
++            DateTimeOffset value => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
++            IFormattable value => value.ToString(null, CultureInfo.InvariantCulture)?.Trim() ?? "_",
++            _ => segment.ToString()?.Trim() ?? "_"
++        };
++
++    private static string NormalizeRequired(string value, string name)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Trim();
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+index 77a8af2..dc41278 100644
+--- a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using StackExchange.Redis;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Infrastructure.Observability;
+@@ -83,7 +84,8 @@ public sealed class BackgroundJobExecutionContext
+         int attempt,
+         int maxAttempts,
+         Guid? companyId = null,
+-        string? correlationId = null)
++        string? correlationId = null,
++        string? idempotencyKey = null)
+     {
+         if (string.IsNullOrWhiteSpace(jobName))
+         {
+@@ -108,6 +110,7 @@ public sealed class BackgroundJobExecutionContext
+         MaxAttempts = maxAttempts;
+         CompanyId = companyId;
+         CorrelationId = string.IsNullOrWhiteSpace(correlationId) ? null : correlationId.Trim();
++        IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim();
+     }
+ 
+     public string JobName { get; }
+@@ -115,32 +118,39 @@ public sealed class BackgroundJobExecutionContext
+     public int MaxAttempts { get; }
+     public Guid? CompanyId { get; }
+     public string? CorrelationId { get; }
++    public string? IdempotencyKey { get; }
+ }
+ 
+ public sealed record BackgroundJobExecutionResult(
+     BackgroundJobExecutionOutcome Outcome,
+     string CorrelationId,
++    string IdempotencyKey,
+     string? ErrorMessage,
+     string? ExceptionType,
+     TimeSpan? RetryDelay,
+     BackgroundJobFailureClassification? FailureClassification)
+ {
+-    public static BackgroundJobExecutionResult Success(string correlationId) =>
+-        new(BackgroundJobExecutionOutcome.Succeeded, correlationId, null, null, null, null);
++    public static BackgroundJobExecutionResult Success(string correlationId, string idempotencyKey) =>
++        new(BackgroundJobExecutionOutcome.Succeeded, correlationId, idempotencyKey, null, null, null, null);
+ 
+-    public static BackgroundJobExecutionResult RetryScheduled(string correlationId, string errorMessage, string exceptionType, TimeSpan retryDelay, BackgroundJobFailureClassification classification) =>
+-        new(BackgroundJobExecutionOutcome.RetryScheduled, correlationId, errorMessage, exceptionType, retryDelay, classification);
++    public static BackgroundJobExecutionResult RetryScheduled(string correlationId, string idempotencyKey, string errorMessage, string exceptionType, TimeSpan retryDelay, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.RetryScheduled, correlationId, idempotencyKey, errorMessage, exceptionType, retryDelay, classification);
+ 
+-    public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
+-        new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, errorMessage, exceptionType, null, classification);
++    public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string idempotencyKey, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, idempotencyKey, errorMessage, exceptionType, null, classification);
+ 
+-    public static BackgroundJobExecutionResult Blocked(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
+-        new(BackgroundJobExecutionOutcome.Blocked, correlationId, errorMessage, exceptionType, null, classification);
++    public static BackgroundJobExecutionResult Blocked(string correlationId, string idempotencyKey, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.Blocked, correlationId, idempotencyKey, errorMessage, exceptionType, null, classification);
+ 
+-    public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
+-        new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, errorMessage, exceptionType, null, classification);
++    public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string idempotencyKey, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, idempotencyKey, errorMessage, exceptionType, null, classification);
+ }
+@@ -250,16 +260,27 @@ public sealed class BackgroundJobExecutor
+ {
+     private readonly ILogger<BackgroundJobExecutor> _logger;
+     private readonly IBackgroundJobFailureClassifier _failureClassifier;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public BackgroundJobExecutor(
+         ILogger<BackgroundJobExecutor> logger,
+         IBackgroundJobFailureClassifier failureClassifier)
++        : this(logger, failureClassifier, new DefaultBackgroundExecutionIdentityFactory())
++    {
++    }
++
++    public BackgroundJobExecutor(
++        ILogger<BackgroundJobExecutor> logger,
++        IBackgroundJobFailureClassifier failureClassifier,
++        IBackgroundExecutionIdentityFactory identityFactory)
+     {
+         _logger = logger;
+         _failureClassifier = failureClassifier;
++        _identityFactory = identityFactory;
+     }
+@@ -262,20 +283,24 @@ public sealed class BackgroundJobExecutor
+         TimeSpan retryDelay,
+         CancellationToken cancellationToken)
+     {
+-        var effectiveCorrelationId = string.IsNullOrWhiteSpace(context.CorrelationId)
+-            ? Guid.NewGuid().ToString("N")
+-            : context.CorrelationId;
++        var effectiveCorrelationId = _identityFactory.EnsureCorrelationId(context.CorrelationId);
++        var effectiveIdempotencyKey = string.IsNullOrWhiteSpace(context.IdempotencyKey)
++            ? _identityFactory.CreateIdempotencyKey("background-job", context.CompanyId, context.JobName, effectiveCorrelationId)
++            : context.IdempotencyKey.Trim();
+         var normalizedRetryDelay = retryDelay < TimeSpan.Zero ? TimeSpan.Zero : retryDelay;
+ 
+         using var scope = _logger.BeginScope(ExecutionLogScope.ForBackgroundJob(
+             context.JobName,
+             context.Attempt,
+             context.MaxAttempts,
+             effectiveCorrelationId,
+-            context.CompanyId));
++            context.CompanyId,
++            effectiveIdempotencyKey));
+ 
+         try
+         {
+             await handler(cancellationToken);
+@@ -287,22 +312,22 @@ public sealed class BackgroundJobExecutor
+                     context.MaxAttempts);
+             }
+ 
+-            return BackgroundJobExecutionResult.Success(effectiveCorrelationId);
++            return BackgroundJobExecutionResult.Success(effectiveCorrelationId, effectiveIdempotencyKey);
+         }
+         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+         {
+-            return HandleFailure(context, effectiveCorrelationId, normalizedRetryDelay, ex);
++            return HandleFailure(context, effectiveCorrelationId, effectiveIdempotencyKey, normalizedRetryDelay, ex);
+         }
+         catch (OperationCanceledException)
+         {
+             throw;
+         }
+         catch (Exception ex)
+         {
+-            return HandleFailure(context, effectiveCorrelationId, normalizedRetryDelay, ex);
++            return HandleFailure(context, effectiveCorrelationId, effectiveIdempotencyKey, normalizedRetryDelay, ex);
+         }
+     }
+ 
+     private BackgroundJobExecutionResult HandleFailure(
+         BackgroundJobExecutionContext context,
+         string effectiveCorrelationId,
++        string effectiveIdempotencyKey,
+         TimeSpan normalizedRetryDelay,
+         Exception ex)
+     {
+@@ -325,7 +350,7 @@ public sealed class BackgroundJobExecutor
+                 classification,
+                 disposition,
+                 exceptionType);
+-            return BackgroundJobExecutionResult.Blocked(effectiveCorrelationId, errorMessage, exceptionType, classification);
++            return BackgroundJobExecutionResult.Blocked(effectiveCorrelationId, effectiveIdempotencyKey, errorMessage, exceptionType, classification);
+         }
+@@ -339,7 +364,7 @@ public sealed class BackgroundJobExecutor
+                 classification,
+                 disposition,
+                 exceptionType);
+-            return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType, classification);
++            return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, effectiveIdempotencyKey, errorMessage, exceptionType, classification);
+         }
+@@ -353,7 +378,7 @@ public sealed class BackgroundJobExecutor
+                 classification,
+                 BackgroundJobExecutionOutcome.RetryExhausted,
+                 exceptionType);
+-            return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType, classification);
++            return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, effectiveIdempotencyKey, errorMessage, exceptionType, classification);
+         }
+@@ -366,7 +391,7 @@ public sealed class BackgroundJobExecutor
+             BackgroundJobExecutionOutcome.RetryScheduled,
+             normalizedRetryDelay.TotalSeconds,
+             exceptionType);
+-        return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay, classification);
++        return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, effectiveIdempotencyKey, errorMessage, exceptionType, normalizedRetryDelay, classification);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+index aef0226..e43838b 100644
+--- a/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
++++ b/src/VirtualCompany.Infrastructure/Observability/ExecutionLogScope.cs
+@@ -75,7 +75,14 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+         return properties;
+     }
+ 
+-    public static IReadOnlyDictionary<string, object?> ForBackgroundJob(string jobName, int attempt, int maxAttempts, string correlationId, Guid? companyId = null)
++    public static IReadOnlyDictionary<string, object?> ForBackgroundJob(
++        string jobName,
++        int attempt,
++        int maxAttempts,
++        string correlationId,
++        Guid? companyId = null,
++        string? idempotencyKey = null)
+     {
+         var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
+         {
+@@ -89,6 +96,11 @@ internal sealed class ExecutionLogScope : IEnumerable<KeyValuePair<string, objec
+             properties["CompanyId"] = companyId.Value;
+         }
+ 
++        if (!string.IsNullOrWhiteSpace(idempotencyKey))
++        {
++            properties["IdempotencyKey"] = idempotencyKey;
++        }
++
+         return properties;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 5dfce40..086907a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Domain.Entities;
+@@ -25,12 +26,15 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ILogger<CompanyOutboxEnqueuer> _logger;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public CompanyOutboxEnqueuer(
+         VirtualCompanyDbContext dbContext,
++        IBackgroundExecutionIdentityFactory identityFactory,
+         ILogger<CompanyOutboxEnqueuer> logger)
+     {
+         _dbContext = dbContext;
++        _identityFactory = identityFactory;
+         _logger = logger;
+     }
+@@ -48,6 +52,9 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+         string? causationId = null,
+         IReadOnlyDictionary<string, string?>? headers = null)
+     {
++        var messageTypeValue = ResolveMessageType(payload, topic, messageType);
++        var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
++        var effectiveCorrelationId = _identityFactory.EnsureCorrelationId(correlationId);
+         var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
+             ? null
+             : idempotencyKey.Trim();
+@@ -70,9 +77,9 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+             Guid.NewGuid(),
+             companyId,
+             topic,
+-            JsonSerializer.Serialize(payload, SerializerOptions),
+-            correlationId: correlationId,
+-            messageType: ResolveMessageType(payload, topic, messageType),
++            payloadJson,
++            correlationId: effectiveCorrelationId,
++            messageType: messageTypeValue,
+             availableUtc: availableAtUtc,
+             idempotencyKey: normalizedIdempotencyKey,
+             causationId: causationId,
+@@ -163,6 +170,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+     private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public CompanyOutboxProcessor(
+         VirtualCompanyDbContext dbContext,
+@@ -171,6 +179,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+         IBackgroundExecutionRetryPolicy retryPolicy,
++        IBackgroundExecutionIdentityFactory identityFactory,
+         ILogger<CompanyOutboxProcessor> logger)
+     {
+         _dbContext = dbContext;
+@@ -179,6 +188,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+         _retryPolicy = retryPolicy;
++        _identityFactory = identityFactory;
+         _logger = logger;
+     }
+@@ -201,6 +211,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             var attempt = message.AttemptCount + 1;
+             _logger.LogInformation("Dispatching company outbox message {Topic} ({MessageType}) on attempt {Attempt}.", message.Topic, message.MessageType ?? message.Topic, attempt);
++            var dispatchIdentity = _identityFactory.FromExisting(
++                message.CompanyId,
++                message.CorrelationId ?? message.ClaimToken ?? _identityFactory.CreateCorrelationId(),
++                message.IdempotencyKey ?? _identityFactory.CreateIdempotencyKey("company-outbox-dispatch", message.CompanyId, message.Id));
++
+             var executionRecord = await _backgroundExecutionRecorder.StartAsync(
+                 message.CompanyId,
+                 BackgroundExecutionType.OutboxDispatch,
+@@ -208,8 +223,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 message.Id.ToString("N"),
+-                message.CorrelationId ?? message.ClaimToken ?? Guid.NewGuid().ToString("N"),
+-                message.IdempotencyKey ?? $"outbox:{message.Id:N}",
++                dispatchIdentity.CorrelationId,
++                dispatchIdentity.IdempotencyKey,
+                 attempt,
+                 MaxAttempts,
+                 cancellationToken);
+@@ -223,7 +238,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     attempt,
+                     MaxAttempts,
+                     message.CompanyId,
+-                    message.CorrelationId ?? message.ClaimToken),
++                    dispatchIdentity.CorrelationId,
++                    dispatchIdentity.IdempotencyKey),
+                 innerCancellationToken => DispatchAsync(message, innerCancellationToken),
+                 retryDelay,
+                 cancellationToken);
+@@ -370,12 +386,15 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationSender _invitationSender;
+     private readonly ILogger<CompanyInvitationDeliveryDispatcher> _logger;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public CompanyInvitationDeliveryDispatcher(
+         VirtualCompanyDbContext dbContext,
+         ICompanyInvitationSender invitationSender,
++        IBackgroundExecutionIdentityFactory identityFactory,
+         ILogger<CompanyInvitationDeliveryDispatcher> logger)
+     {
+         _dbContext = dbContext;
++        _identityFactory = identityFactory;
+         _invitationSender = invitationSender;
+         _logger = logger;
+     }
+@@ -388,9 +407,10 @@ internal sealed class CompanyInvitationDeliveryDispatcher : ICompanyInvitationDe
+             .SingleOrDefaultAsync(x => x.CompanyId == message.CompanyId && x.Id == message.InvitationId, cancellationToken)
+             ?? throw new CompanyOutboxPermanentException($"Company invitation '{message.InvitationId}' was not found.");
+ 
+-        var correlationId = string.IsNullOrWhiteSpace(message.CorrelationId)
+-            ? Guid.NewGuid().ToString("N")
+-            : message.CorrelationId;
++        var correlationId = _identityFactory.EnsureCorrelationId(message.CorrelationId);
++        using var scope = _logger.BeginScope(ExecutionLogScope.ForBackground(
++            correlationId,
++            invitation.CompanyId));
+ 
+         invitation.SyncExpiration(DateTime.UtcNow);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+index 4a47a7f..de67dcd 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using StackExchange.Redis;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -84,6 +85,7 @@ public sealed class WorkflowSchedulePollingService
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public WorkflowSchedulePollingService(
+         VirtualCompanyDbContext dbContext,
+@@ -91,6 +93,7 @@ public sealed class WorkflowSchedulePollingService
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+         IBackgroundExecutionRetryPolicy retryPolicy,
++        IBackgroundExecutionIdentityFactory identityFactory,
+         ILogger<WorkflowSchedulePollingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -98,6 +101,7 @@ public sealed class WorkflowSchedulePollingService
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+         _retryPolicy = retryPolicy;
++        _identityFactory = identityFactory;
+         _logger = logger;
+     }
+@@ -136,8 +140,13 @@ public sealed class WorkflowSchedulePollingService
+         var failureCount = 0;
+         foreach (var companyId in companyIds)
+         {
+-            var correlationId = $"workflow-scheduler:{companyId:N}:{dueAtUtc:yyyyMMddHHmm}";
++            var correlationId = $"workflow-scheduler:{companyId:N}:{dueAtUtc:yyyyMMddHHmm}";
++            var executionIdentity = _identityFactory.Create(
++                companyId,
++                "workflow-scheduler",
++                correlationId,
++                dueAtUtc.ToString("yyyyMMddHHmm"));
+             var executionRecord = await _backgroundExecutionRecorder.StartAsync(
+                 companyId,
+                 BackgroundExecutionType.ScheduledWorkflow,
+@@ -145,8 +154,8 @@ public sealed class WorkflowSchedulePollingService
+                 dueAtUtc.ToString("yyyyMMddHHmm"),
+-                correlationId,
+-                correlationId,
++                executionIdentity.CorrelationId,
++                executionIdentity.IdempotencyKey,
+                 attempt: 1,
+                 maxAttempts: 1,
+                 cancellationToken);
+@@ -159,7 +168,8 @@ public sealed class WorkflowSchedulePollingService
+                     attempt: 1,
+                     maxAttempts: 1,
+                     companyId,
+-                    correlationId),
++                    executionIdentity.CorrelationId,
++                    executionIdentity.IdempotencyKey),
+                 async innerCancellationToken =>
+                 {
+                     var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
+@@ -172,7 +182,8 @@ public sealed class WorkflowSchedulePollingService
+                             ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                             {
+                                 ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler"),
+-                                ["correlationId"] = System.Text.Json.Nodes.JsonValue.Create(correlationId)
++                                ["correlationId"] = System.Text.Json.Nodes.JsonValue.Create(executionIdentity.CorrelationId),
++                                ["idempotencyKey"] = System.Text.Json.Nodes.JsonValue.Create(executionIdentity.IdempotencyKey)
+                             }),
+                         innerCancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+index a4c99b5..4c92c16 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -85,6 +86,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+     private readonly IOptions<WorkflowProgressionOptions> _options;
+     private readonly ILogger<WorkflowProgressionService> _logger;
++    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+ 
+     public WorkflowProgressionService(
+         VirtualCompanyDbContext dbContext,
+@@ -92,6 +94,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+         IBackgroundExecutionRetryPolicy retryPolicy,
+         IOptions<WorkflowProgressionOptions> options,
++        IBackgroundExecutionIdentityFactory identityFactory,
+         ILogger<WorkflowProgressionService> logger)
+     {
+         _dbContext = dbContext;
+@@ -100,6 +103,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+         _retryPolicy = retryPolicy;
+         _options = options;
++        _identityFactory = identityFactory;
+         _logger = logger;
+     }
+@@ -140,8 +144,14 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         DateTime utcNow,
+         CancellationToken cancellationToken)
+     {
+-        var correlationId = ResolveCorrelationId(instance);
+-        var idempotencyKey = ResolveIdempotencyKey(instance);
++        var correlationId = ResolveCorrelationId(instance);
++        var idempotencyKey = ResolveIdempotencyKey(instance) ??
++            _identityFactory.CreateIdempotencyKey(
++                "workflow-progression",
++                instance.CompanyId,
++                instance.Id,
++                instance.State.ToStorageValue(),
++                instance.CurrentStep ?? "instance");
+         var existingExecution = await _dbContext.BackgroundExecutions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -211,7 +221,8 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+                 maxAttempts,
+                 instance.CompanyId,
+-                correlationId),
++                correlationId,
++                idempotencyKey),
+             innerCancellationToken => AdvanceInstanceAsync(instance.Id, innerCancellationToken),
+             retryDelay,
+             cancellationToken);
+@@ -375,12 +386,14 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+             TryGetString(technicalDetailsJson, "errorCode") ?? TryGetString(technicalDetailsJson, "failureCategory"),
+             technicalDetailsJson));
+     }
+ 
+     private static string ResolveCorrelationId(WorkflowInstance instance) =>
+-        string.IsNullOrWhiteSpace(instance.TriggerRef)
+-            ? $"workflow-progression:{instance.CompanyId:N}:{instance.Id:N}"
+-            : instance.TriggerRef;
++        TryGetString(instance.ContextJson, "correlationId") ??
++        TryGetString(instance.InputPayload, "correlationId") ??
++        instance.TriggerRef ??
++        $"workflow-progression:{instance.CompanyId:N}:{instance.Id:N}";
+ 
+-    private static string ResolveIdempotencyKey(WorkflowInstance instance) =>
+-        $"workflow-progression:{instance.Id:N}:{instance.State.ToStorageValue()}:{instance.CurrentStep ?? "instance"}:{instance.UpdatedUtc.Ticks}";
++    private static string? ResolveIdempotencyKey(WorkflowInstance instance) =>
++        TryGetString(instance.ContextJson, "idempotencyKey") ??
++        TryGetString(instance.InputPayload, "idempotencyKey");
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index e20e04d..91d10c7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -536,7 +536,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+                     ["triggerSource"] = triggerSource.ToStorageValue(),
+                     ["triggerRef"] = command.TriggerRef
+                 },
+-                CorrelationId: command.TriggerRef),
++                CorrelationId: ResolveCorrelationId(command)),
+             cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -1172,6 +1172,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+ 
+         return values.FirstOrDefault();
+     }
++
++    private static string? ResolveCorrelationId(StartWorkflowInstanceCommand command) =>
++        TryGetString(command.InputPayload, "correlationId") ?? command.TriggerRef;
++
+     private static string? TryGetString(JsonObject? jsonObject, string key)
+     {
+         if (jsonObject is null ||
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9e12e40..c8efd45 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Context;
+@@ -113,6 +114,7 @@ public static class DependencyInjection
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+         services.AddSingleton<IBackgroundExecutionRetryPolicy, ExponentialBackgroundExecutionRetryPolicy>();
++        services.AddSingleton<IBackgroundExecutionIdentityFactory, DefaultBackgroundExecutionIdentityFactory>();
+         services.AddScoped<IBackgroundExecutionRecorder, BackgroundExecutionRecorder>();
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+diff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+index c226fae..82e737a 100644
+--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+@@ -18,7 +18,7 @@ public sealed class BackgroundJobExecutorTests
+         var companyId = Guid.NewGuid();
+ 
+         var result = await executor.ExecuteAsync(
+-            new BackgroundJobExecutionContext("company-outbox:delivery", 1, 3, companyId, "corr-123"),
++            new BackgroundJobExecutionContext("company-outbox:delivery", 1, 3, companyId, "corr-123", "idem-123"),
+             _ => throw new TimeoutException("Temporary timeout."),
+             TimeSpan.FromSeconds(5),
+             CancellationToken.None);
+@@ -26,6 +26,7 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal(BackgroundJobExecutionOutcome.RetryScheduled, result.Outcome);
+         Assert.Equal("corr-123", result.CorrelationId);
++        Assert.Equal("idem-123", result.IdempotencyKey);
+         Assert.Equal("System.TimeoutException", result.ExceptionType);
+         Assert.Equal(TimeSpan.FromSeconds(5), result.RetryDelay);
+         Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);
+@@ -38,6 +39,7 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal(3, AssertScopeValue(entry.Scope, "MaxAttempts"));
+         Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
+         Assert.Equal("corr-123", AssertScopeValue(entry.Scope, "CorrelationId"));
++        Assert.Equal("idem-123", AssertScopeValue(entry.Scope, "IdempotencyKey"));
+     }
+@@ -178,6 +180,28 @@ public sealed class BackgroundJobExecutorTests
+         Assert.True(classification.IsRetryable());
+     }
+ 
++    [Fact]
++    public async Task ExecuteAsync_derives_stable_idempotency_key_from_logical_execution_identity()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++        var companyId = Guid.NewGuid();
++
++        var first = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("workflow-progression:advance-instance", 1, 3, companyId, "corr-stable"),
++            _ => Task.CompletedTask,
++            TimeSpan.Zero,
++            CancellationToken.None);
++        var retry = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("workflow-progression:advance-instance", 2, 3, companyId, "corr-stable"),
++            _ => Task.CompletedTask,
++            TimeSpan.Zero,
++            CancellationToken.None);
++
++        Assert.Equal(first.IdempotencyKey, retry.IdempotencyKey);
++        Assert.Equal("corr-stable", retry.CorrelationId);
++        Assert.NotEqual(first.CorrelationId, (await executor.ExecuteAsync(new BackgroundJobExecutionContext("workflow-progression:advance-instance", 1, 3, companyId), _ => Task.CompletedTask, TimeSpan.Zero, CancellationToken.None)).CorrelationId);
++    }
++
+     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
+         scope.TryGetValue(key, out var value)
+             ? value
+END_OF_PATCH

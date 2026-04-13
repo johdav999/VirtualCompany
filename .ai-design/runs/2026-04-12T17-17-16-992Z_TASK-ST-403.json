@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-403",
+  "promptPath": ".ai-design/prompts/TASK-ST-403.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T17:17:16.992Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T17-17-16-992Z_TASK-ST-403_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T17-17-16-992Z_TASK-ST-403.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T17:19:15.946Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "   Assert.Equal(\"approval_request_created\", payload.ApprovalDecisionChain[\"currentStep\"].GetString());\n+        Assert.Equal(\"policy_evaluation\", payload.ApprovalDecisionChain[\"steps\"][0].GetProperty(\"step\").GetString());\n \n         using var scope = _factory.Services.CreateScope();\n         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\n@@ -209,6 +213,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         Assert.Equal(\"expenseUsd\", approval.ThresholdContext[\"thresholdKey\"]!.GetValue<string>());\n         Assert.Equal(\"execute\", approval.ThresholdContext[\"actionType\"]!.GetValue<string>());\n         Assert.Equal(\"awaiting_approval\", approval.ThresholdContext[\"executionState\"]!.GetValue<string>());\n+        Assert.Equal(\"pending\", approval.DecisionChain[\"status\"]!.GetValue<string>());\n+        Assert.Equal(\"approval_request_created\", approval.DecisionChain[\"currentStep\"]!.GetValue<string>());\n+        Assert.Equal(\"policy_evaluation\", approval.DecisionChain[\"steps\"]![0]![\"step\"]!.GetValue<string>());\n+        Assert.Equal(payload.ExecutionId, approval.DecisionChain[\"executionId\"]!.GetValue<Guid>());\n+        Assert.Equal(payload.ApprovalRequestId, approval.DecisionChain[\"approvalRequestId\"]!.GetValue<Guid>());\n \n         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);\n         Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);\n@@ -394,6 +403,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         public Guid? ApprovalRequestId { get; set; }\n         public PolicyDecisionResponse PolicyDecision { get; set; } = new();\n         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }\n+        public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }\n         public string Message { get; set; } = string.Empty;\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": "proval_request_created\", payload.ApprovalDecisionChain[\"currentStep\"].GetString());\n+        Assert.Equal(\"policy_evaluation\", payload.ApprovalDecisionChain[\"steps\"][0].GetProperty(\"step\").GetString());\n \n         using var scope = _factory.Services.CreateScope();\n         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();\n@@ -209,6 +213,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         Assert.Equal(\"expenseUsd\", approval.ThresholdContext[\"thresholdKey\"]!.GetValue<string>());\n         Assert.Equal(\"execute\", approval.ThresholdContext[\"actionType\"]!.GetValue<string>());\n         Assert.Equal(\"awaiting_approval\", approval.ThresholdContext[\"executionState\"]!.GetValue<string>());\n+        Assert.Equal(\"pending\", approval.DecisionChain[\"status\"]!.GetValue<string>());\n+        Assert.Equal(\"approval_request_created\", approval.DecisionChain[\"currentStep\"]!.GetValue<string>());\n+        Assert.Equal(\"policy_evaluation\", approval.DecisionChain[\"steps\"]![0]![\"step\"]!.GetValue<string>());\n+        Assert.Equal(payload.ExecutionId, approval.DecisionChain[\"executionId\"]!.GetValue<Guid>());\n+        Assert.Equal(payload.ApprovalRequestId, approval.DecisionChain[\"approvalRequestId\"]!.GetValue<Guid>());\n \n         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);\n         Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);\n@@ -394,6 +403,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp\n         public Guid? ApprovalRequestId { get; set; }\n         public PolicyDecisionResponse PolicyDecision { get; set; } = new();\n         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }\n+        public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }\n         public string Message { get; set; } = string.Empty;\n     }\n \nEND_OF_PATCH\ntokens used\n60,780\n",
+  "verbosityMode": "summary"
+}

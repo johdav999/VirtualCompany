@@ -1,0 +1,477 @@
+diff --git a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+index 7b5c8d2..d7f8f4a 100644
+--- a/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
++++ b/src/VirtualCompany.Application/Auth/AuthAbstractions.cs
+@@ -56,3 +56,8 @@ public interface ICompanyContextAccessor
+     void SetCompanyId(Guid? companyId);
+     void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext);
+ }
++
++public interface ICompanyExecutionScopeFactory
++{
++    IDisposable BeginScope(Guid companyId);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+index 9d7e2b1..bdfd6c3 100644
+--- a/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Auth/AuthInfrastructure.cs
+@@ -233,6 +233,12 @@ public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
+ {
+     public Guid? CompanyId { get; private set; }
+     public Guid? UserId { get; private set; }
+     public bool IsResolved => Membership is not null;
+     public ResolvedCompanyMembershipContext? Membership { get; private set; }
+ 
+     public void SetCompanyId(Guid? companyId)
+     {
++        if (companyId == Guid.Empty)
++        {
++            companyId = null;
++        }
++
+         CompanyId = companyId;
+ 
+         if (!companyId.HasValue || Membership?.CompanyId != companyId.Value)
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+index 1a8b0dc..f5b7bb8 100644
+--- a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+@@ -79,7 +79,8 @@ public sealed class BackgroundJobExecutionContext
+         int maxAttempts,
+         Guid? companyId = null,
+         string? correlationId = null,
+-        string? idempotencyKey = null)
++        string? idempotencyKey = null,
++        bool requireCompanyContext = false)
+     {
+         if (string.IsNullOrWhiteSpace(jobName))
+         {
+@@ -99,12 +100,19 @@ public sealed class BackgroundJobExecutionContext
+         }
+ 
+         JobName = jobName.Trim();
+         Attempt = attempt;
+         MaxAttempts = maxAttempts;
+-        CompanyId = companyId;
++        CompanyId = companyId == Guid.Empty ? null : companyId;
+         CorrelationId = string.IsNullOrWhiteSpace(correlationId) ? null : correlationId.Trim();
+         IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim();
++        RequireCompanyContext = requireCompanyContext;
+     }
+ 
+     public string JobName { get; }
+     public int Attempt { get; }
+     public int MaxAttempts { get; }
+     public Guid? CompanyId { get; }
+     public string? CorrelationId { get; }
+     public string? IdempotencyKey { get; }
++    public bool RequireCompanyContext { get; }
+ }
+@@ -240,6 +248,11 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+ 
+         try
+         {
++            if (context.RequireCompanyContext && !context.CompanyId.HasValue)
++            {
++                throw new PermanentBackgroundJobException("Tenant-scoped background execution requires a non-empty CompanyId.");
++            }
++
+             await handler(cancellationToken);
+ 
+             if (context.Attempt > 1)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 6fcd22a..d8b41e3 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -160,6 +161,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+ 
+     public CompanyOutboxProcessor(
+         VirtualCompanyDbContext dbContext,
+@@ -169,6 +171,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+         IBackgroundExecutionRetryPolicy retryPolicy,
+         IBackgroundExecutionIdentityFactory identityFactory,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         ILogger<CompanyOutboxProcessor> logger)
+     {
+         _dbContext = dbContext;
+@@ -178,6 +181,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+         _retryPolicy = retryPolicy;
+         _identityFactory = identityFactory;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
+         _logger = logger;
+     }
+ 
+@@ -189,6 +193,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+         foreach (var message in claimedMessages)
+         {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(message.CompanyId);
+             using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(
+                 message.Id,
+                 message.CompanyId,
+@@ -231,7 +236,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     MaxAttempts,
+                     message.CompanyId,
+                     dispatchIdentity.CorrelationId,
+-                    dispatchIdentity.IdempotencyKey),
++                    dispatchIdentity.IdempotencyKey,
++                    requireCompanyContext: true),
+                 innerCancellationToken => DispatchAsync(message, innerCancellationToken),
+                 retryDelay,
+                 cancellationToken);
+@@ -380,6 +386,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ {
+     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
+     {
++        if (message.CompanyId == Guid.Empty)
++        {
++            throw new CompanyOutboxPermanentException("Company outbox message is missing tenant context.");
++        }
++
+         switch (message.Topic)
+         {
+             case CompanyOutboxTopics.InvitationDeliveryRequested:
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+index 5d2c0f9..b6d9c40 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -90,6 +91,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+     private readonly IOptions<WorkflowProgressionOptions> _options;
+     private readonly ILogger<WorkflowProgressionService> _logger;
+     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+ 
+     public WorkflowProgressionService(
+         VirtualCompanyDbContext dbContext,
+@@ -98,6 +100,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         IBackgroundExecutionRetryPolicy retryPolicy,
+         IOptions<WorkflowProgressionOptions> options,
+         IBackgroundExecutionIdentityFactory identityFactory,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         ILogger<WorkflowProgressionService> logger)
+     {
+         _dbContext = dbContext;
+@@ -107,6 +110,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         _options = options;
+         _identityFactory = identityFactory;
+         _logger = logger;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
+     }
+ 
+     public async Task<WorkflowProgressionRunResult> RunRunnableInstancesAsync(
+@@ -142,6 +146,12 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         WorkflowInstance instance,
+         DateTime utcNow,
+         CancellationToken cancellationToken)
+     {
++        if (instance.CompanyId == Guid.Empty)
++        {
++            throw new PermanentBackgroundJobException($"Workflow instance '{instance.Id}' is missing tenant context.");
++        }
++
++        using var tenantScope = _companyExecutionScopeFactory.BeginScope(instance.CompanyId);
+         var correlationId = ResolveCorrelationId(instance);
+         var idempotencyKey = ResolveIdempotencyKey(instance) ??
+             _identityFactory.CreateIdempotencyKey(
+@@ -209,8 +219,9 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+                 maxAttempts,
+                 instance.CompanyId,
+                 correlationId,
+-                idempotencyKey),
+-            innerCancellationToken => AdvanceInstanceAsync(instance.Id, innerCancellationToken),
++                idempotencyKey,
++                requireCompanyContext: true),
++            innerCancellationToken => AdvanceInstanceAsync(instance.CompanyId, instance.Id, innerCancellationToken),
+             retryDelay,
+             cancellationToken);
+ 
+@@ -221,7 +232,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+ 
+         if (execution.Outcome is BackgroundJobExecutionOutcome.PermanentFailure or BackgroundJobExecutionOutcome.RetryExhausted)
+         {
+-            await MarkWorkflowTerminalFailureAsync(instance.Id, execution, cancellationToken);
++            await MarkWorkflowTerminalFailureAsync(instance.CompanyId, instance.Id, execution, cancellationToken);
+         }
+ 
+         await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextRetryUtc, cancellationToken);
+@@ -238,13 +249,13 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         };
+     }
+ 
+-    private async Task AdvanceInstanceAsync(Guid instanceId, CancellationToken cancellationToken)
++    private async Task AdvanceInstanceAsync(Guid companyId, Guid instanceId, CancellationToken cancellationToken)
+     {
+         var instance = await _dbContext.WorkflowInstances
+             .IgnoreQueryFilters()
+             .Include(x => x.Definition)
+-            .SingleAsync(x => x.Id == instanceId, cancellationToken);
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == instanceId, cancellationToken);
+ 
+         if (instance.State is not (WorkflowInstanceStatus.Started or WorkflowInstanceStatus.Running))
+         {
+@@ -354,12 +365,13 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+     }
+ 
+     private async Task MarkWorkflowTerminalFailureAsync(
++        Guid companyId,
+         Guid instanceId,
+         BackgroundJobExecutionResult execution,
+         CancellationToken cancellationToken)
+     {
+         var instance = await _dbContext.WorkflowInstances
+             .IgnoreQueryFilters()
+             .Include(x => x.Definition)
+-            .SingleOrDefaultAsync(x => x.Id == instanceId, cancellationToken);
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == instanceId, cancellationToken);
+         if (instance is null || instance.State is WorkflowInstanceStatus.Completed or WorkflowInstanceStatus.Cancelled or WorkflowInstanceStatus.Failed)
+         {
+             return;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+index f8eb6c1..c15fd0a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+@@ -8,6 +8,7 @@ using StackExchange.Redis;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -87,6 +88,7 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+     private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+ 
+     public WorkflowSchedulePollingService(
+         VirtualCompanyDbContext dbContext,
+@@ -95,6 +97,7 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+         IBackgroundExecutionRetryPolicy retryPolicy,
+         IBackgroundExecutionIdentityFactory identityFactory,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         ILogger<WorkflowSchedulePollingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -103,6 +106,7 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+         _retryPolicy = retryPolicy;
+         _identityFactory = identityFactory;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
+         _logger = logger;
+     }
+ 
+@@ -139,6 +143,7 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+         var startedCount = 0;
+         var failureCount = 0;
+         foreach (var companyId in companyIds)
+         {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
+             var correlationId = $"workflow-scheduler:{companyId:N}:{dueAtUtc:yyyyMMddHHmm}";
+             var executionIdentity = _identityFactory.Create(
+                 companyId,
+@@ -171,7 +176,8 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+                     maxAttempts: 1,
+                     companyId,
+                     executionIdentity.CorrelationId,
+-                    executionIdentity.IdempotencyKey),
++                    executionIdentity.IdempotencyKey,
++                    requireCompanyContext: true),
+                 async innerCancellationToken =>
+                 {
+                     var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index b862e3e..7d28e4d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -133,6 +133,7 @@ public static class DependencyInjection
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
++        services.AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>();
+         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
+         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
+         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+index 364ba2d..d7b27fb 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyKnowledgeServices.cs
+@@ -404,6 +404,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly KnowledgeIndexingOptions _options;
+     private readonly ILogger<CompanyKnowledgeIndexingProcessor> _logger;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+ 
+     public CompanyKnowledgeIndexingProcessor(
+         VirtualCompanyDbContext dbContext,
+@@ -412,6 +413,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+         IEmbeddingGenerator embeddingGenerator,
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IOptions<KnowledgeIndexingOptions> options,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         ILogger<CompanyKnowledgeIndexingProcessor> logger)
+     {
+         _dbContext = dbContext;
+@@ -421,6 +423,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _options = options.Value;
+         _logger = logger;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
+     }
+ 
+     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.ClaimTimeoutSeconds));
+@@ -533,6 +536,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+     public async Task IndexDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
++        using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
+         var indexedChunkSetVersion = 0;
+         var indexedChunkCount = 0;
+ 
+@@ -697,6 +701,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+ 
+     private async Task ProcessWithRetriesAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+     {
++        using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
+         for (var attempt = 1; attempt <= Math.Max(1, _options.MaxAttempts); attempt++)
+         {
+             Exception? attemptException = null;
+@@ -707,7 +712,8 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexing
+                     "knowledge-document-indexing",
+                     attempt,
+                     Math.Max(1, _options.MaxAttempts),
+-                    companyId),
++                    companyId,
++                    requireCompanyContext: true),
+                 async innerToken =>
+                 {
+                     try
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyExecutionScopeFactory.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyExecutionScopeFactory.cs
+new file mode 100644
+index 0000000..5a05dc5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyExecutionScopeFactory.cs
+@@ -0,0 +1,58 @@
++using VirtualCompany.Application.Auth;
++
++namespace VirtualCompany.Infrastructure.Tenancy;
++
++public sealed class CompanyExecutionScopeFactory : ICompanyExecutionScopeFactory
++{
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public CompanyExecutionScopeFactory(ICompanyContextAccessor companyContextAccessor)
++    {
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public IDisposable BeginScope(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new InvalidOperationException("Tenant-scoped background execution requires a non-empty CompanyId.");
++        }
++
++        var previousCompanyId = _companyContextAccessor.CompanyId;
++        var previousMembership = _companyContextAccessor.Membership;
++
++        if (previousCompanyId.HasValue && previousCompanyId.Value != companyId)
++        {
++            throw new InvalidOperationException(
++                $"Cannot enter tenant background execution scope for company '{companyId}' while company '{previousCompanyId.Value}' is active.");
++        }
++
++        _companyContextAccessor.SetCompanyId(companyId);
++        return new CompanyExecutionScope(_companyContextAccessor, previousCompanyId, previousMembership);
++    }
++
++    private sealed class CompanyExecutionScope : IDisposable
++    {
++        private readonly ICompanyContextAccessor _companyContextAccessor;
++        private readonly Guid? _previousCompanyId;
++        private readonly ResolvedCompanyMembershipContext? _previousMembership;
++        private bool _disposed;
++
++        public CompanyExecutionScope(
++            ICompanyContextAccessor companyContextAccessor,
++            Guid? previousCompanyId,
++            ResolvedCompanyMembershipContext? previousMembership)
++        {
++            _companyContextAccessor = companyContextAccessor;
++            _previousCompanyId = previousCompanyId;
++            _previousMembership = previousMembership;
++        }
++
++        public void Dispose()
++        {
++            if (_disposed)
++            {
++                return;
++            }
++
++            _disposed = true;
++            _companyContextAccessor.SetCompanyId(_previousCompanyId);
++            _companyContextAccessor.SetCompanyContext(_previousMembership);
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+index 71f2fdb..83210d2 100644
+--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+@@ -89,6 +89,29 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
+         Assert.Equal(result.CorrelationId, AssertScopeValue(entry.Scope, "CorrelationId"));
+     }
+ 
++    [Fact]
++    public async Task ExecuteAsync_rejects_tenant_scoped_job_without_company_context()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++        var invoked = false;
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext(
++                "workflow-progression:advance-instance",
++                1,
++                3,
++                requireCompanyContext: true),
++            _ =>
++            {
++                invoked = true;
++                return Task.CompletedTask;
++            },
++            TimeSpan.Zero,
++            CancellationToken.None);
++
++        Assert.False(invoked);
++        Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
++        Assert.Equal(BackgroundJobFailureClassification.PermanentBusinessRule, result.FailureClassification);
++    }
++
+     [Fact]
+     public async Task ExecuteAsync_does_not_swallow_cancellation()
+     {
+END_OF_PATCH

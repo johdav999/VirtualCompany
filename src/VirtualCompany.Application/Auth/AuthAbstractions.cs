@@ -71,3 +71,8 @@ public interface ICompanyContextAccessor
     void SetCompanyId(Guid? companyId);
     void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext);
 }
+
+public interface ICompanyExecutionScopeFactory
+{
+    IDisposable BeginScope(Guid companyId);
+}

@@ -1,0 +1,1080 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0a8a4e1..5fb0d4a 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -41,6 +41,7 @@ public static class AuditTargetTypes
+     public const string WorkTask = "work_task";
+     public const string LinkedEntity = "linked_entity";
+     public const string WorkflowException = "workflow_exception";
++    public const string ExecutionException = "execution_exception";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -80,6 +81,7 @@ public static class AuditEventActions
+     public const string WorkflowInstanceStarted = "workflow.instance.started";
+     public const string WorkflowExceptionCreated = "workflow.exception.created";
+     public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
++    public const string ExecutionExceptionCreated = "execution.exception.created";
+ }
+diff --git a/src/VirtualCompany.Application/ExecutionExceptions/ExecutionExceptionContracts.cs b/src/VirtualCompany.Application/ExecutionExceptions/ExecutionExceptionContracts.cs
+new file mode 100644
+index 0000000..c368e47
+--- /dev/null
++++ b/src/VirtualCompany.Application/ExecutionExceptions/ExecutionExceptionContracts.cs
+@@ -0,0 +1,59 @@
++namespace VirtualCompany.Application.ExecutionExceptions;
++
++public sealed record RecordExecutionExceptionRequest(
++    Guid CompanyId,
++    string Kind,
++    string Severity,
++    string Title,
++    string Summary,
++    string SourceType,
++    string SourceId,
++    Guid? BackgroundExecutionId,
++    string? RelatedEntityType,
++    string? RelatedEntityId,
++    string IncidentKey,
++    string? FailureCode,
++    IReadOnlyDictionary<string, string?>? Details);
++
++public sealed record ExecutionExceptionDto(
++    Guid Id,
++    Guid CompanyId,
++    string Kind,
++    string Severity,
++    string Status,
++    string Title,
++    string Summary,
++    string SourceType,
++    string SourceId,
++    Guid? BackgroundExecutionId,
++    string? RelatedEntityType,
++    string? RelatedEntityId,
++    string IncidentKey,
++    string? FailureCode,
++    IReadOnlyDictionary<string, string?> Details,
++    DateTime CreatedAt,
++    DateTime UpdatedAt,
++    DateTime? ResolvedAt);
++
++public interface IExecutionExceptionRecorder
++{
++    Task<Guid> RecordAsync(RecordExecutionExceptionRequest request, CancellationToken cancellationToken);
++}
++
++public interface IExecutionExceptionQueryService
++{
++    Task<IReadOnlyList<ExecutionExceptionDto>> ListAsync(
++        Guid companyId,
++        string? status,
++        string? kind,
++        CancellationToken cancellationToken);
++
++    Task<ExecutionExceptionDto> GetAsync(Guid companyId, Guid exceptionId, CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutionExceptionsController.cs b/src/VirtualCompany.Api/Controllers/ExecutionExceptionsController.cs
+new file mode 100644
+index 0000000..04c4c74
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ExecutionExceptionsController.cs
+@@ -0,0 +1,67 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.ExecutionExceptions;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/execution-exceptions")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class ExecutionExceptionsController : ControllerBase
++{
++    private readonly IExecutionExceptionQueryService _exceptions;
++
++    public ExecutionExceptionsController(IExecutionExceptionQueryService exceptions)
++    {
++        _exceptions = exceptions;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<ExecutionExceptionDto>>> ListAsync(
++        Guid companyId,
++        [FromQuery] string? status,
++        [FromQuery] string? kind,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _exceptions.ListAsync(companyId, status, kind, cancellationToken));
++        }
++        catch (ArgumentOutOfRangeException)
++        {
++            return BadRequest();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{exceptionId:guid}")]
++    public async Task<ActionResult<ExecutionExceptionDto>> GetAsync(
++        Guid companyId,
++        Guid exceptionId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _exceptions.GetAsync(companyId, exceptionId, cancellationToken));
++        }
++        catch (ArgumentOutOfRangeException)
++        {
++            return BadRequest();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/ExecutionExceptionEntities.cs b/src/VirtualCompany.Domain/Entities/ExecutionExceptionEntities.cs
+new file mode 100644
+index 0000000..cfa1f29
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ExecutionExceptionEntities.cs
+@@ -0,0 +1,167 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ExecutionExceptionRecord : ICompanyOwnedEntity
++{
++    private const int TitleMaxLength = 200;
++    private const int SummaryMaxLength = 2000;
++    private const int SourceIdMaxLength = 128;
++    private const int RelatedEntityTypeMaxLength = 100;
++    private const int RelatedEntityIdMaxLength = 128;
++    private const int IncidentKeyMaxLength = 300;
++    private const int FailureCodeMaxLength = 200;
++
++    private ExecutionExceptionRecord()
++    {
++        Details = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    public ExecutionExceptionRecord(
++        Guid id,
++        Guid companyId,
++        ExecutionExceptionKind kind,
++        ExecutionExceptionSeverity severity,
++        string title,
++        string summary,
++        ExecutionExceptionSourceType sourceType,
++        string sourceId,
++        Guid? backgroundExecutionId,
++        string? relatedEntityType,
++        string? relatedEntityId,
++        string incidentKey,
++        string? failureCode,
++        IReadOnlyDictionary<string, string?>? details = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (backgroundExecutionId == Guid.Empty)
++        {
++            throw new ArgumentException("BackgroundExecutionId cannot be empty.", nameof(backgroundExecutionId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Kind = kind;
++        Severity = severity;
++        Status = ExecutionExceptionStatus.Open;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        SourceType = sourceType;
++        SourceId = NormalizeRequired(sourceId, nameof(sourceId), SourceIdMaxLength);
++        BackgroundExecutionId = backgroundExecutionId;
++        RelatedEntityType = NormalizeOptional(relatedEntityType, nameof(relatedEntityType), RelatedEntityTypeMaxLength);
++        RelatedEntityId = NormalizeOptional(relatedEntityId, nameof(relatedEntityId), RelatedEntityIdMaxLength);
++        IncidentKey = NormalizeRequired(incidentKey, nameof(incidentKey), IncidentKeyMaxLength);
++        FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
++        Details = Clone(details);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public ExecutionExceptionKind Kind { get; private set; }
++    public ExecutionExceptionSeverity Severity { get; private set; }
++    public ExecutionExceptionStatus Status { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Summary { get; private set; } = null!;
++    public ExecutionExceptionSourceType SourceType { get; private set; }
++    public string SourceId { get; private set; } = null!;
++    public Guid? BackgroundExecutionId { get; private set; }
++    public string? RelatedEntityType { get; private set; }
++    public string? RelatedEntityId { get; private set; }
++    public string IncidentKey { get; private set; } = null!;
++    public string? FailureCode { get; private set; }
++    public Dictionary<string, string?> Details { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? ResolvedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public BackgroundExecution? BackgroundExecution { get; private set; }
++
++    public void RefreshOpen(
++        ExecutionExceptionSeverity severity,
++        string title,
++        string summary,
++        string? failureCode,
++        IReadOnlyDictionary<string, string?>? details)
++    {
++        if (Status != ExecutionExceptionStatus.Open)
++        {
++            return;
++        }
++
++        Severity = severity;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
++        Details = Clone(details);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return NormalizeOptional(value, name, maxLength)!;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++
++    private static Dictionary<string, string?> Clone(IReadOnlyDictionary<string, string?>? details) =>
++        details is null || details.Count == 0
++            ? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            : details.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/ExecutionExceptionEnums.cs b/src/VirtualCompany.Domain/Enums/ExecutionExceptionEnums.cs
+new file mode 100644
+index 0000000..25e447c
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ExecutionExceptionEnums.cs
+@@ -0,0 +1,198 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ExecutionExceptionKind
++{
++    Blocked = 1,
++    Failed = 2
++}
++
++public enum ExecutionExceptionSeverity
++{
++    Warning = 1,
++    Error = 2,
++    Critical = 3
++}
++
++public enum ExecutionExceptionStatus
++{
++    Open = 1,
++    Acknowledged = 2,
++    Resolved = 3
++}
++
++public enum ExecutionExceptionSourceType
++{
++    BackgroundExecution = 1,
++    WorkflowInstance = 2,
++    WorkTask = 3,
++    OutboxMessage = 4,
++    Schedule = 5
++}
++
++public static class ExecutionExceptionKindValues
++{
++    private static readonly IReadOnlyDictionary<ExecutionExceptionKind, string> Values = new Dictionary<ExecutionExceptionKind, string>
++    {
++        [ExecutionExceptionKind.Blocked] = "blocked",
++        [ExecutionExceptionKind.Failed] = "failed"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ExecutionExceptionKind> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ExecutionExceptionKind kind) =>
++        Values.TryGetValue(kind, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported execution exception kind.");
++
++    public static ExecutionExceptionKind Parse(string value) =>
++        TryParse(value, out var kind)
++            ? kind
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported execution exception kind value.");
++
++    public static bool TryParse(string? value, out ExecutionExceptionKind kind)
++    {
++        kind = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out kind) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out kind) && Values.ContainsKey(kind);
++    }
++}
++
++public static class ExecutionExceptionSeverityValues
++{
++    private static readonly IReadOnlyDictionary<ExecutionExceptionSeverity, string> Values = new Dictionary<ExecutionExceptionSeverity, string>
++    {
++        [ExecutionExceptionSeverity.Warning] = "warning",
++        [ExecutionExceptionSeverity.Error] = "error",
++        [ExecutionExceptionSeverity.Critical] = "critical"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ExecutionExceptionSeverity> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ExecutionExceptionSeverity severity) =>
++        Values.TryGetValue(severity, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(severity), severity, "Unsupported execution exception severity.");
++
++    public static ExecutionExceptionSeverity Parse(string value) =>
++        TryParse(value, out var severity)
++            ? severity
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported execution exception severity value.");
++
++    public static bool TryParse(string? value, out ExecutionExceptionSeverity severity)
++    {
++        severity = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out severity) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out severity) && Values.ContainsKey(severity);
++    }
++}
++
++public static class ExecutionExceptionStatusValues
++{
++    private static readonly IReadOnlyDictionary<ExecutionExceptionStatus, string> Values = new Dictionary<ExecutionExceptionStatus, string>
++    {
++        [ExecutionExceptionStatus.Open] = "open",
++        [ExecutionExceptionStatus.Acknowledged] = "acknowledged",
++        [ExecutionExceptionStatus.Resolved] = "resolved"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ExecutionExceptionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static ExecutionExceptionStatus DefaultStatus => ExecutionExceptionStatus.Open;
++
++    public static string ToStorageValue(this ExecutionExceptionStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported execution exception status.");
++
++    public static ExecutionExceptionStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported execution exception status value.");
++
++    public static bool TryParse(string? value, out ExecutionExceptionStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++}
++
++public static class ExecutionExceptionSourceTypeValues
++{
++    private static readonly IReadOnlyDictionary<ExecutionExceptionSourceType, string> Values = new Dictionary<ExecutionExceptionSourceType, string>
++    {
++        [ExecutionExceptionSourceType.BackgroundExecution] = "background_execution",
++        [ExecutionExceptionSourceType.WorkflowInstance] = "workflow_instance",
++        [ExecutionExceptionSourceType.WorkTask] = "work_task",
++        [ExecutionExceptionSourceType.OutboxMessage] = "outbox_message",
++        [ExecutionExceptionSourceType.Schedule] = "schedule"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ExecutionExceptionSourceType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ExecutionExceptionSourceType sourceType) =>
++        Values.TryGetValue(sourceType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(sourceType), sourceType, "Unsupported execution exception source type.");
++
++    public static ExecutionExceptionSourceType Parse(string value) =>
++        TryParse(value, out var sourceType)
++            ? sourceType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported execution exception source type value.");
++
++    public static bool TryParse(string? value, out ExecutionExceptionSourceType sourceType)
++    {
++        sourceType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out sourceType) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out sourceType) && Values.ContainsKey(sourceType);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecutionInfrastructure.cs
+index 29fd307..69f717a 100644
+--- a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecutionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecutionInfrastructure.cs
+@@ -8,6 +8,7 @@ using StackExchange.Redis;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+@@ -335,12 +336,14 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IOptions<BackgroundExecutionOptions> _options;
++    private readonly IExecutionExceptionRecorder _executionExceptionRecorder;
+     private readonly ILogger<BackgroundExecutionRecorder> _logger;
+ 
+     public BackgroundExecutionRecorder(
+         VirtualCompanyDbContext dbContext,
+         IOptions<BackgroundExecutionOptions> options,
++        IExecutionExceptionRecorder executionExceptionRecorder,
+         ILogger<BackgroundExecutionRecorder> logger)
+     {
+         _dbContext = dbContext;
+         _options = options;
++        _executionExceptionRecorder = executionExceptionRecorder;
+         _logger = logger;
+     }
+@@ -406,17 +409,27 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+                 break;
+             case BackgroundJobExecutionOutcome.Blocked:
++                var blockedEscalationId = await RecordVisibleExceptionAsync(execution, result, ExecutionExceptionKind.Blocked, cancellationToken);
+                 execution.MarkBlocked(
+                     MapFailureCategory(result.FailureClassification),
+                     ResolveFailureCode(result),
+-                    ResolveFailureMessage(result));
++                    ResolveFailureMessage(result),
++                    blockedEscalationId);
+                 break;
+             case BackgroundJobExecutionOutcome.PermanentFailure:
+             case BackgroundJobExecutionOutcome.RetryExhausted:
++                var failedEscalationId = await RecordVisibleExceptionAsync(execution, result, ExecutionExceptionKind.Failed, cancellationToken);
+                 execution.MarkFailed(
+                     MapFailureCategory(result.FailureClassification),
+                     ResolveFailureCode(result),
+                     ResolveFailureMessage(result),
+-                    escalationId: null);
++                    failedEscalationId);
+                 break;
+         }
+@@ -446,6 +459,41 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+ 
+         return staleExecutions.Count;
+     }
++
++    private async Task<Guid> RecordVisibleExceptionAsync(
++        BackgroundExecution execution,
++        BackgroundJobExecutionResult result,
++        ExecutionExceptionKind kind,
++        CancellationToken cancellationToken)
++    {
++        var failureCode = ResolveFailureCode(result);
++        var failureMessage = ResolveFailureMessage(result);
++        var sourceType = ResolveSourceType(execution.RelatedEntityType);
++        var title = kind == ExecutionExceptionKind.Blocked
++            ? "Background execution blocked"
++            : "Background execution failed";
++
++        return await _executionExceptionRecorder.RecordAsync(
++            new RecordExecutionExceptionRequest(
++                execution.CompanyId,
++                kind.ToStorageValue(),
++                kind == ExecutionExceptionKind.Blocked ? ExecutionExceptionSeverity.Warning.ToStorageValue() : ExecutionExceptionSeverity.Error.ToStorageValue(),
++                title,
++                failureMessage,
++                sourceType.ToStorageValue(),
++                string.IsNullOrWhiteSpace(execution.RelatedEntityId) ? execution.Id.ToString("N") : execution.RelatedEntityId,
++                execution.Id,
++                execution.RelatedEntityType,
++                execution.RelatedEntityId,
++                $"background-execution:{execution.Id:N}:{kind.ToStorageValue()}",
++                failureCode,
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["correlationId"] = result.CorrelationId,
++                    ["executionType"] = execution.ExecutionType.ToStorageValue(),
++                    ["backgroundExecutionStatus"] = execution.Status.ToStorageValue(),
++                    ["failureClassification"] = result.FailureClassification?.ToString()
++                }),
++            cancellationToken);
++    }
+ 
+     private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
+         classification switch
+@@ -467,6 +515,14 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+     private static string ResolveFailureCode(BackgroundJobExecutionResult result) =>
+         string.IsNullOrWhiteSpace(result.ExceptionType) ? result.Outcome.ToString() : result.ExceptionType;
+ 
++    private static ExecutionExceptionSourceType ResolveSourceType(string relatedEntityType) =>
++        relatedEntityType switch
++        {
++            BackgroundExecutionRelatedEntityTypes.WorkflowInstance => ExecutionExceptionSourceType.WorkflowInstance,
++            BackgroundExecutionRelatedEntityTypes.WorkTask => ExecutionExceptionSourceType.WorkTask,
++            BackgroundExecutionRelatedEntityTypes.OutboxMessage => ExecutionExceptionSourceType.OutboxMessage,
++            BackgroundExecutionRelatedEntityTypes.Schedule => ExecutionExceptionSourceType.Schedule,
++            _ => ExecutionExceptionSourceType.BackgroundExecution
++        };
++
+     private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
+         string.IsNullOrWhiteSpace(result.ErrorMessage) ? "Background execution failed." : result.ErrorMessage;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs
+new file mode 100644
+index 0000000..d470c69
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutionExceptionService.cs
+@@ -0,0 +1,146 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.ExecutionExceptions;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IExecutionExceptionQueryService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly IAuditEventWriter _auditEventWriter;
++
++    public ExecutionExceptionService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        IAuditEventWriter auditEventWriter)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _auditEventWriter = auditEventWriter;
++    }
++
++    public async Task<Guid> RecordAsync(RecordExecutionExceptionRequest request, CancellationToken cancellationToken)
++    {
++        if (request.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(request));
++        }
++
++        var kind = ExecutionExceptionKindValues.Parse(request.Kind);
++        var severity = ExecutionExceptionSeverityValues.Parse(request.Severity);
++        var sourceType = ExecutionExceptionSourceTypeValues.Parse(request.SourceType);
++
++        var existing = await _dbContext.ExecutionExceptionRecords
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == request.CompanyId &&
++                x.IncidentKey == request.IncidentKey,
++                cancellationToken);
++
++        if (existing is not null)
++        {
++            existing.RefreshOpen(severity, request.Title, request.Summary, request.FailureCode, request.Details);
++            return existing.Id;
++        }
++
++        var record = new ExecutionExceptionRecord(
++            Guid.NewGuid(),
++            request.CompanyId,
++            kind,
++            severity,
++            request.Title,
++            request.Summary,
++            sourceType,
++            request.SourceId,
++            request.BackgroundExecutionId,
++            request.RelatedEntityType,
++            request.RelatedEntityId,
++            request.IncidentKey,
++            request.FailureCode,
++            request.Details);
++
++        _dbContext.ExecutionExceptionRecords.Add(record);
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                request.CompanyId,
++                AuditActorTypes.System,
++                null,
++                AuditEventActions.ExecutionExceptionCreated,
++                AuditTargetTypes.ExecutionException,
++                record.Id.ToString("N"),
++                AuditEventOutcomes.Pending,
++                record.Title,
++                Metadata: new Dictionary<string, string?>
++                {
++                    ["kind"] = record.Kind.ToStorageValue(),
++                    ["severity"] = record.Severity.ToStorageValue(),
++                    ["sourceType"] = record.SourceType.ToStorageValue(),
++                    ["sourceId"] = record.SourceId,
++                    ["backgroundExecutionId"] = record.BackgroundExecutionId?.ToString("N"),
++                    ["incidentKey"] = record.IncidentKey,
++                    ["failureCode"] = record.FailureCode
++                }),
++            cancellationToken);
++
++        return record.Id;
++    }
++
++    public async Task<IReadOnlyList<ExecutionExceptionDto>> ListAsync(
++        Guid companyId,
++        string? status,
++        string? kind,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var query = _dbContext.ExecutionExceptionRecords
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            query = query.Where(x => x.Status == ExecutionExceptionStatusValues.Parse(status));
++        }
++
++        if (!string.IsNullOrWhiteSpace(kind))
++        {
++            query = query.Where(x => x.Kind == ExecutionExceptionKindValues.Parse(kind));
++        }
++
++        var records = await query
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(200)
++            .ToListAsync(cancellationToken);
++
++        return records.Select(ToDto).ToList();
++    }
++
++    public async Task<ExecutionExceptionDto> GetAsync(Guid companyId, Guid exceptionId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var record = await _dbContext.ExecutionExceptionRecords
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == exceptionId, cancellationToken);
++
++        return record is null
++            ? throw new KeyNotFoundException("Execution exception not found.")
++            : ToDto(record);
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken) is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static ExecutionExceptionDto ToDto(ExecutionExceptionRecord record) =>
++        new(
++            record.Id,
++            record.CompanyId,
++            record.Kind.ToStorageValue(),
++            record.Severity.ToStorageValue(),
++            record.Status.ToStorageValue(),
++            record.Title,
++            record.Summary,
++            record.SourceType.ToStorageValue(),
++            record.SourceId,
++            record.BackgroundExecutionId,
++            record.RelatedEntityType,
++            record.RelatedEntityId,
++            record.IncidentKey,
++            record.FailureCode,
++            new Dictionary<string, string?>(record.Details, StringComparer.OrdinalIgnoreCase),
++            record.CreatedUtc,
++            record.UpdatedUtc,
++            record.ResolvedUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 72e3d28..cc49117 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -9,6 +9,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Context;
+ using StackExchange.Redis;
++using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+@@ -169,6 +170,9 @@ public static class DependencyInjection
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
++        services.AddScoped<ExecutionExceptionService>();
++        services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
++        services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 720f5f1..fb83de3 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -426,6 +426,67 @@ internal sealed class BackgroundExecutionConfiguration : IEntityTypeConfiguratio
+     }
+ }
+ 
++internal sealed class ExecutionExceptionRecordConfiguration : IEntityTypeConfiguration<ExecutionExceptionRecord>
++{
++    public void Configure(EntityTypeBuilder<ExecutionExceptionRecord> builder)
++    {
++        builder.ToTable("execution_exceptions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Kind)
++            .HasColumnName("kind")
++            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionKindValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Severity)
++            .HasColumnName("severity")
++            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionSeverityValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(ExecutionExceptionStatusValues.DefaultStatus)
++            .HasSentinel((ExecutionExceptionStatus)0)
++            .IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000).IsRequired();
++        builder.Property(x => x.SourceType)
++            .HasColumnName("source_type")
++            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionSourceTypeValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.BackgroundExecutionId).HasColumnName("background_execution_id");
++        builder.Property(x => x.RelatedEntityType).HasColumnName("related_entity_type").HasMaxLength(100);
++        builder.Property(x => x.RelatedEntityId).HasColumnName("related_entity_id").HasMaxLength(128);
++        builder.Property(x => x.IncidentKey).HasColumnName("incident_key").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(200);
++        builder.Property(x => x.Details)
++            .HasColumnName("details_json")
++            .HasJsonConversion<Dictionary<string, string?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.ResolvedUtc).HasColumnName("resolved_at");
++
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Kind, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.IncidentKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId });
++        builder.HasIndex(x => x.BackgroundExecutionId);
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.BackgroundExecution)
++            .WithMany()
++            .HasForeignKey(x => x.BackgroundExecutionId)
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent>
+ {
+     public void Configure(EntityTypeBuilder<AuditEvent> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413100000_AddExecutionExceptions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413100000_AddExecutionExceptions.cs
+new file mode 100644
+index 0000000..0d0e1e4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413100000_AddExecutionExceptions.cs
+@@ -0,0 +1,120 @@
++using System;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413100000_AddExecutionExceptions")]
++public partial class AddExecutionExceptions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++
++        migrationBuilder.CreateTable(
++            name: "execution_exceptions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                kind = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false),
++                severity = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false),
++                status = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "open"),
++                title = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                summary = table.Column<string>(type: $"{stringType}(2000)", maxLength: 2000, nullable: false),
++                source_type = table.Column<string>(type: $"{stringType}(64)", maxLength: 64, nullable: false),
++                source_id = table.Column<string>(type: $"{stringType}(128)", maxLength: 128, nullable: false),
++                background_execution_id = table.Column<Guid>(type: guidType, nullable: true),
++                related_entity_type = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: true),
++                related_entity_id = table.Column<string>(type: $"{stringType}(128)", maxLength: 128, nullable: true),
++                incident_key = table.Column<string>(type: $"{stringType}(300)", maxLength: 300, nullable: false),
++                failure_code = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: true),
++                details_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                resolved_at = table.Column<DateTime>(type: dateTimeType, nullable: true)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_execution_exceptions", x => x.id);
++                table.ForeignKey(
++                    name: "FK_execution_exceptions_background_executions_background_execution_id",
++                    column: x => x.background_execution_id,
++                    principalTable: "background_executions",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_execution_exceptions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_execution_exceptions_background_execution_id",
++            table: "execution_exceptions",
++            column: "background_execution_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_execution_exceptions_company_id_incident_key",
++            table: "execution_exceptions",
++            columns: new[] { "company_id", "incident_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_execution_exceptions_company_id_kind_status_created_at",
++            table: "execution_exceptions",
++            columns: new[] { "company_id", "kind", "status", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_execution_exceptions_company_id_source_type_source_id",
++            table: "execution_exceptions",
++            columns: new[] { "company_id", "source_type", "source_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_execution_exceptions_company_id_status_created_at",
++            table: "execution_exceptions",
++            columns: new[] { "company_id", "status", "created_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "execution_exceptions");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 716a928..6ca39a9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -24,6 +24,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
+     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
+     public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
++    public DbSet<ExecutionExceptionRecord> ExecutionExceptionRecords => Set<ExecutionExceptionRecord>();
+     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+@@ -64,6 +65,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<BackgroundExecution>()
+             .HasQueryFilter(execution =>
+                 CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ExecutionExceptionRecord>()
++            .HasQueryFilter(executionException =>
++                CurrentCompanyId.HasValue && executionException.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<Agent>()
+             .HasQueryFilter(agent =>
+                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+index d8e0f3c..c2d9c31 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowDefinitionIntegrationTests.cs
+@@ -4,10 +4,12 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Persistence;
+ using Xunit;
+ 
+@@ -489,6 +491,87 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Background_execution_terminal_incidents_create_visible_execution_exceptions_once_per_tenant()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++        var blockedTaskId = Guid.NewGuid();
++        var failedTaskId = Guid.NewGuid();
++        var otherTaskId = Guid.NewGuid();
++
++        await using (var scope = _factory.Services.CreateAsyncScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            await dbContext.Database.EnsureCreatedAsync();
++            var recorder = scope.ServiceProvider.GetRequiredService<IBackgroundExecutionRecorder>();
++
++            var blockedExecution = await recorder.StartAsync(
++                seed.CompanyId,
++                BackgroundExecutionType.LongRunningTask,
++                BackgroundExecutionRelatedEntityTypes.WorkTask,
++                blockedTaskId.ToString("N"),
++                "corr-blocked",
++                "incident-blocked",
++                attempt: 1,
++                maxAttempts: 1,
++                CancellationToken.None);
++
++            var blockedResult = BackgroundJobExecutionResult.Blocked(
++                "corr-blocked",
++                "Manual approval is required.",
++                "policy.approval_required",
++                BackgroundJobFailureClassification.ApprovalRequired);
++            await recorder.ApplyOutcomeAsync(blockedExecution, blockedResult, null, CancellationToken.None);
++            await recorder.ApplyOutcomeAsync(blockedExecution, blockedResult, null, CancellationToken.None);
++
++            var failedExecution = await recorder.StartAsync(
++                seed.CompanyId,
++                BackgroundExecutionType.LongRunningTask,
++                BackgroundExecutionRelatedEntityTypes.WorkTask,
++                failedTaskId.ToString("N"),
++                "corr-failed",
++                "incident-failed",
++                attempt: 1,
++                maxAttempts: 1,
++                CancellationToken.None);
++
++            await recorder.ApplyOutcomeAsync(
++                failedExecution,
++                BackgroundJobExecutionResult.RetryExhausted(
++                    "corr-failed",
++                    "Provider timed out after retries.",
++                    "System.TimeoutException",
++                    BackgroundJobFailureClassification.ExternalDependencyTimeout),
++                null,
++                CancellationToken.None);
++
++            var otherExecution = await recorder.StartAsync(
++                seed.OtherCompanyId,
++                BackgroundExecutionType.LongRunningTask,
++                BackgroundExecutionRelatedEntityTypes.WorkTask,
++                otherTaskId.ToString("N"),
++                "corr-other",
++                "incident-other",
++                attempt: 1,
++                maxAttempts: 1,
++                CancellationToken.None);
++            await recorder.ApplyOutcomeAsync(otherExecution, blockedResult, null, CancellationToken.None);
++
++            await dbContext.SaveChangesAsync();
++        }
++
++        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(
++            $"/api/companies/{seed.CompanyId}/execution-exceptions?status=open");
++        Assert.NotNull(ownerExceptions);
++        Assert.Equal(2, ownerExceptions!.Count);
++        Assert.Single(ownerExceptions.Where(x => x.Kind == "blocked"));
++        Assert.Single(ownerExceptions.Where(x => x.Kind == "failed"));
++        Assert.All(ownerExceptions, x => Assert.Equal(seed.CompanyId, x.CompanyId));
++        Assert.All(ownerExceptions, x => Assert.Equal("work_task", x.SourceType));
++        Assert.Equal(1, ownerExceptions.Count(x => x.IncidentKey == $"background-execution:{ownerExceptions.Single(y => y.Kind == "blocked").BackgroundExecutionId:N}:blocked"));
++
++        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);
++        var crossTenantList = await otherClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(
++            $"/api/companies/{seed.OtherCompanyId}/execution-exceptions?status=open");
++        var otherException = Assert.Single(crossTenantList!);
++        Assert.Equal(seed.OtherCompanyId, otherException.CompanyId);
++    }
++
+     [Fact]
+     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()
+     {
+END_OF_PATCH

@@ -6,9 +6,12 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Context;
 using StackExchange.Redis;
+using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Tasks;
@@ -55,6 +58,20 @@ public static class DependencyInjection
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
+        services.AddOptions<RedisExecutionCoordinationOptions>()
+            .Bind(configuration.GetSection(RedisExecutionCoordinationOptions.SectionName))
+            .Validate(
+                options => options.DefaultLockLeaseSeconds > 0 && options.DefaultExecutionStateTtlSeconds > 0,
+                "Redis execution coordination TTL values must be positive.")
+            .PostConfigure(options =>
+            {
+                options.KeyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix) ? "vc" : options.KeyPrefix.Trim();
+            });
+
+        services.AddOptions<BackgroundExecutionOptions>()
+            .Bind(configuration.GetSection(BackgroundExecutionOptions.SectionName))
+            .Configure(options => options.BaseRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, 0));
+
         services.AddOptions<KnowledgeChunkingOptions>()
             .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
 
@@ -76,7 +93,10 @@ public static class DependencyInjection
                 options.AbortOnConnectFail = false;
                 return ConnectionMultiplexer.Connect(options);
             });
-            services.AddSingleton<IDistributedLockProvider, RedisDistributedLockProvider>();
+            services.AddSingleton<RedisExecutionCoordinationService>();
+            services.AddSingleton<IExecutionCoordinationStore>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
+            services.AddSingleton<IExecutionCoordinationKeyBuilder>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
+            services.AddSingleton<IDistributedLockProvider>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
             services.AddStackExchangeRedisCache(options =>
             {
                 options.Configuration = redisConnectionString;
@@ -86,7 +106,10 @@ public static class DependencyInjection
         else
         {
             // Local/test fallback keeps the worker path runnable when Redis is intentionally absent.
-            services.AddSingleton<IDistributedLockProvider, InMemoryDistributedLockProvider>();
+            services.AddSingleton<InMemoryExecutionCoordinationService>();
+            services.AddSingleton<IExecutionCoordinationStore>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
+            services.AddSingleton<IExecutionCoordinationKeyBuilder>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
+            services.AddSingleton<IDistributedLockProvider>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
             services.AddDistributedMemoryCache();
         }
 
@@ -97,13 +120,22 @@ public static class DependencyInjection
         services.AddVirtualCompanyObservability(configuration);
         services.AddOptions<WorkflowSchedulerOptions>()
             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
+        services.AddOptions<WorkflowProgressionOptions>()
+            .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));
         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
         services.AddHostedService<WorkflowSchedulerBackgroundService>();
+        services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
+        services.AddScoped<IWorkflowProgressionService, WorkflowProgressionService>();
+        services.AddHostedService<WorkflowProgressionBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+        services.AddSingleton<IBackgroundExecutionRetryPolicy, ExponentialBackgroundExecutionRetryPolicy>();
+        services.AddSingleton<IBackgroundExecutionIdentityFactory, DefaultBackgroundExecutionIdentityFactory>();
+        services.AddScoped<IBackgroundExecutionRecorder, BackgroundExecutionRecorder>();
         services.AddHttpContextAccessor();
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+        services.AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
@@ -143,9 +175,13 @@ public static class DependencyInjection
         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+        services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
         services.AddScoped<CompanyWorkflowService>();
         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+        services.AddScoped<ExecutionExceptionService>();
+        services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+        services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());

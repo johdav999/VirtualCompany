@@ -273,6 +273,11 @@ public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
 
     public void SetCompanyId(Guid? companyId)
     {
+        if (companyId == Guid.Empty)
+        {
+            companyId = null;
+        }
+
         CompanyId = companyId;
 
         if (!companyId.HasValue || Membership?.CompanyId != companyId.Value)

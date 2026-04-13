@@ -194,6 +194,10 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.Equal("This sensitive action is pending approval and was not executed.", payload.Message);
         Assert.NotNull(payload.ApprovalRequestId);
         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+        Assert.NotNull(payload.ApprovalDecisionChain);
+        Assert.Equal("pending", payload.ApprovalDecisionChain!["status"].GetString());
+        Assert.Equal("approval_request_created", payload.ApprovalDecisionChain["currentStep"].GetString());
+        Assert.Equal("policy_evaluation", payload.ApprovalDecisionChain["steps"][0].GetProperty("step").GetString());
 
         using var scope = _factory.Services.CreateScope();
         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
@@ -207,6 +211,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         Assert.Equal("expenseUsd", approval.ThresholdContext["thresholdKey"]!.GetValue<string>());
         Assert.Equal("execute", approval.ThresholdContext["actionType"]!.GetValue<string>());
         Assert.Equal("awaiting_approval", approval.ThresholdContext["executionState"]!.GetValue<string>());
+        Assert.Equal("pending", approval.DecisionChain["status"]!.GetValue<string>());
+        Assert.Equal("approval_request_created", approval.DecisionChain["currentStep"]!.GetValue<string>());
+        Assert.Equal("policy_evaluation", approval.DecisionChain["steps"]![0]!["step"]!.GetValue<string>());
+        Assert.Equal(payload.ExecutionId, approval.DecisionChain["executionId"]!.GetValue<Guid>());
+        Assert.Equal(payload.ApprovalRequestId, approval.DecisionChain["approvalRequestId"]!.GetValue<Guid>());
 
         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
         Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
@@ -394,6 +403,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
         public Guid? ApprovalRequestId { get; set; }
         public PolicyDecisionResponse PolicyDecision { get; set; } = new();
         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }
+        public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }
         public string Message { get; set; } = string.Empty;
     }
 

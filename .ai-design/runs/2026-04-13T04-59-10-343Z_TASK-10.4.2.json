@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.4.2",
+  "promptPath": ".ai-design/prompts/TASK-10.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T04:59:10.343Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T04-59-10-343Z_TASK-10.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T04-59-10-343Z_TASK-10.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T05:02:22.305Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ication);\n+        Assert.Equal(BackgroundJobExecutionOutcome.RetryExhausted, exhausted.Outcome);\n+    }\n+\n     [Fact]\n     public void Classifier_distinguishes_concurrency_and_validation_failures()\n     {\n@@ -134,7 +173,7 @@ public sealed class BackgroundJobExecutorTests\n     }\n \n     [Fact]\n-    public void Classifier_marks_business_policy_and_workflow_validation_as_non_retryable()\n+    public void Classifier_marks_business_policy_approval_and_workflow_validation_as_non_retryable()\n     {\n         var classifier = new DefaultBackgroundJobFailureClassifier();\n \n@@ -154,11 +193,24 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(\n             BackgroundJobFailureClassification.Configuration,\n             classifier.Classify(new KeyNotFoundException(\"Missing workflow definition.\")));\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.ApprovalRequired,\n+            classifier.Classify(new WorkflowBlockedException(\"Approval required.\")));\n \n         Assert.False(BackgroundJobFailureClassification.Validation.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.PermanentPolicy.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.PermanentBusinessRule.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.Configuration.IsRetryable());\n+        Assert.False(BackgroundJobFailureClassification.ApprovalRequired.IsRetryable());\n+    }\n+\n+    [Fact]\n+    public void Classifier_marks_rate_limit_as_retryable()\n+    {\n+        var classifier = new DefaultBackgroundJobFailureClassifier();\n+\n+        var classification = classifier.Classify(new HttpRequestException(\"Rate limited.\", null, HttpStatusCode.TooManyRequests));\n+\n+        Assert.Equal(BackgroundJobFailureClassification.RateLimited, classification);\n+        Assert.True(classification.IsRetryable());\n     }\n \n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\nEND_OF_PATCH\n",
+  "stderrTail": "Assert.Equal(BackgroundJobExecutionOutcome.RetryExhausted, exhausted.Outcome);\n+    }\n+\n     [Fact]\n     public void Classifier_distinguishes_concurrency_and_validation_failures()\n     {\n@@ -134,7 +173,7 @@ public sealed class BackgroundJobExecutorTests\n     }\n \n     [Fact]\n-    public void Classifier_marks_business_policy_and_workflow_validation_as_non_retryable()\n+    public void Classifier_marks_business_policy_approval_and_workflow_validation_as_non_retryable()\n     {\n         var classifier = new DefaultBackgroundJobFailureClassifier();\n \n@@ -154,11 +193,24 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(\n             BackgroundJobFailureClassification.Configuration,\n             classifier.Classify(new KeyNotFoundException(\"Missing workflow definition.\")));\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.ApprovalRequired,\n+            classifier.Classify(new WorkflowBlockedException(\"Approval required.\")));\n \n         Assert.False(BackgroundJobFailureClassification.Validation.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.PermanentPolicy.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.PermanentBusinessRule.IsRetryable());\n         Assert.False(BackgroundJobFailureClassification.Configuration.IsRetryable());\n+        Assert.False(BackgroundJobFailureClassification.ApprovalRequired.IsRetryable());\n+    }\n+\n+    [Fact]\n+    public void Classifier_marks_rate_limit_as_retryable()\n+    {\n+        var classifier = new DefaultBackgroundJobFailureClassifier();\n+\n+        var classification = classifier.Classify(new HttpRequestException(\"Rate limited.\", null, HttpStatusCode.TooManyRequests));\n+\n+        Assert.Equal(BackgroundJobFailureClassification.RateLimited, classification);\n+        Assert.True(classification.IsRetryable());\n     }\n \n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\nEND_OF_PATCH\ntokens used\n62,296\n",
+  "verbosityMode": "summary"
+}

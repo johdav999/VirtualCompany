@@ -6,7 +6,11 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.BackgroundExecution;
+using VirtualCompany.Application.Auth;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
@@ -78,14 +82,29 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingSer
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IWorkflowScheduleTriggerService _scheduleTriggerService;
     private readonly ILogger<WorkflowSchedulePollingService> _logger;
+    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+    private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
+    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+    private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
 
     public WorkflowSchedulePollingService(
         VirtualCompanyDbContext dbContext,
         IWorkflowScheduleTriggerService scheduleTriggerService,
+        IBackgroundJobExecutor backgroundJobExecutor,
+        IBackgroundExecutionRecorder backgroundExecutionRecorder,
+        IBackgroundExecutionRetryPolicy retryPolicy,
+        IBackgroundExecutionIdentityFactory identityFactory,
+        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         ILogger<WorkflowSchedulePollingService> logger)
     {
         _dbContext = dbContext;
         _scheduleTriggerService = scheduleTriggerService;
+        _backgroundJobExecutor = backgroundJobExecutor;
+        _backgroundExecutionRecorder = backgroundExecutionRecorder;
+        _retryPolicy = retryPolicy;
+        _identityFactory = identityFactory;
+        _companyExecutionScopeFactory = companyExecutionScopeFactory;
         _logger = logger;
     }
 
@@ -115,39 +134,74 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingSer
         var failureCount = 0;
         foreach (var companyId in companyIds)
         {
-            try
-            {
-                var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
-                    companyId,
-                    new TriggerScheduledWorkflowsCommand(
-                        dueAtUtc,
-                        ScheduleKey: null,
-                        ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler")
-                        }),
-                    cancellationToken);
+            using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
+            var correlationId = $"workflow-scheduler:{companyId:N}:{dueAtUtc:yyyyMMddHHmm}";
+            var executionIdentity = _identityFactory.Create(
+                companyId,
+                "workflow-scheduler",
+                correlationId,
+                dueAtUtc.ToString("yyyyMMddHHmm"));
+            var executionRecord = await _backgroundExecutionRecorder.StartAsync(
+                companyId,
+                BackgroundExecutionType.ScheduledWorkflow,
+                BackgroundExecutionRelatedEntityTypes.Schedule,
+                dueAtUtc.ToString("yyyyMMddHHmm"),
+                executionIdentity.CorrelationId,
+                executionIdentity.IdempotencyKey,
+                attempt: 1,
+                maxAttempts: 1,
+                cancellationToken);
 
-                startedCount += started.Count;
-                if (started.Count > 0)
+            var execution = await _backgroundJobExecutor.ExecuteAsync(
+                new BackgroundJobExecutionContext(
+                    "workflow-scheduler:poll-company",
+                    attempt: 1,
+                    maxAttempts: 1,
+                    companyId,
+                    executionIdentity.CorrelationId,
+                    executionIdentity.IdempotencyKey,
+                    requireCompanyContext: true),
+                async innerCancellationToken =>
                 {
-                    _logger.LogInformation(
-                        "Workflow scheduler started {StartedCount} scheduled workflow instance(s) for company {CompanyId}.",
-                        started.Count,
-                        companyId);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
+                    var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
+                        companyId,
+                        new TriggerScheduledWorkflowsCommand(
+                            dueAtUtc,
+                            ScheduleKey: null,
+                            ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler"),
+                                ["correlationId"] = System.Text.Json.Nodes.JsonValue.Create(executionIdentity.CorrelationId),
+                                ["idempotencyKey"] = System.Text.Json.Nodes.JsonValue.Create(executionIdentity.IdempotencyKey)
+                            }),
+                        innerCancellationToken);
+
+                    startedCount += started.Count;
+                    if (started.Count > 0)
+                    {
+                        _logger.LogInformation(
+                            "Workflow scheduler started {StartedCount} scheduled workflow instance(s) for company {CompanyId}.",
+                            started.Count,
+                            companyId);
+                    }
+                },
+                _retryPolicy.GetRetryDelay(1),
+                cancellationToken);
+
+            await _backgroundExecutionRecorder.ApplyOutcomeAsync(
+                executionRecord,
+                execution,
+                execution.Outcome == BackgroundJobExecutionOutcome.RetryScheduled ? DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero) : null,
+                cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            if (execution.Outcome != BackgroundJobExecutionOutcome.Succeeded)
             {
                 failureCount++;
                 _logger.LogError(
-                    ex,
-                    "Workflow scheduler failed while processing scheduled workflows for company {CompanyId}.",
-                    companyId);
+                    "Workflow scheduler failed while processing scheduled workflows for company {CompanyId}. Failure: {FailureMessage}.",
+                    companyId,
+                    execution.ErrorMessage);
             }
         }
 

@@ -21,6 +21,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
+    public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
+    public DbSet<ExecutionExceptionRecord> ExecutionExceptionRecords => Set<ExecutionExceptionRecord>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
@@ -31,6 +33,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+    public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
@@ -50,6 +53,12 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyOwnedNote>()
             .HasQueryFilter(note =>
                 CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<BackgroundExecution>()
+            .HasQueryFilter(execution =>
+                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ExecutionExceptionRecord>()
+            .HasQueryFilter(executionException =>
+                CurrentCompanyId.HasValue && executionException.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);

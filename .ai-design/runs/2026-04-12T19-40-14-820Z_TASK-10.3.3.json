@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.3.3",
+  "promptPath": ".ai-design/prompts/TASK-10.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-12T19:40:14.820Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-12T19-40-14-820Z_TASK-10.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-12T19-40-14-820Z_TASK-10.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-12T19:43:03.744Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "b833..5ec7d23 100644\n--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n@@ -109,6 +109,33 @@ public sealed class ApprovalDecisionChainTests\n         Assert.Null(approval.CurrentActionableStep);\n     }\n \n+    [Fact]\n+    public void Expiring_approval_marks_it_non_actionable()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.MarkExpired();\n+\n+        Assert.Equal(ApprovalRequestStatus.Expired, approval.Status);\n+        Assert.Equal(\"Approval request expired.\", approval.DecisionSummary);\n+        Assert.Null(approval.CurrentActionableStep);\n+        Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));\n+    }\n+\n+    [Fact]\n+    public void Cancelling_approval_marks_it_non_actionable()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.MarkCancelled(\"superseded\");\n+\n+        Assert.Equal(ApprovalRequestStatus.Cancelled, approval.Status);\n+        Assert.Equal(\"superseded\", approval.DecisionSummary);\n+        Assert.Null(approval.CurrentActionableStep);\n+        Assert.Throws<InvalidOperationException>(() => approval.RejectCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));\n+    }\n+\n+    [Fact]\n+    public void Legacy_action_approval_gets_default_owner_step()\n+    {\n+        var approval = new ApprovalRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), \"erp\", ToolActionType.Execute, \"founder\", new Dictionary<string, JsonNode?> { [\"amount\"] = JsonValue.Create(100) });\n+\n+        var step = Assert.Single(approval.Steps);\n+        Assert.Equal(ApprovalStepApproverType.Role, step.ApproverType);\n+        Assert.Equal(\"owner\", step.ApproverRef);\n+    }\n+\n     private static ApprovalRequest CreateApproval(\n         string? requiredRole = null,\n         Guid? requiredUserId = null,\nEND_OF_PATCH\n",
+  "stderrTail": "4\n--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs\n@@ -109,6 +109,33 @@ public sealed class ApprovalDecisionChainTests\n         Assert.Null(approval.CurrentActionableStep);\n     }\n \n+    [Fact]\n+    public void Expiring_approval_marks_it_non_actionable()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.MarkExpired();\n+\n+        Assert.Equal(ApprovalRequestStatus.Expired, approval.Status);\n+        Assert.Equal(\"Approval request expired.\", approval.DecisionSummary);\n+        Assert.Null(approval.CurrentActionableStep);\n+        Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));\n+    }\n+\n+    [Fact]\n+    public void Cancelling_approval_marks_it_non_actionable()\n+    {\n+        var approval = CreateApproval(requiredRole: \"manager\");\n+\n+        approval.MarkCancelled(\"superseded\");\n+\n+        Assert.Equal(ApprovalRequestStatus.Cancelled, approval.Status);\n+        Assert.Equal(\"superseded\", approval.DecisionSummary);\n+        Assert.Null(approval.CurrentActionableStep);\n+        Assert.Throws<InvalidOperationException>(() => approval.RejectCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));\n+    }\n+\n+    [Fact]\n+    public void Legacy_action_approval_gets_default_owner_step()\n+    {\n+        var approval = new ApprovalRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), \"erp\", ToolActionType.Execute, \"founder\", new Dictionary<string, JsonNode?> { [\"amount\"] = JsonValue.Create(100) });\n+\n+        var step = Assert.Single(approval.Steps);\n+        Assert.Equal(ApprovalStepApproverType.Role, step.ApproverType);\n+        Assert.Equal(\"owner\", step.ApproverRef);\n+    }\n+\n     private static ApprovalRequest CreateApproval(\n         string? requiredRole = null,\n         Guid? requiredUserId = null,\nEND_OF_PATCH\ntokens used\n88,136\n",
+  "verbosityMode": "summary"
+}

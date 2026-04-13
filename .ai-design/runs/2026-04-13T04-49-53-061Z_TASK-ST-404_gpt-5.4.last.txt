@@ -1,0 +1,1334 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+new file mode 100644
+index 0000000..a5e36b3
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+@@ -0,0 +1,202 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum BackgroundExecutionType
++{
++    ScheduledWorkflow = 1,
++    WorkflowProgression = 2,
++    Retry = 3,
++    LongRunningTask = 4,
++    OutboxDispatch = 5
++}
++
++public enum BackgroundExecutionStatus
++{
++    Pending = 1,
++    InProgress = 2,
++    Succeeded = 3,
++    RetryScheduled = 4,
++    Failed = 5,
++    Escalated = 6
++}
++
++public enum BackgroundExecutionFailureCategory
++{
++    TransientInfrastructure = 1,
++    LockContention = 2,
++    ExternalDependencyTimeout = 3,
++    ExternalDependencyUnavailable = 4,
++    PermanentBusinessRule = 5,
++    PermanentPolicy = 6,
++    Validation = 7,
++    Configuration = 8
++}
++
++public enum CompanyOutboxMessageStatus
++{
++    Pending = 1,
++    InProgress = 2,
++    Dispatched = 3,
++    Failed = 4,
++    RetryScheduled = 5
++}
++
++public static class BackgroundExecutionTypeValues
++{
++    private static readonly IReadOnlyDictionary<BackgroundExecutionType, string> Values = new Dictionary<BackgroundExecutionType, string>
++    {
++        [BackgroundExecutionType.ScheduledWorkflow] = "scheduled_workflow",
++        [BackgroundExecutionType.WorkflowProgression] = "workflow_progression",
++        [BackgroundExecutionType.Retry] = "retry",
++        [BackgroundExecutionType.LongRunningTask] = "long_running_task",
++        [BackgroundExecutionType.OutboxDispatch] = "outbox_dispatch"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BackgroundExecutionType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this BackgroundExecutionType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported background execution type.");
++
++    public static BackgroundExecutionType Parse(string value) =>
++        TryParse(value, out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported background execution type value.");
++
++    public static bool TryParse(string? value, out BackgroundExecutionType type)
++    {
++        type = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out type) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out type) && Values.ContainsKey(type);
++    }
++}
++
++public static class BackgroundExecutionStatusValues
++{
++    private static readonly IReadOnlyDictionary<BackgroundExecutionStatus, string> Values = new Dictionary<BackgroundExecutionStatus, string>
++    {
++        [BackgroundExecutionStatus.Pending] = "pending",
++        [BackgroundExecutionStatus.InProgress] = "in_progress",
++        [BackgroundExecutionStatus.Succeeded] = "succeeded",
++        [BackgroundExecutionStatus.RetryScheduled] = "retry_scheduled",
++        [BackgroundExecutionStatus.Failed] = "failed",
++        [BackgroundExecutionStatus.Escalated] = "escalated"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BackgroundExecutionStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static BackgroundExecutionStatus DefaultStatus => BackgroundExecutionStatus.Pending;
++
++    public static string ToStorageValue(this BackgroundExecutionStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported background execution status.");
++
++    public static BackgroundExecutionStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported background execution status value.");
++
++    public static bool TryParse(string? value, out BackgroundExecutionStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++}
++
++public static class BackgroundExecutionFailureCategoryValues
++{
++    private static readonly IReadOnlyDictionary<BackgroundExecutionFailureCategory, string> Values = new Dictionary<BackgroundExecutionFailureCategory, string>
++    {
++        [BackgroundExecutionFailureCategory.TransientInfrastructure] = "transient_infrastructure",
++        [BackgroundExecutionFailureCategory.LockContention] = "lock_contention",
++        [BackgroundExecutionFailureCategory.ExternalDependencyTimeout] = "external_dependency_timeout",
++        [BackgroundExecutionFailureCategory.ExternalDependencyUnavailable] = "external_dependency_unavailable",
++        [BackgroundExecutionFailureCategory.PermanentBusinessRule] = "permanent_business_rule",
++        [BackgroundExecutionFailureCategory.PermanentPolicy] = "permanent_policy",
++        [BackgroundExecutionFailureCategory.Validation] = "validation",
++        [BackgroundExecutionFailureCategory.Configuration] = "configuration"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BackgroundExecutionFailureCategory> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this BackgroundExecutionFailureCategory category) =>
++        Values.TryGetValue(category, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(category), category, "Unsupported background execution failure category.");
++
++    public static BackgroundExecutionFailureCategory Parse(string value) =>
++        TryParse(value, out var category)
++            ? category
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported background execution failure category value.");
++
++    public static bool TryParse(string? value, out BackgroundExecutionFailureCategory category)
++    {
++        category = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out category) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out category) && Values.ContainsKey(category);
++    }
++}
++
++public static class CompanyOutboxMessageStatusValues
++{
++    private static readonly IReadOnlyDictionary<CompanyOutboxMessageStatus, string> Values = new Dictionary<CompanyOutboxMessageStatus, string>
++    {
++        [CompanyOutboxMessageStatus.Pending] = "pending",
++        [CompanyOutboxMessageStatus.InProgress] = "in_progress",
++        [CompanyOutboxMessageStatus.Dispatched] = "dispatched",
++        [CompanyOutboxMessageStatus.Failed] = "failed",
++        [CompanyOutboxMessageStatus.RetryScheduled] = "retry_scheduled"
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyOutboxMessageStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static CompanyOutboxMessageStatus DefaultStatus => CompanyOutboxMessageStatus.Pending;
++
++    public static string ToStorageValue(this CompanyOutboxMessageStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported company outbox message status.");
++
++    public static CompanyOutboxMessageStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported company outbox message status value.");
++
++    public static bool TryParse(string? value, out CompanyOutboxMessageStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+new file mode 100644
+index 0000000..86b9d32
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+@@ -0,0 +1,203 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class BackgroundExecution : ICompanyOwnedEntity
++{
++    private const int RelatedEntityTypeMaxLength = 100;
++    private const int RelatedEntityIdMaxLength = 128;
++    private const int CorrelationIdMaxLength = 128;
++    private const int IdempotencyKeyMaxLength = 200;
++    private const int FailureCodeMaxLength = 100;
++    private const int FailureMessageMaxLength = 4000;
++
++    private BackgroundExecution()
++    {
++    }
++
++    public BackgroundExecution(
++        Guid id,
++        Guid companyId,
++        BackgroundExecutionType executionType,
++        string relatedEntityType,
++        string relatedEntityId,
++        string correlationId,
++        string idempotencyKey,
++        int maxAttempts)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (maxAttempts <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(maxAttempts), "MaxAttempts must be greater than zero.");
++        }
++
++        _ = executionType.ToStorageValue();
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ExecutionType = executionType;
++        RelatedEntityType = NormalizeRequired(relatedEntityType, nameof(relatedEntityType), RelatedEntityTypeMaxLength);
++        RelatedEntityId = NormalizeRequired(relatedEntityId, nameof(relatedEntityId), RelatedEntityIdMaxLength);
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        IdempotencyKey = NormalizeRequired(idempotencyKey, nameof(idempotencyKey), IdempotencyKeyMaxLength);
++        Status = BackgroundExecutionStatus.Pending;
++        MaxAttempts = maxAttempts;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public BackgroundExecutionType ExecutionType { get; private set; }
++    public string RelatedEntityType { get; private set; } = null!;
++    public string RelatedEntityId { get; private set; } = null!;
++    public string CorrelationId { get; private set; } = null!;
++    public string IdempotencyKey { get; private set; } = null!;
++    public BackgroundExecutionStatus Status { get; private set; }
++    public int AttemptCount { get; private set; }
++    public int MaxAttempts { get; private set; }
++    public DateTime? NextRetryUtc { get; private set; }
++    public DateTime? StartedUtc { get; private set; }
++    public DateTime? HeartbeatUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public BackgroundExecutionFailureCategory? FailureCategory { get; private set; }
++    public string? FailureCode { get; private set; }
++    public string? FailureMessage { get; private set; }
++    public Guid? EscalationId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public bool IsTerminal => Status is BackgroundExecutionStatus.Succeeded or BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Escalated;
++
++    public void StartAttempt(string correlationId, int attempt, int maxAttempts)
++    {
++        if (attempt <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(attempt), "Attempt must be greater than zero.");
++        }
++
++        if (maxAttempts <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(maxAttempts), "MaxAttempts must be greater than zero.");
++        }
++
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        AttemptCount = attempt;
++        MaxAttempts = maxAttempts;
++        Status = BackgroundExecutionStatus.InProgress;
++        StartedUtc = DateTime.UtcNow;
++        HeartbeatUtc = StartedUtc;
++        CompletedUtc = null;
++        NextRetryUtc = null;
++        FailureCategory = null;
++        FailureCode = null;
++        FailureMessage = null;
++        UpdatedUtc = StartedUtc.Value;
++    }
++
++    public void RecordHeartbeat(DateTime utcNow)
++    {
++        HeartbeatUtc = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
++        UpdatedUtc = HeartbeatUtc.Value;
++    }
++
++    public void MarkSucceeded()
++    {
++        var utcNow = DateTime.UtcNow;
++        Status = BackgroundExecutionStatus.Succeeded;
++        CompletedUtc = utcNow;
++        HeartbeatUtc = utcNow;
++        NextRetryUtc = null;
++        FailureCategory = null;
++        FailureCode = null;
++        FailureMessage = null;
++        UpdatedUtc = utcNow;
++    }
++
++    public void ScheduleRetry(
++        DateTime nextRetryUtc,
++        BackgroundExecutionFailureCategory failureCategory,
++        string failureCode,
++        string failureMessage)
++    {
++        var utcNow = DateTime.UtcNow;
++        Status = BackgroundExecutionStatus.RetryScheduled;
++        NextRetryUtc = nextRetryUtc.Kind == DateTimeKind.Utc ? nextRetryUtc : nextRetryUtc.ToUniversalTime();
++        HeartbeatUtc = utcNow;
++        CompletedUtc = null;
++        FailureCategory = failureCategory;
++        FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
++        FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
++        UpdatedUtc = utcNow;
++    }
++
++    public void MarkFailed(
++        BackgroundExecutionFailureCategory failureCategory,
++        string failureCode,
++        string failureMessage,
++        Guid? escalationId = null)
++    {
++        var utcNow = DateTime.UtcNow;
++        Status = escalationId.HasValue ? BackgroundExecutionStatus.Escalated : BackgroundExecutionStatus.Failed;
++        CompletedUtc = utcNow;
++        HeartbeatUtc = utcNow;
++        NextRetryUtc = null;
++        FailureCategory = failureCategory;
++        FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
++        FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
++        EscalationId = escalationId;
++        UpdatedUtc = utcNow;
++    }
++
++    public void RecoverStale(DateTime nextRetryUtc, string failureMessage)
++    {
++        ScheduleRetry(
++            nextRetryUtc,
++            BackgroundExecutionFailureCategory.TransientInfrastructure,
++            "stale_execution",
++            failureMessage);
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
++
++public static class BackgroundExecutionRelatedEntityTypes
++{
++    public const string WorkflowInstance = "workflow_instance";
++    public const string WorkTask = "task";
++    public const string OutboxMessage = "outbox_message";
++    public const string Schedule = "schedule";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+index 44f3fa1..b21b24e 100644
+--- a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+@@ -274,6 +274,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         AvailableUtc = availableUtc ?? OccurredUtc;
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         IdempotencyKey = NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 200);
++        Status = CompanyOutboxMessageStatus.Pending;
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -289,6 +290,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+     public DateTime OccurredUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime AvailableUtc { get; private set; }
++    public CompanyOutboxMessageStatus Status { get; private set; }
+     public int AttemptCount { get; private set; }
+     public DateTime? LastAttemptUtc { get; private set; }
+     public string? LastError { get; private set; }
+@@ -320,6 +322,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+ 
+         ClaimToken = NormalizeRequired(claimToken, nameof(claimToken), 64);
+         ClaimedUtc = utcNow;
++        Status = CompanyOutboxMessageStatus.InProgress;
+         LastError = null;
+         return true;
+     }
+@@ -329,6 +332,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         AttemptCount++;
+         LastAttemptUtc = DateTime.UtcNow;
+         AvailableUtc = availableUtc;
++        Status = CompanyOutboxMessageStatus.RetryScheduled;
+         LastError = NormalizeRequired(error, nameof(error), 4000);
+         ClaimedUtc = null;
+         ClaimToken = null;
+@@ -339,6 +343,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         AttemptCount++;
+         LastAttemptUtc = DateTime.UtcNow;
+         LastError = NormalizeRequired(error, nameof(error), 4000);
++        Status = CompanyOutboxMessageStatus.Failed;
+         ProcessedUtc = DateTime.UtcNow;
+         ClaimedUtc = null;
+         ClaimToken = null;
+@@ -353,6 +358,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         LastAttemptUtc = DateTime.UtcNow;
+         LastError = null;
+         ProcessedUtc = DateTime.UtcNow;
++        Status = CompanyOutboxMessageStatus.Dispatched;
+         ClaimedUtc = null;
+         ClaimToken = null;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+index 5b8035a..33bdf56 100644
+--- a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+@@ -1,22 +1,42 @@
+ using System.IO;
+ using System.Net.Sockets;
+ using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Observability;
++using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.BackgroundJobs;
+ 
+ public enum BackgroundJobFailureClassification
+ {
+     Transient = 0,
+-    Permanent = 1
++    Permanent = 1,
++    LockContention = 2,
++    ExternalDependencyTimeout = 3,
++    ExternalDependencyUnavailable = 4,
++    PermanentBusinessRule = 5,
++    PermanentPolicy = 6,
++    Validation = 7,
++    Configuration = 8
+ }
+ 
++public static class BackgroundJobFailureClassificationExtensions
++{
++    public static bool IsRetryable(this BackgroundJobFailureClassification classification) =>
++        classification is BackgroundJobFailureClassification.Transient
++            or BackgroundJobFailureClassification.LockContention
++            or BackgroundJobFailureClassification.ExternalDependencyTimeout
++            or BackgroundJobFailureClassification.ExternalDependencyUnavailable;
++}
++
+ public enum BackgroundJobExecutionOutcome
+ {
+     Succeeded = 0,
+     RetryScheduled = 1,
+     PermanentFailure = 2,
+-    RetryExhausted = 3
++    RetryExhausted = 3,
++    IdempotentDuplicate = 4
+ }
+ 
+ public class PermanentBackgroundJobException : Exception
+@@ -71,25 +91,27 @@ public sealed record BackgroundJobExecutionResult(
+     string CorrelationId,
+     string? ErrorMessage,
+     string? ExceptionType,
+-    TimeSpan? RetryDelay)
++    TimeSpan? RetryDelay,
++    BackgroundJobFailureClassification? FailureClassification)
+ {
+     public static BackgroundJobExecutionResult Success(string correlationId) =>
+-        new(BackgroundJobExecutionOutcome.Succeeded, correlationId, null, null, null);
++        new(BackgroundJobExecutionOutcome.Succeeded, correlationId, null, null, null, null);
+ 
+-    public static BackgroundJobExecutionResult RetryScheduled(string correlationId, string errorMessage, string exceptionType, TimeSpan retryDelay) =>
+-        new(BackgroundJobExecutionOutcome.RetryScheduled, correlationId, errorMessage, exceptionType, retryDelay);
++    public static BackgroundJobExecutionResult RetryScheduled(string correlationId, string errorMessage, string exceptionType, TimeSpan retryDelay, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.RetryScheduled, correlationId, errorMessage, exceptionType, retryDelay, classification);
+ 
+-    public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string errorMessage, string exceptionType) =>
+-        new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, errorMessage, exceptionType, null);
++    public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, errorMessage, exceptionType, null, classification);
+ 
+-    public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string errorMessage, string exceptionType) =>
+-        new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, errorMessage, exceptionType, null);
++    public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, errorMessage, exceptionType, null, classification);
+ }
+ 
+ public interface IBackgroundJobFailureClassifier
+ {
+     BackgroundJobFailureClassification Classify(Exception exception);
+ }
+ 
+ public interface IBackgroundJobExecutor
+@@ -117,18 +139,28 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailure
+         foreach (var current in Enumerate(exception))
+         {
+             if (current is PermanentBackgroundJobException or ArgumentException or JsonException or NotSupportedException)
+             {
+-                return BackgroundJobFailureClassification.Permanent;
++                return current is ArgumentException or JsonException
++                    ? BackgroundJobFailureClassification.Validation
++                    : BackgroundJobFailureClassification.PermanentBusinessRule;
++            }
++
++            if (current is DbUpdateConcurrencyException)
++            {
++                return BackgroundJobFailureClassification.LockContention;
++            }
++
++            if (current is TimeoutException)
++            {
++                return BackgroundJobFailureClassification.ExternalDependencyTimeout;
+             }
+ 
+-            if (current is TimeoutException or HttpRequestException or IOException or SocketException or DbUpdateException)
++            if (current is HttpRequestException or IOException or SocketException or DbUpdateException)
+             {
+-                return BackgroundJobFailureClassification.Transient;
++                return BackgroundJobFailureClassification.ExternalDependencyUnavailable;
+             }
+         }
+ 
+         return BackgroundJobFailureClassification.Transient;
+@@ -225,7 +257,7 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+             var exceptionType = ex.GetType().FullName ?? ex.GetType().Name;
+             var classification = _failureClassifier.Classify(ex);
+ 
+-            if (classification == BackgroundJobFailureClassification.Permanent)
++            if (!classification.IsRetryable())
+             {
+                 _logger.LogError(
+                     ex,
+@@ -234,7 +266,7 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+                     context.Attempt,
+                     context.MaxAttempts,
+                     exceptionType);
+-                return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType);
++                return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType, classification);
+             }
+ 
+             if (context.Attempt >= context.MaxAttempts)
+@@ -248,7 +280,7 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+                     context.MaxAttempts,
+                     exceptionType);
+-                return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType);
++                return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType, classification);
+             }
+ 
+             _logger.LogWarning(
+@@ -263,10 +295,176 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+                 normalizedRetryDelay.TotalSeconds,
+                 exceptionType);
+-            return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay);
++            return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay, classification);
+         }
+     }
+ 
+     private static string TrimError(string? errorMessage) =>
+         string.IsNullOrWhiteSpace(errorMessage) ? "Unhandled background job failure." : errorMessage.Trim()[..Math.Min(errorMessage.Trim().Length, 2000)];
+ }
++
++public sealed class BackgroundExecutionOptions
++{
++    public const string SectionName = "BackgroundExecution";
++
++    public int MaxAttempts { get; set; } = 5;
++    public int BaseRetryDelaySeconds { get; set; } = 30;
++    public int MaxRetryDelaySeconds { get; set; } = 900;
++    public int StaleExecutionTimeoutSeconds { get; set; } = 900;
++}
++
++public interface IBackgroundExecutionRetryPolicy
++{
++    TimeSpan GetRetryDelay(int attempt);
++}
++
++public interface IBackgroundExecutionRecorder
++{
++    Task<BackgroundExecution> StartAsync(
++        Guid companyId,
++        BackgroundExecutionType executionType,
++        string relatedEntityType,
++        string relatedEntityId,
++        string correlationId,
++        string idempotencyKey,
++        int attempt,
++        int maxAttempts,
++        CancellationToken cancellationToken);
++
++    Task ApplyOutcomeAsync(
++        BackgroundExecution execution,
++        BackgroundJobExecutionResult result,
++        DateTime? nextRetryUtc,
++        CancellationToken cancellationToken);
++
++    Task<int> RecoverStaleExecutionsAsync(DateTime utcNow, CancellationToken cancellationToken);
++}
++
++public sealed class ExponentialBackgroundExecutionRetryPolicy : IBackgroundExecutionRetryPolicy
++{
++    private readonly IOptions<BackgroundExecutionOptions> _options;
++
++    public ExponentialBackgroundExecutionRetryPolicy(IOptions<BackgroundExecutionOptions> options) => _options = options;
++
++    public TimeSpan GetRetryDelay(int attempt)
++    {
++        var baseDelaySeconds = Math.Max(0, _options.Value.BaseRetryDelaySeconds);
++        if (baseDelaySeconds == 0)
++        {
++            return TimeSpan.Zero;
++        }
++
++        var maxDelaySeconds = Math.Max(baseDelaySeconds, _options.Value.MaxRetryDelaySeconds);
++        var multiplier = Math.Pow(2d, Math.Max(0, attempt - 1));
++        return TimeSpan.FromSeconds(Math.Min(baseDelaySeconds * multiplier, maxDelaySeconds));
++    }
++}
++
++public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IOptions<BackgroundExecutionOptions> _options;
++    private readonly ILogger<BackgroundExecutionRecorder> _logger;
++
++    public BackgroundExecutionRecorder(
++        VirtualCompanyDbContext dbContext,
++        IOptions<BackgroundExecutionOptions> options,
++        ILogger<BackgroundExecutionRecorder> logger)
++    {
++        _dbContext = dbContext;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<BackgroundExecution> StartAsync(
++        Guid companyId,
++        BackgroundExecutionType executionType,
++        string relatedEntityType,
++        string relatedEntityId,
++        string correlationId,
++        string idempotencyKey,
++        int attempt,
++        int maxAttempts,
++        CancellationToken cancellationToken)
++    {
++        var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
++            ? $"{executionType.ToStorageValue()}:{relatedEntityType}:{relatedEntityId}:{correlationId}"
++            : idempotencyKey.Trim();
++        var execution = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x =>
++                x.CompanyId == companyId &&
++                x.ExecutionType == executionType &&
++                x.IdempotencyKey == normalizedIdempotencyKey,
++                cancellationToken);
++
++        if (execution is null)
++        {
++            execution = new BackgroundExecution(
++                Guid.NewGuid(),
++                companyId,
++                executionType,
++                relatedEntityType,
++                relatedEntityId,
++                correlationId,
++                normalizedIdempotencyKey,
++                maxAttempts);
++            _dbContext.BackgroundExecutions.Add(execution);
++        }
++
++        if (!execution.IsTerminal)
++        {
++            execution.StartAttempt(correlationId, attempt, maxAttempts);
++        }
++
++        return execution;
++    }
++
++    public async Task ApplyOutcomeAsync(
++        BackgroundExecution execution,
++        BackgroundJobExecutionResult result,
++        DateTime? nextRetryUtc,
++        CancellationToken cancellationToken)
++    {
++        switch (result.Outcome)
++        {
++            case BackgroundJobExecutionOutcome.Succeeded:
++            case BackgroundJobExecutionOutcome.IdempotentDuplicate:
++                execution.MarkSucceeded();
++                break;
++            case BackgroundJobExecutionOutcome.RetryScheduled:
++                execution.ScheduleRetry(
++                    nextRetryUtc ?? DateTime.UtcNow.Add(result.RetryDelay ?? TimeSpan.Zero),
++                    MapFailureCategory(result.FailureClassification),
++                    ResolveFailureCode(result),
++                    ResolveFailureMessage(result));
++                break;
++            case BackgroundJobExecutionOutcome.PermanentFailure:
++            case BackgroundJobExecutionOutcome.RetryExhausted:
++                execution.MarkFailed(
++                    MapFailureCategory(result.FailureClassification),
++                    ResolveFailureCode(result),
++                    ResolveFailureMessage(result),
++                    escalationId: null);
++                break;
++        }
++
++        _logger.LogInformation(
++            "Background execution {ExecutionId} for company {CompanyId} finished with {Outcome}.",
++            execution.Id,
++            execution.CompanyId,
++            result.Outcome);
++
++        await Task.CompletedTask;
++    }
++
++    public async Task<int> RecoverStaleExecutionsAsync(DateTime utcNow, CancellationToken cancellationToken)
++    {
++        var timeout = TimeSpan.FromSeconds(Math.Max(30, _options.Value.StaleExecutionTimeoutSeconds));
++        var staleBeforeUtc = utcNow.Subtract(timeout);
++        var staleExecutions = await _dbContext.BackgroundExecutions
++            .IgnoreQueryFilters()
++            .Where(x => x.Status == BackgroundExecutionStatus.InProgress && x.HeartbeatUtc < staleBeforeUtc)
++            .Take(100)
++            .ToListAsync(cancellationToken);
++
++        foreach (var execution in staleExecutions)
++        {
++            execution.RecoverStale(utcNow, "Background execution was recovered after a stale in-progress heartbeat.");
++        }
++
++        return staleExecutions.Count;
++    }
++
++    private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
++        classification switch
++        {
++            BackgroundJobFailureClassification.LockContention => BackgroundExecutionFailureCategory.LockContention,
++            BackgroundJobFailureClassification.ExternalDependencyTimeout => BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
++            BackgroundJobFailureClassification.ExternalDependencyUnavailable => BackgroundExecutionFailureCategory.ExternalDependencyUnavailable,
++            BackgroundJobFailureClassification.PermanentBusinessRule or BackgroundJobFailureClassification.Permanent => BackgroundExecutionFailureCategory.PermanentBusinessRule,
++            BackgroundJobFailureClassification.PermanentPolicy => BackgroundExecutionFailureCategory.PermanentPolicy,
++            BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
++            BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
++            _ => BackgroundExecutionFailureCategory.TransientInfrastructure
++        };
++
++    private static string ResolveFailureCode(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ExceptionType) ? result.Outcome.ToString() : result.ExceptionType;
++
++    private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
++        string.IsNullOrWhiteSpace(result.ErrorMessage) ? "Background execution failed." : result.ErrorMessage;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index f544a31..28e650f 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -147,6 +147,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
++    private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
++    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+ 
+     public CompanyOutboxProcessor(
+         VirtualCompanyDbContext dbContext,
+@@ -154,13 +156,17 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         IOptions<CompanyOutboxDispatcherOptions> options,
+         IBackgroundJobExecutor backgroundJobExecutor,
++        IBackgroundExecutionRecorder backgroundExecutionRecorder,
++        IBackgroundExecutionRetryPolicy retryPolicy,
+         ILogger<CompanyOutboxProcessor> logger)
+     {
+         _dbContext = dbContext;
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+         _options = options;
+         _backgroundJobExecutor = backgroundJobExecutor;
++        _backgroundExecutionRecorder = backgroundExecutionRecorder;
++        _retryPolicy = retryPolicy;
+         _logger = logger;
+     }
+@@ -176,6 +182,18 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+             var attempt = message.AttemptCount + 1;
+             _logger.LogInformation("Dispatching company outbox message {Topic} ({MessageType}) on attempt {Attempt}.", message.Topic, message.MessageType ?? message.Topic, attempt);
++            var executionRecord = await _backgroundExecutionRecorder.StartAsync(
++                message.CompanyId,
++                BackgroundExecutionType.OutboxDispatch,
++                BackgroundExecutionRelatedEntityTypes.OutboxMessage,
++                message.Id.ToString("N"),
++                message.CorrelationId ?? message.ClaimToken ?? Guid.NewGuid().ToString("N"),
++                message.IdempotencyKey ?? $"outbox:{message.Id:N}",
++                attempt,
++                MaxAttempts,
++                cancellationToken);
++            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
++
+             var execution = await _backgroundJobExecutor.ExecuteAsync(
+                 new BackgroundJobExecutionContext(
+                     $"company-outbox:{message.Topic}",
+@@ -184,8 +202,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     message.CompanyId,
+                     message.CorrelationId ?? message.ClaimToken),
+                 innerCancellationToken => DispatchAsync(message, innerCancellationToken),
+-                GetRetryDelay(attempt),
++                retryDelay,
+                 cancellationToken);
+ 
+             switch (execution.Outcome)
+@@ -198,6 +216,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         message.Topic,
+                         message.MessageType ?? message.Topic,
+                         attempt);
++                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
+                     break;
+@@ -211,6 +230,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         message.Topic,
+                         message.MessageType ?? message.Topic,
+                         attempt);
++                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     handledCount++;
+                     break;
+@@ -226,6 +246,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         message.MessageType ?? message.Topic,
+                         attempt,
+                         nextAttemptAtUtc);
++                    await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     break;
+                 }
+@@ -240,19 +261,6 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private int BatchSize => Math.Max(1, _options.Value.BatchSize);
+     private int MaxAttempts => Math.Max(1, _options.Value.MaxAttempts);
+ 
+-    private TimeSpan GetRetryDelay(int attempt)
+-    {
+-        var baseDelaySeconds = Math.Max(0, _options.Value.RetryDelaySeconds);
+-        if (baseDelaySeconds == 0)
+-        {
+-            return TimeSpan.Zero;
+-        }
+-
+-        var multiplier = Math.Pow(2d, Math.Max(0, attempt - 1));
+-        var delaySeconds = Math.Min(baseDelaySeconds * multiplier, TimeSpan.FromMinutes(15).TotalSeconds);
+-        return TimeSpan.FromSeconds(delaySeconds);
+-    }
+-
+     private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) => string.IsNullOrWhiteSpace(execution.ErrorMessage) ? "Unhandled company outbox processing failure." : execution.ErrorMessage;
+     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.Value.ClaimTimeoutSeconds));
+@@ -261,7 +269,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         var utcNow = DateTime.UtcNow;
+         var claimToken = Guid.NewGuid().ToString("N");
+ 
+         var candidates = await _dbContext.CompanyOutboxMessages
+             .Where(x => x.ProcessedUtc == null &&
++                        x.Status != CompanyOutboxMessageStatus.InProgress &&
+                         x.AvailableUtc <= utcNow &&
+                         (x.ClaimedUtc == null || x.ClaimedUtc <= utcNow - ClaimTimeout))
+             .OrderBy(x => x.AvailableUtc)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+index 54c166a..8354257 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowSchedulerInfrastructure.cs
+@@ -7,6 +7,8 @@ using StackExchange.Redis;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -76,17 +78,25 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IWorkflowScheduleTriggerService _scheduleTriggerService;
+     private readonly ILogger<WorkflowSchedulePollingService> _logger;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
++    private readonly IBackgroundExecutionRecorder _backgroundExecutionRecorder;
++    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+ 
+     public WorkflowSchedulePollingService(
+         VirtualCompanyDbContext dbContext,
+         IWorkflowScheduleTriggerService scheduleTriggerService,
++        IBackgroundJobExecutor backgroundJobExecutor,
++        IBackgroundExecutionRecorder backgroundExecutionRecorder,
++        IBackgroundExecutionRetryPolicy retryPolicy,
+         ILogger<WorkflowSchedulePollingService> logger)
+     {
+         _dbContext = dbContext;
+         _scheduleTriggerService = scheduleTriggerService;
++        _backgroundJobExecutor = backgroundJobExecutor;
++        _backgroundExecutionRecorder = backgroundExecutionRecorder;
++        _retryPolicy = retryPolicy;
+         _logger = logger;
+     }
+@@ -128,30 +138,56 @@ public sealed class WorkflowSchedulePollingService : IWorkflowSchedulePollingServ
+         var startedCount = 0;
+         var failureCount = 0;
+         foreach (var companyId in companyIds)
+         {
+-            try
+-            {
+-                var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
+-                    companyId,
+-                    new TriggerScheduledWorkflowsCommand(
+-                        dueAtUtc,
+-                        ScheduleKey: null,
+-                        ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-                        {
+-                            ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler")
+-                        }),
+-                    cancellationToken);
++            var correlationId = $"workflow-scheduler:{companyId:N}:{dueAtUtc:yyyyMMddHHmm}";
++            var executionRecord = await _backgroundExecutionRecorder.StartAsync(
++                companyId,
++                BackgroundExecutionType.ScheduledWorkflow,
++                BackgroundExecutionRelatedEntityTypes.Schedule,
++                dueAtUtc.ToString("yyyyMMddHHmm"),
++                correlationId,
++                correlationId,
++                attempt: 1,
++                maxAttempts: 1,
++                cancellationToken);
+ 
+-                startedCount += started.Count;
+-                if (started.Count > 0)
++            var execution = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    "workflow-scheduler:poll-company",
++                    attempt: 1,
++                    maxAttempts: 1,
++                    companyId,
++                    correlationId),
++                async innerCancellationToken =>
+                 {
+-                    _logger.LogInformation(
+-                        "Workflow scheduler started {StartedCount} scheduled workflow instance(s) for company {CompanyId}.",
+-                        started.Count,
+-                        companyId);
+-                }
+-            }
+-            catch (OperationCanceledException)
+-            {
+-                throw;
+-            }
+-            catch (Exception ex)
++                    var started = await _scheduleTriggerService.StartDueScheduledWorkflowsAsync(
++                        companyId,
++                        new TriggerScheduledWorkflowsCommand(
++                            dueAtUtc,
++                            ScheduleKey: null,
++                            ContextJson: new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                            {
++                                ["triggeredBy"] = System.Text.Json.Nodes.JsonValue.Create("workflow-scheduler"),
++                                ["correlationId"] = System.Text.Json.Nodes.JsonValue.Create(correlationId)
++                            }),
++                        innerCancellationToken);
++
++                    startedCount += started.Count;
++                    if (started.Count > 0)
++                    {
++                        _logger.LogInformation(
++                            "Workflow scheduler started {StartedCount} scheduled workflow instance(s) for company {CompanyId}.",
++                            started.Count,
++                            companyId);
++                    }
++                },
++                _retryPolicy.GetRetryDelay(1),
++                cancellationToken);
++
++            await _backgroundExecutionRecorder.ApplyOutcomeAsync(
++                executionRecord,
++                execution,
++                execution.Outcome == BackgroundJobExecutionOutcome.RetryScheduled ? DateTime.UtcNow.Add(execution.RetryDelay ?? TimeSpan.Zero) : null,
++                cancellationToken);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            if (execution.Outcome != BackgroundJobExecutionOutcome.Succeeded)
+             {
+                 failureCount++;
+                 _logger.LogError(
+-                    ex,
+-                    "Workflow scheduler failed while processing scheduled workflows for company {CompanyId}.",
+-                    companyId);
++                    "Workflow scheduler failed while processing scheduled workflows for company {CompanyId}. Failure: {FailureMessage}.",
++                    companyId,
++                    execution.ErrorMessage);
+             }
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 22620aa..e2a0819 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -23,6 +23,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
+     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
++    public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
+     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
+     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
+@@ -57,6 +58,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyOwnedNote>()
+             .HasQueryFilter(note =>
+                 CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<BackgroundExecution>()
++            .HasQueryFilter(execution =>
++                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<Agent>()
+             .HasQueryFilter(agent =>
+                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 5e9476d..12b5be0 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -343,6 +343,12 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfiguration
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.AvailableUtc).IsRequired();
++        builder.Property(x => x.Status)
++            .HasConversion(status => status.ToStorageValue(), value => CompanyOutboxMessageStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(CompanyOutboxMessageStatusValues.DefaultStatus)
++            .HasSentinel((CompanyOutboxMessageStatus)0)
++            .IsRequired();
+         builder.Property(x => x.AttemptCount).HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.LastAttemptUtc);
+         builder.Property(x => x.LastError).HasMaxLength(4000);
+@@ -353,6 +359,7 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfiguration
+ 
+         builder.HasIndex(x => new { x.ProcessedUtc, x.AvailableUtc, x.AttemptCount });
+         builder.HasIndex(x => new { x.ProcessedUtc, x.ClaimedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.AvailableUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Topic, x.IdempotencyKey }).HasFilter("\"IdempotencyKey\" IS NOT NULL").IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
+@@ -365,6 +372,67 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfiguration
+     }
+ }
+ 
++internal sealed class BackgroundExecutionConfiguration : IEntityTypeConfiguration<BackgroundExecution>
++{
++    public void Configure(EntityTypeBuilder<BackgroundExecution> builder)
++    {
++        builder.ToTable("background_executions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ExecutionType)
++            .HasColumnName("execution_type")
++            .HasConversion(value => value.ToStorageValue(), value => BackgroundExecutionTypeValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.RelatedEntityType).HasColumnName("related_entity_type").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.RelatedEntityId).HasColumnName("related_entity_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => BackgroundExecutionStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(BackgroundExecutionStatusValues.DefaultStatus)
++            .HasSentinel((BackgroundExecutionStatus)0)
++            .IsRequired();
++        builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.MaxAttempts).HasColumnName("max_attempts").IsRequired();
++        builder.Property(x => x.NextRetryUtc).HasColumnName("next_retry_at");
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at");
++        builder.Property(x => x.HeartbeatUtc).HasColumnName("heartbeat_at");
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.FailureCategory)
++            .HasColumnName("failure_category")
++            .HasConversion(
++                value => value.HasValue ? value.Value.ToStorageValue() : null,
++                value => string.IsNullOrWhiteSpace(value) ? null : BackgroundExecutionFailureCategoryValues.Parse(value));
++        builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(100);
++        builder.Property(x => x.FailureMessage).HasColumnName("failure_message").HasMaxLength(4000);
++        builder.Property(x => x.EscalationId).HasColumnName("escalation_id");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.NextRetryUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedEntityType, x.RelatedEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.ExecutionType, x.IdempotencyKey }).IsUnique();
++        builder.HasIndex(x => new { x.Status, x.HeartbeatUtc });
++        builder.HasIndex(x => x.CorrelationId);
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEvent>
+ {
+     public void Configure(EntityTypeBuilder<AuditEvent> builder)
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index fb60d35..a0c1bdb 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -59,6 +59,10 @@ public static class DependencyInjection
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
++        services.AddOptions<BackgroundExecutionOptions>()
++            .Bind(configuration.GetSection(BackgroundExecutionOptions.SectionName))
++            .Configure(options => options.BaseRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, 0));
++
+         services.AddOptions<KnowledgeChunkingOptions>()
+             .Bind(configuration.GetSection(KnowledgeChunkingOptions.SectionName));
+@@ -105,6 +109,8 @@ public static class DependencyInjection
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
++        services.AddSingleton<IBackgroundExecutionRetryPolicy, ExponentialBackgroundExecutionRetryPolicy>();
++        services.AddScoped<IBackgroundExecutionRecorder, BackgroundExecutionRecorder>();
+         services.AddHttpContextAccessor();
+         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413090000_AddBackgroundExecutions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413090000_AddBackgroundExecutions.cs
+new file mode 100644
+index 0000000..3ae17e5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413090000_AddBackgroundExecutions.cs
+@@ -0,0 +1,139 @@
++using System;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413090000_AddBackgroundExecutions")]
++public partial class AddBackgroundExecutions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var outboxStatusDefault = isPostgres ? "'pending'" : "N'pending'";
++
++        migrationBuilder.AddColumn<string>(
++            name: "Status",
++            table: "company_outbox_messages",
++            type: $"{stringType}(32)",
++            maxLength: 32,
++            nullable: false,
++            defaultValue: "pending");
++
++        migrationBuilder.Sql("UPDATE company_outbox_messages SET Status = CASE WHEN ProcessedUtc IS NOT NULL AND LastError IS NOT NULL THEN 'failed' WHEN ProcessedUtc IS NOT NULL THEN 'dispatched' WHEN ClaimedUtc IS NOT NULL THEN 'in_progress' WHEN AttemptCount > 0 THEN 'retry_scheduled' ELSE 'pending' END");
++
++        migrationBuilder.CreateTable(
++            name: "background_executions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                execution_type = table.Column<string>(type: $"{stringType}(64)", maxLength: 64, nullable: false),
++                related_entity_type = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: false),
++                related_entity_id = table.Column<string>(type: $"{stringType}(128)", maxLength: 128, nullable: false),
++                correlation_id = table.Column<string>(type: $"{stringType}(128)", maxLength: 128, nullable: false),
++                idempotency_key = table.Column<string>(type: $"{stringType}(200)", maxLength: 200, nullable: false),
++                status = table.Column<string>(type: $"{stringType}(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
++                attempt_count = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                max_attempts = table.Column<int>(type: "int", nullable: false),
++                next_retry_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                started_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                heartbeat_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                completed_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                failure_category = table.Column<string>(type: $"{stringType}(64)", maxLength: 64, nullable: true),
++                failure_code = table.Column<string>(type: $"{stringType}(100)", maxLength: 100, nullable: true),
++                failure_message = table.Column<string>(type: $"{stringType}(4000)", maxLength: 4000, nullable: true),
++                escalation_id = table.Column<Guid>(type: guidType, nullable: true),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_background_executions", x => x.id);
++                table.ForeignKey(
++                    name: "FK_background_executions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_outbox_messages_CompanyId_Status_AvailableUtc",
++            table: "company_outbox_messages",
++            columns: new[] { "CompanyId", "Status", "AvailableUtc" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_background_executions_company_id_execution_type_idempotency_key",
++            table: "background_executions",
++            columns: new[] { "company_id", "execution_type", "idempotency_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_background_executions_company_id_related_entity_type_related_entity_id",
++            table: "background_executions",
++            columns: new[] { "company_id", "related_entity_type", "related_entity_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_background_executions_company_id_status_next_retry_at",
++            table: "background_executions",
++            columns: new[] { "company_id", "status", "next_retry_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_background_executions_correlation_id",
++            table: "background_executions",
++            column: "correlation_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_background_executions_status_heartbeat_at",
++            table: "background_executions",
++            columns: new[] { "status", "heartbeat_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "background_executions");
++        migrationBuilder.DropIndex(
++            name: "IX_company_outbox_messages_CompanyId_Status_AvailableUtc",
++            table: "company_outbox_messages");
++        migrationBuilder.DropColumn(
++            name: "Status",
++            table: "company_outbox_messages");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+index 126e11a..60ed8bb 100644
+--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+@@ -1,4 +1,5 @@
+ using Microsoft.Extensions.Logging;
++using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using Xunit;
+ using Xunit.Sdk;
+@@ -26,6 +27,7 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal("corr-123", result.CorrelationId);
+         Assert.Equal("System.TimeoutException", result.ExceptionType);
+         Assert.Equal(TimeSpan.FromSeconds(5), result.RetryDelay);
++        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);
+ 
+         var entry = Assert.Single(logger.Entries);
+         Assert.Equal(LogLevel.Warning, entry.LogLevel);
+@@ -128,6 +130,18 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Empty(logger.Entries);
+     }
+ 
++    [Fact]
++    public void Classifier_distinguishes_concurrency_and_validation_failures()
++    {
++        var classifier = new DefaultBackgroundJobFailureClassifier();
++
++        Assert.Equal(
++            BackgroundJobFailureClassification.LockContention,
++            classifier.Classify(new DbUpdateConcurrencyException("stale row")));
++        Assert.Equal(
++            BackgroundJobFailureClassification.Validation,
++            classifier.Classify(new ArgumentException("bad workflow definition")));
++    }
++
+     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
+         scope.TryGetValue(key, out var value)
+             ? value
+END_OF_PATCH

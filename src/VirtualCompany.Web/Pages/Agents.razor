@@ -569,6 +569,13 @@ else
             return;
         }
 
+        if (selectedAgentProfile is null)
+        {
+            profileErrorMessage = "Select an agent profile before saving.";
+            profileSuccessMessage = null;
+            return;
+        }
+
         if (!profileModel.TryCreateRequest(selectedAgentProfile.Visibility, out var request, out var localErrors))
         {
             profileErrors = localErrors;

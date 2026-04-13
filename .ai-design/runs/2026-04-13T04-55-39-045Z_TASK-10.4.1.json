@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.4.1",
+  "promptPath": ".ai-design/prompts/TASK-10.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T04:55:39.045Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T04-55-39-045Z_TASK-10.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T04-55-39-045Z_TASK-10.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T04:59:10.114Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " CancellationToken.None);\n+\n+        Assert.True(result.LockAcquired);\n+        Assert.Equal(1, progression.CallCount);\n+        Assert.Equal(12, progression.LastBatchSize);\n+        Assert.Equal(4, result.InstancesScanned);\n+        Assert.Equal(3, result.InstancesAdvanced);\n+        Assert.Equal(1, result.Failures);\n+    }\n+\n+    private sealed class RecordingProgressionService : IWorkflowProgressionService\n+    {\n+        private readonly WorkflowProgressionRunResult _result;\n+\n+        public RecordingProgressionService()\n+            : this(new WorkflowProgressionRunResult(true, 0, 0, 0))\n+        {\n+        }\n+\n+        public RecordingProgressionService(WorkflowProgressionRunResult result) => _result = result;\n+\n+        public int CallCount { get; private set; }\n+        public int LastBatchSize { get; private set; }\n+\n+        public Task<WorkflowProgressionRunResult> RunRunnableInstancesAsync(\n+            DateTime utcNow,\n+            int batchSize,\n+            CancellationToken cancellationToken)\n+        {\n+            CallCount++;\n+            LastBatchSize = batchSize;\n+            return Task.FromResult(_result);\n+        }\n+    }\n+\n+    private sealed class DenyLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(null);\n+    }\n+\n+    private sealed class AllowLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));\n+    }\n+\n+    private sealed class TestLockHandle : IDistributedLockHandle\n+    {\n+        public TestLockHandle(string key) => Key = key;\n+\n+        public string Key { get; }\n+\n+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "None);\n+\n+        Assert.True(result.LockAcquired);\n+        Assert.Equal(1, progression.CallCount);\n+        Assert.Equal(12, progression.LastBatchSize);\n+        Assert.Equal(4, result.InstancesScanned);\n+        Assert.Equal(3, result.InstancesAdvanced);\n+        Assert.Equal(1, result.Failures);\n+    }\n+\n+    private sealed class RecordingProgressionService : IWorkflowProgressionService\n+    {\n+        private readonly WorkflowProgressionRunResult _result;\n+\n+        public RecordingProgressionService()\n+            : this(new WorkflowProgressionRunResult(true, 0, 0, 0))\n+        {\n+        }\n+\n+        public RecordingProgressionService(WorkflowProgressionRunResult result) => _result = result;\n+\n+        public int CallCount { get; private set; }\n+        public int LastBatchSize { get; private set; }\n+\n+        public Task<WorkflowProgressionRunResult> RunRunnableInstancesAsync(\n+            DateTime utcNow,\n+            int batchSize,\n+            CancellationToken cancellationToken)\n+        {\n+            CallCount++;\n+            LastBatchSize = batchSize;\n+            return Task.FromResult(_result);\n+        }\n+    }\n+\n+    private sealed class DenyLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(null);\n+    }\n+\n+    private sealed class AllowLockProvider : IDistributedLockProvider\n+    {\n+        public Task<IDistributedLockHandle?> TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken) =>\n+            Task.FromResult<IDistributedLockHandle?>(new TestLockHandle(key));\n+    }\n+\n+    private sealed class TestLockHandle : IDistributedLockHandle\n+    {\n+        public TestLockHandle(string key) => Key = key;\n+\n+        public string Key { get; }\n+\n+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n+    }\n+}\nEND_OF_PATCH\ntokens used\n88,704\n",
+  "verbosityMode": "summary"
+}

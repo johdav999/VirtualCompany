@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-ST-404",
+  "promptPath": ".ai-design/prompts/TASK-ST-404.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T04:49:53.061Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T04-49-53-061Z_TASK-ST-404_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T04-49-53-061Z_TASK-ST-404.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T04:55:38.888Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ox_messages_CompanyId_Status_AvailableUtc\",\n+            table: \"company_outbox_messages\");\n+        migrationBuilder.DropColumn(\n+            name: \"Status\",\n+            table: \"company_outbox_messages\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\nindex 126e11a..60ed8bb 100644\n--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\n@@ -1,4 +1,5 @@\n using Microsoft.Extensions.Logging;\n+using Microsoft.EntityFrameworkCore;\n using VirtualCompany.Infrastructure.BackgroundJobs;\n using Xunit;\n using Xunit.Sdk;\n@@ -26,6 +27,7 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(\"corr-123\", result.CorrelationId);\n         Assert.Equal(\"System.TimeoutException\", result.ExceptionType);\n         Assert.Equal(TimeSpan.FromSeconds(5), result.RetryDelay);\n+        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);\n \n         var entry = Assert.Single(logger.Entries);\n         Assert.Equal(LogLevel.Warning, entry.LogLevel);\n@@ -128,6 +130,18 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Empty(logger.Entries);\n     }\n \n+    [Fact]\n+    public void Classifier_distinguishes_concurrency_and_validation_failures()\n+    {\n+        var classifier = new DefaultBackgroundJobFailureClassifier();\n+\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.LockContention,\n+            classifier.Classify(new DbUpdateConcurrencyException(\"stale row\")));\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.Validation,\n+            classifier.Classify(new ArgumentException(\"bad workflow definition\")));\n+    }\n+\n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\n         scope.TryGetValue(key, out var value)\n             ? value\nEND_OF_PATCH\n",
+  "stderrTail": "Id_Status_AvailableUtc\",\n+            table: \"company_outbox_messages\");\n+        migrationBuilder.DropColumn(\n+            name: \"Status\",\n+            table: \"company_outbox_messages\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\nindex 126e11a..60ed8bb 100644\n--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs\n@@ -1,4 +1,5 @@\n using Microsoft.Extensions.Logging;\n+using Microsoft.EntityFrameworkCore;\n using VirtualCompany.Infrastructure.BackgroundJobs;\n using Xunit;\n using Xunit.Sdk;\n@@ -26,6 +27,7 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(\"corr-123\", result.CorrelationId);\n         Assert.Equal(\"System.TimeoutException\", result.ExceptionType);\n         Assert.Equal(TimeSpan.FromSeconds(5), result.RetryDelay);\n+        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);\n \n         var entry = Assert.Single(logger.Entries);\n         Assert.Equal(LogLevel.Warning, entry.LogLevel);\n@@ -128,6 +130,18 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Empty(logger.Entries);\n     }\n \n+    [Fact]\n+    public void Classifier_distinguishes_concurrency_and_validation_failures()\n+    {\n+        var classifier = new DefaultBackgroundJobFailureClassifier();\n+\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.LockContention,\n+            classifier.Classify(new DbUpdateConcurrencyException(\"stale row\")));\n+        Assert.Equal(\n+            BackgroundJobFailureClassification.Validation,\n+            classifier.Classify(new ArgumentException(\"bad workflow definition\")));\n+    }\n+\n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\n         scope.TryGetValue(key, out var value)\n             ? value\nEND_OF_PATCH\ntokens used\n93,754\n",
+  "verbosityMode": "summary"
+}

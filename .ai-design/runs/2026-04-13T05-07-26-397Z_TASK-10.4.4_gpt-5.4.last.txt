@@ -1,0 +1,392 @@
+diff --git a/README.md b/README.md
+index 1b7a2f0..4d7e0d1 100644
+--- a/README.md
++++ b/README.md
+@@ -149,6 +149,7 @@ Logging boundary:
+ - Reliability-sensitive side effects are persisted to `company_outbox_messages` in the same EF Core transaction as business state changes.
+ - `CompanyOutboxDispatcherBackgroundService` dispatches pending outbox work outside the request path with retry metadata, idempotency keys, and correlation-aware logging.
+ - Dispatcher behavior is configured through `CompanyOutboxDispatcher:*` in API configuration.
++- Outbox delivery is at-least-once; handlers must be idempotent and terminal failures remain in the outbox for future escalation/ops workflows.
+ - When an operation needs both, write a technical log for operators and a business audit event for actor/action/target/outcome history.
+ - The current baseline records tenant-scoped membership administration audit events and leaves future audit query/UI work to later backlog items.
+ 
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index 0f7b1e7..c6b1a16 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -36,7 +36,9 @@ public interface ICompanyOutboxEnqueuer
+         object payload,
+         string? correlationId = null,
+         DateTime? availableAtUtc = null,
+         string? idempotencyKey = null,
+-        string? messageType = null);
++        string? messageType = null,
++        string? causationId = null,
++        IReadOnlyDictionary<string, string?>? headers = null);
+ }
+ 
+ public interface ICompanyInvitationDeliveryDispatcher
+diff --git a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+index 87fa8b4..5e0ac4c 100644
+--- a/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+@@ -296,7 +296,9 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         string? correlationId = null,
+         string? messageType = null,
+         DateTime? availableUtc = null,
+-        string? idempotencyKey = null)
++        string? idempotencyKey = null,
++        string? causationId = null,
++        string? headersJson = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -312,6 +314,8 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+         AvailableUtc = availableUtc ?? OccurredUtc;
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         IdempotencyKey = NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 200);
++        CausationId = NormalizeOptional(causationId, nameof(causationId), 128);
++        HeadersJson = NormalizeOptional(headersJson, nameof(headersJson), 4000);
+         Status = CompanyOutboxMessageStatus.Pending;
+     }
+ 
+@@ -322,6 +326,8 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
+     public string? IdempotencyKey { get; private set; }
+     public string? CorrelationId { get; private set; }
+     public DateTime OccurredUtc { get; private set; }
++    public string? CausationId { get; private set; }
++    public string? HeadersJson { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime AvailableUtc { get; private set; }
+     public CompanyOutboxMessageStatus Status { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 02ac0bd..0f6d671 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -46,7 +46,9 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+         object payload,
+         string? correlationId = null,
+         DateTime? availableAtUtc = null,
+         string? idempotencyKey = null,
+-        string? messageType = null)
++        string? messageType = null,
++        string? causationId = null,
++        IReadOnlyDictionary<string, string?>? headers = null)
+     {
+         var normalizedIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
+             ? null
+@@ -71,7 +73,9 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+             correlationId: correlationId,
+             messageType: ResolveMessageType(payload, topic, messageType),
+             availableUtc: availableAtUtc,
+-            idempotencyKey: normalizedIdempotencyKey);
++            idempotencyKey: normalizedIdempotencyKey,
++            causationId: causationId,
++            headersJson: SerializeHeaders(headers));
+ 
+         _dbContext.CompanyOutboxMessages.Add(outboxMessage);
+ 
+@@ -122,6 +126,15 @@ internal sealed class CompanyOutboxEnqueuer : ICompanyOutboxEnqueuer
+             : typeName;
+     }
+ 
++    private static string? SerializeHeaders(IReadOnlyDictionary<string, string?>? headers)
++    {
++        if (headers is null || headers.Count == 0)
++        {
++            return null;
++        }
++
++        return JsonSerializer.Serialize(headers, SerializerOptions);
++    }
++
+     private static JsonSerializerOptions CreateSerializerOptions()
+     {
+         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+@@ -262,41 +275,42 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ 
+     private async Task<IReadOnlyList<CompanyOutboxMessage>> ClaimBatchAsync(CancellationToken cancellationToken)
+     {
+         var utcNow = DateTime.UtcNow;
+         var claimToken = Guid.NewGuid().ToString("N");
++        var claimStaleBeforeUtc = utcNow.Subtract(ClaimTimeout);
+ 
+-        var candidates = await _dbContext.CompanyOutboxMessages
++        var candidateIds = await _dbContext.CompanyOutboxMessages
++            .AsNoTracking()
+             .Where(x => x.ProcessedUtc == null &&
+                         x.Status != CompanyOutboxMessageStatus.InProgress &&
+                         x.AvailableUtc <= utcNow &&
+-                        (x.ClaimedUtc == null || x.ClaimedUtc <= utcNow - ClaimTimeout))
++                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
+             .OrderBy(x => x.AvailableUtc)
+             .ThenBy(x => x.CreatedUtc)
+             .Take(BatchSize)
+-            .ToListAsync(cancellationToken);
++            .Select(x => x.Id)
++            .ToArrayAsync(cancellationToken);
+ 
+-        if (candidates.Count == 0)
++        if (candidateIds.Length == 0)
+         {
+             return [];
+         }
+ 
+-        foreach (var candidate in candidates)
+-        {
+-            candidate.TryClaim(claimToken, utcNow, ClaimTimeout);
+-        }
++        // The conditional update is the outbox lease. Competing dispatchers may see
++        // the same candidate ids, but only one can move each row to InProgress.
++        await _dbContext.CompanyOutboxMessages
++            .Where(x => candidateIds.Contains(x.Id) &&
++                        x.ProcessedUtc == null &&
++                        x.Status != CompanyOutboxMessageStatus.InProgress &&
++                        x.AvailableUtc <= utcNow &&
++                        (x.ClaimedUtc == null || x.ClaimedUtc <= claimStaleBeforeUtc))
++            .ExecuteUpdateAsync(setters => setters
++                .SetProperty(x => x.ClaimToken, claimToken)
++                .SetProperty(x => x.ClaimedUtc, (DateTime?)utcNow)
++                .SetProperty(x => x.Status, CompanyOutboxMessageStatus.InProgress)
++                .SetProperty(x => x.LastError, (string?)null),
++                cancellationToken);
+ 
+-        try
+-        {
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-        }
+-        catch (DbUpdateConcurrencyException ex)
+-        {
+-            _logger.LogDebug(ex, "Company outbox claim contention detected.");
+-            foreach (var entry in ex.Entries)
+-            {
+-                entry.State = EntityState.Detached;
+-            }
+-
+-            return [];
+-        }
+-
+-        return candidates
+-            .Where(x => string.Equals(x.ClaimToken, claimToken, StringComparison.Ordinal))
+-            .ToArray();
++        return await _dbContext.CompanyOutboxMessages
++            .Where(x => x.ClaimToken == claimToken && x.Status == CompanyOutboxMessageStatus.InProgress)
++            .OrderBy(x => x.AvailableUtc)
++            .ThenBy(x => x.CreatedUtc)
++            .ToArrayAsync(cancellationToken);
+     }
+ 
+     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 5f7a7cb..1ad78f7 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -337,6 +337,8 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
+         builder.Property(x => x.IdempotencyKey).HasMaxLength(200);
+         builder.Property(x => x.CorrelationId).HasMaxLength(128);
+         builder.Property(x => x.PayloadJson).IsRequired();
++        builder.Property(x => x.CausationId).HasMaxLength(128);
++        builder.Property(x => x.HeadersJson).HasMaxLength(4000);
+         builder.Property(x => x.OccurredUtc).IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.AvailableUtc).IsRequired();
+@@ -357,6 +359,7 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
+         builder.HasIndex(x => new { x.ProcessedUtc, x.ClaimedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.AvailableUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Topic, x.IdempotencyKey }).HasFilter("\"IdempotencyKey\" IS NOT NULL").IsUnique();
++        builder.HasIndex(x => new { x.Status, x.AvailableUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413110000_AddCompanyOutboxDispatchMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413110000_AddCompanyOutboxDispatchMetadata.cs
+new file mode 100644
+index 0000000..69f41ae
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413110000_AddCompanyOutboxDispatchMetadata.cs
+@@ -0,0 +1,66 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413110000_AddCompanyOutboxDispatchMetadata")]
++public partial class AddCompanyOutboxDispatchMetadata : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var stringType = isPostgres ? "character varying" : "nvarchar";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var maxStringType = isPostgres ? "text" : "nvarchar(max)";
++
++        migrationBuilder.AddColumn<string>(
++            name: "CausationId",
++            table: "company_outbox_messages",
++            type: $"{stringType}(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "HeadersJson",
++            table: "company_outbox_messages",
++            type: maxStringType,
++            maxLength: 4000,
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_outbox_messages_Status_AvailableUtc",
++            table: "company_outbox_messages",
++            columns: new[] { "Status", "AvailableUtc" });
++
++        migrationBuilder.Sql(isPostgres
++            ? """
++              UPDATE company_outbox_messages
++              SET "CausationId" = COALESCE("CausationId", "CorrelationId")
++              WHERE "CausationId" IS NULL
++                AND "CorrelationId" IS NOT NULL
++              """
++            : """
++              UPDATE company_outbox_messages
++              SET CausationId = COALESCE(CausationId, CorrelationId)
++              WHERE CausationId IS NULL
++                AND CorrelationId IS NOT NULL
++              """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_company_outbox_messages_Status_AvailableUtc",
++            table: "company_outbox_messages");
++
++        migrationBuilder.DropColumn(
++            name: "CausationId",
++            table: "company_outbox_messages");
++
++        migrationBuilder.DropColumn(
++            name: "HeadersJson",
++            table: "company_outbox_messages");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index 5aef138..4fd2f55 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -724,9 +724,16 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.Property<Guid>("CompanyId")
+                         .HasColumnType("uniqueidentifier");
+ 
++                    b.Property<string>("CausationId")
++                        .HasMaxLength(128)
++                        .HasColumnType("nvarchar(128)");
++
+                     b.Property<string>("IdempotencyKey")
+                         .HasMaxLength(200)
+                         .HasColumnType("nvarchar(200)");
+ 
++                    b.Property<string>("HeadersJson")
++                        .HasMaxLength(4000)
++                        .HasColumnType("nvarchar(max)");
++
+                     b.Property<string>("CorrelationId")
+                         .HasMaxLength(128)
+                         .HasColumnType("nvarchar(128)");
+@@ -758,6 +765,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                         .HasMaxLength(200)
+                         .HasColumnType("nvarchar(200)");
+ 
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasMaxLength(32)
++                        .HasColumnType("nvarchar(32)")
++                        .HasDefaultValue("pending");
++
+                     b.HasKey("Id");
+ 
+                     b.HasIndex("CompanyId", "CreatedUtc");
+@@ -767,10 +781,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                         .IsUnique()
+                         .HasFilter("\"IdempotencyKey\" IS NOT NULL");
+ 
++                    b.HasIndex("CompanyId", "Status", "AvailableUtc");
++
+                     b.HasIndex("CompanyId", "ProcessedUtc");
+ 
+                     b.HasIndex("ProcessedUtc", "ClaimedUtc");
+                     b.HasIndex("ProcessedUtc", "AvailableUtc", "AttemptCount");
+ 
++                    b.HasIndex("Status", "AvailableUtc");
++
+                     b.ToTable("company_outbox_messages", (string)null);
+                 });
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+index a67b32f..6f0e2d4 100644
+--- a/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CompanyMembershipAdministrationIntegrationTests.cs
+@@ -80,6 +80,8 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixtu
+         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.IdempotencyKey));
+         Assert.Equal(deliveryOutbox.CreatedUtc, deliveryOutbox.OccurredUtc);
+         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.CorrelationId));
++        Assert.Equal("audit-invite-correlation", deliveryOutbox.CorrelationId);
++        Assert.Null(deliveryOutbox.ProcessedUtc);
+         Assert.True(await dbContext.AuditEvents.AnyAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Action == "company.invitation.created" &&
+@@ -341,6 +343,49 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixtu
+         Assert.Single(sender.Sent);
+     }
+ 
++    [Fact]
++    public async Task OutboxProcessor_concurrent_dispatchers_claim_message_once_and_do_not_redeliver_succeeded_message()
++    {
++        var sender = ResetInvitationSender();
++        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
++
++        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
++        await ownerClient.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/invitations",
++            new { Email = "concurrent@example.com", MembershipRole = "employee" });
++
++        var handledCounts = await Task.WhenAll(
++            DispatchOutboxInNewScopeAsync(),
++            DispatchOutboxInNewScopeAsync());
++
++        using (var assertionScope = _factory.Services.CreateScope())
++        {
++            var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var deliveryMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
++            var invitation = await dbContext.CompanyInvitations.SingleAsync(x =>
++                x.CompanyId == seed.CompanyId &&
++                x.Email == "concurrent@example.com");
++
++            Assert.Equal(1, handledCounts.Sum());
++            Assert.NotNull(deliveryMessage.ProcessedUtc);
++            Assert.Equal(CompanyOutboxMessageStatus.Dispatched, deliveryMessage.Status);
++            Assert.Equal(CompanyInvitationDeliveryStatus.Delivered, invitation.DeliveryStatus);
++            Assert.Single(sender.Sent);
++        }
++
++        var rerunHandledCount = await DispatchOutboxInNewScopeAsync();
++
++        Assert.Equal(0, rerunHandledCount);
++        Assert.Single(sender.Sent);
++    }
++
++    private async Task<int> DispatchOutboxInNewScopeAsync()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++        return await processor.DispatchPendingAsync(CancellationToken.None);
++    }
++
+     [Fact]
+     public async Task OutboxProcessor_marks_unsupported_messages_as_terminal_failure()
+     {
+END_OF_PATCH

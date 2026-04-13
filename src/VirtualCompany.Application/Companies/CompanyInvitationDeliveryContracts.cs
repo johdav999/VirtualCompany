@@ -34,7 +34,9 @@ public interface ICompanyOutboxEnqueuer
         string? correlationId = null,
         DateTime? availableAtUtc = null,
         string? idempotencyKey = null,
-        string? messageType = null);
+        string? messageType = null,
+        string? causationId = null,
+        IReadOnlyDictionary<string, string?>? headers = null);
 }
 
 public interface ICompanyInvitationDeliveryDispatcher

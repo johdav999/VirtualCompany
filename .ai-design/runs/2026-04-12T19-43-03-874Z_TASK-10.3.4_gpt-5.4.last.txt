@@ -1,0 +1,209 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -194,6 +194,10 @@ public static class PolicyDecisionReasonCodes
+     public const string AutonomyLevelRequiresApproval = "autonomy_level_requires_approval";
+     public const string ApprovalRouteMissing = "approval_route_missing";
+     public const string ApprovalRequired = "approval_required";
++    public const string ApprovalPending = "approval_pending";
++    public const string ApprovalRejected = "approval_rejected";
++    public const string ApprovalExpired = "approval_expired";
++    public const string ApprovalCancelled = "approval_cancelled";
+     public const string ThresholdContextMissing = "threshold_context_missing";
+     public const string ThresholdConfigurationMissing = "threshold_configuration_missing";
+     public const string ThresholdExceededRequiresApproval = "threshold_exceeded_requires_approval";
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -270,6 +270,20 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+             : null;
+ 
++    public bool IsTerminal =>
++        Status is ApprovalRequestStatus.Approved
++            or ApprovalRequestStatus.Rejected
++            or ApprovalRequestStatus.Expired
++            or ApprovalRequestStatus.Cancelled;
++
++    public bool CanExecuteGuardedAction => Status == ApprovalRequestStatus.Approved;
++
++    public string? ExecutionBlockReasonCode => Status switch
++    {
++        ApprovalRequestStatus.Pending => "approval_pending",
++        ApprovalRequestStatus.Rejected => "approval_rejected",
++        ApprovalRequestStatus.Expired => "approval_expired",
++        ApprovalRequestStatus.Cancelled => "approval_cancelled",
++        _ => null
++    };
++
+     public void SetDecisionChain(IDictionary<string, JsonNode?>? decisionChain)
+     {
+         DecisionChain = CloneNodes(decisionChain);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -224,7 +224,13 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         {
+             var attempt = await _dbContext.ToolExecutionAttempts.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+             var previousStatus = attempt.Status.ToStorageValue();
+-            if (approval.Status == ApprovalRequestStatus.Approved)
++            if (!approval.CanExecuteGuardedAction)
++            {
++                attempt.MarkDenied(BuildBlockedApprovalPolicyDecision(approval));
++                return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
++            }
++
++            if (approval.Status == ApprovalRequestStatus.Approved)
+             {
+                 var result = await _companyToolExecutor.ExecuteAsync(
+                     new ToolExecutionRequest(
+@@ -238,13 +244,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 attempt.MarkExecuted(approval.PolicyDecision, result.Payload);
+                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+             }
+-
+-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+-            {
+-                attempt.MarkDenied(approval.PolicyDecision);
+-                return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+-            }
+         }
+ 
+         return null;
+@@ -523,6 +522,40 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             approval.CurrentActionableStep is { } currentStep ? ToStepDto(currentStep) : null,
+             approval.CreatedUtc);
+ 
++    private static Dictionary<string, JsonNode?> BuildBlockedApprovalPolicyDecision(ApprovalRequest approval)
++    {
++        var policyDecision = CloneNodes(approval.PolicyDecision);
++        var reasonCode = approval.ExecutionBlockReasonCode ?? "approval_not_executable";
++        var approvalStatus = approval.Status.ToStorageValue();
++
++        policyDecision["outcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Deny);
++        policyDecision["approvalStatus"] = JsonValue.Create(approvalStatus);
++
++        JsonObject metadata;
++        if (policyDecision.TryGetValue("metadata", out var metadataNode) && metadataNode is JsonObject existingMetadata)
++        {
++            metadata = existingMetadata;
++        }
++        else
++        {
++            metadata = [];
++            policyDecision["metadata"] = metadata;
++        }
++
++        metadata["approvalRequestId"] = approval.Id;
++        metadata["approvalStatus"] = approvalStatus;
++        metadata["executionBlockedReason"] = reasonCode;
++
++        JsonArray reasons;
++        if (policyDecision.TryGetValue("reasons", out var reasonsNode) && reasonsNode is JsonArray existingReasons)
++        {
++            reasons = existingReasons;
++        }
++        else
++        {
++            reasons = [];
++            policyDecision["reasons"] = reasons;
++        }
++
++        reasons.Add(new JsonObject
++        {
++            ["code"] = reasonCode,
++            ["category"] = "approval",
++            ["message"] = $"Approval is {approvalStatus} and cannot execute the guarded action."
++        });
++
++        return policyDecision;
++    }
++
+     private static ApprovalStepDto ToStepDto(ApprovalStep step) =>
+         new(step.Id, step.SequenceNo, step.ApproverType.ToStorageValue(), step.ApproverRef, step.Status.ToStorageValue(),
+             step.DecidedByUserId, step.DecidedUtc, step.Comment);
+diff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+@@ -109,6 +109,30 @@ public sealed class ApprovalDecisionChainTests
+         Assert.Null(approval.CurrentActionableStep);
+     }
+ 
++    [Fact]
++    public void Approved_approval_can_execute_guarded_action()
++    {
++        var approval = CreateApproval(requiredRole: "manager");
++
++        approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "ok");
++
++        Assert.True(approval.IsTerminal);
++        Assert.True(approval.CanExecuteGuardedAction);
++        Assert.Null(approval.ExecutionBlockReasonCode);
++    }
++
++    [Theory]
++    [InlineData(ApprovalRequestStatus.Pending, "approval_pending")]
++    [InlineData(ApprovalRequestStatus.Rejected, "approval_rejected")]
++    [InlineData(ApprovalRequestStatus.Expired, "approval_expired")]
++    [InlineData(ApprovalRequestStatus.Cancelled, "approval_cancelled")]
++    public void Non_approved_approval_cannot_execute_guarded_action(ApprovalRequestStatus status, string reasonCode)
++    {
++        var approval = CreateApprovalWithStatus(status);
++
++        Assert.False(approval.CanExecuteGuardedAction);
++        Assert.Equal(reasonCode, approval.ExecutionBlockReasonCode);
++        Assert.Equal(status != ApprovalRequestStatus.Pending, approval.IsTerminal);
++    }
++
+     [Fact]
+     public void Expiring_approval_marks_it_non_actionable()
+     {
+@@ -120,6 +144,7 @@ public sealed class ApprovalDecisionChainTests
+         Assert.Equal("Approval request expired.", approval.DecisionSummary);
+         Assert.Null(approval.CurrentActionableStep);
+         Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
++        Assert.False(approval.CanExecuteGuardedAction);
+     }
+ 
+     [Fact]
+@@ -132,7 +157,9 @@ public sealed class ApprovalDecisionChainTests
+         Assert.Equal("superseded", approval.DecisionSummary);
+         Assert.Null(approval.CurrentActionableStep);
+         Assert.Throws<InvalidOperationException>(() => approval.RejectCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
++        Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
++        Assert.False(approval.CanExecuteGuardedAction);
+     }
+ 
+     [Fact]
+@@ -164,4 +191,21 @@ public sealed class ApprovalDecisionChainTests
+             },
+             requiredRole,
+             requiredUserId,
+             steps ?? []);
++
++    private static ApprovalRequest CreateApprovalWithStatus(ApprovalRequestStatus status)
++    {
++        var approval = CreateApproval(requiredRole: "manager");
++        switch (status)
++        {
++            case ApprovalRequestStatus.Approved:
++                approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "ok");
++                break;
++            case ApprovalRequestStatus.Rejected:
++                approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "no");
++                break;
++            case ApprovalRequestStatus.Expired:
++                approval.MarkExpired();
++                break;
++            case ApprovalRequestStatus.Cancelled:
++                approval.MarkCancelled("superseded");
++                break;
++        }
++
++        return approval;
++    }
+ }
+END_OF_PATCH

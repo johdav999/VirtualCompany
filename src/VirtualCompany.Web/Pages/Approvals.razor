@@ -1,0 +1,278 @@
+@page "/approvals"
+@inject ApprovalApiClient ApprovalApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.Components
+
+<PageTitle>Approvals</PageTitle>
+
+@if (isLoading)
+{
+    <section class="py-4">
+        <h1>Approval inbox</h1>
+        <p class="text-body-secondary mb-0">Loading approval requests...</p>
+    </section>
+}
+else if (CompanyId is null)
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <h1>Choose a company approval inbox</h1>
+                <p class="lead mb-3">Approvals are scoped to a company workspace.</p>
+
+                @if (ActiveMemberships.Count > 0)
+                {
+                    <div class="template-grid mt-4">
+                        @foreach (var membership in ActiveMemberships)
+                        {
+                            <a class="template-card text-decoration-none text-reset" href="@($"/approvals?companyId={membership.CompanyId}")">
+                                <strong>@membership.CompanyName</strong>
+                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+            </div>
+        </div>
+    </section>
+}
+else
+{
+    <section class="py-4 dashboard-hero">
+        <div class="dashboard-shell">
+            <div class="wizard-card dashboard-summary">
+                <span class="dashboard-kicker">Approval inbox</span>
+                <h1>@(companyAccess?.CompanyName ?? "Approvals")</h1>
+                <p class="text-body-secondary mb-0">Review the rationale and affected data before deciding.</p>
+
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                }
+
+                @if (approvals.Count == 0)
+                {
+                    <p class="text-body-secondary mt-4 mb-0">No pending approvals.</p>
+                }
+                else
+                {
+                    <div class="list-group mt-4">
+                        @foreach (var approval in approvals)
+                        {
+                            <button type="button"
+                                    class="@GetApprovalListItemClass(approval)"
+                                    @onclick="() => SelectApprovalAsync(approval.Id)">
+                                <div class="d-flex w-100 justify-content-between gap-3">
+                                    <div>
+                                        <strong>@approval.ApprovalType approval</strong>
+                                        <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
+                                        <div class="small mt-2">@approval.AffectedDataSummary</div>
+                                    </div>
+                                    <span class="badge text-bg-light align-self-start">@approval.Status</span>
+                                </div>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="wizard-card wizard-card--compact">
+                @if (selectedApproval is null)
+                {
+                    <h2 class="h5">Approval detail</h2>
+                    <p class="text-body-secondary mb-0">Select an approval to review the rationale and affected data.</p>
+                }
+                else
+                {
+                    <h2 class="h5">Approval detail</h2>
+                    <dl class="mb-4">
+                        <dt>Status</dt>
+                        <dd>@selectedApproval.Status</dd>
+                        <dt>Requested</dt>
+                        <dd>@selectedApproval.CreatedAt.ToLocalTime().ToString("g")</dd>
+                        <dt>Target</dt>
+                        <dd>@selectedApproval.TargetEntityType</dd>
+                    </dl>
+
+                    <h3 class="h6">Rationale</h3>
+                    <p class="text-body-secondary">@selectedApproval.RationaleSummary</p>
+
+                    <h3 class="h6">Affected data</h3>
+                    <p class="text-body-secondary">@selectedApproval.AffectedDataSummary</p>
+                    @if (selectedApproval.AffectedEntities.Count > 0)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            @foreach (var entity in selectedApproval.AffectedEntities)
+                            {
+                                <span class="badge text-bg-light">@entity.EntityType: @entity.Label</span>
+                            }
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(selectedApproval.ThresholdSummary))
+                    {
+                        <h3 class="h6">Threshold context</h3>
+                        <p class="text-body-secondary">@selectedApproval.ThresholdSummary</p>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(selectedApproval.RejectionComment))
+                    {
+                        <h3 class="h6">Rejection feedback</h3>
+                        <p class="text-body-secondary">@selectedApproval.RejectionComment</p>
+                    }
+
+                    @if (selectedApproval.Steps.Any(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        <h3 class="h6">Decision history</h3>
+                        <ul class="list-unstyled">
+                            @foreach (var step in selectedApproval.Steps.Where(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                <li class="mb-2">
+                                    Step @step.SequenceNo: @step.Status@if (!string.IsNullOrWhiteSpace(step.Comment)) { <span> - @step.Comment</span> }
+                                </li>
+                            }
+                        </ul>
+                    }
+
+                    @if (selectedApproval.CurrentStep is not null && IsPending(selectedApproval))
+                    {
+                        <div class="mb-3">
+                            <label class="form-label" for="approval-comment">Decision comment</label>
+                            <textarea id="approval-comment" class="form-control" rows="3" @bind="decisionComment"></textarea>
+                        </div>
+                        <div class="dashboard-actions">
+                            <button class="btn btn-primary" @onclick='() => DecideAsync("approve")' disabled="@isDeciding">Approve</button>
+                            <button class="btn btn-outline-secondary" @onclick='() => DecideAsync("reject")' disabled="@isDeciding">Reject</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary mb-0">This approval is not awaiting a decision.</p>
+                    }
+                }
+            </div>
+        </div>
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "approvalId")]
+    public Guid? ApprovalId { get; set; }
+
+    private bool isLoading = true;
+    private bool isDeciding;
+    private CurrentUserContextViewModel? currentUser;
+    private CompanyAccessViewModel? companyAccess;
+    private List<ApprovalRequestViewModel> approvals = [];
+    private ApprovalRequestViewModel? selectedApproval;
+    private string? decisionComment;
+    private string? errorMessage;
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .ToList()
+        ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is not Guid companyId)
+            {
+                if (currentUser?.ActiveCompany is not null)
+                {
+                    Navigation.NavigateTo($"/approvals?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
+                }
+
+                return;
+            }
+
+            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
+            selectedApproval = ApprovalId is Guid approvalId
+                ? await ApprovalApiClient.GetAsync(companyId, approvalId)
+                : approvals.FirstOrDefault();
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            approvals = [];
+            selectedApproval = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SelectApprovalAsync(Guid approvalId)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        selectedApproval = await ApprovalApiClient.GetAsync(companyId, approvalId);
+        decisionComment = null;
+        Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
+    }
+
+    private async Task DecideAsync(string decision)
+    {
+        if (CompanyId is not Guid companyId || selectedApproval?.CurrentStep is null)
+        {
+            return;
+        }
+
+        isDeciding = true;
+        errorMessage = null;
+        try
+        {
+            var result = await ApprovalApiClient.DecideAsync(
+                companyId,
+                selectedApproval.Id,
+                new ApprovalDecisionRequest
+                {
+                    ApprovalId = selectedApproval.Id,
+                    StepId = selectedApproval.CurrentStep.Id,
+                    Decision = decision,
+                    Comment = decisionComment
+                });
+            selectedApproval = result.Approval;
+            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isDeciding = false;
+        }
+    }
+
+    private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
+        selectedApproval?.Id == approval.Id
+            ? "list-group-item list-group-item-action active"
+            : "list-group-item list-group-item-action";
+
+    private static bool IsPending(ApprovalRequestViewModel approval) =>
+        string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+}

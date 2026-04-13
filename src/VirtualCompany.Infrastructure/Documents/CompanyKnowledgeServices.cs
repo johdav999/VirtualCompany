@@ -395,6 +395,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly KnowledgeIndexingOptions _options;
     private readonly ILogger<CompanyKnowledgeIndexingProcessor> _logger;
+    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
 
     public CompanyKnowledgeIndexingProcessor(
         VirtualCompanyDbContext dbContext,
@@ -403,6 +404,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
         IEmbeddingGenerator embeddingGenerator,
         IBackgroundJobExecutor backgroundJobExecutor,
         IOptions<KnowledgeIndexingOptions> options,
+        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         ILogger<CompanyKnowledgeIndexingProcessor> logger)
     {
         _dbContext = dbContext;
@@ -412,6 +414,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
         _backgroundJobExecutor = backgroundJobExecutor;
         _options = options.Value;
         _logger = logger;
+        _companyExecutionScopeFactory = companyExecutionScopeFactory;
     }
 
     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.ClaimTimeoutSeconds));
@@ -532,6 +535,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
 
     public async Task IndexDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
     {
+        using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
         var indexedChunkSetVersion = 0;
         var indexedChunkCount = 0;
 
@@ -698,6 +702,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
 
     private async Task ProcessWithRetriesAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
     {
+        using var tenantScope = _companyExecutionScopeFactory.BeginScope(companyId);
         for (var attempt = 1; attempt <= Math.Max(1, _options.MaxAttempts); attempt++)
         {
             Exception? attemptException = null;
@@ -706,7 +711,8 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
                     "knowledge-document-indexing",
                     attempt,
                     Math.Max(1, _options.MaxAttempts),
-                    companyId),
+                    companyId,
+                    requireCompanyContext: true),
                 async innerToken =>
                 {
                     try

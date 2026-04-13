@@ -80,6 +80,8 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.IdempotencyKey));
         Assert.Equal(deliveryOutbox.CreatedUtc, deliveryOutbox.OccurredUtc);
         Assert.False(string.IsNullOrWhiteSpace(deliveryOutbox.CorrelationId));
+        Assert.Equal("audit-invite-correlation", deliveryOutbox.CorrelationId);
+        Assert.Null(deliveryOutbox.ProcessedUtc);
 
         var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
             x.CompanyId == seed.CompanyId &&
@@ -337,6 +339,51 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Equal(typeof(CompanyInvitationDeliveryRequestedMessage).FullName, processedMessage.MessageType);
         Assert.Equal(2, sender.AttemptCount);
         Assert.Single(sender.Sent);
+    }
+
+    [Fact]
+    public async Task OutboxProcessor_concurrent_dispatchers_claim_message_once_and_do_not_redeliver_succeeded_message()
+    {
+        var sender = ResetInvitationSender();
+        var seed = await SeedSingleMembershipAsync("owner", "owner@example.com", CompanyMembershipRole.Owner);
+
+        using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
+        await ownerClient.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId}/invitations",
+            new { Email = "concurrent@example.com", MembershipRole = "employee" });
+
+        var handledCounts = await Task.WhenAll(
+            DispatchOutboxInNewScopeAsync(),
+            DispatchOutboxInNewScopeAsync());
+
+        using (var assertionScope = _factory.Services.CreateScope())
+        {
+            var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+            var deliveryMessage = await dbContext.CompanyOutboxMessages.SingleAsync(x =>
+                x.CompanyId == seed.CompanyId &&
+                x.Topic == CompanyOutboxTopics.InvitationDeliveryRequested);
+            var invitation = await dbContext.CompanyInvitations.SingleAsync(x =>
+                x.CompanyId == seed.CompanyId &&
+                x.Email == "concurrent@example.com");
+
+            Assert.Equal(1, handledCounts.Sum());
+            Assert.NotNull(deliveryMessage.ProcessedUtc);
+            Assert.Equal(CompanyOutboxMessageStatus.Dispatched, deliveryMessage.Status);
+            Assert.Equal(CompanyInvitationDeliveryStatus.Delivered, invitation.DeliveryStatus);
+            Assert.Single(sender.Sent);
+        }
+
+        var rerunHandledCount = await DispatchOutboxInNewScopeAsync();
+
+        Assert.Equal(0, rerunHandledCount);
+        Assert.Single(sender.Sent);
+    }
+
+    private async Task<int> DispatchOutboxInNewScopeAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
+        return await processor.DispatchPendingAsync(CancellationToken.None);
     }
 
     [Fact]

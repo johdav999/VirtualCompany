@@ -1,0 +1,226 @@
+diff --git a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+--- a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
++++ b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+@@ -40,6 +40,7 @@ public sealed record ApprovalRequestDto(
+     IReadOnlyList<ApprovalStepDto> Steps,
+     ApprovalStepDto? CurrentStep,
+     string? DecisionSummary,
++    string? RejectionComment,
+     string RationaleSummary,
+     string AffectedDataSummary,
+     IReadOnlyList<ApprovalAffectedEntityDto> AffectedEntities,
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -187,7 +187,8 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+                     ["approverRef"] = step.ApproverRef,
+                     ["status"] = step.Status.ToStorageValue(),
+                     ["decidedByUserId"] = step.DecidedByUserId,
+-                    ["decidedAt"] = step.DecidedUtc
++                    ["decidedAt"] = step.DecidedUtc,
++                    ["comment"] = step.Comment
+                 })
+                 .ToArray<JsonNode?>())
+         };
+@@ -933,7 +934,8 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+                     ["approverRef"] = step.ApproverRef,
+                     ["status"] = step.Status.ToStorageValue(),
+                     ["decidedByUserId"] = step.DecidedByUserId,
+-                    ["decidedAt"] = step.DecidedUtc
++                    ["decidedAt"] = step.DecidedUtc,
++                    ["comment"] = step.Comment
+                 })
+                 .ToArray<JsonNode?>())
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -341,6 +341,11 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         {
+             throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.Decision)] = ["Decision must be approve or reject."] });
+         }
++
++        if (command.Comment?.Trim().Length > 2000)
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.Comment)] = ["Decision comment must be 2000 characters or fewer."] });
++        }
+     }
+ 
+     private async Task EnsureTargetExistsAsync(
+@@ -476,7 +481,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                     ["approverType"] = step.ApproverType.ToStorageValue(),
+                     ["approverRef"] = step.ApproverRef,
+                     ["targetEntityType"] = approval.TargetEntityType,
+-                    ["targetEntityId"] = approval.TargetEntityId.ToString("N")
++                    ["targetEntityId"] = approval.TargetEntityId.ToString("N"),
++                    ["comment"] = step.Comment
+                 }),
+             cancellationToken);
+     }
+@@ -522,6 +528,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+     private async Task WriteCompletionAuditAsync(ApprovalRequest approval, Guid actorUserId, CancellationToken cancellationToken)
+     {
++        var rejectionComment = GetRejectionComment(approval);
+         await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+                 approval.CompanyId,
+@@ -536,7 +543,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                     ["approvalRequestId"] = approval.Id.ToString("N"),
+                     ["targetEntityType"] = approval.TargetEntityType,
+                     ["targetEntityId"] = approval.TargetEntityId.ToString("N"),
+-                    ["approvalStatus"] = approval.Status.ToStorageValue()
++                    ["approvalStatus"] = approval.Status.ToStorageValue(),
++                    ["rejectionComment"] = rejectionComment
+                 }),
+             cancellationToken);
+     }
+@@ -548,6 +556,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         Guid actorUserId,
+         CancellationToken cancellationToken)
+     {
++        var rejectionComment = GetRejectionComment(approval);
+         await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+                 approval.CompanyId,
+@@ -566,7 +575,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                     ["previousState"] = transition.PreviousState,
+                     ["currentState"] = transition.CurrentState,
+                     ["approvalStatus"] = approval.Status.ToStorageValue()
++                    ["rejectionComment"] = rejectionComment
+                 }),
+             cancellationToken);
+     }
+@@ -695,6 +705,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             approval.Steps.OrderBy(step => step.SequenceNo).Select(ToStepDto).ToList(),
+             approval.CurrentActionableStep is { } currentStep ? ToStepDto(currentStep) : null,
+             approval.DecisionSummary,
++            GetRejectionComment(approval),
+             rationaleSummary,
+             affectedDataSummary,
+             summaryContext?.AffectedEntities ?? [],
+@@ -774,6 +785,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+         metadata["approvalRequestId"] = approval.Id;
+         metadata["approvalStatus"] = approvalStatus;
++        metadata["rejectionComment"] = GetRejectionComment(approval);
+         metadata["executionBlockedReason"] = reasonCode;
+ 
+         JsonArray reasons;
+@@ -810,6 +822,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+     private static ApprovalStepDto ToStepDto(ApprovalStep step) =>
+         new(step.Id, step.SequenceNo, step.ApproverType.ToStorageValue(), step.ApproverRef, step.Status.ToStorageValue(),
+             step.DecidedByUserId, step.DecidedUtc, step.Comment);
++
++    private static string? GetRejectionComment(ApprovalRequest approval) =>
++        approval.Steps.FirstOrDefault(step => step.Status == ApprovalStepStatus.Rejected)?.Comment;
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+         nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+--- a/src/VirtualCompany.Web/Pages/Approvals.razor
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -127,6 +127,24 @@ else
+                         <p class="text-body-secondary">@selectedApproval.ThresholdSummary</p>
+                     }
+ 
++                    @if (!string.IsNullOrWhiteSpace(selectedApproval.RejectionComment))
++                    {
++                        <h3 class="h6">Rejection feedback</h3>
++                        <p class="text-body-secondary">@selectedApproval.RejectionComment</p>
++                    }
++
++                    @if (selectedApproval.Steps.Any(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
++                    {
++                        <h3 class="h6">Decision history</h3>
++                        <ul class="list-unstyled">
++                            @foreach (var step in selectedApproval.Steps.Where(step => step.DecidedAt is not null || !string.Equals(step.Status, "pending", StringComparison.OrdinalIgnoreCase)))
++                            {
++                                <li class="mb-2">
++                                    Step @step.SequenceNo: @step.Status@if (!string.IsNullOrWhiteSpace(step.Comment)) { <span> - @step.Comment</span> }
++                                </li>
++                            }
++                        </ul>
++                    }
++
+                     @if (selectedApproval.CurrentStep is not null && IsPending(selectedApproval))
+                     {
+                         <div class="mb-3">
+diff --git a/src/VirtualCompany.Web/Services/ApprovalApiClient.cs b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+--- a/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+@@ -52,9 +52,17 @@ public sealed class ApprovalApiClient
+         {
+             var approval = OfflineApprovals(companyId).Single(x => x.Id == approvalId);
+             approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
+-            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, IsFinalized = true });
++            var currentStep = approval.CurrentStep;
++            if (currentStep is not null)
++            {
++                currentStep.Status = approval.Status;
++                currentStep.DecidedAt = DateTime.UtcNow;
++                currentStep.Comment = request.Comment?.Trim();
++                approval.RejectionComment = approval.Status == "rejected" ? currentStep.Comment : null;
++            }
++
++            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, DecidedStep = currentStep, IsFinalized = true });
+         }
+ 
+         return SendAsync<ApprovalDecisionResultViewModel>(
+@@ -126,7 +134,14 @@ public sealed class ApprovalApiClient
+             ApprovalType = "threshold",
+             Status = "pending",
+             RationaleSummary = "This action exceeded a configured approval threshold.",
++            Steps =
++            [
++                new ApprovalStepViewModel { Id = Guid.Parse("7c797ca4-4a74-49f5-a669-9dc4173f2aa6"), SequenceNo = 1, ApproverType = "role", ApproverRef = "owner", Status = "pending" }
++            ],
+             AffectedDataSummary = "Task: Vendor payment run for April",
++            CurrentStep = new ApprovalStepViewModel { Id = Guid.Parse("7c797ca4-4a74-49f5-a669-9dc4173f2aa6"), SequenceNo = 1, ApproverType = "role", ApproverRef = "owner", Status = "pending" },
+             AffectedEntities = [new ApprovalAffectedEntityViewModel { EntityType = "task", EntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"), Label = "Vendor payment run for April" }],
+             ThresholdSummary = "Threshold: amount 25000 (configured 10000)",
+             CreatedAt = DateTime.UtcNow
+@@ -165,6 +180,7 @@ public sealed class ApprovalRequestViewModel
+     public List<ApprovalStepViewModel> Steps { get; set; } = [];
+     public ApprovalStepViewModel? CurrentStep { get; set; }
+     public string? DecisionSummary { get; set; }
++    public string? RejectionComment { get; set; }
+     public string RationaleSummary { get; set; } = string.Empty;
+     public string AffectedDataSummary { get; set; } = string.Empty;
+     public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];
+diff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+@@ -102,10 +102,29 @@ public sealed class ApprovalDecisionChainTests
+ 
+         approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "no");
+ 
++        var rejectedStep = approval.Steps.Single(x => x.SequenceNo == 1);
+         Assert.Equal(ApprovalRequestStatus.Rejected, approval.Status);
+         Assert.Equal("no", approval.DecisionSummary);
++        Assert.Equal(ApprovalStepStatus.Rejected, rejectedStep.Status);
++        Assert.Equal("no", rejectedStep.Comment);
+         Assert.Null(approval.CurrentActionableStep);
+     }
+ 
++    [Fact]
++    public void Rejecting_active_step_records_trimmed_comment_in_decision_chain()
++    {
++        var approval = CreateApproval(requiredRole: "manager");
++
++        approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "  Missing invoice attachment.  ");
++
++        var rejectedStep = approval.Steps.Single();
++        Assert.Equal("Missing invoice attachment.", rejectedStep.Comment);
++        Assert.Equal("Missing invoice attachment.", approval.DecisionSummary);
++
++        var steps = Assert.IsType<JsonArray>(approval.DecisionChain["steps"]);
++        var step = Assert.IsType<JsonObject>(Assert.Single(steps));
++        Assert.Equal("rejected", step["status"]!.GetValue<string>());
++        Assert.Equal("Missing invoice attachment.", step["comment"]!.GetValue<string>());
++    }
++
+     [Fact]
+     public void Approved_approval_can_execute_guarded_action()
+     {
+END_OF_PATCH

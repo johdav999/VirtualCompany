@@ -1,0 +1,579 @@
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -280,3 +280,11 @@ public sealed class WorkflowValidationException : Exception
+ 
+     public IReadOnlyDictionary<string, string[]> Errors { get; }
+ }
++
++public sealed class WorkflowBlockedException : Exception
++{
++    public WorkflowBlockedException(string message)
++        : base(string.IsNullOrWhiteSpace(message) ? "Workflow progression is blocked and requires review." : message)
++    {
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BackgroundExecutionEntities.cs
+@@ -72,7 +72,7 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+-    public bool IsTerminal => Status is BackgroundExecutionStatus.Succeeded or BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Escalated;
++    public bool IsTerminal => Status is BackgroundExecutionStatus.Succeeded or BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Escalated or BackgroundExecutionStatus.Blocked;
+ 
+     public void StartAttempt(string correlationId, int attempt, int maxAttempts)
+     {
+@@ -156,6 +156,24 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
+         UpdatedUtc = utcNow;
+     }
+ 
++    public void MarkBlocked(
++        BackgroundExecutionFailureCategory failureCategory,
++        string failureCode,
++        string failureMessage,
++        Guid? escalationId = null)
++    {
++        var utcNow = DateTime.UtcNow;
++        Status = BackgroundExecutionStatus.Blocked;
++        CompletedUtc = utcNow;
++        HeartbeatUtc = utcNow;
++        NextRetryUtc = null;
++        FailureCategory = failureCategory;
++        FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
++        FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
++        EscalationId = escalationId;
++        UpdatedUtc = utcNow;
++    }
++
+     public void RecoverStale(DateTime nextRetryUtc, string failureMessage)
+     {
+         ScheduleRetry(
+diff --git a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+--- a/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BackgroundExecutionEnums.cs
+@@ -13,11 +13,13 @@ public enum BackgroundExecutionStatus
+     Succeeded = 3,
+     RetryScheduled = 4,
+     Failed = 5,
+-    Escalated = 6
++    Escalated = 6,
++    Blocked = 7
+ }
+ 
+ public enum BackgroundExecutionFailureCategory
+ {
++    Unknown = 0,
+     TransientInfrastructure = 1,
+     LockContention = 2,
+     ExternalDependencyTimeout = 3,
+@@ -26,7 +28,9 @@ public enum BackgroundExecutionFailureCategory
+     PermanentBusinessRule = 5,
+     PermanentPolicy = 6,
+     Validation = 7,
+-    Configuration = 8
++    Configuration = 8,
++    RateLimited = 9,
++    ApprovalRequired = 10
+ }
+ 
+ public enum CompanyOutboxMessageStatus
+@@ -82,7 +86,8 @@ public static class BackgroundExecutionStatusValues
+         [BackgroundExecutionStatus.Succeeded] = "succeeded",
+         [BackgroundExecutionStatus.RetryScheduled] = "retry_scheduled",
+         [BackgroundExecutionStatus.Failed] = "failed",
+-        [BackgroundExecutionStatus.Escalated] = "escalated"
++        [BackgroundExecutionStatus.Escalated] = "escalated",
++        [BackgroundExecutionStatus.Blocked] = "blocked"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, BackgroundExecutionStatus> ReverseValues =
+@@ -119,6 +124,7 @@ public static class BackgroundExecutionFailureCategoryValues
+ {
+     private static readonly IReadOnlyDictionary<BackgroundExecutionFailureCategory, string> Values = new Dictionary<BackgroundExecutionFailureCategory, string>
+     {
++        [BackgroundExecutionFailureCategory.Unknown] = "unknown",
+         [BackgroundExecutionFailureCategory.TransientInfrastructure] = "transient_infrastructure",
+         [BackgroundExecutionFailureCategory.LockContention] = "lock_contention",
+         [BackgroundExecutionFailureCategory.ExternalDependencyTimeout] = "external_dependency_timeout",
+@@ -127,7 +133,9 @@ public static class BackgroundExecutionFailureCategoryValues
+         [BackgroundExecutionFailureCategory.PermanentBusinessRule] = "permanent_business_rule",
+         [BackgroundExecutionFailureCategory.PermanentPolicy] = "permanent_policy",
+         [BackgroundExecutionFailureCategory.Validation] = "validation",
+-        [BackgroundExecutionFailureCategory.Configuration] = "configuration"
++        [BackgroundExecutionFailureCategory.Configuration] = "configuration",
++        [BackgroundExecutionFailureCategory.RateLimited] = "rate_limited",
++        [BackgroundExecutionFailureCategory.ApprovalRequired] = "approval_required"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, BackgroundExecutionFailureCategory> ReverseValues =
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+--- a/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/BackgroundJobExecution.cs
+@@ -1,8 +1,10 @@
+ using System.IO;
++using System.Net;
+ using System.Net.Sockets;
+ using System.Text.Json;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
++using StackExchange.Redis;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Application.Workflows;
+@@ -13,7 +15,8 @@ namespace VirtualCompany.Infrastructure.BackgroundJobs;
+ 
+ public enum BackgroundJobFailureClassification
+ {
+-    Transient = 0,
++    Unknown = -1,
++    Transient = 0,
+     Permanent = 1,
+     LockContention = 2,
+     ExternalDependencyTimeout = 3,
+@@ -22,7 +25,9 @@ public enum BackgroundJobFailureClassification
+     PermanentBusinessRule = 5,
+     PermanentPolicy = 6,
+     Validation = 7,
+-    Configuration = 8
++    Configuration = 8,
++    RateLimited = 9,
++    ApprovalRequired = 10
+ }
+ 
+ public static class BackgroundJobFailureClassificationExtensions
+@@ -30,10 +35,24 @@ public static class BackgroundJobFailureClassificationExtensions
+     public static bool IsRetryable(this BackgroundJobFailureClassification classification) =>
+         classification is BackgroundJobFailureClassification.Transient
+             or BackgroundJobFailureClassification.LockContention
++            or BackgroundJobFailureClassification.Unknown
++            or BackgroundJobFailureClassification.RateLimited
+             or BackgroundJobFailureClassification.ExternalDependencyTimeout
+             or BackgroundJobFailureClassification.ExternalDependencyUnavailable;
++
++    public static BackgroundJobFailureDisposition GetDisposition(this BackgroundJobFailureClassification classification) =>
++        classification.IsRetryable()
++            ? BackgroundJobFailureDisposition.Retry
++            : classification is BackgroundJobFailureClassification.PermanentPolicy
++                or BackgroundJobFailureClassification.PermanentBusinessRule
++                or BackgroundJobFailureClassification.ApprovalRequired
++                ? BackgroundJobFailureDisposition.Block
++                : BackgroundJobFailureDisposition.Fail;
+ }
+ 
++public enum BackgroundJobFailureDisposition
++{
++    Retry = 0,
++    Fail = 1,
++    Block = 2
++}
++
+ public enum BackgroundJobExecutionOutcome
+ {
+     Succeeded = 0,
+@@ -41,7 +60,8 @@ public enum BackgroundJobExecutionOutcome
+     PermanentFailure = 2,
+     RetryExhausted = 3,
+-    IdempotentDuplicate = 4
++    IdempotentDuplicate = 4,
++    Blocked = 5
+ }
+ 
+ public class PermanentBackgroundJobException : Exception
+@@ -98,6 +118,9 @@ public sealed record BackgroundJobExecutionResult(
+     public static BackgroundJobExecutionResult PermanentFailure(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
+         new(BackgroundJobExecutionOutcome.PermanentFailure, correlationId, errorMessage, exceptionType, null, classification);
+ 
++    public static BackgroundJobExecutionResult Blocked(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
++        new(BackgroundJobExecutionOutcome.Blocked, correlationId, errorMessage, exceptionType, null, classification);
++
+     public static BackgroundJobExecutionResult RetryExhausted(string correlationId, string errorMessage, string exceptionType, BackgroundJobFailureClassification classification) =>
+         new(BackgroundJobExecutionOutcome.RetryExhausted, correlationId, errorMessage, exceptionType, null, classification);
+ }
+@@ -122,6 +145,11 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailure
+     {
+         foreach (var current in Enumerate(exception))
+         {
++            if (current is WorkflowBlockedException)
++            {
++                return BackgroundJobFailureClassification.ApprovalRequired;
++            }
++
+             if (current is UnauthorizedAccessException)
+             {
+                 return BackgroundJobFailureClassification.PermanentPolicy;
+@@ -137,6 +165,11 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailure
+                 return BackgroundJobFailureClassification.PermanentBusinessRule;
+             }
+ 
++            if (current is OperationCanceledException)
++            {
++                return BackgroundJobFailureClassification.ExternalDependencyTimeout;
++            }
++
+             if (current is KeyNotFoundException)
+             {
+                 return BackgroundJobFailureClassification.Configuration;
+@@ -152,8 +185,18 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailure
+                 return BackgroundJobFailureClassification.ExternalDependencyTimeout;
+             }
+ 
+-            if (current is HttpRequestException or IOException or SocketException or DbUpdateException)
++            if (current is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests })
++            {
++                return BackgroundJobFailureClassification.RateLimited;
++            }
++
++            if (current is HttpRequestException { StatusCode: HttpStatusCode.RequestTimeout or >= HttpStatusCode.InternalServerError })
++            {
++                return BackgroundJobFailureClassification.ExternalDependencyUnavailable;
++            }
++
++            if (current is IOException or SocketException or RedisException or DbUpdateException)
+             {
+                 return BackgroundJobFailureClassification.ExternalDependencyUnavailable;
+             }
+         }
+ 
+-        return BackgroundJobFailureClassification.Transient;
++        return BackgroundJobFailureClassification.Unknown;
+     }
+@@ -229,63 +272,94 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
+ 
+             return BackgroundJobExecutionResult.Success(effectiveCorrelationId);
+         }
++        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
++        {
++            return HandleFailure(context, effectiveCorrelationId, normalizedRetryDelay, ex);
++        }
+         catch (OperationCanceledException)
+         {
+             throw;
+         }
+         catch (Exception ex)
+         {
+-            var errorMessage = TrimError(ex.Message);
+-            var exceptionType = ex.GetType().FullName ?? ex.GetType().Name;
+-            var classification = _failureClassifier.Classify(ex);
+-
+-            if (!classification.IsRetryable())
+-            {
+-                _logger.LogError(
+-                    ex,
+-                    "Background job {JobName} failed permanently on attempt {Attempt} of {MaxAttempts}. ExceptionType: {ExceptionType}.",
+-                    context.JobName,
+-                    context.Attempt,
+-                    context.MaxAttempts,
+-                    exceptionType);
+-                return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType, classification);
+-            }
++            return HandleFailure(context, effectiveCorrelationId, normalizedRetryDelay, ex);
++        }
++    }
+ 
+-            if (context.Attempt >= context.MaxAttempts)
+-            {
+-                _logger.LogError(
+-                    ex,
+-                    "Background job {JobName} exhausted retries on attempt {Attempt} of {MaxAttempts}. ExceptionType: {ExceptionType}.",
+-                    context.JobName,
+-                    context.Attempt,
+-                    context.MaxAttempts,
+-                    exceptionType);
+-                return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType, classification);
+-            }
++    private BackgroundJobExecutionResult HandleFailure(
++        BackgroundJobExecutionContext context,
++        string effectiveCorrelationId,
++        TimeSpan normalizedRetryDelay,
++        Exception ex)
++    {
++        var errorMessage = TrimError(ex.Message);
++        var exceptionType = ex.GetType().FullName ?? ex.GetType().Name;
++        var classification = _failureClassifier.Classify(ex);
++        var disposition = classification.GetDisposition();
+ 
+-            _logger.LogWarning(
++        if (disposition == BackgroundJobFailureDisposition.Block)
++        {
++            _logger.LogError(
+                 ex,
+-                "Background job {JobName} failed with a retryable error on attempt {Attempt} of {MaxAttempts}. Retrying in {RetryDelaySeconds} seconds. ExceptionType: {ExceptionType}.",
++                "Background job {JobName} is blocked on attempt {Attempt} of {MaxAttempts}. FailureClassification: {FailureClassification}. RetryDecision: {RetryDecision}. ExceptionType: {ExceptionType}.",
+                 context.JobName,
+                 context.Attempt,
+                 context.MaxAttempts,
+-                normalizedRetryDelay.TotalSeconds,
++                classification,
++                disposition,
+                 exceptionType);
+-            return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay, classification);
++            return BackgroundJobExecutionResult.Blocked(effectiveCorrelationId, errorMessage, exceptionType, classification);
+         }
++
++        if (disposition == BackgroundJobFailureDisposition.Fail)
++        {
++            _logger.LogError(
++                ex,
++                "Background job {JobName} failed permanently on attempt {Attempt} of {MaxAttempts}. FailureClassification: {FailureClassification}. RetryDecision: {RetryDecision}. ExceptionType: {ExceptionType}.",
++                context.JobName,
++                context.Attempt,
++                context.MaxAttempts,
++                classification,
++                disposition,
++                exceptionType);
++            return BackgroundJobExecutionResult.PermanentFailure(effectiveCorrelationId, errorMessage, exceptionType, classification);
++        }
++
++        if (context.Attempt >= context.MaxAttempts)
++        {
++            _logger.LogError(
++                ex,
++                "Background job {JobName} exhausted retries on attempt {Attempt} of {MaxAttempts}. FailureClassification: {FailureClassification}. RetryDecision: {RetryDecision}. ExceptionType: {ExceptionType}.",
++                context.JobName,
++                context.Attempt,
++                context.MaxAttempts,
++                classification,
++                BackgroundJobExecutionOutcome.RetryExhausted,
++                exceptionType);
++            return BackgroundJobExecutionResult.RetryExhausted(effectiveCorrelationId, errorMessage, exceptionType, classification);
++        }
++
++        _logger.LogWarning(
++            ex,
++            "Background job {JobName} failed with a retryable error on attempt {Attempt} of {MaxAttempts}. FailureClassification: {FailureClassification}. RetryDecision: {RetryDecision}. Retrying in {RetryDelaySeconds} seconds. ExceptionType: {ExceptionType}.",
++            context.JobName,
++            context.Attempt,
++            context.MaxAttempts,
++            classification,
++            BackgroundJobExecutionOutcome.RetryScheduled,
++            normalizedRetryDelay.TotalSeconds,
++            exceptionType);
++        return BackgroundJobExecutionResult.RetryScheduled(effectiveCorrelationId, errorMessage, exceptionType, normalizedRetryDelay, classification);
+     }
+ 
+     private static string TrimError(string? errorMessage) =>
+@@ -386,6 +460,12 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+                     ResolveFailureCode(result),
+                     ResolveFailureMessage(result));
+                 break;
++            case BackgroundJobExecutionOutcome.Blocked:
++                execution.MarkBlocked(
++                    MapFailureCategory(result.FailureClassification),
++                    ResolveFailureCode(result),
++                    ResolveFailureMessage(result));
++                break;
+             case BackgroundJobExecutionOutcome.PermanentFailure:
+             case BackgroundJobExecutionOutcome.RetryExhausted:
+                 execution.MarkFailed(
+@@ -402,10 +482,15 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+         }
+ 
+         _logger.LogInformation(
+-            "Background execution {ExecutionId} for company {CompanyId} finished with {Outcome}.",
++            "Background execution {ExecutionId} for company {CompanyId} finished with {Outcome}. FailureCategory: {FailureCategory}. RetryDecision: {RetryDecision}.",
+             execution.Id,
+             execution.CompanyId,
+-            result.Outcome);
++            result.Outcome,
++            execution.FailureCategory,
++            result.FailureClassification?.GetDisposition());
+ 
+         await Task.CompletedTask;
+     }
+@@ -438,12 +523,15 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
+     private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
+         classification switch
+         {
++            BackgroundJobFailureClassification.Unknown => BackgroundExecutionFailureCategory.Unknown,
+             BackgroundJobFailureClassification.LockContention => BackgroundExecutionFailureCategory.LockContention,
+             BackgroundJobFailureClassification.ExternalDependencyTimeout => BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
+             BackgroundJobFailureClassification.ExternalDependencyUnavailable => BackgroundExecutionFailureCategory.ExternalDependencyUnavailable,
++            BackgroundJobFailureClassification.RateLimited => BackgroundExecutionFailureCategory.RateLimited,
+             BackgroundJobFailureClassification.PermanentBusinessRule or BackgroundJobFailureClassification.Permanent => BackgroundExecutionFailureCategory.PermanentBusinessRule,
+             BackgroundJobFailureClassification.PermanentPolicy => BackgroundExecutionFailureCategory.PermanentPolicy,
+             BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
++            BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
+             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
+         };
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -204,6 +204,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     handledCount++;
+                     break;
+                 case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.Blocked:
+                 case BackgroundJobExecutionOutcome.RetryExhausted:
+                     message.MarkDiscarded(ResolveFailureMessage(execution));
+                     _logger.LogError(
+@@ -223,11 +224,13 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     message.ScheduleRetry(nextAttemptAtUtc, ResolveFailureMessage(execution));
+                     _logger.LogWarning(
+-                        "Retry scheduled for company outbox message {Topic} ({MessageType}) after attempt {Attempt}. Next attempt at {AvailableUtc}.",
++                        "Retry scheduled for company outbox message {Topic} ({MessageType}) after attempt {Attempt}. FailureClassification: {FailureClassification}. Next attempt at {AvailableUtc}.",
+                         message.Topic,
+                         message.MessageType ?? message.Topic,
+                         attempt,
++                        execution.FailureClassification,
+                         nextAttemptAtUtc);
+                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/WorkflowProgressionInfrastructure.cs
+@@ -220,7 +220,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+             : utcNow.Add(execution.RetryDelay ?? TimeSpan.Zero)
+             : (DateTime?)null;
+ 
+-        if (execution.Outcome is BackgroundJobExecutionOutcome.PermanentFailure or BackgroundJobExecutionOutcome.RetryExhausted)
++        if (execution.Outcome is BackgroundJobExecutionOutcome.PermanentFailure or BackgroundJobExecutionOutcome.RetryExhausted)
+         {
+             await MarkWorkflowTerminalFailureAsync(instance.Id, execution, cancellationToken);
+         }
+@@ -234,7 +234,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+         {
+             BackgroundJobExecutionOutcome.Succeeded or BackgroundJobExecutionOutcome.IdempotentDuplicate => WorkflowProgressionInstanceOutcome.Advanced,
+             BackgroundJobExecutionOutcome.RetryScheduled => WorkflowProgressionInstanceOutcome.Skipped,
+-            _ => WorkflowProgressionInstanceOutcome.Failed
++            BackgroundJobExecutionOutcome.Blocked or BackgroundJobExecutionOutcome.PermanentFailure or BackgroundJobExecutionOutcome.RetryExhausted => WorkflowProgressionInstanceOutcome.Failed,
++            _ => WorkflowProgressionInstanceOutcome.Skipped
+         };
+     }
+@@ -299,7 +299,7 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
+                 "Workflow instance {WorkflowInstanceId} is blocked at step {StepKey} for company {CompanyId}.",
+                 instance.Id,
+                 currentStep,
+                 instance.CompanyId);
+-            return;
++            throw new WorkflowBlockedException(TryGetString(output, "reason") ?? "Workflow step is blocked and requires review.");
+         }
+ 
+         var nextStep = currentIndex + 1 < steps.Count
+diff --git a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BackgroundJobExecutorTests.cs
+@@ -1,3 +1,4 @@
++using System.Net;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -46,14 +47,14 @@ public sealed class BackgroundJobExecutorTests
+     }
+ 
+     [Fact]
+-    public async Task ExecuteAsync_marks_permanent_failure_without_retry()
++    public async Task ExecuteAsync_marks_policy_and_business_failures_blocked_without_retry()
+     {
+         var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
+         var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
+ 
+         var result = await executor.ExecuteAsync(
+             new BackgroundJobExecutionContext("company-outbox:unsupported-topic", 1, 3, correlationId: "corr-permanent"),
+-            _ => throw new PermanentBackgroundJobException("Unsupported payload."),
++            _ => throw new UnauthorizedAccessException("Policy denied."),
+             TimeSpan.FromSeconds(5),
+             CancellationToken.None);
+ 
+-        Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
+-        Assert.Equal("Unsupported payload.", result.ErrorMessage);
++        Assert.Equal(BackgroundJobExecutionOutcome.Blocked, result.Outcome);
++        Assert.Equal("Policy denied.", result.ErrorMessage);
++        Assert.Equal(BackgroundJobFailureClassification.PermanentPolicy, result.FailureClassification);
+         Assert.NotEqual("System.TimeoutException", result.ExceptionType);
+ 
+         var entry = Assert.Single(logger.Entries);
+@@ -76,6 +77,7 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal(BackgroundJobExecutionOutcome.RetryExhausted, result.Outcome);
+         Assert.Equal("System.TimeoutException", result.ExceptionType);
+         Assert.Null(result.RetryDelay);
++        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);
+ 
+         var entry = Assert.Single(logger.Entries);
+         Assert.Equal(LogLevel.Error, entry.LogLevel);
+@@ -121,6 +123,43 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Empty(logger.Entries);
+     }
+ 
++    [Fact]
++    public async Task ExecuteAsync_treats_internal_task_cancellation_as_timeout_not_host_cancellation()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++
++        var result = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("provider-call", 1, 3, correlationId: "corr-timeout"),
++            _ => throw new TaskCanceledException("Provider timed out."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.RetryScheduled, result.Outcome);
++        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyTimeout, result.FailureClassification);
++    }
++
++    [Fact]
++    public async Task ExecuteAsync_bounds_unknown_failures_before_terminal_failure()
++    {
++        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
++        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
++
++        var retry = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("unknown-job", 1, 2, correlationId: "corr-unknown"),
++            _ => throw new Exception("Unknown failure."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        var exhausted = await executor.ExecuteAsync(
++            new BackgroundJobExecutionContext("unknown-job", 2, 2, correlationId: "corr-unknown"),
++            _ => throw new Exception("Unknown failure."),
++            TimeSpan.FromSeconds(5),
++            CancellationToken.None);
++
++        Assert.Equal(BackgroundJobExecutionOutcome.RetryScheduled, retry.Outcome);
++        Assert.Equal(BackgroundJobFailureClassification.Unknown, retry.FailureClassification);
++        Assert.Equal(BackgroundJobExecutionOutcome.RetryExhausted, exhausted.Outcome);
++    }
++
+     [Fact]
+     public void Classifier_distinguishes_concurrency_and_validation_failures()
+     {
+@@ -134,7 +173,7 @@ public sealed class BackgroundJobExecutorTests
+     }
+ 
+     [Fact]
+-    public void Classifier_marks_business_policy_and_workflow_validation_as_non_retryable()
++    public void Classifier_marks_business_policy_approval_and_workflow_validation_as_non_retryable()
+     {
+         var classifier = new DefaultBackgroundJobFailureClassifier();
+ 
+@@ -154,11 +193,24 @@ public sealed class BackgroundJobExecutorTests
+         Assert.Equal(
+             BackgroundJobFailureClassification.Configuration,
+             classifier.Classify(new KeyNotFoundException("Missing workflow definition.")));
++        Assert.Equal(
++            BackgroundJobFailureClassification.ApprovalRequired,
++            classifier.Classify(new WorkflowBlockedException("Approval required.")));
+ 
+         Assert.False(BackgroundJobFailureClassification.Validation.IsRetryable());
+         Assert.False(BackgroundJobFailureClassification.PermanentPolicy.IsRetryable());
+         Assert.False(BackgroundJobFailureClassification.PermanentBusinessRule.IsRetryable());
+         Assert.False(BackgroundJobFailureClassification.Configuration.IsRetryable());
++        Assert.False(BackgroundJobFailureClassification.ApprovalRequired.IsRetryable());
++    }
++
++    [Fact]
++    public void Classifier_marks_rate_limit_as_retryable()
++    {
++        var classifier = new DefaultBackgroundJobFailureClassifier();
++
++        var classification = classifier.Classify(new HttpRequestException("Rate limited.", null, HttpStatusCode.TooManyRequests));
++
++        Assert.Equal(BackgroundJobFailureClassification.RateLimited, classification);
++        Assert.True(classification.IsRetryable());
+     }
+ 
+     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>
+END_OF_PATCH

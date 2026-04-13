@@ -335,9 +335,17 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.IdempotencyKey).HasMaxLength(200);
         builder.Property(x => x.CorrelationId).HasMaxLength(128);
         builder.Property(x => x.PayloadJson).IsRequired();
+        builder.Property(x => x.CausationId).HasMaxLength(128);
+        builder.Property(x => x.HeadersJson).HasMaxLength(4000);
         builder.Property(x => x.OccurredUtc).IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.AvailableUtc).IsRequired();
+        builder.Property(x => x.Status)
+            .HasConversion(status => status.ToStorageValue(), value => CompanyOutboxMessageStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(CompanyOutboxMessageStatusValues.DefaultStatus)
+            .HasSentinel((CompanyOutboxMessageStatus)0)
+            .IsRequired();
         builder.Property(x => x.AttemptCount).HasDefaultValue(0).IsRequired();
         builder.Property(x => x.LastAttemptUtc);
         builder.Property(x => x.LastError).HasMaxLength(4000);
@@ -346,7 +354,9 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
 
         builder.HasIndex(x => new { x.ProcessedUtc, x.AvailableUtc, x.AttemptCount });
         builder.HasIndex(x => new { x.ProcessedUtc, x.ClaimedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.AvailableUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Topic, x.IdempotencyKey }).HasFilter("\"IdempotencyKey\" IS NOT NULL").IsUnique();
+        builder.HasIndex(x => new { x.Status, x.AvailableUtc });
         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
 
@@ -354,6 +364,123 @@ internal sealed class CompanyOutboxMessageConfiguration : IEntityTypeConfigurati
             .WithMany()
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class BackgroundExecutionConfiguration : IEntityTypeConfiguration<BackgroundExecution>
+{
+    public void Configure(EntityTypeBuilder<BackgroundExecution> builder)
+    {
+        builder.ToTable("background_executions");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.ExecutionType)
+            .HasColumnName("execution_type")
+            .HasConversion(value => value.ToStorageValue(), value => BackgroundExecutionTypeValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.RelatedEntityType).HasColumnName("related_entity_type").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.RelatedEntityId).HasColumnName("related_entity_id").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion(value => value.ToStorageValue(), value => BackgroundExecutionStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(BackgroundExecutionStatusValues.DefaultStatus)
+            .HasSentinel((BackgroundExecutionStatus)0)
+            .IsRequired();
+        builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.MaxAttempts).HasColumnName("max_attempts").IsRequired();
+        builder.Property(x => x.NextRetryUtc).HasColumnName("next_retry_at");
+        builder.Property(x => x.StartedUtc).HasColumnName("started_at");
+        builder.Property(x => x.HeartbeatUtc).HasColumnName("heartbeat_at");
+        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+        builder.Property(x => x.FailureCategory)
+            .HasColumnName("failure_category")
+            .HasConversion(
+                value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : BackgroundExecutionFailureCategoryValues.Parse(value));
+        builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(100);
+        builder.Property(x => x.FailureMessage).HasColumnName("failure_message").HasMaxLength(4000);
+        builder.Property(x => x.EscalationId).HasColumnName("escalation_id");
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.NextRetryUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.RelatedEntityType, x.RelatedEntityId });
+        builder.HasIndex(x => new { x.CompanyId, x.ExecutionType, x.IdempotencyKey }).IsUnique();
+        builder.HasIndex(x => new { x.Status, x.HeartbeatUtc });
+        builder.HasIndex(x => x.CorrelationId);
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class ExecutionExceptionRecordConfiguration : IEntityTypeConfiguration<ExecutionExceptionRecord>
+{
+    public void Configure(EntityTypeBuilder<ExecutionExceptionRecord> builder)
+    {
+        builder.ToTable("execution_exceptions");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.Kind)
+            .HasColumnName("kind")
+            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionKindValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Severity)
+            .HasColumnName("severity")
+            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionSeverityValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(ExecutionExceptionStatusValues.DefaultStatus)
+            .HasSentinel((ExecutionExceptionStatus)0)
+            .IsRequired();
+        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000).IsRequired();
+        builder.Property(x => x.SourceType)
+            .HasColumnName("source_type")
+            .HasConversion(value => value.ToStorageValue(), value => ExecutionExceptionSourceTypeValues.Parse(value))
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.BackgroundExecutionId).HasColumnName("background_execution_id");
+        builder.Property(x => x.RelatedEntityType).HasColumnName("related_entity_type").HasMaxLength(100);
+        builder.Property(x => x.RelatedEntityId).HasColumnName("related_entity_id").HasMaxLength(128);
+        builder.Property(x => x.IncidentKey).HasColumnName("incident_key").HasMaxLength(300).IsRequired();
+        builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(200);
+        builder.Property(x => x.Details)
+            .HasColumnName("details_json")
+            .HasJsonConversion<Dictionary<string, string?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.ResolvedUtc).HasColumnName("resolved_at");
+
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Kind, x.Status, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.IncidentKey }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId });
+        builder.HasIndex(x => x.BackgroundExecutionId);
+
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.BackgroundExecution)
+            .WithMany()
+            .HasForeignKey(x => x.BackgroundExecutionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -1036,13 +1163,21 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.AgentId).IsRequired();
-        builder.Property(x => x.ToolExecutionAttemptId).IsRequired();
+        builder.Property(x => x.ToolExecutionAttemptId);
         builder.Property(x => x.RequestedByUserId).IsRequired();
+        builder.Property(x => x.TargetEntityType).HasColumnName("entity_type").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.TargetEntityId).HasColumnName("entity_id").IsRequired();
+        builder.Property(x => x.RequestedByActorType).HasColumnName("requested_by_actor_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.RequestedByActorId).HasColumnName("requested_by_actor_id").IsRequired();
+        builder.Property(x => x.ApprovalType).HasColumnName("approval_type").HasMaxLength(100).IsRequired();
         builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
         builder.Property(x => x.ActionType)
             .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
             .HasMaxLength(32)
             .IsRequired();
+        builder.Property(x => x.RequiredRole).HasColumnName("required_role").HasMaxLength(100);
+        builder.Property(x => x.RequiredUserId).HasColumnName("required_user_id");
+        builder.Property(x => x.DecisionSummary).HasColumnName("decision_summary").HasMaxLength(2000);
         builder.Property(x => x.ApprovalTarget).HasMaxLength(100);
         builder.Property(x => x.Status)
             .HasConversion(value => value.ToStorageValue(), value => ApprovalRequestStatusValues.Parse(value))
@@ -1058,10 +1193,52 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
+        builder.Property(x => x.DecisionChain)
+            .HasColumnName("decision_chain_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
+        builder.HasMany(x => x.Steps)
+            .WithOne(x => x.Approval)
+            .HasForeignKey(x => x.ApprovalId)
+            .OnDelete(DeleteBehavior.Cascade);
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
-        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.TargetEntityType, x.TargetEntityId });
+        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique().HasFilter("[ToolExecutionAttemptId] IS NOT NULL");
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class ApprovalStepConfiguration : IEntityTypeConfiguration<ApprovalStep>
+{
+    public void Configure(EntityTypeBuilder<ApprovalStep> builder)
+    {
+        builder.ToTable("approval_steps");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.ApprovalId).IsRequired();
+        builder.Property(x => x.SequenceNo).HasColumnName("sequence_no").IsRequired();
+        builder.Property(x => x.ApproverType)
+            .HasColumnName("approver_type")
+            .HasConversion(value => value.ToStorageValue(), value => ApprovalStepApproverTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.ApproverRef)
+            .HasColumnName("approver_ref")
+            .HasMaxLength(200)
+            .IsRequired();
+        builder.Property(x => x.Status)
+            .HasConversion(value => value.ToStorageValue(), value => ApprovalStepStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.DecidedByUserId).HasColumnName("decided_by_user_id");
+        builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
+        builder.Property(x => x.Comment).HasColumnName("comment").HasMaxLength(2000);
+
+        builder.HasIndex(x => new { x.ApprovalId, x.SequenceNo }).IsUnique();
+        builder.HasIndex(x => x.Status);
     }
 }

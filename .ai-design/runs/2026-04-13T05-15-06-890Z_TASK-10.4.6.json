@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.4.6",
+  "promptPath": ".ai-design/prompts/TASK-10.4.6.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T05:15:06.890Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T05-15-06-890Z_TASK-10.4.6_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T05-15-06-890Z_TASK-10.4.6.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T05:18:44.018Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "-42\", \"corr-42\"),\n+            CancellationToken.None);\n+        var deleted = await store.DeleteStateAsync(key, CancellationToken.None);\n+        var afterDelete = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);\n+\n+        Assert.Equal(new TestExecutionState(\"running\", 3), loaded);\n+        Assert.Null(isolated);\n+        Assert.True(deleted);\n+        Assert.Null(afterDelete);\n+    }\n+\n+    [Fact]\n+    public async Task In_memory_coordination_expires_execution_state_by_ttl()\n+    {\n+        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse(\"2026-04-13T09:00:00Z\"));\n+        var store = CreateStore(timeProvider);\n+        var key = new ExecutionStateKey(Guid.Parse(\"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee\"), \"execution-ttl\", \"corr-ttl\");\n+\n+        await store.SetStateAsync(key, new TestExecutionState(\"heartbeat\", 1), TimeSpan.FromSeconds(5), CancellationToken.None);\n+        timeProvider.Advance(TimeSpan.FromSeconds(6));\n+        var expired = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);\n+\n+        Assert.Null(expired);\n+    }\n+\n+    private static InMemoryExecutionCoordinationService CreateStore(TimeProvider timeProvider) =>\n+        new(\n+            Options.Create(new RedisExecutionCoordinationOptions\n+            {\n+                KeyPrefix = \"vc\",\n+                DefaultLockLeaseSeconds = 120,\n+                DefaultExecutionStateTtlSeconds = 3600\n+            }),\n+            timeProvider);\n+\n+    private sealed record TestExecutionState(string Status, int Attempt);\n+\n+    private sealed class ManualTimeProvider : TimeProvider\n+    {\n+        private DateTimeOffset _utcNow;\n+\n+        public ManualTimeProvider(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+\n+        public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void Advance(TimeSpan duration)\n+        {\n+            _utcNow = _utcNow.Add(duration);\n+        }\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "            CancellationToken.None);\n+        var deleted = await store.DeleteStateAsync(key, CancellationToken.None);\n+        var afterDelete = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);\n+\n+        Assert.Equal(new TestExecutionState(\"running\", 3), loaded);\n+        Assert.Null(isolated);\n+        Assert.True(deleted);\n+        Assert.Null(afterDelete);\n+    }\n+\n+    [Fact]\n+    public async Task In_memory_coordination_expires_execution_state_by_ttl()\n+    {\n+        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse(\"2026-04-13T09:00:00Z\"));\n+        var store = CreateStore(timeProvider);\n+        var key = new ExecutionStateKey(Guid.Parse(\"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee\"), \"execution-ttl\", \"corr-ttl\");\n+\n+        await store.SetStateAsync(key, new TestExecutionState(\"heartbeat\", 1), TimeSpan.FromSeconds(5), CancellationToken.None);\n+        timeProvider.Advance(TimeSpan.FromSeconds(6));\n+        var expired = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);\n+\n+        Assert.Null(expired);\n+    }\n+\n+    private static InMemoryExecutionCoordinationService CreateStore(TimeProvider timeProvider) =>\n+        new(\n+            Options.Create(new RedisExecutionCoordinationOptions\n+            {\n+                KeyPrefix = \"vc\",\n+                DefaultLockLeaseSeconds = 120,\n+                DefaultExecutionStateTtlSeconds = 3600\n+            }),\n+            timeProvider);\n+\n+    private sealed record TestExecutionState(string Status, int Attempt);\n+\n+    private sealed class ManualTimeProvider : TimeProvider\n+    {\n+        private DateTimeOffset _utcNow;\n+\n+        public ManualTimeProvider(DateTimeOffset utcNow)\n+        {\n+            _utcNow = utcNow;\n+        }\n+\n+        public override DateTimeOffset GetUtcNow() => _utcNow;\n+\n+        public void Advance(TimeSpan duration)\n+        {\n+            _utcNow = _utcNow.Add(duration);\n+        }\n+    }\n+}\nEND_OF_PATCH\ntokens used\n61,003\n",
+  "verbosityMode": "summary"
+}

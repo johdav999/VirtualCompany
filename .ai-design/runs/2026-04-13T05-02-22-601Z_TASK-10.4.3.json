@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.4.3",
+  "promptPath": ".ai-design/prompts/TASK-10.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T05:02:22.601Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T05-02-22-601Z_TASK-10.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T05-02-22-601Z_TASK-10.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T05:07:25.994Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "r.StartAsync(\n+                seed.OtherCompanyId,\n+                BackgroundExecutionType.LongRunningTask,\n+                BackgroundExecutionRelatedEntityTypes.WorkTask,\n+                otherTaskId.ToString(\"N\"),\n+                \"corr-other\",\n+                \"incident-other\",\n+                attempt: 1,\n+                maxAttempts: 1,\n+                CancellationToken.None);\n+            await recorder.ApplyOutcomeAsync(otherExecution, blockedResult, null, CancellationToken.None);\n+\n+            await dbContext.SaveChangesAsync();\n+        }\n+\n+        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(\n+            $\"/api/companies/{seed.CompanyId}/execution-exceptions?status=open\");\n+        Assert.NotNull(ownerExceptions);\n+        Assert.Equal(2, ownerExceptions!.Count);\n+        Assert.Single(ownerExceptions.Where(x => x.Kind == \"blocked\"));\n+        Assert.Single(ownerExceptions.Where(x => x.Kind == \"failed\"));\n+        Assert.All(ownerExceptions, x => Assert.Equal(seed.CompanyId, x.CompanyId));\n+        Assert.All(ownerExceptions, x => Assert.Equal(\"work_task\", x.SourceType));\n+        Assert.Equal(1, ownerExceptions.Count(x => x.IncidentKey == $\"background-execution:{ownerExceptions.Single(y => y.Kind == \"blocked\").BackgroundExecutionId:N}:blocked\"));\n+\n+        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);\n+        var crossTenantList = await otherClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(\n+            $\"/api/companies/{seed.OtherCompanyId}/execution-exceptions?status=open\");\n+        var otherException = Assert.Single(crossTenantList!);\n+        Assert.Equal(seed.OtherCompanyId, otherException.CompanyId);\n+    }\n+\n     [Fact]\n     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "            seed.OtherCompanyId,\n+                BackgroundExecutionType.LongRunningTask,\n+                BackgroundExecutionRelatedEntityTypes.WorkTask,\n+                otherTaskId.ToString(\"N\"),\n+                \"corr-other\",\n+                \"incident-other\",\n+                attempt: 1,\n+                maxAttempts: 1,\n+                CancellationToken.None);\n+            await recorder.ApplyOutcomeAsync(otherExecution, blockedResult, null, CancellationToken.None);\n+\n+            await dbContext.SaveChangesAsync();\n+        }\n+\n+        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(\n+            $\"/api/companies/{seed.CompanyId}/execution-exceptions?status=open\");\n+        Assert.NotNull(ownerExceptions);\n+        Assert.Equal(2, ownerExceptions!.Count);\n+        Assert.Single(ownerExceptions.Where(x => x.Kind == \"blocked\"));\n+        Assert.Single(ownerExceptions.Where(x => x.Kind == \"failed\"));\n+        Assert.All(ownerExceptions, x => Assert.Equal(seed.CompanyId, x.CompanyId));\n+        Assert.All(ownerExceptions, x => Assert.Equal(\"work_task\", x.SourceType));\n+        Assert.Equal(1, ownerExceptions.Count(x => x.IncidentKey == $\"background-execution:{ownerExceptions.Single(y => y.Kind == \"blocked\").BackgroundExecutionId:N}:blocked\"));\n+\n+        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);\n+        var crossTenantList = await otherClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(\n+            $\"/api/companies/{seed.OtherCompanyId}/execution-exceptions?status=open\");\n+        var otherException = Assert.Single(crossTenantList!);\n+        Assert.Equal(seed.OtherCompanyId, otherException.CompanyId);\n+    }\n+\n     [Fact]\n     public async Task Scheduled_start_service_creates_instance_and_skips_duplicate_tick()\n     {\nEND_OF_PATCH\ntokens used\n94,376\n",
+  "verbosityMode": "summary"
+}

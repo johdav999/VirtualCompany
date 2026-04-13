@@ -294,7 +294,9 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         string? correlationId = null,
         string? messageType = null,
         DateTime? availableUtc = null,
-        string? idempotencyKey = null)
+        string? idempotencyKey = null,
+        string? causationId = null,
+        string? headersJson = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -311,6 +313,9 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         AvailableUtc = availableUtc ?? OccurredUtc;
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
         IdempotencyKey = NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 200);
+        CausationId = NormalizeOptional(causationId, nameof(causationId), 128);
+        HeadersJson = NormalizeOptional(headersJson, nameof(headersJson), 4000);
+        Status = CompanyOutboxMessageStatus.Pending;
     }
 
     public Guid Id { get; private set; }
@@ -321,8 +326,11 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
     public string? IdempotencyKey { get; private set; }
     public string? CorrelationId { get; private set; }
     public DateTime OccurredUtc { get; private set; }
+    public string? CausationId { get; private set; }
+    public string? HeadersJson { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime AvailableUtc { get; private set; }
+    public CompanyOutboxMessageStatus Status { get; private set; }
     public int AttemptCount { get; private set; }
     public DateTime? LastAttemptUtc { get; private set; }
     public string? LastError { get; private set; }
@@ -347,6 +355,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
 
         ClaimToken = NormalizeRequired(claimToken, nameof(claimToken), 64);
         ClaimedUtc = utcNow;
+        Status = CompanyOutboxMessageStatus.InProgress;
         LastError = null;
         return true;
     }
@@ -356,6 +365,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         AttemptCount++;
         LastAttemptUtc = DateTime.UtcNow;
         AvailableUtc = availableUtc;
+        Status = CompanyOutboxMessageStatus.RetryScheduled;
         LastError = NormalizeRequired(error, nameof(error), 4000);
         ClaimedUtc = null;
         ClaimToken = null;
@@ -366,6 +376,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         AttemptCount++;
         LastAttemptUtc = DateTime.UtcNow;
         LastError = NormalizeRequired(error, nameof(error), 4000);
+        Status = CompanyOutboxMessageStatus.Failed;
         ProcessedUtc = DateTime.UtcNow;
         ClaimedUtc = null;
         ClaimToken = null;
@@ -383,6 +394,7 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         LastAttemptUtc = DateTime.UtcNow;
         LastError = null;
         ProcessedUtc = DateTime.UtcNow;
+        Status = CompanyOutboxMessageStatus.Dispatched;
         ClaimedUtc = null;
         ClaimToken = null;
     }

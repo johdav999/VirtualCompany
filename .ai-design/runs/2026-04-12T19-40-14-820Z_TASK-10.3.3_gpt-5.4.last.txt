@@ -1,0 +1,470 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 3f7b2cf..4e6b70d 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -36,6 +36,8 @@ public static class AuditTargetTypes
+     public const string ApprovalRequest = "approval_request";
+     public const string MemoryItem = "memory_item";
+     public const string WorkflowInstance = "workflow_instance";
++    public const string WorkTask = "work_task";
++    public const string LinkedEntity = "linked_entity";
+     public const string WorkflowException = "workflow_exception";
+ }
+ 
+@@ -69,7 +71,10 @@ public static class AuditEventActions
+     public const string ApprovalCreated = "approval.created";
+     public const string ApprovalStepApproved = "approval.step.approved";
+     public const string ApprovalStepRejected = "approval.step.rejected";
++    public const string ApprovalChainAdvanced = "approval.chain.advanced";
+     public const string ApprovalCompleted = "approval.completed";
++    public const string ApprovalRejected = "approval.rejected";
++    public const string ApprovalLinkedEntityStateUpdated = "approval.linked_entity.state_updated";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+     public const string WorkflowInstanceStarted = "workflow.instance.started";
+     public const string WorkflowExceptionCreated = "workflow.exception.created";
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 90eb9f5..b89b7b5 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -138,6 +138,7 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+     private const string DefaultApprovalType = "threshold";
+     private const string LegacyTargetEntityType = "action";
+     private const string LegacyRequestedByActorType = "user";
++    private const string LegacyRequiredApproverRole = "owner";
+     private readonly List<ApprovalStep> _steps = [];
+ 
+     private ApprovalRequest()
+@@ -206,6 +207,7 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         DecisionChain = CloneNodes(decisionChain);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
++        _steps.Add(new ApprovalStep(Guid.NewGuid(), Id, 1, ApprovalStepApproverType.Role, NormalizeLegacyApprovalRole(approvalTarget)));
+     }
+ 
+     public static ApprovalRequest CreateForTarget(
+@@ -354,6 +356,28 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         return currentStep;
+     }
+ 
++    public void MarkExpired(string? decisionSummary = null)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can expire.");
++        }
++
++        Status = ApprovalRequestStatus.Expired;
++        DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? "Approval request expired." : decisionSummary.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DecidedUtc.Value;
++    }
++
++    public void MarkCancelled(string? decisionSummary = null)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be cancelled.");
++        }
++
++        Status = ApprovalRequestStatus.Cancelled;
++        DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? "Approval request cancelled." : decisionSummary.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DecidedUtc.Value;
++    }
++
+     private static IReadOnlyList<ApprovalStepDefinition> NormalizeSteps(
+         string? requiredRole,
+         Guid? requiredUserId,
+@@ -420,6 +444,12 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
++    private static string NormalizeLegacyApprovalRole(string? approvalTarget) =>
++        !string.IsNullOrWhiteSpace(approvalTarget) &&
++        CompanyMembershipRoles.TryParse(approvalTarget, out var role)
++            ? role.ToStorageValue()
++            : LegacyRequiredApproverRole;
++
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index efd961a..d335e05 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -365,7 +365,8 @@ public enum ApprovalRequestStatus
+     Pending = 1,
+     Approved = 2,
+     Rejected = 3,
+-    Expired = 4
++    Expired = 4,
++    Cancelled = 5
+ }
+ 
+ public static class ApprovalRequestStatusValues
+@@ -376,7 +377,8 @@ public static class ApprovalRequestStatusValues
+         [ApprovalRequestStatus.Pending] = "pending",
+         [ApprovalRequestStatus.Approved] = "approved",
+         [ApprovalRequestStatus.Rejected] = "rejected",
+-        [ApprovalRequestStatus.Expired] = "expired"
++        [ApprovalRequestStatus.Expired] = "expired",
++        [ApprovalRequestStatus.Cancelled] = "cancelled"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, ApprovalRequestStatus> ReverseValues =
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 38fd906..0a71a46 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -1,6 +1,7 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -13,16 +14,19 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICompanyToolExecutor _companyToolExecutor;
+ 
+     public CompanyApprovalRequestService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICompanyToolExecutor companyToolExecutor)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _auditEventWriter = auditEventWriter;
++        _companyToolExecutor = companyToolExecutor;
+     }
+ 
+     public async Task<ApprovalRequestDto> CreateAsync(
+@@ -108,7 +112,18 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             throw new KeyNotFoundException("Approval request not found.");
+         }
+ 
+-        var currentStep = approval.CurrentActionableStep ?? throw new InvalidOperationException("Approval request has no current actionable step.");
++        if (approval.Status != ApprovalRequestStatus.Pending)
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.Decision)] = [$"Only pending approvals can be decided. Current status: {approval.Status.ToStorageValue()}."]
++            });
++        }
++
++        var currentStep = approval.CurrentActionableStep ?? throw new ApprovalValidationException(new Dictionary<string, string[]>
++        {
++            [nameof(command.StepId)] = ["Approval request has no current actionable step."]
++        });
++
+         if (command.StepId.HasValue && command.StepId.Value != currentStep.Id)
+         {
+             throw new InvalidOperationException("Only the current approval step can be decided.");
+@@ -125,13 +140,17 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, command.Comment)
+             : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, command.Comment);
+ 
+-        await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
++        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
+         await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
+ 
+         var finalized = approval.Status != ApprovalRequestStatus.Pending;
+         if (finalized)
+         {
+             await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
++            if (linkedEntityTransition is not null)
++            {
++                await WriteLinkedEntityStateAuditAsync(approval, linkedEntityTransition, membership.UserId, cancellationToken);
++            }
+         }
++        else
++        {
++            await WriteChainAdvancedAuditAsync(approval, decidedStep, membership.UserId, cancellationToken);
++        }
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -143,44 +162,68 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             finalized);
+     }
+ 
+-    private async Task UpdateLinkedEntityAfterDecisionAsync(ApprovalRequest approval, CancellationToken cancellationToken)
++    private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionAsync(
++        ApprovalRequest approval,
++        CancellationToken cancellationToken)
+     {
++        if (approval.Status == ApprovalRequestStatus.Pending)
++        {
++            return null;
++        }
++
+         var targetType = ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType);
+         if (targetType == ApprovalTargetEntityType.Task)
+         {
+             var task = await _dbContext.WorkTasks.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            var previousStatus = task.Status.ToStorageValue();
+             if (approval.Status == ApprovalRequestStatus.Approved)
+             {
+                 task.UpdateStatus(WorkTaskStatus.InProgress);
++                return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
+             }
+-            else if (approval.Status == ApprovalRequestStatus.Rejected)
++
++            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired)
+             {
+                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
++                return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
++            }
++
++            if (approval.Status == ApprovalRequestStatus.Cancelled)
++            {
++                task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
++                return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
+             }
+         }
+         else if (targetType == ApprovalTargetEntityType.Workflow)
+         {
+             var workflow = await _dbContext.WorkflowInstances.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            var previousStatus = workflow.State.ToStorageValue();
+             if (approval.Status == ApprovalRequestStatus.Approved)
+             {
+                 workflow.UpdateState(WorkflowInstanceStatus.Running, workflow.CurrentStep);
++                return LinkedEntityStateTransition.ForWorkflow(workflow.Id, previousStatus, workflow.State.ToStorageValue());
+             }
+-            else if (approval.Status == ApprovalRequestStatus.Rejected)
++
++            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired)
+             {
+                 workflow.UpdateState(WorkflowInstanceStatus.Failed, workflow.CurrentStep);
++                return LinkedEntityStateTransition.ForWorkflow(workflow.Id, previousStatus, workflow.State.ToStorageValue());
++            }
++
++            if (approval.Status == ApprovalRequestStatus.Cancelled)
++            {
++                workflow.UpdateState(WorkflowInstanceStatus.Cancelled, workflow.CurrentStep);
++                return LinkedEntityStateTransition.ForWorkflow(workflow.Id, previousStatus, workflow.State.ToStorageValue());
+             }
+         }
+-        else if (targetType == ApprovalTargetEntityType.Action && approval.Status == ApprovalRequestStatus.Rejected)
++        else if (targetType == ApprovalTargetEntityType.Action)
+         {
+             var attempt = await _dbContext.ToolExecutionAttempts.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+-            attempt.MarkDenied(approval.PolicyDecision);
++            var previousStatus = attempt.Status.ToStorageValue();
++            if (approval.Status == ApprovalRequestStatus.Approved)
++            {
++                var result = await _companyToolExecutor.ExecuteAsync(
++                    new ToolExecutionRequest(
++                        approval.CompanyId,
++                        attempt.AgentId,
++                        attempt.ToolName,
++                        attempt.ActionType.ToStorageValue(),
++                        attempt.Scope,
++                        CloneNodes(attempt.RequestPayload)),
++                    cancellationToken);
++                attempt.MarkExecuted(approval.PolicyDecision, result.Payload);
++                return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
++            }
++
++            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
++            {
++                attempt.MarkDenied(approval.PolicyDecision);
++                return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
++            }
+         }
++
++        return null;
+     }
+ 
+     private static bool CanDecide(ApprovalStep step, ResolvedCompanyMembershipContext membership)
+@@ -193,7 +236,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+         if (step.ApproverType == ApprovalStepApproverType.Role)
+         {
+-            return CompanyMembershipRoles.TryParse(step.ApproverRef, out var role) && role == membership.MembershipRole;
++            if (membership.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin)
++            {
++                return true;
++            }
++
++            return CompanyMembershipRoles.TryParse(step.ApproverRef, out var role) && role == membership.MembershipRole;
+         }
+ 
+         return false;
+@@ -354,6 +402,34 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             cancellationToken);
+     }
+ 
++    private async Task WriteChainAdvancedAuditAsync(
++        ApprovalRequest approval,
++        ApprovalStep step,
++        Guid actorUserId,
++        CancellationToken cancellationToken)
++    {
++        var nextStep = approval.CurrentActionableStep;
++        if (nextStep is null)
++        {
++            return;
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                approval.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                AuditEventActions.ApprovalChainAdvanced,
++                AuditTargetTypes.ApprovalRequest,
++                approval.Id.ToString("N"),
++                AuditEventOutcomes.Pending,
++                DataSources: ["approvals", "http_request"],
++                RationaleSummary: $"Approval chain advanced from step {step.SequenceNo} to step {nextStep.SequenceNo}.",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["approvalRequestId"] = approval.Id.ToString("N"),
++                    ["completedStepId"] = step.Id.ToString("N"),
++                    ["nextStepId"] = nextStep.Id.ToString("N")
++                }),
++            cancellationToken);
++    }
++
+     private async Task WriteCompletionAuditAsync(ApprovalRequest approval, Guid actorUserId, CancellationToken cancellationToken)
+     {
+         await _auditEventWriter.WriteAsync(
+@@ -364,18 +440,57 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 actorUserId,
+                 AuditEventActions.ApprovalCompleted,
+                 AuditTargetTypes.ApprovalRequest,
+                 approval.Id.ToString("N"),
+                 approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
+                 DataSources: ["approvals", "http_request"],
+-                RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}"),
++                RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["approvalRequestId"] = approval.Id.ToString("N"),
++                    ["targetEntityType"] = approval.TargetEntityType,
++                    ["targetEntityId"] = approval.TargetEntityId.ToString("N"),
++                    ["approvalStatus"] = approval.Status.ToStorageValue()
++                }),
+             cancellationToken);
+     }
+ 
++    private async Task WriteLinkedEntityStateAuditAsync(
++        ApprovalRequest approval,
++        LinkedEntityStateTransition transition,
++        Guid actorUserId,
++        CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                approval.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                AuditEventActions.ApprovalLinkedEntityStateUpdated,
++                transition.AuditTargetType,
++                transition.TargetId,
++                AuditEventOutcomes.Succeeded,
++                DataSources: ["approvals", transition.DataSource],
++                RationaleSummary: $"Approval {approval.Status.ToStorageValue()} transitioned {approval.TargetEntityType} from {transition.PreviousState} to {transition.CurrentState}.",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["approvalRequestId"] = approval.Id.ToString("N"),
++                    ["targetEntityType"] = approval.TargetEntityType,
++                    ["targetEntityId"] = approval.TargetEntityId.ToString("N"),
++                    ["previousState"] = transition.PreviousState,
++                    ["currentState"] = transition.CurrentState,
++                    ["approvalStatus"] = approval.Status.ToStorageValue()
++                }),
++            cancellationToken);
++    }
++
+     private static ApprovalRequestDto ToDto(ApprovalRequest approval) =>
+         new(
+@@ -398,4 +513,17 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+         nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private sealed record LinkedEntityStateTransition(
++        string AuditTargetType,
++        string TargetId,
++        string PreviousState,
++        string CurrentState,
++        string DataSource)
++    {
++        public static LinkedEntityStateTransition ForTask(Guid id, string previousState, string currentState) =>
++            new(AuditTargetTypes.WorkTask, id.ToString("N"), previousState, currentState, "tasks");
++        public static LinkedEntityStateTransition ForWorkflow(Guid id, string previousState, string currentState) =>
++            new(AuditTargetTypes.WorkflowInstance, id.ToString("N"), previousState, currentState, "workflow_instances");
++        public static LinkedEntityStateTransition ForAction(Guid id, string previousState, string currentState) =>
++            new(AuditTargetTypes.AgentToolExecution, id.ToString("N"), previousState, currentState, "agent_tool_executions");
++    }
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+index 8d1af37..0b5b1a6 100644
+--- a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
++++ b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+@@ -78,5 +78,9 @@ public sealed class ApprovalsController : ControllerBase
+         {
+             return NotFound();
+         }
++        catch (InvalidOperationException ex)
++        {
++            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
++        }
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+index 54fb833..5ec7d23 100644
+--- a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+@@ -109,6 +109,33 @@ public sealed class ApprovalDecisionChainTests
+         Assert.Null(approval.CurrentActionableStep);
+     }
+ 
++    [Fact]
++    public void Expiring_approval_marks_it_non_actionable()
++    {
++        var approval = CreateApproval(requiredRole: "manager");
++
++        approval.MarkExpired();
++
++        Assert.Equal(ApprovalRequestStatus.Expired, approval.Status);
++        Assert.Equal("Approval request expired.", approval.DecisionSummary);
++        Assert.Null(approval.CurrentActionableStep);
++        Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
++    }
++
++    [Fact]
++    public void Cancelling_approval_marks_it_non_actionable()
++    {
++        var approval = CreateApproval(requiredRole: "manager");
++
++        approval.MarkCancelled("superseded");
++
++        Assert.Equal(ApprovalRequestStatus.Cancelled, approval.Status);
++        Assert.Equal("superseded", approval.DecisionSummary);
++        Assert.Null(approval.CurrentActionableStep);
++        Assert.Throws<InvalidOperationException>(() => approval.RejectCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
++    }
++
++    [Fact]
++    public void Legacy_action_approval_gets_default_owner_step()
++    {
++        var approval = new ApprovalRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "erp", ToolActionType.Execute, "founder", new Dictionary<string, JsonNode?> { ["amount"] = JsonValue.Create(100) });
++
++        var step = Assert.Single(approval.Steps);
++        Assert.Equal(ApprovalStepApproverType.Role, step.ApproverType);
++        Assert.Equal("owner", step.ApproverRef);
++    }
++
+     private static ApprovalRequest CreateApproval(
+         string? requiredRole = null,
+         Guid? requiredUserId = null,
+END_OF_PATCH

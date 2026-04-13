@@ -38,6 +38,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             {
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
+                [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",

@@ -4,10 +4,12 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Auth;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Persistence;
 using Xunit;
 
@@ -485,6 +487,93 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.Empty(crossTenantList!);
         var crossTenantRead = await otherClient.GetAsync($"/api/companies/{seed.OtherCompanyId}/workflows/exceptions/{workflowException.Id}");
         Assert.Equal(HttpStatusCode.NotFound, crossTenantRead.StatusCode);
+    }
+
+    [Fact]
+    public async Task Background_execution_terminal_incidents_create_visible_execution_exceptions_once_per_tenant()
+    {
+        var seed = await SeedTwoMembershipsAsync();
+        var blockedTaskId = Guid.NewGuid();
+        var failedTaskId = Guid.NewGuid();
+        var otherTaskId = Guid.NewGuid();
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+            await dbContext.Database.EnsureCreatedAsync();
+            var recorder = scope.ServiceProvider.GetRequiredService<IBackgroundExecutionRecorder>();
+
+            var blockedExecution = await recorder.StartAsync(
+                seed.CompanyId,
+                BackgroundExecutionType.LongRunningTask,
+                BackgroundExecutionRelatedEntityTypes.WorkTask,
+                blockedTaskId.ToString("N"),
+                "corr-blocked",
+                "incident-blocked",
+                attempt: 1,
+                maxAttempts: 1,
+                CancellationToken.None);
+
+            var blockedResult = BackgroundJobExecutionResult.Blocked(
+                "corr-blocked",
+                "Manual approval is required.",
+                "policy.approval_required",
+                BackgroundJobFailureClassification.ApprovalRequired);
+            await recorder.ApplyOutcomeAsync(blockedExecution, blockedResult, null, CancellationToken.None);
+            await recorder.ApplyOutcomeAsync(blockedExecution, blockedResult, null, CancellationToken.None);
+
+            var failedExecution = await recorder.StartAsync(
+                seed.CompanyId,
+                BackgroundExecutionType.LongRunningTask,
+                BackgroundExecutionRelatedEntityTypes.WorkTask,
+                failedTaskId.ToString("N"),
+                "corr-failed",
+                "incident-failed",
+                attempt: 1,
+                maxAttempts: 1,
+                CancellationToken.None);
+
+            await recorder.ApplyOutcomeAsync(
+                failedExecution,
+                BackgroundJobExecutionResult.RetryExhausted(
+                    "corr-failed",
+                    "Provider timed out after retries.",
+                    "System.TimeoutException",
+                    BackgroundJobFailureClassification.ExternalDependencyTimeout),
+                null,
+                CancellationToken.None);
+
+            var otherExecution = await recorder.StartAsync(
+                seed.OtherCompanyId,
+                BackgroundExecutionType.LongRunningTask,
+                BackgroundExecutionRelatedEntityTypes.WorkTask,
+                otherTaskId.ToString("N"),
+                "corr-other",
+                "incident-other",
+                attempt: 1,
+                maxAttempts: 1,
+                CancellationToken.None);
+            await recorder.ApplyOutcomeAsync(otherExecution, blockedResult, null, CancellationToken.None);
+
+            await dbContext.SaveChangesAsync();
+        }
+
+        using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var ownerExceptions = await ownerClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(
+            $"/api/companies/{seed.CompanyId}/execution-exceptions?status=open");
+        Assert.NotNull(ownerExceptions);
+        Assert.Equal(2, ownerExceptions!.Count);
+        Assert.Single(ownerExceptions.Where(x => x.Kind == "blocked"));
+        Assert.Single(ownerExceptions.Where(x => x.Kind == "failed"));
+        Assert.All(ownerExceptions, x => Assert.Equal(seed.CompanyId, x.CompanyId));
+        Assert.All(ownerExceptions, x => Assert.Equal("work_task", x.SourceType));
+        Assert.Equal(1, ownerExceptions.Count(x => x.IncidentKey == $"background-execution:{ownerExceptions.Single(y => y.Kind == "blocked").BackgroundExecutionId:N}:blocked"));
+
+        using var otherClient = CreateAuthenticatedClient(seed.OtherSubject, seed.OtherEmail, seed.OtherDisplayName);
+        var crossTenantList = await otherClient.GetFromJsonAsync<List<ExecutionExceptionDto>>(
+            $"/api/companies/{seed.OtherCompanyId}/execution-exceptions?status=open");
+        var otherException = Assert.Single(crossTenantList!);
+        Assert.Equal(seed.OtherCompanyId, otherException.CompanyId);
     }
 
     [Fact]

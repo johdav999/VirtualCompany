@@ -1,0 +1,873 @@
+diff --git a/README.md b/README.md
+index 5d59e51..70ef049 100644
+--- a/README.md
++++ b/README.md
+@@ -138,7 +138,8 @@ Configuration:
+ 
+ - `Observability:Redis:ConnectionString` enables the Redis readiness check.
+ - `Observability:ObjectStorage:*` enables an object-storage probe without coupling the API to a specific provider yet.
+ - `Observability:RateLimiting:*` configures the early named policies for future chat/task style endpoints.
++- `RedisExecutionCoordination:*` configures Redis key prefix and default TTLs for distributed locks and ephemeral tenant execution state used by schedulers, workflow progression, retry workers, and long-running task heartbeats.
+ 
+ Logging boundary:
+ - Technical operational logs stay in the application logging pipeline for diagnostics, retries, health checks, dependency failures, and exception handling.
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 92f5f42..9a3b121 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -52,6 +52,11 @@
+     "BatchSize": 50,
+     "LockKey": "workflow-scheduler"
+   },
++  "RedisExecutionCoordination": {
++    "KeyPrefix": "vc",
++    "DefaultLockLeaseSeconds": 120,
++    "DefaultExecutionStateTtlSeconds": 3600
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 6a005e2..5a59d70 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -60,6 +60,11 @@
+     "MaxAttempts": 5,
+     "LockKey": "workflow-progression"
+   },
++  "RedisExecutionCoordination": {
++    "KeyPrefix": "vc",
++    "DefaultLockLeaseSeconds": 120,
++    "DefaultExecutionStateTtlSeconds": 3600
++  },
+   "Observability": {
+     "CorrelationId": {
+       "HeaderName": "X-Correlation-ID"
+diff --git a/src/VirtualCompany.Application/BackgroundExecution/ExecutionCoordinationContracts.cs b/src/VirtualCompany.Application/BackgroundExecution/ExecutionCoordinationContracts.cs
+new file mode 100644
+index 0000000..a6c211f
+--- /dev/null
++++ b/src/VirtualCompany.Application/BackgroundExecution/ExecutionCoordinationContracts.cs
+@@ -0,0 +1,69 @@
++namespace VirtualCompany.Application.BackgroundExecution;
++
++public sealed record ExecutionCoordinationLockScope(
++    Guid? CompanyId,
++    string Category,
++    string Resource,
++    string? CorrelationId = null);
++
++public sealed record ExecutionCoordinationLockLease(
++    string Key,
++    string OwnerToken,
++    DateTimeOffset ExpiresAtUtc,
++    Guid? CompanyId,
++    string Category,
++    string Resource,
++    string? CorrelationId = null);
++
++public sealed record ExecutionStateKey(
++    Guid CompanyId,
++    string ExecutionId,
++    string? CorrelationId = null);
++
++public interface IExecutionCoordinationKeyBuilder
++{
++    string BuildLockKey(ExecutionCoordinationLockScope scope);
++
++    string BuildExecutionStateKey(ExecutionStateKey key);
++}
++
++public interface IExecutionCoordinationStore
++{
++    Task<ExecutionCoordinationLockLease?> TryAcquireLockAsync(
++        ExecutionCoordinationLockScope scope,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken);
++
++    Task<bool> RenewLockAsync(
++        ExecutionCoordinationLockLease lease,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken);
++
++    Task<bool> ReleaseLockAsync(
++        ExecutionCoordinationLockLease lease,
++        CancellationToken cancellationToken);
++
++    Task SetStateAsync<TState>(
++        ExecutionStateKey key,
++        TState state,
++        TimeSpan? ttl,
++        CancellationToken cancellationToken);
++
++    Task<TState?> GetStateAsync<TState>(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken);
++
++    Task<bool> DeleteStateAsync(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/BackgroundJobs/ExecutionCoordination.cs b/src/VirtualCompany.Infrastructure/BackgroundJobs/ExecutionCoordination.cs
+new file mode 100644
+index 0000000..f2916f2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/BackgroundJobs/ExecutionCoordination.cs
+@@ -0,0 +1,448 @@
++using System.Collections.Concurrent;
++using System.Text;
++using System.Text.Json;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using StackExchange.Redis;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Workflows;
++
++namespace VirtualCompany.Infrastructure.BackgroundJobs;
++
++public sealed class RedisExecutionCoordinationOptions
++{
++    public const string SectionName = "RedisExecutionCoordination";
++
++    public string KeyPrefix { get; set; } = "vc";
++    public int DefaultLockLeaseSeconds { get; set; } = 120;
++    public int DefaultExecutionStateTtlSeconds { get; set; } = 3600;
++}
++
++public sealed class RedisExecutionCoordinationService :
++    IExecutionCoordinationStore,
++    IExecutionCoordinationKeyBuilder,
++    IDistributedLockProvider
++{
++    private const string ReleaseScript = """
++        if redis.call('get', KEYS[1]) == ARGV[1] then
++            return redis.call('del', KEYS[1])
++        end
++
++        return 0
++        """;
++
++    private const string RenewScript = """
++        if redis.call('get', KEYS[1]) == ARGV[1] then
++            return redis.call('pexpire', KEYS[1], ARGV[2])
++        end
++
++        return 0
++        """;
++
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly IConnectionMultiplexer _connectionMultiplexer;
++    private readonly IOptions<RedisExecutionCoordinationOptions> _options;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<RedisExecutionCoordinationService> _logger;
++
++    public RedisExecutionCoordinationService(
++        IConnectionMultiplexer connectionMultiplexer,
++        IOptions<RedisExecutionCoordinationOptions> options,
++        TimeProvider timeProvider,
++        ILogger<RedisExecutionCoordinationService> logger)
++    {
++        _connectionMultiplexer = connectionMultiplexer;
++        _options = options;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    public async Task<ExecutionCoordinationLockLease?> TryAcquireLockAsync(
++        ExecutionCoordinationLockScope scope,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var key = BuildLockKey(scope);
++        var token = Guid.NewGuid().ToString("N");
++        var ttl = ResolveLockLease(leaseDuration);
++        var acquired = await _connectionMultiplexer
++            .GetDatabase()
++            .StringSetAsync(key, token, ttl, When.NotExists);
++
++        if (!acquired)
++        {
++            _logger.LogDebug(
++                "Redis coordination lock {LockKey} was not acquired for company {CompanyId}, category {LockCategory}, resource {LockResource}, correlation {CorrelationId}.",
++                key,
++                scope.CompanyId,
++                scope.Category,
++                scope.Resource,
++                scope.CorrelationId);
++            return null;
++        }
++
++        var lease = new ExecutionCoordinationLockLease(
++            key,
++            token,
++            _timeProvider.GetUtcNow().Add(ttl),
++            scope.CompanyId,
++            NormalizeSegment(scope.Category, "general"),
++            NormalizeSegment(scope.Resource, "resource"),
++            scope.CorrelationId);
++
++        _logger.LogInformation(
++            "Redis coordination lock {LockKey} acquired for company {CompanyId}, category {LockCategory}, resource {LockResource}, correlation {CorrelationId}, TTL {LockTtlSeconds} seconds.",
++            lease.Key,
++            lease.CompanyId,
++            lease.Category,
++            lease.Resource,
++            lease.CorrelationId,
++            ttl.TotalSeconds);
++
++        return lease;
++    }
++
++    public async Task<bool> RenewLockAsync(
++        ExecutionCoordinationLockLease lease,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var ttl = ResolveLockLease(leaseDuration);
++        var result = await _connectionMultiplexer
++            .GetDatabase()
++            .ScriptEvaluateAsync(
++                RenewScript,
++                [(RedisKey)lease.Key],
++                [(RedisValue)lease.OwnerToken, (RedisValue)((long)ttl.TotalMilliseconds)]);
++
++        var renewed = (long)result == 1;
++        if (!renewed)
++        {
++            _logger.LogWarning(
++                "Redis coordination lock {LockKey} was not renewed because owner token did not match or the lease expired.",
++                lease.Key);
++        }
++
++        return renewed;
++    }
++
++    public async Task<bool> ReleaseLockAsync(
++        ExecutionCoordinationLockLease lease,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var result = await _connectionMultiplexer
++            .GetDatabase()
++            .ScriptEvaluateAsync(
++                ReleaseScript,
++                [(RedisKey)lease.Key],
++                [(RedisValue)lease.OwnerToken]);
++
++        var released = (long)result == 1;
++        if (!released)
++        {
++            _logger.LogWarning(
++                "Redis coordination lock {LockKey} was not released because owner token did not match or the lease expired.",
++                lease.Key);
++        }
++        else
++        {
++            _logger.LogDebug("Redis coordination lock {LockKey} released.", lease.Key);
++        }
++
++        return released;
++    }
++
++    public async Task SetStateAsync<TState>(
++        ExecutionStateKey key,
++        TState state,
++        TimeSpan? ttl,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var redisKey = BuildExecutionStateKey(key);
++        var stateTtl = ResolveStateTtl(ttl);
++        var payload = JsonSerializer.Serialize(state, SerializerOptions);
++
++        await _connectionMultiplexer
++            .GetDatabase()
++            .StringSetAsync(redisKey, payload, stateTtl);
++
++        _logger.LogDebug(
++            "Redis execution state {ExecutionStateKey} set for company {CompanyId}, execution {ExecutionId}, correlation {CorrelationId}, TTL {StateTtlSeconds} seconds.",
++            redisKey,
++            key.CompanyId,
++            key.ExecutionId,
++            key.CorrelationId,
++            stateTtl.TotalSeconds);
++    }
++
++    public async Task<TState?> GetStateAsync<TState>(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var redisKey = BuildExecutionStateKey(key);
++        var payload = await _connectionMultiplexer
++            .GetDatabase()
++            .StringGetAsync(redisKey);
++
++        return payload.HasValue
++            ? JsonSerializer.Deserialize<TState>(payload!, SerializerOptions)
++            : default;
++    }
++
++    public async Task<bool> DeleteStateAsync(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var redisKey = BuildExecutionStateKey(key);
++        var deleted = await _connectionMultiplexer
++            .GetDatabase()
++            .KeyDeleteAsync(redisKey);
++
++        _logger.LogDebug(
++            "Redis execution state {ExecutionStateKey} delete for company {CompanyId}, execution {ExecutionId}, correlation {CorrelationId} returned {Deleted}.",
++            redisKey,
++            key.CompanyId,
++            key.ExecutionId,
++            key.CorrelationId,
++            deleted);
++
++        return deleted;
++    }
++
++    public string BuildLockKey(ExecutionCoordinationLockScope scope)
++    {
++        var tenantScope = scope.CompanyId.HasValue
++            ? $"company:{scope.CompanyId.Value:N}"
++            : "system";
++        return $"{NormalizePrefix()}:lock:{tenantScope}:{NormalizeSegment(scope.Category, "general")}:{NormalizeSegment(scope.Resource, "resource")}";
++    }
++
++    public string BuildExecutionStateKey(ExecutionStateKey key)
++    {
++        if (key.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required for tenant execution state.", nameof(key));
++        }
++
++        return $"{NormalizePrefix()}:execstate:company:{key.CompanyId:N}:{NormalizeSegment(key.ExecutionId, "execution")}";
++    }
++
++    async Task<IDistributedLockHandle?> IDistributedLockProvider.TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken)
++    {
++        var lease = await TryAcquireLockAsync(
++            new ExecutionCoordinationLockScope(null, "legacy", key),
++            ttl,
++            cancellationToken);
++
++        return lease is null
++            ? null
++            : new ExecutionCoordinationDistributedLockHandle(this, lease);
++    }
++
++    private TimeSpan ResolveLockLease(TimeSpan? requestedLease)
++    {
++        if (requestedLease.HasValue && requestedLease.Value > TimeSpan.Zero)
++        {
++            return requestedLease.Value;
++        }
++
++        return TimeSpan.FromSeconds(Math.Max(5, _options.Value.DefaultLockLeaseSeconds));
++    }
++
++    private TimeSpan ResolveStateTtl(TimeSpan? requestedTtl)
++    {
++        if (requestedTtl.HasValue && requestedTtl.Value > TimeSpan.Zero)
++        {
++            return requestedTtl.Value;
++        }
++
++        return TimeSpan.FromSeconds(Math.Max(1, _options.Value.DefaultExecutionStateTtlSeconds));
++    }
++
++    private string NormalizePrefix() => NormalizeSegment(_options.Value.KeyPrefix, "vc");
++
++    private static string NormalizeSegment(string? value, string fallback)
++    {
++        var text = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
++        var builder = new StringBuilder(text.Length);
++        foreach (var character in text)
++        {
++            if (char.IsLetterOrDigit(character) || character is '-' or '_' or '.')
++            {
++                builder.Append(char.ToLowerInvariant(character));
++            }
++            else
++            {
++                builder.Append('-');
++            }
++        }
++
++        var normalized = builder.ToString().Trim('-');
++        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
++    }
++
++    private sealed class ExecutionCoordinationDistributedLockHandle : IDistributedLockHandle
++    {
++        private readonly IExecutionCoordinationStore _store;
++        private readonly ExecutionCoordinationLockLease _lease;
++        private int _disposed;
++
++        public ExecutionCoordinationDistributedLockHandle(
++            IExecutionCoordinationStore store,
++            ExecutionCoordinationLockLease lease)
++        {
++            _store = store;
++            _lease = lease;
++            Key = lease.Key;
++        }
++
++        public string Key { get; }
++
++        public async ValueTask DisposeAsync()
++        {
++            if (Interlocked.Exchange(ref _disposed, 1) == 1)
++            {
++                return;
++            }
++
++            await _store.ReleaseLockAsync(_lease, CancellationToken.None);
++        }
++    }
++}
++
++public sealed class InMemoryExecutionCoordinationService :
++    IExecutionCoordinationStore,
++    IExecutionCoordinationKeyBuilder,
++    IDistributedLockProvider
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
++    private readonly ConcurrentDictionary<string, InMemoryLease> _leases = new(StringComparer.Ordinal);
++    private readonly ConcurrentDictionary<string, InMemoryState> _states = new(StringComparer.Ordinal);
++    private readonly IOptions<RedisExecutionCoordinationOptions> _options;
++    private readonly TimeProvider _timeProvider;
++
++    public InMemoryExecutionCoordinationService(
++        IOptions<RedisExecutionCoordinationOptions> options,
++        TimeProvider timeProvider)
++    {
++        _options = options;
++        _timeProvider = timeProvider;
++    }
++
++    public Task<ExecutionCoordinationLockLease?> TryAcquireLockAsync(
++        ExecutionCoordinationLockScope scope,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var key = BuildLockKey(scope);
++        var token = Guid.NewGuid().ToString("N");
++        var ttl = ResolveLockLease(leaseDuration);
++        var expiresUtc = _timeProvider.GetUtcNow().Add(ttl);
++
++        while (true)
++        {
++            if (_leases.TryGetValue(key, out var existing))
++            {
++                if (existing.ExpiresAtUtc > _timeProvider.GetUtcNow())
++                {
++                    return Task.FromResult<ExecutionCoordinationLockLease?>(null);
++                }
++
++                var replacement = new InMemoryLease(token, expiresUtc);
++                if (!_leases.TryUpdate(key, replacement, existing))
++                {
++                    continue;
++                }
++            }
++            else
++            {
++                var lease = new InMemoryLease(token, expiresUtc);
++                if (!_leases.TryAdd(key, lease))
++                {
++                    continue;
++                }
++            }
++
++            return Task.FromResult<ExecutionCoordinationLockLease?>(
++                new ExecutionCoordinationLockLease(
++                    key,
++                    token,
++                    expiresUtc,
++                    scope.CompanyId,
++                    NormalizeSegment(scope.Category, "general"),
++                    NormalizeSegment(scope.Resource, "resource"),
++                    scope.CorrelationId));
++        }
++    }
++
++    public Task<bool> RenewLockAsync(
++        ExecutionCoordinationLockLease lease,
++        TimeSpan? leaseDuration,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        if (!_leases.TryGetValue(lease.Key, out var existing) ||
++            existing.OwnerToken != lease.OwnerToken ||
++            existing.ExpiresAtUtc <= _timeProvider.GetUtcNow())
++        {
++            return Task.FromResult(false);
++        }
++
++        var ttl = ResolveLockLease(leaseDuration);
++        var renewed = _leases.TryUpdate(
++            lease.Key,
++            existing with { ExpiresAtUtc = _timeProvider.GetUtcNow().Add(ttl) },
++            existing);
++
++        return Task.FromResult(renewed);
++    }
++
++    public Task<bool> ReleaseLockAsync(
++        ExecutionCoordinationLockLease lease,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        if (!_leases.TryGetValue(lease.Key, out var existing) ||
++            existing.OwnerToken != lease.OwnerToken)
++        {
++            return Task.FromResult(false);
++        }
++
++        return Task.FromResult(_leases.TryRemove(new KeyValuePair<string, InMemoryLease>(lease.Key, existing)));
++    }
++
++    public Task SetStateAsync<TState>(
++        ExecutionStateKey key,
++        TState state,
++        TimeSpan? ttl,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var stateKey = BuildExecutionStateKey(key);
++        var payload = JsonSerializer.Serialize(state, SerializerOptions);
++        _states[stateKey] = new InMemoryState(payload, _timeProvider.GetUtcNow().Add(ResolveStateTtl(ttl)));
++        return Task.CompletedTask;
++    }
++
++    public Task<TState?> GetStateAsync<TState>(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        var stateKey = BuildExecutionStateKey(key);
++        if (!_states.TryGetValue(stateKey, out var state))
++        {
++            return Task.FromResult<TState?>(default);
++        }
++
++        if (state.ExpiresAtUtc <= _timeProvider.GetUtcNow())
++        {
++            _states.TryRemove(stateKey, out _);
++            return Task.FromResult<TState?>(default);
++        }
++
++        return Task.FromResult(JsonSerializer.Deserialize<TState>(state.Payload, SerializerOptions));
++    }
++
++    public Task<bool> DeleteStateAsync(
++        ExecutionStateKey key,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++
++        return Task.FromResult(_states.TryRemove(BuildExecutionStateKey(key), out _));
++    }
++
++    public string BuildLockKey(ExecutionCoordinationLockScope scope)
++    {
++        var tenantScope = scope.CompanyId.HasValue
++            ? $"company:{scope.CompanyId.Value:N}"
++            : "system";
++        return $"{NormalizePrefix()}:lock:{tenantScope}:{NormalizeSegment(scope.Category, "general")}:{NormalizeSegment(scope.Resource, "resource")}";
++    }
++
++    public string BuildExecutionStateKey(ExecutionStateKey key)
++    {
++        if (key.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required for tenant execution state.", nameof(key));
++        }
++
++        return $"{NormalizePrefix()}:execstate:company:{key.CompanyId:N}:{NormalizeSegment(key.ExecutionId, "execution")}";
++    }
++
++    async Task<IDistributedLockHandle?> IDistributedLockProvider.TryAcquireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken)
++    {
++        var lease = await TryAcquireLockAsync(
++            new ExecutionCoordinationLockScope(null, "legacy", key),
++            ttl,
++            cancellationToken);
++
++        return lease is null
++            ? null
++            : new ExecutionCoordinationDistributedLockHandle(this, lease);
++    }
++
++    private TimeSpan ResolveLockLease(TimeSpan? requestedLease)
++    {
++        if (requestedLease.HasValue && requestedLease.Value > TimeSpan.Zero)
++        {
++            return requestedLease.Value;
++        }
++
++        return TimeSpan.FromSeconds(Math.Max(5, _options.Value.DefaultLockLeaseSeconds));
++    }
++
++    private TimeSpan ResolveStateTtl(TimeSpan? requestedTtl)
++    {
++        if (requestedTtl.HasValue && requestedTtl.Value > TimeSpan.Zero)
++        {
++            return requestedTtl.Value;
++        }
++
++        return TimeSpan.FromSeconds(Math.Max(1, _options.Value.DefaultExecutionStateTtlSeconds));
++    }
++
++    private string NormalizePrefix() => NormalizeSegment(_options.Value.KeyPrefix, "vc");
++
++    private static string NormalizeSegment(string? value, string fallback)
++    {
++        var text = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
++        var builder = new StringBuilder(text.Length);
++        foreach (var character in text)
++        {
++            if (char.IsLetterOrDigit(character) || character is '-' or '_' or '.')
++            {
++                builder.Append(char.ToLowerInvariant(character));
++            }
++            else
++            {
++                builder.Append('-');
++            }
++        }
++
++        var normalized = builder.ToString().Trim('-');
++        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
++    }
++
++    private sealed record InMemoryLease(string OwnerToken, DateTimeOffset ExpiresAtUtc);
++
++    private sealed record InMemoryState(string Payload, DateTimeOffset ExpiresAtUtc);
++
++    private sealed class ExecutionCoordinationDistributedLockHandle : IDistributedLockHandle
++    {
++        private readonly IExecutionCoordinationStore _store;
++        private readonly ExecutionCoordinationLockLease _lease;
++        private int _disposed;
++
++        public ExecutionCoordinationDistributedLockHandle(
++            IExecutionCoordinationStore store,
++            ExecutionCoordinationLockLease lease)
++        {
++            _store = store;
++            _lease = lease;
++            Key = lease.Key;
++        }
++
++        public string Key { get; }
++
++        public async ValueTask DisposeAsync()
++        {
++            if (Interlocked.Exchange(ref _disposed, 1) == 1)
++            {
++                return;
++            }
++
++            await _store.ReleaseLockAsync(_lease, CancellationToken.None);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9430ab9..4ab2ba4 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -42,6 +42,16 @@ public static class DependencyInjection
+         services.AddOptions<CompanyOutboxDispatcherOptions>()
+             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
+ 
++        services.AddOptions<RedisExecutionCoordinationOptions>()
++            .Bind(configuration.GetSection(RedisExecutionCoordinationOptions.SectionName))
++            .Validate(
++                options => options.DefaultLockLeaseSeconds > 0 && options.DefaultExecutionStateTtlSeconds > 0,
++                "Redis execution coordination TTL values must be positive.")
++            .PostConfigure(options =>
++            {
++                options.KeyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix) ? "vc" : options.KeyPrefix.Trim();
++            });
++
+         services.AddOptions<BackgroundExecutionOptions>()
+             .Bind(configuration.GetSection(BackgroundExecutionOptions.SectionName))
+             .Configure(options => options.BaseRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, 0));
+@@ -74,14 +84,20 @@ public static class DependencyInjection
+                 options.AbortOnConnectFail = false;
+                 return ConnectionMultiplexer.Connect(options);
+             });
+-            services.AddSingleton<IDistributedLockProvider, RedisDistributedLockProvider>();
++            services.AddSingleton<RedisExecutionCoordinationService>();
++            services.AddSingleton<IExecutionCoordinationStore>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
++            services.AddSingleton<IExecutionCoordinationKeyBuilder>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
++            services.AddSingleton<IDistributedLockProvider>(provider => provider.GetRequiredService<RedisExecutionCoordinationService>());
+             services.AddStackExchangeRedisCache(options =>
+             {
+                 options.Configuration = redisConnectionString;
+                 options.InstanceName = "virtual-company:";
+             });
+         }
+         else
+         {
+             // Local/test fallback keeps the worker path runnable when Redis is intentionally absent.
+-            services.AddSingleton<IDistributedLockProvider, InMemoryDistributedLockProvider>();
++            services.AddSingleton<InMemoryExecutionCoordinationService>();
++            services.AddSingleton<IExecutionCoordinationStore>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
++            services.AddSingleton<IExecutionCoordinationKeyBuilder>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
++            services.AddSingleton<IDistributedLockProvider>(provider => provider.GetRequiredService<InMemoryExecutionCoordinationService>());
+             services.AddDistributedMemoryCache();
+         }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutionCoordinationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutionCoordinationTests.cs
+new file mode 100644
+index 0000000..aa30bce
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutionCoordinationTests.cs
+@@ -0,0 +1,124 @@
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutionCoordinationTests
++{
++    [Fact]
++    public async Task In_memory_coordination_allows_one_lock_owner_per_key()
++    {
++        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-04-13T09:00:00Z"));
++        var store = CreateStore(timeProvider);
++        var scope = new ExecutionCoordinationLockScope(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), "Workflow Progression", "instance-1", "corr-1");
++
++        var first = await store.TryAcquireLockAsync(scope, TimeSpan.FromMinutes(1), CancellationToken.None);
++        var second = await store.TryAcquireLockAsync(scope, TimeSpan.FromMinutes(1), CancellationToken.None);
++
++        Assert.NotNull(first);
++        Assert.Null(second);
++        Assert.Equal("vc:lock:company:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:workflow-progression:instance-1", first!.Key);
++    }
++
++    [Fact]
++    public async Task In_memory_coordination_releases_only_matching_owner()
++    {
++        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-04-13T09:00:00Z"));
++        var store = CreateStore(timeProvider);
++        var scope = new ExecutionCoordinationLockScope(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), "retry-worker", "execution-1");
++        var lease = await store.TryAcquireLockAsync(scope, TimeSpan.FromMinutes(1), CancellationToken.None);
++
++        var wrongOwnerReleased = await store.ReleaseLockAsync(lease! with { OwnerToken = "wrong-owner" }, CancellationToken.None);
++        var stillBlocked = await store.TryAcquireLockAsync(scope, TimeSpan.FromMinutes(1), CancellationToken.None);
++        var released = await store.ReleaseLockAsync(lease!, CancellationToken.None);
++        var reacquired = await store.TryAcquireLockAsync(scope, TimeSpan.FromMinutes(1), CancellationToken.None);
++
++        Assert.False(wrongOwnerReleased);
++        Assert.Null(stillBlocked);
++        Assert.True(released);
++        Assert.NotNull(reacquired);
++    }
++
++    [Fact]
++    public async Task In_memory_coordination_lets_expired_lock_be_reacquired()
++    {
++        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-04-13T09:00:00Z"));
++        var store = CreateStore(timeProvider);
++        var scope = new ExecutionCoordinationLockScope(null, "scheduler", "singleton");
++
++        var first = await store.TryAcquireLockAsync(scope, TimeSpan.FromSeconds(5), CancellationToken.None);
++        timeProvider.Advance(TimeSpan.FromSeconds(6));
++        var second = await store.TryAcquireLockAsync(scope, TimeSpan.FromSeconds(5), CancellationToken.None);
++
++        Assert.NotNull(first);
++        Assert.NotNull(second);
++        Assert.NotEqual(first!.OwnerToken, second!.OwnerToken);
++    }
++
++    [Fact]
++    public async Task In_memory_coordination_round_trips_tenant_execution_state()
++    {
++        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-04-13T09:00:00Z"));
++        var store = CreateStore(timeProvider);
++        var companyId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
++        var key = new ExecutionStateKey(companyId, "execution-42", "corr-42");
++
++        await store.SetStateAsync(key, new TestExecutionState("running", 3), TimeSpan.FromMinutes(5), CancellationToken.None);
++        var loaded = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);
++        var isolated = await store.GetStateAsync<TestExecutionState>(
++            new ExecutionStateKey(Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"), "execution-42", "corr-42"),
++            CancellationToken.None);
++        var deleted = await store.DeleteStateAsync(key, CancellationToken.None);
++        var afterDelete = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);
++
++        Assert.Equal(new TestExecutionState("running", 3), loaded);
++        Assert.Null(isolated);
++        Assert.True(deleted);
++        Assert.Null(afterDelete);
++    }
++
++    [Fact]
++    public async Task In_memory_coordination_expires_execution_state_by_ttl()
++    {
++        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-04-13T09:00:00Z"));
++        var store = CreateStore(timeProvider);
++        var key = new ExecutionStateKey(Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"), "execution-ttl", "corr-ttl");
++
++        await store.SetStateAsync(key, new TestExecutionState("heartbeat", 1), TimeSpan.FromSeconds(5), CancellationToken.None);
++        timeProvider.Advance(TimeSpan.FromSeconds(6));
++        var expired = await store.GetStateAsync<TestExecutionState>(key, CancellationToken.None);
++
++        Assert.Null(expired);
++    }
++
++    private static InMemoryExecutionCoordinationService CreateStore(TimeProvider timeProvider) =>
++        new(
++            Options.Create(new RedisExecutionCoordinationOptions
++            {
++                KeyPrefix = "vc",
++                DefaultLockLeaseSeconds = 120,
++                DefaultExecutionStateTtlSeconds = 3600
++            }),
++            timeProvider);
++
++    private sealed record TestExecutionState(string Status, int Attempt);
++
++    private sealed class ManualTimeProvider : TimeProvider
++    {
++        private DateTimeOffset _utcNow;
++
++        public ManualTimeProvider(DateTimeOffset utcNow)
++        {
++            _utcNow = utcNow;
++        }
++
++        public override DateTimeOffset GetUtcNow() => _utcNow;
++
++        public void Advance(TimeSpan duration)
++        {
++            _utcNow = _utcNow.Add(duration);
++        }
++    }
++}
+END_OF_PATCH

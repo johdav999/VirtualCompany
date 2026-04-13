@@ -35,15 +35,16 @@ else if (!string.IsNullOrWhiteSpace(errorMessage))
 }
 else
 {
+    var currentProfile = profile!;
     var canViewDirectory = CanViewDirectory;
-    var initials = GetInitials(profile.DisplayName);
+    var initials = GetInitials(currentProfile.DisplayName);
 
     <section class="py-4 dashboard-hero">
         <div class="wizard-card">
             <div class="agent-roster-header">
                 <div>
                     <span class="dashboard-kicker">Agent profile</span>
-                    <h1 class="mb-2 mt-2">@profile.DisplayName</h1>
+                    <h1 class="mb-2 mt-2">@currentProfile.DisplayName</h1>
                     <p class="text-body-secondary mb-0">Canonical tenant-scoped profile for @(ActiveMembership?.CompanyName ?? "the selected company"), ready to host future analytics modules without changing the primary route.</p>
                 </div>
                 <div class="dashboard-actions">
@@ -55,18 +56,18 @@ else
                     {
                         <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">Back to dashboard</a>
                     }
-                    @if (profile.Visibility.CanEditAgent)
+                    @if (currentProfile.Visibility.CanEditAgent)
                     {
-                        <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId}&agentId={profile.Id}")">Edit operating profile</a>
+                        <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId}&agentId={currentProfile.Id}")">Edit operating profile</a>
                     }
                 </div>
             </div>
         </div>
 
-        @if (profile.Sections.Count > 0)
+        @if (currentProfile.Sections.Count > 0)
         {
             <nav class="agent-profile-nav mt-4" aria-label="Agent profile sections">
-                @foreach (var section in profile.Sections)
+                @foreach (var section in currentProfile.Sections)
                 {
                     <a class="@GetSectionLinkCss(section)" href="@BuildSectionHref(section.Id)">@(section.Title)</a>
                 }
@@ -84,13 +85,13 @@ else
                 </div>
 
                 <div class="agent-identity">
-                    @if (!string.IsNullOrWhiteSpace(profile.AvatarUrl))
+                    @if (!string.IsNullOrWhiteSpace(currentProfile.AvatarUrl))
                     {
-                        <img class="agent-avatar" src="@profile.AvatarUrl" alt="@($"{profile.DisplayName} avatar")" />
+                        <img class="agent-avatar" src="@currentProfile.AvatarUrl" alt="@($"{currentProfile.DisplayName} avatar")" />
                     }
-                    else if (!string.IsNullOrWhiteSpace(profile.Personality))
+                    else if (!string.IsNullOrWhiteSpace(currentProfile.Personality))
                     {
-                        <img class="agent-avatar" src="@profile.AvatarUrl" alt="@($"{profile.DisplayName} avatar")" />
+                        <img class="agent-avatar" src="@currentProfile.AvatarUrl" alt="@($"{currentProfile.DisplayName} avatar")" />
                     }
                     else
                     {
@@ -101,54 +102,54 @@ else
                         <div class="summary-pill-grid mb-4">
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Status</span>
-                                <strong>@ToDisplayText(profile.Status)</strong>
+                                <strong>@ToDisplayText(currentProfile.Status)</strong>
                             </div>
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Autonomy</span>
-                                <strong>@ToDisplayText(profile.AutonomyLevel)</strong>
+                                <strong>@ToDisplayText(currentProfile.AutonomyLevel)</strong>
                             </div>
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Health</span>
-                                <strong class="@GetHealthCss(profile.WorkloadSummary.HealthSummary.Status)">@profile.WorkloadSummary.HealthSummary.Label</strong>
+                                <strong class="@GetHealthCss(currentProfile.WorkloadSummary.HealthSummary.Status)">@currentProfile.WorkloadSummary.HealthSummary.Label</strong>
                             </div>
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Open work</span>
-                                <strong>@profile.WorkloadSummary.OpenItemsCount item(s)</strong>
+                                <strong>@currentProfile.WorkloadSummary.OpenItemsCount item(s)</strong>
                             </div>
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Awaiting approval</span>
-                                <strong>@profile.WorkloadSummary.AwaitingApprovalCount item(s)</strong>
+                                <strong>@currentProfile.WorkloadSummary.AwaitingApprovalCount item(s)</strong>
                             </div>
                             <div class="summary-pill">
                                 <span class="dashboard-kicker">Recent signals</span>
-                                <strong>@profile.RecentActivity.Count event(s)</strong>
+                                <strong>@currentProfile.RecentActivity.Count event(s)</strong>
                             </div>
                         </div>
 
                         <dl class="kv-list mb-0">
                             <dt>Display name</dt>
-                            <dd>@profile.DisplayName</dd>
+                            <dd>@currentProfile.DisplayName</dd>
                             <dt>Role</dt>
-                            <dd>@profile.RoleName</dd>
+                            <dd>@currentProfile.RoleName</dd>
                             <dt>Department</dt>
-                            <dd>@profile.Department</dd>
+                            <dd>@currentProfile.Department</dd>
                             <dt>Seniority</dt>
-                            <dd>@ToDisplayText(profile.Seniority)</dd>
+                            <dd>@ToDisplayText(currentProfile.Seniority)</dd>
                             <dt>Role brief</dt>
-                            <dd>@GetOptionalText(profile.RoleBrief)</dd>
+                            <dd>@GetOptionalText(currentProfile.RoleBrief)</dd>
                             <dt>Summary</dt>
-                            <dd>@GetOptionalText(profile.Personality)</dd>
+                            <dd>@GetOptionalText(currentProfile.Personality)</dd>
                             <dt>Health summary</dt>
-                            <dd>@profile.WorkloadSummary.HealthSummary.Reason</dd>
+                            <dd>@currentProfile.WorkloadSummary.HealthSummary.Reason</dd>
                             <dt>Last activity</dt>
-                            <dd>@FormatDate(profile.WorkloadSummary.LastActivityUtc)</dd>
+                            <dd>@FormatDate(currentProfile.WorkloadSummary.LastActivityUtc)</dd>
                             <dt>Profile updated</dt>
-                            <dd>@FormatDate(profile.UpdatedUtc)</dd>
+                            <dd>@FormatDate(currentProfile.UpdatedUtc)</dd>
                         </dl>
                     </div>
                 </div>
 
-                @if (!profile.Visibility.CanEditAgent)
+                @if (!currentProfile.Visibility.CanEditAgent)
                 {
                     <p class="text-body-secondary mb-0 mt-4">
                         Restricted configuration actions stay hidden for your membership role
@@ -166,18 +167,18 @@ else
 
             <section id="objectives" class="wizard-card agent-profile-section">
                 <h2 class="h5 mb-3">Objectives</h2>
-                @RenderEntries(profile.Objectives)
+                @RenderEntries(currentProfile.Objectives)
             </section>
 
             <section id="analytics" class="wizard-card agent-profile-section">
                 <span class="dashboard-kicker">Reserved surface</span>
-                <h2 class="h5 mb-3 mt-2">@profile.AnalyticsPreview.Heading</h2>
-                <p class="text-body-secondary mb-0">@profile.AnalyticsPreview.Description</p>
+                <h2 class="h5 mb-3 mt-2">@currentProfile.AnalyticsPreview.Heading</h2>
+                <p class="text-body-secondary mb-0">@currentProfile.AnalyticsPreview.Description</p>
 
-                @if (profile.AnalyticsPreview.PlannedModules.Count > 0)
+                @if (currentProfile.AnalyticsPreview.PlannedModules.Count > 0)
                 {
                     <div class="agent-analytics-placeholder-grid mt-4">
-                        @foreach (var module in profile.AnalyticsPreview.PlannedModules)
+                        @foreach (var module in currentProfile.AnalyticsPreview.PlannedModules)
                         {
                             <article class="agent-analytics-placeholder-card">
                                 <strong>@module</strong>
@@ -190,43 +191,43 @@ else
 
             <section id="permissions" class="wizard-card agent-profile-section">
                 <h2 class="h5 mb-3">Permissions</h2>
-                @if (!profile.Visibility.CanViewPermissions)
+                @if (!currentProfile.Visibility.CanViewPermissions)
                 {
                     <p class="text-body-secondary mb-0">Tool permissions and data scopes are hidden for your membership role.</p>
                 }
                 else
                 {
                     <h3 class="h6">Tool permissions</h3>
-                    @RenderEntries(profile.ToolPermissions)
+                    @RenderEntries(currentProfile.ToolPermissions)
                     <h3 class="h6 mt-4">Data scopes</h3>
-                    @RenderEntries(profile.DataScopes)
+                    @RenderEntries(currentProfile.DataScopes)
                 }
             </section>
 
             <section id="thresholds" class="wizard-card agent-profile-section">
                 <h2 class="h5 mb-3">Thresholds</h2>
-                @if (!profile.Visibility.CanViewThresholds)
+                @if (!currentProfile.Visibility.CanViewThresholds)
                 {
                     <p class="text-body-secondary mb-0">Approval thresholds and escalation rules are hidden for your membership role.</p>
                 }
                 else
                 {
                     <h3 class="h6">Approval thresholds</h3>
-                    @RenderEntries(profile.ApprovalThresholds)
+                    @RenderEntries(currentProfile.ApprovalThresholds)
                     <h3 class="h6 mt-4">Escalation rules</h3>
-                    @RenderEntries(profile.EscalationRules)
+                    @RenderEntries(currentProfile.EscalationRules)
                 }
             </section>
 
             <section id="working-hours" class="wizard-card agent-profile-section">
                 <h2 class="h5 mb-3">Working hours</h2>
-                @if (!profile.Visibility.CanViewWorkingHours)
+                @if (!currentProfile.Visibility.CanViewWorkingHours)
                 {
                     <p class="text-body-secondary mb-0">Working hours are hidden for your membership role.</p>
                 }
                 else
                 {
-                    @RenderEntries(profile.WorkingHours)
+                    @RenderEntries(currentProfile.WorkingHours)
                 }
             </section>
 
@@ -235,21 +236,21 @@ else
 
                 <dl class="kv-list mb-4">
                     <dt>Awaiting approval</dt>
-                    <dd>@profile.WorkloadSummary.AwaitingApprovalCount</dd>
+                    <dd>@currentProfile.WorkloadSummary.AwaitingApprovalCount</dd>
                     <dt>Executed</dt>
-                    <dd>@profile.WorkloadSummary.ExecutedCount</dd>
+                    <dd>@currentProfile.WorkloadSummary.ExecutedCount</dd>
                     <dt>Failed</dt>
-                    <dd>@profile.WorkloadSummary.FailedCount</dd>
+                    <dd>@currentProfile.WorkloadSummary.FailedCount</dd>
                 </dl>
 
-                @if (profile.RecentActivity.Count == 0)
+                @if (currentProfile.RecentActivity.Count == 0)
                 {
                     <p class="text-body-secondary mb-0">No recent activity is available yet.</p>
                 }
                 else
                 {
                     <div class="activity-list">
-                        @foreach (var item in profile.RecentActivity)
+                        @foreach (var item in currentProfile.RecentActivity)
                         {
                             <article class="activity-item">
                                 <div class="agent-template-header">
@@ -264,7 +265,7 @@ else
                             </article>
                         }
 
-                        @if (profile.RecentActivity.Count > 0 && !profile.Visibility.CanViewThresholds)
+                        @if (currentProfile.RecentActivity.Count > 0 && !currentProfile.Visibility.CanViewThresholds)
                         {
                             <p class="text-body-secondary small mb-0">
                                 Activity is limited to the tenant-scoped events available to your current membership role.

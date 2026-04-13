@@ -1,0 +1,931 @@
+diff --git a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+new file mode 100644
+index 0000000..15d5d2c
+--- /dev/null
++++ b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+@@ -0,0 +1,81 @@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Approvals;
++
++public sealed record CreateApprovalRequestCommand(
++    string TargetEntityType,
++    Guid TargetEntityId,
++    string RequestedByActorType,
++    Guid RequestedByActorId,
++    string ApprovalType,
++    Dictionary<string, JsonNode?>? ThresholdContext,
++    string? RequiredRole = null,
++    Guid? RequiredUserId = null,
++    IReadOnlyList<CreateApprovalStepInput>? Steps = null);
++
++public sealed record CreateApprovalStepInput(
++    int SequenceNo,
++    string ApproverType,
++    string ApproverRef);
++
++public sealed record ApprovalDecisionCommand(
++    Guid ApprovalId,
++    string Decision,
++    Guid? StepId = null,
++    string? Comment = null);
++
++public sealed record ApprovalRequestDto(
++    Guid Id,
++    Guid CompanyId,
++    string TargetEntityType,
++    Guid TargetEntityId,
++    string RequestedByActorType,
++    Guid RequestedByActorId,
++    string ApprovalType,
++    string? RequiredRole,
++    Guid? RequiredUserId,
++    string Status,
++    Dictionary<string, JsonNode?> ThresholdContext,
++    IReadOnlyList<ApprovalStepDto> Steps,
++    ApprovalStepDto? CurrentStep,
++    DateTime CreatedAt);
++
++public sealed record ApprovalStepDto(
++    Guid Id,
++    int SequenceNo,
++    string ApproverType,
++    string ApproverRef,
++    string Status,
++    Guid? DecidedByUserId = null,
++    DateTime? DecidedAt = null,
++    string? Comment = null);
++
++public sealed record ApprovalDecisionResultDto(
++    ApprovalRequestDto Approval,
++    ApprovalStepDto DecidedStep,
++    ApprovalStepDto? NextStep,
++    bool IsFinalized);
++
++public interface IApprovalRequestService
++{
++    Task<ApprovalRequestDto> CreateAsync(Guid companyId, CreateApprovalRequestCommand command, CancellationToken cancellationToken);
++    Task<ApprovalDecisionResultDto> DecideAsync(Guid companyId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
++}
++
++public sealed class ApprovalValidationException : Exception
++{
++    public ApprovalValidationException(IDictionary<string, string[]> errors)
++        : base("Approval request validation failed.") =>
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
++public sealed class ApprovalDecisionForbiddenException : Exception
++{
++    public ApprovalDecisionForbiddenException(string message)
++        : base(message)
++    {
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index e417797..662291d 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -365,7 +365,8 @@ public enum ApprovalRequestStatus
+     Pending = 1,
+     Approved = 2,
+     Rejected = 3,
+-    Expired = 4
++    Expired = 4,
++    Cancelled = 5
+ }
+ 
+ public static class ApprovalRequestStatusValues
+@@ -375,7 +376,8 @@ public static class ApprovalRequestStatusValues
+         [ApprovalRequestStatus.Pending] = "pending",
+         [ApprovalRequestStatus.Approved] = "approved",
+         [ApprovalRequestStatus.Rejected] = "rejected",
+-        [ApprovalRequestStatus.Expired] = "expired"
++        [ApprovalRequestStatus.Expired] = "expired",
++        [ApprovalRequestStatus.Cancelled] = "cancelled"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, ApprovalRequestStatus> ReverseValues =
+diff --git a/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs b/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
+new file mode 100644
+index 0000000..b9d4b96
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
+@@ -0,0 +1,112 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ApprovalTargetEntityType
++{
++    Task = 1,
++    Workflow = 2,
++    Action = 3
++}
++
++public static class ApprovalTargetEntityTypeValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalTargetEntityType, string> Values = new Dictionary<ApprovalTargetEntityType, string>
++    {
++        [ApprovalTargetEntityType.Task] = "task",
++        [ApprovalTargetEntityType.Workflow] = "workflow",
++        [ApprovalTargetEntityType.Action] = "action"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this ApprovalTargetEntityType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported approval target entity type.");
++
++    public static bool TryParse(string? value, out ApprovalTargetEntityType type)
++    {
++        type = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        if (ReverseValues.TryGetValue(trimmed, out type))
++        {
++            return true;
++        }
++
++        return Enum.TryParse(trimmed, ignoreCase: true, out type) && Values.ContainsKey(type);
++    }
++
++    public static ApprovalTargetEntityType Parse(string value) =>
++        TryParse(value, out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported approval target entity type. Allowed values: {string.Join(", ", AllowedValues)}.");
++}
++
++public enum ApprovalStepApproverType
++{
++    Role = 1,
++    User = 2
++}
++
++public static class ApprovalStepApproverTypeValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalStepApproverType, string> Values = new Dictionary<ApprovalStepApproverType, string>
++    {
++        [ApprovalStepApproverType.Role] = "role",
++        [ApprovalStepApproverType.User] = "user"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalStepApproverType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this ApprovalStepApproverType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported approval step approver type.");
++
++    public static ApprovalStepApproverType Parse(string value) =>
++        !string.IsNullOrWhiteSpace(value) && ReverseValues.TryGetValue(value.Trim(), out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, $"Unsupported approval step approver type. Allowed values: {string.Join(", ", AllowedValues)}.");
++}
++
++public enum ApprovalStepStatus
++{
++    Pending = 1,
++    Approved = 2,
++    Rejected = 3,
++    Skipped = 4
++}
++
++public static class ApprovalStepStatusValues
++{
++    private static readonly IReadOnlyDictionary<ApprovalStepStatus, string> Values = new Dictionary<ApprovalStepStatus, string>
++    {
++        [ApprovalStepStatus.Pending] = "pending",
++        [ApprovalStepStatus.Approved] = "approved",
++        [ApprovalStepStatus.Rejected] = "rejected",
++        [ApprovalStepStatus.Skipped] = "skipped"
++    };
++
++    private static readonly IReadOnlyDictionary<string, ApprovalStepStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this ApprovalStepStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported approval step status.");
++
++    public static ApprovalStepStatus Parse(string value) =>
++        !string.IsNullOrWhiteSpace(value) && ReverseValues.TryGetValue(value.Trim(), out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported approval step status.");
++}
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index ff2b70e..e2fe861 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -142,8 +142,17 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
+ 
+ public sealed class ApprovalRequest : ICompanyOwnedEntity
+ {
++    private const int ActorTypeMaxLength = 64;
++    private const int ApprovalTypeMaxLength = 100;
++    private const int RequiredRoleMaxLength = 100;
++    private const int DecisionSummaryMaxLength = 2000;
+     private const int ToolNameMaxLength = 100;
+     private const int ApprovalTargetMaxLength = 100;
++    private const string DefaultApprovalType = "threshold";
++    private const string LegacyTargetEntityType = "action";
++    private const string LegacyRequestedByActorType = "user";
++    private const string LegacyRequiredApproverRole = "owner";
++    private readonly List<ApprovalStep> _steps = [];
+ 
+     private ApprovalRequest()
+     {
+@@ -159,7 +168,8 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         ToolActionType actionType,
+         string? approvalTarget,
+         IDictionary<string, JsonNode?>? thresholdContext = null,
+-        IDictionary<string, JsonNode?>? policyDecision = null)
++        IDictionary<string, JsonNode?>? policyDecision = null,
++        IDictionary<string, JsonNode?>? decisionChain = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -171,11 +181,6 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+             throw new ArgumentException("AgentId is required.", nameof(agentId));
+         }
+ 
+-        if (toolExecutionAttemptId == Guid.Empty)
+-        {
+-            throw new ArgumentException("ToolExecutionAttemptId is required.", nameof(toolExecutionAttemptId));
+-        }
+-
+         if (requestedByUserId == Guid.Empty)
+         {
+             throw new ArgumentException("RequestedByUserId is required.", nameof(requestedByUserId));
+@@ -190,28 +195,259 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         RequestedByUserId = requestedByUserId;
+         ToolName = NormalizeRequired(toolName, nameof(toolName), ToolNameMaxLength);
+         ActionType = actionType;
++        TargetEntityType = LegacyTargetEntityType;
++        TargetEntityId = toolExecutionAttemptId;
++        RequestedByActorType = LegacyRequestedByActorType;
++        RequestedByActorId = requestedByUserId;
++        ApprovalType = DefaultApprovalType;
+         ApprovalTarget = NormalizeOptional(approvalTarget, nameof(approvalTarget), ApprovalTargetMaxLength);
+         Status = ApprovalRequestStatus.Pending;
+         ThresholdContext = CloneNodes(thresholdContext);
++        if (ThresholdContext.Count == 0)
++        {
++            throw new ArgumentException("ThresholdContext is required.", nameof(thresholdContext));
++        }
++
+         PolicyDecision = CloneNodes(policyDecision);
++        DecisionChain = CloneNodes(decisionChain);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
++        _steps.Add(new ApprovalStep(Guid.NewGuid(), Id, 1, ApprovalStepApproverType.Role, NormalizeLegacyApprovalRole(approvalTarget)));
++    }
++
++    public static ApprovalRequest CreateForTarget(
++        Guid id,
++        Guid companyId,
++        ApprovalTargetEntityType targetEntityType,
++        Guid targetEntityId,
++        string requestedByActorType,
++        Guid requestedByActorId,
++        string approvalType,
++        IDictionary<string, JsonNode?> thresholdContext,
++        string? requiredRole,
++        Guid? requiredUserId,
++        IEnumerable<ApprovalStepDefinition> steps)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (targetEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetEntityId is required.", nameof(targetEntityId));
++        }
++
++        if (requestedByActorId == Guid.Empty)
++        {
++            throw new ArgumentException("RequestedByActorId is required.", nameof(requestedByActorId));
++        }
++
++        var normalizedSteps = NormalizeSteps(requiredRole, requiredUserId, steps);
++        var approval = new ApprovalRequest
++        {
++            Id = id == Guid.Empty ? Guid.NewGuid() : id,
++            CompanyId = companyId,
++            AgentId = Guid.Empty,
++            ToolExecutionAttemptId = targetEntityType == ApprovalTargetEntityType.Action ? targetEntityId : null,
++            RequestedByUserId = string.Equals(requestedByActorType, LegacyRequestedByActorType, StringComparison.OrdinalIgnoreCase) ? requestedByActorId : Guid.Empty,
++            ToolName = "approval_request",
++            ActionType = ToolActionType.Execute,
++            TargetEntityType = targetEntityType.ToStorageValue(),
++            TargetEntityId = targetEntityId,
++            RequestedByActorType = NormalizeRequired(requestedByActorType, nameof(requestedByActorType), ActorTypeMaxLength),
++            RequestedByActorId = requestedByActorId,
++            ApprovalType = NormalizeRequired(approvalType, nameof(approvalType), ApprovalTypeMaxLength),
++            ApprovalTarget = $"{targetEntityType.ToStorageValue()}:{targetEntityId:N}",
++            RequiredRole = NormalizeOptional(requiredRole, nameof(requiredRole), RequiredRoleMaxLength),
++            RequiredUserId = requiredUserId,
++            Status = ApprovalRequestStatus.Pending,
++            ThresholdContext = CloneRequiredNodes(thresholdContext, nameof(thresholdContext)),
++            PolicyDecision = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            DecisionChain = BuildInitialDecisionChain(targetEntityType, targetEntityId, normalizedSteps),
++            CreatedUtc = DateTime.UtcNow
++        };
++        approval.UpdatedUtc = approval.CreatedUtc;
++        approval._steps.AddRange(normalizedSteps.Select(step => new ApprovalStep(Guid.NewGuid(), approval.Id, step.SequenceNo, step.ApproverType, step.ApproverRef)));
++        return approval;
+     }
+ 
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+     public Guid AgentId { get; private set; }
+-    public Guid ToolExecutionAttemptId { get; private set; }
++    public Guid? ToolExecutionAttemptId { get; private set; }
+     public Guid RequestedByUserId { get; private set; }
++    public string TargetEntityType { get; private set; } = null!;
++    public Guid TargetEntityId { get; private set; }
++    public string RequestedByActorType { get; private set; } = null!;
++    public Guid RequestedByActorId { get; private set; }
++    public string ApprovalType { get; private set; } = null!;
+     public string ToolName { get; private set; } = null!;
+     public ToolActionType ActionType { get; private set; }
+     public string? ApprovalTarget { get; private set; }
++    public string? RequiredRole { get; private set; }
++    public Guid? RequiredUserId { get; private set; }
+     public ApprovalRequestStatus Status { get; private set; }
++    public string? DecisionSummary { get; private set; }
+     public Dictionary<string, JsonNode?> ThresholdContext { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> DecisionChain { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public DateTime? DecidedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
++    public IReadOnlyCollection<ApprovalStep> Steps => _steps;
++
++    public ApprovalStep? CurrentActionableStep =>
++        Status == ApprovalRequestStatus.Pending
++            ? _steps.OrderBy(step => step.SequenceNo).FirstOrDefault(step => step.Status == ApprovalStepStatus.Pending)
++            : null;
++
++    public bool IsTerminal =>
++        Status is ApprovalRequestStatus.Approved
++            or ApprovalRequestStatus.Rejected
++            or ApprovalRequestStatus.Expired
++            or ApprovalRequestStatus.Cancelled;
++
++    public bool CanExecuteGuardedAction => Status == ApprovalRequestStatus.Approved;
++
++    public string? ExecutionBlockReasonCode => Status switch
++    {
++        ApprovalRequestStatus.Pending => "approval_pending",
++        ApprovalRequestStatus.Rejected => "approval_rejected",
++        ApprovalRequestStatus.Expired => "approval_expired",
++        ApprovalRequestStatus.Cancelled => "approval_cancelled",
++        _ => null
++    };
++
++    public void SetDecisionChain(IDictionary<string, JsonNode?>? decisionChain)
++    {
++        DecisionChain = CloneNodes(decisionChain);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public ApprovalStep ApproveCurrentStep(Guid stepId, Guid decidedByUserId, string? comment)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be decided.");
++        }
++
++        var currentStep = CurrentActionableStep ?? throw new InvalidOperationException("Approval has no current actionable step.");
++        if (currentStep.Id != stepId)
++        {
++            throw new InvalidOperationException("Only the current approval step can be decided.");
++        }
++
++        currentStep.MarkApproved(decidedByUserId, comment);
++        if (_steps.All(step => step.Status == ApprovalStepStatus.Approved))
++        {
++            Status = ApprovalRequestStatus.Approved;
++            DecisionSummary = "Approval chain completed.";
++            DecidedUtc = DateTime.UtcNow;
++        }
++
++        RebuildDecisionChain();
++        UpdatedUtc = DateTime.UtcNow;
++        return currentStep;
++    }
++
++    public ApprovalStep RejectCurrentStep(Guid stepId, Guid decidedByUserId, string? comment)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be decided.");
++        }
++
++        var currentStep = CurrentActionableStep ?? throw new InvalidOperationException("Approval has no current actionable step.");
++        if (currentStep.Id != stepId)
++        {
++            throw new InvalidOperationException("Only the current approval step can be decided.");
++        }
++
++        currentStep.MarkRejected(decidedByUserId, comment);
++        Status = ApprovalRequestStatus.Rejected;
++        DecisionSummary = string.IsNullOrWhiteSpace(comment) ? "Approval chain rejected." : comment.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DateTime.UtcNow;
++        return currentStep;
++    }
++
++    public void MarkExpired(string? decisionSummary = null)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can expire.");
++        }
++
++        Status = ApprovalRequestStatus.Expired;
++        DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? "Approval request expired." : decisionSummary.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DecidedUtc.Value;
++    }
++
++    public void MarkCancelled(string? decisionSummary = null)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be cancelled.");
++        }
++
++        Status = ApprovalRequestStatus.Cancelled;
++        DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? "Approval request cancelled." : decisionSummary.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DecidedUtc.Value;
++    }
++
++    private static IReadOnlyList<ApprovalStepDefinition> NormalizeSteps(
++        string? requiredRole,
++        Guid? requiredUserId,
++        IEnumerable<ApprovalStepDefinition> steps)
++    {
++        if (requiredUserId == Guid.Empty)
++        {
++            throw new ArgumentException("RequiredUserId cannot be empty.", nameof(requiredUserId));
++        }
++
++        var suppliedSteps = steps.ToList();
++        if (suppliedSteps.Count > 0 && (!string.IsNullOrWhiteSpace(requiredRole) || requiredUserId.HasValue))
++        {
++            throw new ArgumentException("Use either top-level required approver fields or ordered approval steps, not both.", nameof(steps));
++        }
++
++        if (suppliedSteps.Count == 0)
++        {
++            if (!string.IsNullOrWhiteSpace(requiredRole))
++            {
++                return [new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, requiredRole.Trim())];
++            }
++
++            if (requiredUserId.HasValue)
++            {
++                return [new ApprovalStepDefinition(1, ApprovalStepApproverType.User, requiredUserId.Value.ToString("N"))];
++            }
++
++            throw new ArgumentException("At least one approver target is required.", nameof(steps));
++        }
++
++        if (suppliedSteps.Any(x => x.SequenceNo <= 0))
++        {
++            throw new ArgumentException("Approval step sequence numbers must be positive.", nameof(steps));
++        }
++
++        if (suppliedSteps.Select(x => x.SequenceNo).Distinct().Count() != suppliedSteps.Count)
++        {
++            throw new ArgumentException("Approval step sequence numbers must be unique.", nameof(steps));
++        }
++
++        return suppliedSteps
++            .OrderBy(x => x.SequenceNo)
++            .Select(x => new ApprovalStepDefinition(x.SequenceNo, x.ApproverType, NormalizeRequired(x.ApproverRef, nameof(x.ApproverRef), 200)))
++            .ToList();
++    }
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+@@ -229,6 +465,12 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
++    private static string NormalizeLegacyApprovalRole(string? approvalTarget) =>
++        !string.IsNullOrWhiteSpace(approvalTarget) &&
++        CompanyMembershipRoles.TryParse(approvalTarget, out var role)
++            ? role.ToStorageValue()
++            : LegacyRequiredApproverRole;
++
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -245,8 +487,170 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         return trimmed;
+     }
+ 
++    private static Dictionary<string, JsonNode?> CloneRequiredNodes(IDictionary<string, JsonNode?>? nodes, string name)
++    {
++        var cloned = CloneNodes(nodes);
++        if (cloned.Count == 0)
++        {
++            throw new ArgumentException("Threshold context is required.", name);
++        }
++
++        return cloned;
++    }
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static Dictionary<string, JsonNode?> BuildInitialDecisionChain(
++        ApprovalTargetEntityType targetEntityType,
++        Guid targetEntityId,
++        IReadOnlyList<ApprovalStepDefinition> steps) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
++            ["status"] = JsonValue.Create("pending"),
++            ["targetEntityType"] = JsonValue.Create(targetEntityType.ToStorageValue()),
++            ["targetEntityId"] = JsonValue.Create(targetEntityId),
++            ["steps"] = new JsonArray(steps
++                .Select(step => new JsonObject
++                {
++                    ["sequenceNo"] = step.SequenceNo,
++                    ["approverType"] = step.ApproverType.ToStorageValue(),
++                    ["approverRef"] = step.ApproverRef,
++                    ["status"] = ApprovalStepStatus.Pending.ToStorageValue()
++                })
++                .ToArray<JsonNode?>())
++        };
++
++    private void RebuildDecisionChain()
++    {
++        DecisionChain = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
++            ["status"] = JsonValue.Create(Status.ToStorageValue()),
++            ["targetEntityType"] = JsonValue.Create(TargetEntityType),
++            ["targetEntityId"] = JsonValue.Create(TargetEntityId),
++            ["steps"] = new JsonArray(_steps.OrderBy(step => step.SequenceNo)
++                .Select(step => new JsonObject
++                {
++                    ["sequenceNo"] = step.SequenceNo,
++                    ["approverType"] = step.ApproverType.ToStorageValue(),
++                    ["approverRef"] = step.ApproverRef,
++                    ["status"] = step.Status.ToStorageValue(),
++                    ["decidedByUserId"] = step.DecidedByUserId,
++                    ["decidedAt"] = step.DecidedUtc
++                })
++                .ToArray<JsonNode?>())
++        };
++    }
++}
++
++public sealed record ApprovalStepDefinition(int SequenceNo, ApprovalStepApproverType ApproverType, string ApproverRef);
++
++public sealed class ApprovalStep
++{
++    private const int ApproverRefMaxLength = 200;
++    private const int CommentMaxLength = 2000;
++
++    private ApprovalStep()
++    {
++    }
++
++    public ApprovalStep(
++        Guid id,
++        Guid approvalId,
++        int sequenceNo,
++        ApprovalStepApproverType approverType,
++        string approverRef)
++    {
++        if (approvalId == Guid.Empty)
++        {
++            throw new ArgumentException("ApprovalId is required.", nameof(approvalId));
++        }
++
++        if (sequenceNo <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(sequenceNo), "SequenceNo must be positive.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        ApprovalId = approvalId;
++        SequenceNo = sequenceNo;
++        ApproverType = approverType;
++        ApproverRef = NormalizeRequired(approverRef, nameof(approverRef), ApproverRefMaxLength);
++        Status = ApprovalStepStatus.Pending;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid ApprovalId { get; private set; }
++    public int SequenceNo { get; private set; }
++    public ApprovalStepApproverType ApproverType { get; private set; }
++    public string ApproverRef { get; private set; } = null!;
++    public ApprovalStepStatus Status { get; private set; }
++    public Guid? DecidedByUserId { get; private set; }
++    public DateTime? DecidedUtc { get; private set; }
++    public string? Comment { get; private set; }
++    public ApprovalRequest Approval { get; private set; } = null!;
++
++    public void MarkApproved(Guid decidedByUserId, string? comment)
++    {
++        MarkDecided(ApprovalStepStatus.Approved, decidedByUserId, comment);
++    }
++
++    public void MarkRejected(Guid decidedByUserId, string? comment)
++    {
++        MarkDecided(ApprovalStepStatus.Rejected, decidedByUserId, comment);
++    }
++
++    private void MarkDecided(ApprovalStepStatus status, Guid decidedByUserId, string? comment)
++    {
++        if (decidedByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("DecidedByUserId is required.", nameof(decidedByUserId));
++        }
++
++        if (Status != ApprovalStepStatus.Pending)
++        {
++            throw new InvalidOperationException("Approval step has already been decided.");
++        }
++
++        Status = status;
++        DecidedByUserId = decidedByUserId;
++        DecidedUtc = DateTime.UtcNow;
++        Comment = NormalizeOptional(comment, nameof(comment), CommentMaxLength);
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 93fa1fc..6c12af2 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -31,6 +31,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
++    public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0cf2afe..87dbdf5 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1036,13 +1036,21 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.AgentId).IsRequired();
+-        builder.Property(x => x.ToolExecutionAttemptId).IsRequired();
++        builder.Property(x => x.ToolExecutionAttemptId);
+         builder.Property(x => x.RequestedByUserId).IsRequired();
++        builder.Property(x => x.TargetEntityType).HasColumnName("entity_type").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.TargetEntityId).HasColumnName("entity_id").IsRequired();
++        builder.Property(x => x.RequestedByActorType).HasColumnName("requested_by_actor_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.RequestedByActorId).HasColumnName("requested_by_actor_id").IsRequired();
++        builder.Property(x => x.ApprovalType).HasColumnName("approval_type").HasMaxLength(100).IsRequired();
+         builder.Property(x => x.ToolName).HasMaxLength(100).IsRequired();
+         builder.Property(x => x.ActionType)
+             .HasConversion(value => value.ToStorageValue(), value => ToolActionTypeValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
++        builder.Property(x => x.RequiredRole).HasColumnName("required_role").HasMaxLength(100);
++        builder.Property(x => x.RequiredUserId).HasColumnName("required_user_id");
++        builder.Property(x => x.DecisionSummary).HasColumnName("decision_summary").HasMaxLength(2000);
+         builder.Property(x => x.ApprovalTarget).HasMaxLength(100);
+         builder.Property(x => x.Status)
+             .HasConversion(value => value.ToStorageValue(), value => ApprovalRequestStatusValues.Parse(value))
+@@ -1058,10 +1066,52 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.DecisionChain)
++            .HasColumnName("decision_chain_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
++        builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
++        builder.HasMany(x => x.Steps)
++            .WithOne(x => x.Approval)
++            .HasForeignKey(x => x.ApprovalId)
++            .OnDelete(DeleteBehavior.Cascade);
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+-        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.TargetEntityType, x.TargetEntityId });
++        builder.HasIndex(x => x.ToolExecutionAttemptId).IsUnique().HasFilter("[ToolExecutionAttemptId] IS NOT NULL");
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
++
++internal sealed class ApprovalStepConfiguration : IEntityTypeConfiguration<ApprovalStep>
++{
++    public void Configure(EntityTypeBuilder<ApprovalStep> builder)
++    {
++        builder.ToTable("approval_steps");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.ApprovalId).IsRequired();
++        builder.Property(x => x.SequenceNo).HasColumnName("sequence_no").IsRequired();
++        builder.Property(x => x.ApproverType)
++            .HasColumnName("approver_type")
++            .HasConversion(value => value.ToStorageValue(), value => ApprovalStepApproverTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.ApproverRef)
++            .HasColumnName("approver_ref")
++            .HasMaxLength(200)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasConversion(value => value.ToStorageValue(), value => ApprovalStepStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.DecidedByUserId).HasColumnName("decided_by_user_id");
++        builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
++        builder.Property(x => x.Comment).HasColumnName("comment").HasMaxLength(2000);
++
++        builder.HasIndex(x => new { x.ApprovalId, x.SequenceNo }).IsUnique();
++        builder.HasIndex(x => x.Status);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index e3a5b32..cc19060 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Context;
+ using StackExchange.Redis;
+ using VirtualCompany.Application.Auditing;
+@@ -143,6 +144,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
++        services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+new file mode 100644
+index 0000000..adba882
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+@@ -0,0 +1,93 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Approvals;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/approvals")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class ApprovalsController : ControllerBase
++{
++    private readonly IApprovalRequestService _approvalRequestService;
++
++    public ApprovalsController(IApprovalRequestService approvalRequestService)
++    {
++        _approvalRequestService = approvalRequestService;
++    }
++
++    [HttpPost]
++    public async Task<ActionResult<ApprovalRequestDto>> CreateAsync(
++        Guid companyId,
++        [FromBody] CreateApprovalRequestCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _approvalRequestService.CreateAsync(companyId, command, cancellationToken);
++            return CreatedAtAction(nameof(CreateAsync), new { companyId, approvalId = result.Id }, result);
++        }
++        catch (ApprovalValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("{approvalId:guid}/decisions")]
++    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideAsync(
++        Guid companyId,
++        Guid approvalId,
++        [FromBody] ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (command.ApprovalId == Guid.Empty)
++        {
++            command = command with { ApprovalId = approvalId };
++        }
++
++        if (command.ApprovalId != approvalId)
++        {
++            return ValidationProblem(new Dictionary<string, string[]> { [nameof(command.ApprovalId)] = ["Approval id must match the route."] });
++        }
++
++        try
++        {
++            return Ok(await _approvalRequestService.DecideAsync(companyId, command, cancellationToken));
++        }
++        catch (ApprovalValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (ApprovalDecisionForbiddenException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Conflict(new ProblemDetails { Title = "Approval decision conflict", Detail = ex.Message, Status = StatusCodes.Status409Conflict });
++        }
++    }
++}
+END_OF_PATCH

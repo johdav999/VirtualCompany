@@ -1,0 +1,273 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+index 8b7f2b4..9fd0d2d 100644
+--- a/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentExecutionContracts.cs
+@@ -16,7 +16,8 @@ public sealed record ExecuteAgentToolResultDto(
+     Guid? ApprovalRequestId,
+     ToolExecutionDecisionDto PolicyDecision,
+     Dictionary<string, JsonNode?>? ExecutionResult,
+-    string Message);
++    string Message,
++    Dictionary<string, JsonNode?>? ApprovalDecisionChain = null);
+ 
+ public static class PolicyDecisionSchemaVersions
+ {
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index 10a7f4b..b2f0d2d 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -148,7 +148,8 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         ToolActionType actionType,
+         string? approvalTarget,
+         IDictionary<string, JsonNode?>? thresholdContext = null,
+-        IDictionary<string, JsonNode?>? policyDecision = null)
++        IDictionary<string, JsonNode?>? policyDecision = null,
++        IDictionary<string, JsonNode?>? decisionChain = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -187,6 +188,7 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+         Status = ApprovalRequestStatus.Pending;
+         ThresholdContext = CloneNodes(thresholdContext);
+         PolicyDecision = CloneNodes(policyDecision);
++        DecisionChain = CloneNodes(decisionChain);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -204,6 +206,7 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+     public ApprovalRequestStatus Status { get; private set; }
+     public Dictionary<string, JsonNode?> ThresholdContext { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> DecisionChain { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 9efbd08..a52c92c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -101,20 +101,23 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         {
+             var approvalRequest = new ApprovalRequest(
+                 Guid.NewGuid(),
+                 companyId,
+                 agentId,
+                 attempt.Id,
+                 membership.UserId,
+                 command.ToolName,
+                 ToolActionTypeValues.Parse(command.ActionType),
+                 TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
+                 BuildThresholdContext(command, decision),
+-                serializedDecision);
++                serializedDecision,
++                null);
++            var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, membership.UserId);
++            approvalRequest.SetDecisionChain(decisionChain);
+ 
+             _dbContext.ApprovalRequests.Add(approvalRequest);
+             attempt.MarkAwaitingApproval(approvalRequest.Id, serializedDecision);
+ 
+             await _auditEventWriter.WriteAsync(
+@@ -140,7 +143,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+                 approvalRequest.Id,
+                 decision,
+                 null,
+-                BuildCallerMessage(decision));
++                BuildCallerMessage(decision),
++                CloneNodes(decisionChain));
+         }
+ 
+         var result = await _companyToolExecutor.ExecuteAsync(
+@@ -257,6 +261,64 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return thresholdContext;
+     }
+ 
++    private static Dictionary<string, JsonNode?> BuildApprovalDecisionChain(
++        ExecuteAgentToolCommand command,
++        ToolExecutionDecisionDto decision,
++        Guid approvalRequestId,
++        Guid executionId,
++        Guid requestedByUserId)
++    {
++        var steps = new JsonArray
++        {
++            new JsonObject
++            {
++                ["step"] = "policy_evaluation",
++                ["outcome"] = decision.Outcome,
++                ["reasonCodes"] = JsonSerializer.SerializeToNode(decision.ReasonCodes),
++                ["evaluatedAtUtc"] = decision.Audit is null
++                    ? JsonValue.Create(DateTime.UtcNow)
++                    : JsonValue.Create(decision.Audit.EvaluatedAtUtc),
++                ["policyVersion"] = decision.Audit?.PolicyVersion,
++                ["correlationId"] = decision.Audit?.CorrelationId
++            },
++            new JsonObject
++            {
++                ["step"] = "approval_request_created",
++                ["outcome"] = "pending",
++                ["approvalRequestId"] = approvalRequestId,
++                ["requestedByUserId"] = requestedByUserId,
++                ["toolName"] = command.ToolName,
++                ["actionType"] = command.ActionType,
++                ["scope"] = command.Scope,
++                ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
++            }
++        };
++
++        var chain = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
++            ["approvalRequestId"] = JsonValue.Create(approvalRequestId),
++            ["executionId"] = JsonValue.Create(executionId),
++            ["status"] = JsonValue.Create("pending"),
++            ["currentStep"] = JsonValue.Create("approval_request_created"),
++            ["steps"] = steps
++        };
++
++        if (decision.ApprovalRequirement is not null)
++        {
++            chain["approvalRequirement"] = JsonSerializer.SerializeToNode(decision.ApprovalRequirement);
++        }
++
++        if (decision.ThresholdEvaluations is not null && decision.ThresholdEvaluations.Count > 0)
++        {
++            chain["thresholdEvaluations"] = JsonSerializer.SerializeToNode(decision.ThresholdEvaluations);
++        }
++
++        if (decision.Metadata.TryGetValue("approvalRequirementPolicy", out var approvalRequirementPolicy))
++        {
++            chain["approvalRequirementPolicy"] = approvalRequirementPolicy?.DeepClone();
++        }
++
++        return chain;
++    }
++
+     private static Dictionary<string, JsonNode?> SerializeDecision(ToolExecutionDecisionDto decision) =>
+         ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision);
+ 
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index b2f0d2d..cfcb7e7 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -211,6 +211,12 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
++    public void SetDecisionChain(IDictionary<string, JsonNode?>? decisionChain)
++    {
++        DecisionChain = CloneNodes(decisionChain);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1513df3..4abca1a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1054,6 +1054,11 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<App
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.DecisionChain)
++            .HasColumnName("decision_chain_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412223000_AddApprovalRequestDecisionChains.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412223000_AddApprovalRequestDecisionChains.cs
+new file mode 100644
+index 0000000..3319e3f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412223000_AddApprovalRequestDecisionChains.cs
+@@ -0,0 +1,45 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++using VirtualCompany.Infrastructure.Persistence;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260412223000_AddApprovalRequestDecisionChains")]
++public partial class AddApprovalRequestDecisionChains : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "decision_chain_json",
++                table: "approval_requests",
++                type: "jsonb",
++                nullable: false,
++                defaultValueSql: "'{}'::jsonb");
++        }
++        else
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "decision_chain_json",
++                table: "approval_requests",
++                type: "nvarchar(max)",
++                nullable: false,
++                defaultValueSql: "N'{}'");
++        }
++
++        migrationBuilder.CreateIndex(
++            name: "IX_approval_requests_CompanyId_ApprovalTarget_Status_CreatedUtc",
++            table: "approval_requests",
++            columns: new[] { "CompanyId", "ApprovalTarget", "Status", "CreatedUtc" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_approval_requests_CompanyId_ApprovalTarget_Status_CreatedUtc",
++            table: "approval_requests");
++
++        migrationBuilder.DropColumn(
++            name: "decision_chain_json",
++            table: "approval_requests");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+index 01943a2..6a91a46 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentExecutionPolicyGuardrailTests.cs
+@@ -196,6 +196,10 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("This sensitive action is pending approval and was not executed.", payload.Message);
+         Assert.NotNull(payload.ApprovalRequestId);
+         Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++        Assert.NotNull(payload.ApprovalDecisionChain);
++        Assert.Equal("pending", payload.ApprovalDecisionChain!["status"].GetString());
++        Assert.Equal("approval_request_created", payload.ApprovalDecisionChain["currentStep"].GetString());
++        Assert.Equal("policy_evaluation", payload.ApprovalDecisionChain["steps"][0].GetProperty("step").GetString());
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+@@ -209,6 +213,11 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         Assert.Equal("expenseUsd", approval.ThresholdContext["thresholdKey"]!.GetValue<string>());
+         Assert.Equal("execute", approval.ThresholdContext["actionType"]!.GetValue<string>());
+         Assert.Equal("awaiting_approval", approval.ThresholdContext["executionState"]!.GetValue<string>());
++        Assert.Equal("pending", approval.DecisionChain["status"]!.GetValue<string>());
++        Assert.Equal("approval_request_created", approval.DecisionChain["currentStep"]!.GetValue<string>());
++        Assert.Equal("policy_evaluation", approval.DecisionChain["steps"]![0]!["step"]!.GetValue<string>());
++        Assert.Equal(payload.ExecutionId, approval.DecisionChain["executionId"]!.GetValue<Guid>());
++        Assert.Equal(payload.ApprovalRequestId, approval.DecisionChain["approvalRequestId"]!.GetValue<Guid>());
+ 
+         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+         Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
+@@ -394,6 +403,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebAp
+         public Guid? ApprovalRequestId { get; set; }
+         public PolicyDecisionResponse PolicyDecision { get; set; } = new();
+         public Dictionary<string, JsonElement>? ExecutionResult { get; set; }
++        public Dictionary<string, JsonElement>? ApprovalDecisionChain { get; set; }
+         public string Message { get; set; } = string.Empty;
+     }
+ 
+END_OF_PATCH

@@ -223,6 +223,175 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
             await dbContext.Database.ExecuteSqlRawAsync("""CREATE INDEX [IX_approval_requests_CompanyId_Status_CreatedUtc] ON [approval_requests] ([CompanyId], [Status], [CreatedUtc]);""");
             await dbContext.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX [IX_approval_requests_ToolExecutionAttemptId] ON [approval_requests] ([ToolExecutionAttemptId]);""");
         }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "entity_type"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [entity_type] nvarchar(32) NOT NULL
+                    CONSTRAINT [DF_approval_requests_entity_type_startup] DEFAULT (N'action');
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "entity_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [entity_id] uniqueidentifier NOT NULL
+                    CONSTRAINT [DF_approval_requests_entity_id_startup] DEFAULT ('00000000-0000-0000-0000-000000000000');
+                """);
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [approval_requests]
+            SET [entity_id] = [ToolExecutionAttemptId]
+            WHERE [entity_id] = '00000000-0000-0000-0000-000000000000'
+              AND [ToolExecutionAttemptId] IS NOT NULL;
+            """);
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "requested_by_actor_type"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [requested_by_actor_type] nvarchar(64) NOT NULL
+                    CONSTRAINT [DF_approval_requests_requested_by_actor_type_startup] DEFAULT (N'user');
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "requested_by_actor_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [requested_by_actor_id] uniqueidentifier NOT NULL
+                    CONSTRAINT [DF_approval_requests_requested_by_actor_id_startup] DEFAULT ('00000000-0000-0000-0000-000000000000');
+                """);
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE [approval_requests]
+            SET [requested_by_actor_id] = [RequestedByUserId]
+            WHERE [requested_by_actor_id] = '00000000-0000-0000-0000-000000000000';
+            """);
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "approval_type"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [approval_type] nvarchar(100) NOT NULL
+                    CONSTRAINT [DF_approval_requests_approval_type_startup] DEFAULT (N'threshold');
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "required_role"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [approval_requests] ADD [required_role] nvarchar(100) NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "required_user_id"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [approval_requests] ADD [required_user_id] uniqueidentifier NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "decision_summary"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [approval_requests] ADD [decision_summary] nvarchar(2000) NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "decided_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("""ALTER TABLE [approval_requests] ADD [decided_at] datetime2 NULL;""");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "approval_requests", "decision_chain_json"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [approval_requests]
+                ADD [decision_chain_json] nvarchar(max) NOT NULL
+                    CONSTRAINT [DF_approval_requests_decision_chain_json_startup] DEFAULT (N'{}');
+                """);
+        }
+
+        if (!await SqlServerTableExistsAsync(connection, "approval_steps"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [approval_steps] (
+                    [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_approval_steps] PRIMARY KEY,
+                    [ApprovalId] uniqueidentifier NOT NULL,
+                    [sequence_no] int NOT NULL,
+                    [approver_type] nvarchar(32) NOT NULL,
+                    [approver_ref] nvarchar(200) NOT NULL,
+                    [Status] nvarchar(32) NOT NULL,
+                    [decided_by_user_id] uniqueidentifier NULL,
+                    [decided_at] datetime2 NULL,
+                    [comment] nvarchar(2000) NULL,
+                    CONSTRAINT [FK_approval_steps_approval_requests_ApprovalId]
+                        FOREIGN KEY ([ApprovalId]) REFERENCES [approval_requests] ([Id]) ON DELETE CASCADE
+                );
+                """);
+
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO [approval_steps] ([Id], [ApprovalId], [sequence_no], [approver_type], [approver_ref], [Status])
+                SELECT NEWID(), [Id], 1, N'role', COALESCE(NULLIF([ApprovalTarget], N''), N'finance_approver'), [Status]
+                FROM [approval_requests]
+                WHERE [Status] IN (N'pending', N'approved', N'rejected');
+                """);
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_requests_CompanyId_TargetEntity' AND object_id = OBJECT_ID(N'[approval_requests]'))
+            BEGIN
+                CREATE INDEX [IX_approval_requests_CompanyId_TargetEntity]
+                ON [approval_requests] ([CompanyId], [entity_type], [entity_id]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_requests_ToolExecutionAttemptId' AND object_id = OBJECT_ID(N'[approval_requests]'))
+            BEGIN
+                CREATE UNIQUE INDEX [IX_approval_requests_ToolExecutionAttemptId]
+                ON [approval_requests] ([ToolExecutionAttemptId])
+                WHERE [ToolExecutionAttemptId] IS NOT NULL;
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_steps_ApprovalId_sequence_no' AND object_id = OBJECT_ID(N'[approval_steps]'))
+            BEGIN
+                CREATE UNIQUE INDEX [IX_approval_steps_ApprovalId_sequence_no]
+                ON [approval_steps] ([ApprovalId], [sequence_no]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_steps_Status' AND object_id = OBJECT_ID(N'[approval_steps]'))
+            BEGIN
+                CREATE INDEX [IX_approval_steps_Status]
+                ON [approval_steps] ([Status]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_steps_ApprovalId_Status_sequence_no' AND object_id = OBJECT_ID(N'[approval_steps]'))
+            BEGIN
+                CREATE INDEX [IX_approval_steps_ApprovalId_Status_sequence_no]
+                ON [approval_steps] ([ApprovalId], [Status], [sequence_no]);
+            END
+            """);
     }
     finally
     {

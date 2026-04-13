@@ -1,0 +1,678 @@
+diff --git a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+index 2a5f4b1..58e9b37 100644
+--- a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
++++ b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+@@ -18,6 +18,12 @@ public sealed record CreateApprovalStepInput(
+     string ApproverType,
+     string ApproverRef);
+ 
++public sealed record ApprovalDecisionCommand(
++    Guid ApprovalId,
++    string Decision,
++    Guid? StepId = null,
++    string? Comment = null);
++
+ public sealed record ApprovalRequestDto(
+     Guid Id,
+     Guid CompanyId,
+@@ -32,18 +38,33 @@ public sealed record ApprovalRequestDto(
+     string Status,
+     Dictionary<string, JsonNode?> ThresholdContext,
+     IReadOnlyList<ApprovalStepDto> Steps,
++    ApprovalStepDto? CurrentStep,
+     DateTime CreatedAt);
+ 
+ public sealed record ApprovalStepDto(
+     Guid Id,
+     int SequenceNo,
+     string ApproverType,
+     string ApproverRef,
+-    string Status);
++    string Status,
++    Guid? DecidedByUserId = null,
++    DateTime? DecidedAt = null,
++    string? Comment = null);
++
++public sealed record ApprovalDecisionResultDto(
++    ApprovalRequestDto Approval,
++    ApprovalStepDto DecidedStep,
++    ApprovalStepDto? NextStep,
++    bool IsFinalized);
+ 
+ public interface IApprovalRequestService
+ {
+     Task<ApprovalRequestDto> CreateAsync(Guid companyId, CreateApprovalRequestCommand command, CancellationToken cancellationToken);
++    Task<ApprovalDecisionResultDto> DecideAsync(Guid companyId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
+ }
+ 
+ public sealed class ApprovalValidationException : Exception
+@@ -54,3 +75,10 @@ public sealed class ApprovalValidationException : Exception
+ 
+     public IReadOnlyDictionary<string, string[]> Errors { get; }
+ }
++
++public sealed class ApprovalDecisionForbiddenException : Exception
++{
++    public ApprovalDecisionForbiddenException(string message)
++        : base(message)
++    {
++    }
++}
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0a0c7e5..b26094b 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -69,6 +69,9 @@ public static class AuditEventActions
+     public const string MemoryItemExpired = "memory.item.expired";
+     public const string MemoryItemDeleted = "memory.item.deleted";
+     public const string ApprovalCreated = "approval.created";
++    public const string ApprovalStepApproved = "approval.step.approved";
++    public const string ApprovalStepRejected = "approval.step.rejected";
++    public const string ApprovalCompleted = "approval.completed";
+     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
+     public const string WorkflowInstanceStarted = "workflow.instance.started";
+     public const string WorkflowExceptionCreated = "workflow.exception.created";
+diff --git a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+index a5c5898..8f1ea69 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+@@ -297,11 +297,60 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+     public Company Company { get; private set; } = null!;
+     public IReadOnlyCollection<ApprovalStep> Steps => _steps;
+ 
++    public ApprovalStep? CurrentActionableStep =>
++        Status == ApprovalRequestStatus.Pending
++            ? _steps.OrderBy(step => step.SequenceNo).FirstOrDefault(step => step.Status == ApprovalStepStatus.Pending)
++            : null;
++
+     public void SetDecisionChain(IDictionary<string, JsonNode?>? decisionChain)
+     {
+         DecisionChain = CloneNodes(decisionChain);
+         UpdatedUtc = DateTime.UtcNow;
+     }
++
++    public ApprovalStep ApproveCurrentStep(Guid stepId, Guid decidedByUserId, string? comment)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be decided.");
++        }
++
++        var currentStep = CurrentActionableStep ?? throw new InvalidOperationException("Approval has no current actionable step.");
++        if (currentStep.Id != stepId)
++        {
++            throw new InvalidOperationException("Only the current approval step can be decided.");
++        }
++
++        currentStep.MarkApproved(decidedByUserId, comment);
++        if (_steps.All(step => step.Status == ApprovalStepStatus.Approved))
++        {
++            Status = ApprovalRequestStatus.Approved;
++            DecisionSummary = "Approval chain completed.";
++            DecidedUtc = DateTime.UtcNow;
++        }
++
++        RebuildDecisionChain();
++        UpdatedUtc = DateTime.UtcNow;
++        return currentStep;
++    }
++
++    public ApprovalStep RejectCurrentStep(Guid stepId, Guid decidedByUserId, string? comment)
++    {
++        if (Status != ApprovalRequestStatus.Pending)
++        {
++            throw new InvalidOperationException("Only pending approvals can be decided.");
++        }
++
++        var currentStep = CurrentActionableStep ?? throw new InvalidOperationException("Approval has no current actionable step.");
++        if (currentStep.Id != stepId)
++        {
++            throw new InvalidOperationException("Only the current approval step can be decided.");
++        }
++
++        currentStep.MarkRejected(decidedByUserId, comment);
++        Status = ApprovalRequestStatus.Rejected;
++        DecisionSummary = string.IsNullOrWhiteSpace(comment) ? "Approval chain rejected." : comment.Trim();
++        DecidedUtc = DateTime.UtcNow;
++        RebuildDecisionChain();
++        UpdatedUtc = DateTime.UtcNow;
++        return currentStep;
++    }
+ 
+     private static IReadOnlyList<ApprovalStepDefinition> NormalizeSteps(
+         string? requiredRole,
+@@ -390,6 +439,26 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
+                 })
+                 .ToArray<JsonNode?>())
+         };
++
++    private void RebuildDecisionChain()
++    {
++        DecisionChain = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
++            ["status"] = JsonValue.Create(Status.ToStorageValue()),
++            ["targetEntityType"] = JsonValue.Create(TargetEntityType),
++            ["targetEntityId"] = JsonValue.Create(TargetEntityId),
++            ["steps"] = new JsonArray(_steps.OrderBy(step => step.SequenceNo)
++                .Select(step => new JsonObject
++                {
++                    ["sequenceNo"] = step.SequenceNo,
++                    ["approverType"] = step.ApproverType.ToStorageValue(),
++                    ["approverRef"] = step.ApproverRef,
++                    ["status"] = step.Status.ToStorageValue(),
++                    ["decidedByUserId"] = step.DecidedByUserId,
++                    ["decidedAt"] = step.DecidedUtc
++                })
++                .ToArray<JsonNode?>())
++        };
++    }
+ }
+ 
+ public sealed record ApprovalStepDefinition(int SequenceNo, ApprovalStepApproverType ApproverType, string ApproverRef);
+@@ -446,6 +515,45 @@ public sealed class ApprovalStep
+     public string? Comment { get; private set; }
+     public ApprovalRequest Approval { get; private set; } = null!;
+ 
++    public void MarkApproved(Guid decidedByUserId, string? comment)
++    {
++        MarkDecided(ApprovalStepStatus.Approved, decidedByUserId, comment);
++    }
++
++    public void MarkRejected(Guid decidedByUserId, string? comment)
++    {
++        MarkDecided(ApprovalStepStatus.Rejected, decidedByUserId, comment);
++    }
++
++    private void MarkDecided(ApprovalStepStatus status, Guid decidedByUserId, string? comment)
++    {
++        if (decidedByUserId == Guid.Empty)
++        {
++            throw new ArgumentException("DecidedByUserId is required.", nameof(decidedByUserId));
++        }
++
++        if (Status != ApprovalStepStatus.Pending)
++        {
++            throw new InvalidOperationException("Approval step has already been decided.");
++        }
++
++        Status = status;
++        DecidedByUserId = decidedByUserId;
++        DecidedUtc = DateTime.UtcNow;
++        Comment = NormalizeOptional(comment, nameof(comment), CommentMaxLength);
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index ad01781..1f1e452 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -64,6 +64,16 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             var task = await _dbContext.WorkTasks.SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken);
+             task.UpdateStatus(WorkTaskStatus.AwaitingApproval);
+         }
++        else if (targetType == ApprovalTargetEntityType.Workflow)
++        {
++            var workflow = await _dbContext.WorkflowInstances.SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken);
++            workflow.UpdateState(WorkflowInstanceStatus.Blocked, workflow.CurrentStep);
++        }
++        else if (targetType == ApprovalTargetEntityType.Action)
++        {
++            var attempt = await _dbContext.ToolExecutionAttempts.SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken);
++            attempt.MarkAwaitingApproval(approval.Id, approval.PolicyDecision);
++        }
+ 
+         await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+@@ -91,9 +101,118 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         return ToDto(approval);
+     }
+ 
++    public async Task<ApprovalDecisionResultDto> DecideAsync(
++        Guid companyId,
++        ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        ValidateDecision(command);
++
++        var approval = await _dbContext.ApprovalRequests
++            .Include(x => x.Steps)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == command.ApprovalId, cancellationToken);
++
++        if (approval is null)
++        {
++            throw new KeyNotFoundException("Approval request not found.");
++        }
++
++        var currentStep = approval.CurrentActionableStep ?? throw new InvalidOperationException("Approval request has no current actionable step.");
++        if (command.StepId.HasValue && command.StepId.Value != currentStep.Id)
++        {
++            throw new InvalidOperationException("Only the current approval step can be decided.");
++        }
++
++        if (!CanDecide(currentStep, membership))
++        {
++            throw new ApprovalDecisionForbiddenException("The current user is not an approver for the current step.");
++        }
++
++        var rejected = string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(command.Decision, "rejected", StringComparison.OrdinalIgnoreCase);
++        var decidedStep = rejected
++            ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, command.Comment)
++            : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, command.Comment);
++
++        await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
++        await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
++
++        var finalized = approval.Status != ApprovalRequestStatus.Pending;
++        if (finalized)
++        {
++            await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new ApprovalDecisionResultDto(
++            ToDto(approval),
++            ToStepDto(decidedStep),
++            approval.CurrentActionableStep is { } nextStep ? ToStepDto(nextStep) : null,
++            finalized);
++    }
++
++    private async Task UpdateLinkedEntityAfterDecisionAsync(ApprovalRequest approval, CancellationToken cancellationToken)
++    {
++        var targetType = ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType);
++        if (targetType == ApprovalTargetEntityType.Task)
++        {
++            var task = await _dbContext.WorkTasks.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            if (approval.Status == ApprovalRequestStatus.Approved)
++            {
++                task.UpdateStatus(WorkTaskStatus.InProgress);
++            }
++            else if (approval.Status == ApprovalRequestStatus.Rejected)
++            {
++                task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
++            }
++        }
++        else if (targetType == ApprovalTargetEntityType.Workflow)
++        {
++            var workflow = await _dbContext.WorkflowInstances.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            if (approval.Status == ApprovalRequestStatus.Approved)
++            {
++                workflow.UpdateState(WorkflowInstanceStatus.Running, workflow.CurrentStep);
++            }
++            else if (approval.Status == ApprovalRequestStatus.Rejected)
++            {
++                workflow.UpdateState(WorkflowInstanceStatus.Failed, workflow.CurrentStep);
++            }
++        }
++        else if (targetType == ApprovalTargetEntityType.Action && approval.Status == ApprovalRequestStatus.Rejected)
++        {
++            var attempt = await _dbContext.ToolExecutionAttempts.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            attempt.MarkDenied(approval.PolicyDecision);
++        }
++    }
++
++    private static bool CanDecide(ApprovalStep step, ResolvedCompanyMembershipContext membership)
++    {
++        if (step.ApproverType == ApprovalStepApproverType.User)
++        {
++            return Guid.TryParse(step.ApproverRef, out var userId) && userId == membership.UserId;
++        }
++
++        if (step.ApproverType == ApprovalStepApproverType.Role)
++        {
++            return CompanyMembershipRoles.TryParse(step.ApproverRef, out var role) && role == membership.MembershipRole;
++        }
++
++        return false;
++    }
++
++    private static void ValidateDecision(ApprovalDecisionCommand command)
++    {
++        if (command.ApprovalId == Guid.Empty)
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.ApprovalId)] = ["Approval id is required."] });
++        }
++
++        if (!string.Equals(command.Decision, "approve", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(command.Decision, "approved", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) &&
++            !string.Equals(command.Decision, "rejected", StringComparison.OrdinalIgnoreCase))
++        {
++            throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.Decision)] = ["Decision must be approve or reject."] });
++        }
++    }
++
+     private async Task EnsureTargetExistsAsync(
+         Guid companyId,
+         ApprovalTargetEntityType targetType,
+@@ -190,14 +309,59 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         }
+     }
+ 
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+         {
+             throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+         }
++
++        return membership;
+     }
+ 
++    private async Task WriteDecisionAuditAsync(
++        ApprovalRequest approval,
++        ApprovalStep step,
++        Guid actorUserId,
++        bool rejected,
++        CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                approval.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                rejected ? AuditEventActions.ApprovalStepRejected : AuditEventActions.ApprovalStepApproved,
++                AuditTargetTypes.ApprovalRequest,
++                approval.Id.ToString("N"),
++                rejected ? AuditEventOutcomes.Denied : AuditEventOutcomes.Succeeded,
++                DataSources: ["approvals", "http_request"],
++                RationaleSummary: $"Approval step {step.SequenceNo} {(rejected ? "rejected" : "approved")}.",
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["approvalRequestId"] = approval.Id.ToString("N"),
++                    ["approvalStepId"] = step.Id.ToString("N"),
++                    ["sequenceNo"] = step.SequenceNo.ToString(),
++                    ["approverType"] = step.ApproverType.ToStorageValue(),
++                    ["approverRef"] = step.ApproverRef,
++                    ["targetEntityType"] = approval.TargetEntityType,
++                    ["targetEntityId"] = approval.TargetEntityId.ToString("N")
++                }),
++            cancellationToken);
++    }
++
++    private async Task WriteCompletionAuditAsync(ApprovalRequest approval, Guid actorUserId, CancellationToken cancellationToken)
++    {
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                approval.CompanyId,
++                AuditActorTypes.User,
++                actorUserId,
++                AuditEventActions.ApprovalCompleted,
++                AuditTargetTypes.ApprovalRequest,
++                approval.Id.ToString("N"),
++                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
++                DataSources: ["approvals", "http_request"],
++                RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}"),
++            cancellationToken);
++    }
++
+     private static ApprovalRequestDto ToDto(ApprovalRequest approval) =>
+         new(
+             approval.Id,
+@@ -212,9 +376,14 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             approval.RequiredUserId,
+             approval.Status.ToStorageValue(),
+             CloneNodes(approval.ThresholdContext),
+-            approval.Steps.OrderBy(step => step.SequenceNo).Select(step => new ApprovalStepDto(step.Id, step.SequenceNo, step.ApproverType.ToStorageValue(), step.ApproverRef, step.Status.ToStorageValue())).ToList(),
++            approval.Steps.OrderBy(step => step.SequenceNo).Select(ToStepDto).ToList(),
++            approval.CurrentActionableStep is { } currentStep ? ToStepDto(currentStep) : null,
+             approval.CreatedUtc);
+ 
++    private static ApprovalStepDto ToStepDto(ApprovalStep step) =>
++        new(step.Id, step.SequenceNo, step.ApproverType.ToStorageValue(), step.ApproverRef, step.Status.ToStorageValue(),
++            step.DecidedByUserId, step.DecidedUtc, step.Comment);
++
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
+         nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+index c1b2d55..3dd15fb 100644
+--- a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
++++ b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+@@ -38,4 +38,35 @@ public sealed class ApprovalsController : ControllerBase
+             return Forbid();
+         }
+     }
++
++    [HttpPost("{approvalId:guid}/decisions")]
++    public async Task<ActionResult<ApprovalDecisionResultDto>> DecideAsync(
++        Guid companyId,
++        Guid approvalId,
++        [FromBody] ApprovalDecisionCommand command,
++        CancellationToken cancellationToken)
++    {
++        if (command.ApprovalId == Guid.Empty)
++        {
++            command = command with { ApprovalId = approvalId };
++        }
++
++        if (command.ApprovalId != approvalId)
++        {
++            return ValidationProblem(new Dictionary<string, string[]> { [nameof(command.ApprovalId)] = ["Approval id must match the route."] });
++        }
++
++        try
++        {
++            return Ok(await _approvalRequestService.DecideAsync(companyId, command, cancellationToken));
++        }
++        catch (ApprovalValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (ApprovalDecisionForbiddenException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412224500_AddApprovalTargetChains.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412224500_AddApprovalTargetChains.cs
+index 538a4b6..3a9fc41 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412224500_AddApprovalTargetChains.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260412224500_AddApprovalTargetChains.cs
+@@ -122,6 +122,19 @@ public partial class AddApprovalTargetChains : Migration
+                     onDelete: ReferentialAction.Cascade);
+             });
+ 
++        migrationBuilder.Sql("""
++            INSERT INTO approval_steps (Id, ApprovalId, sequence_no, approver_type, approver_ref, Status)
++            SELECT NEWID(), Id, 1, 'role', COALESCE(NULLIF(ApprovalTarget, ''), 'finance_approver'), Status
++            FROM approval_requests
++            WHERE NOT EXISTS (
++                SELECT 1
++                FROM approval_steps
++                WHERE approval_steps.ApprovalId = approval_requests.Id
++            )
++            AND Status IN ('pending', 'approved', 'rejected')
++            """);
++
+         migrationBuilder.CreateIndex(
+             name: "IX_approval_requests_ToolExecutionAttemptId",
+             table: "approval_requests",
+@@ -146,6 +159,11 @@ public partial class AddApprovalTargetChains : Migration
+             name: "IX_approval_steps_Status",
+             table: "approval_steps",
+             column: "Status");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_approval_steps_ApprovalId_Status_sequence_no",
++            table: "approval_steps",
++            columns: new[] { "ApprovalId", "Status", "sequence_no" });
+     }
+ 
+     protected override void Down(MigrationBuilder migrationBuilder)
+@@ -163,6 +181,7 @@ public partial class AddApprovalTargetChains : Migration
+         migrationBuilder.DropColumn(name: "decision_summary", table: "approval_requests");
+         migrationBuilder.DropColumn(name: "decided_at", table: "approval_requests");
+         migrationBuilder.AlterColumn<Guid>(name: "ToolExecutionAttemptId", table: "approval_requests", type: "uniqueidentifier", nullable: false, defaultValue: Guid.Empty, oldClrType: typeof(Guid), oldType: "uniqueidentifier", oldNullable: true);
++        migrationBuilder.DropIndex(name: "IX_approval_steps_ApprovalId_Status_sequence_no", table: "approval_steps");
+         migrationBuilder.CreateIndex(name: "IX_approval_requests_ToolExecutionAttemptId", table: "approval_requests", column: "ToolExecutionAttemptId", unique: true);
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+new file mode 100644
+index 0000000..971a235
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ApprovalDecisionChainTests.cs
+@@ -0,0 +1,122 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ApprovalDecisionChainTests
++{
++    [Fact]
++    public void CreateForTarget_normalizes_required_role_to_single_step()
++    {
++        var approval = CreateApproval(requiredRole: "finance_approver");
++
++        var step = Assert.Single(approval.Steps);
++        Assert.Equal(ApprovalStepApproverType.Role, step.ApproverType);
++        Assert.Equal("finance_approver", step.ApproverRef);
++        Assert.Equal(step.Id, approval.CurrentActionableStep!.Id);
++    }
++
++    [Fact]
++    public void CreateForTarget_normalizes_required_user_to_single_step()
++    {
++        var userId = Guid.NewGuid();
++        var approval = CreateApproval(requiredUserId: userId);
++
++        var step = Assert.Single(approval.Steps);
++        Assert.Equal(ApprovalStepApproverType.User, step.ApproverType);
++        Assert.Equal(userId.ToString("N"), step.ApproverRef);
++    }
++
++    [Fact]
++    public void CreateForTarget_orders_multi_step_chain()
++    {
++        var userId = Guid.NewGuid();
++        var approval = CreateApproval(steps:
++        [
++            new ApprovalStepDefinition(2, ApprovalStepApproverType.User, userId.ToString("N")),
++            new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "manager")
++        ]);
++
++        Assert.Equal([1, 2], approval.Steps.OrderBy(x => x.SequenceNo).Select(x => x.SequenceNo));
++        Assert.Equal(1, approval.CurrentActionableStep!.SequenceNo);
++    }
++
++    [Fact]
++    public void CreateForTarget_rejects_missing_targeting_mode()
++    {
++        Assert.Throws<ArgumentException>(() => CreateApproval());
++    }
++
++    [Fact]
++    public void CreateForTarget_rejects_mixed_targeting_modes()
++    {
++        Assert.Throws<ArgumentException>(() => CreateApproval(
++            requiredRole: "manager",
++            steps: [new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "finance_approver")]));
++    }
++
++    [Fact]
++    public void ApproveCurrentStep_prevents_out_of_order_decisions()
++    {
++        var approval = CreateApproval(steps:
++        [
++            new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "manager"),
++            new ApprovalStepDefinition(2, ApprovalStepApproverType.Role, "finance_approver")
++        ]);
++
++        var secondStep = approval.Steps.Single(x => x.SequenceNo == 2);
++
++        Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(secondStep.Id, Guid.NewGuid(), null));
++    }
++
++    [Fact]
++    public void Approving_final_step_marks_approval_approved()
++    {
++        var approval = CreateApproval(steps:
++        [
++            new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "manager"),
++            new ApprovalStepDefinition(2, ApprovalStepApproverType.Role, "finance_approver")
++        ]);
++
++        approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "ok");
++        Assert.Equal(ApprovalRequestStatus.Pending, approval.Status);
++        Assert.Equal(2, approval.CurrentActionableStep!.SequenceNo);
++
++        approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "ok");
++
++        Assert.Equal(ApprovalRequestStatus.Approved, approval.Status);
++        Assert.Null(approval.CurrentActionableStep);
++        Assert.All(approval.Steps, step => Assert.Equal(ApprovalStepStatus.Approved, step.Status));
++        Assert.NotNull(approval.DecidedUtc);
++    }
++
++    [Fact]
++    public void Rejecting_active_step_marks_approval_rejected()
++    {
++        var approval = CreateApproval(steps:
++        [
++            new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "manager"),
++            new ApprovalStepDefinition(2, ApprovalStepApproverType.Role, "finance_approver")
++        ]);
++
++        approval.RejectCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "no");
++
++        Assert.Equal(ApprovalRequestStatus.Rejected, approval.Status);
++        Assert.Equal("no", approval.DecisionSummary);
++        Assert.Null(approval.CurrentActionableStep);
++    }
++
++    private static ApprovalRequest CreateApproval(
++        string? requiredRole = null,
++        Guid? requiredUserId = null,
++        IEnumerable<ApprovalStepDefinition>? steps = null) =>
++        ApprovalRequest.CreateForTarget(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            ApprovalTargetEntityType.Task,
++            Guid.NewGuid(),
++            "user",
++            Guid.NewGuid(),
++            "threshold",
++            new Dictionary<string, JsonNode?>
++            {
++                ["amount"] = JsonValue.Create(100)
++            },
++            requiredRole,
++            requiredUserId,
++            steps ?? []);
++}
+END_OF_PATCH

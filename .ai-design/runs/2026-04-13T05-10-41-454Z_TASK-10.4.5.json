@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-10.4.5",
+  "promptPath": ".ai-design/prompts/TASK-10.4.5.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T05:10:41.454Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T05-10-41-454Z_TASK-10.4.5_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T05-10-41-454Z_TASK-10.4.5.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T05:15:06.363Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "lureClassification);\n@@ -38,6 +39,7 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(3, AssertScopeValue(entry.Scope, \"MaxAttempts\"));\n         Assert.Equal(companyId, AssertScopeValue(entry.Scope, \"CompanyId\"));\n         Assert.Equal(\"corr-123\", AssertScopeValue(entry.Scope, \"CorrelationId\"));\n+        Assert.Equal(\"idem-123\", AssertScopeValue(entry.Scope, \"IdempotencyKey\"));\n     }\n@@ -178,6 +180,28 @@ public sealed class BackgroundJobExecutorTests\n         Assert.True(classification.IsRetryable());\n     }\n \n+    [Fact]\n+    public async Task ExecuteAsync_derives_stable_idempotency_key_from_logical_execution_identity()\n+    {\n+        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();\n+        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());\n+        var companyId = Guid.NewGuid();\n+\n+        var first = await executor.ExecuteAsync(\n+            new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 1, 3, companyId, \"corr-stable\"),\n+            _ => Task.CompletedTask,\n+            TimeSpan.Zero,\n+            CancellationToken.None);\n+        var retry = await executor.ExecuteAsync(\n+            new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 2, 3, companyId, \"corr-stable\"),\n+            _ => Task.CompletedTask,\n+            TimeSpan.Zero,\n+            CancellationToken.None);\n+\n+        Assert.Equal(first.IdempotencyKey, retry.IdempotencyKey);\n+        Assert.Equal(\"corr-stable\", retry.CorrelationId);\n+        Assert.NotEqual(first.CorrelationId, (await executor.ExecuteAsync(new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 1, 3, companyId), _ => Task.CompletedTask, TimeSpan.Zero, CancellationToken.None)).CorrelationId);\n+    }\n+\n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\n         scope.TryGetValue(key, out var value)\n             ? value\nEND_OF_PATCH\n",
+  "stderrTail": ";\n@@ -38,6 +39,7 @@ public sealed class BackgroundJobExecutorTests\n         Assert.Equal(3, AssertScopeValue(entry.Scope, \"MaxAttempts\"));\n         Assert.Equal(companyId, AssertScopeValue(entry.Scope, \"CompanyId\"));\n         Assert.Equal(\"corr-123\", AssertScopeValue(entry.Scope, \"CorrelationId\"));\n+        Assert.Equal(\"idem-123\", AssertScopeValue(entry.Scope, \"IdempotencyKey\"));\n     }\n@@ -178,6 +180,28 @@ public sealed class BackgroundJobExecutorTests\n         Assert.True(classification.IsRetryable());\n     }\n \n+    [Fact]\n+    public async Task ExecuteAsync_derives_stable_idempotency_key_from_logical_execution_identity()\n+    {\n+        var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();\n+        var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());\n+        var companyId = Guid.NewGuid();\n+\n+        var first = await executor.ExecuteAsync(\n+            new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 1, 3, companyId, \"corr-stable\"),\n+            _ => Task.CompletedTask,\n+            TimeSpan.Zero,\n+            CancellationToken.None);\n+        var retry = await executor.ExecuteAsync(\n+            new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 2, 3, companyId, \"corr-stable\"),\n+            _ => Task.CompletedTask,\n+            TimeSpan.Zero,\n+            CancellationToken.None);\n+\n+        Assert.Equal(first.IdempotencyKey, retry.IdempotencyKey);\n+        Assert.Equal(\"corr-stable\", retry.CorrelationId);\n+        Assert.NotEqual(first.CorrelationId, (await executor.ExecuteAsync(new BackgroundJobExecutionContext(\"workflow-progression:advance-instance\", 1, 3, companyId), _ => Task.CompletedTask, TimeSpan.Zero, CancellationToken.None)).CorrelationId);\n+    }\n+\n     private static object? AssertScopeValue(IReadOnlyDictionary<string, object?> scope, string key) =>\n         scope.TryGetValue(key, out var value)\n             ? value\nEND_OF_PATCH\ntokens used\n88,207\n",
+  "verbosityMode": "summary"
+}

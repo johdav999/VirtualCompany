@@ -1,0 +1,873 @@
+diff --git a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+index 5e0b7c1..4cf0a1a 100644
+--- a/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
++++ b/src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+@@ -38,9 +38,18 @@ public sealed record ApprovalRequestDto(
+     Dictionary<string, JsonNode?> ThresholdContext,
+     IReadOnlyList<ApprovalStepDto> Steps,
+     ApprovalStepDto? CurrentStep,
++    string? DecisionSummary,
++    string RationaleSummary,
++    string AffectedDataSummary,
++    IReadOnlyList<ApprovalAffectedEntityDto> AffectedEntities,
++    string? ThresholdSummary,
+     DateTime CreatedAt);
+ 
++public sealed record ApprovalAffectedEntityDto(
++    string EntityType,
++    Guid EntityId,
++    string Label);
++
+ public sealed record ApprovalStepDto(
+     Guid Id,
+     int SequenceNo,
+@@ -54,6 +63,8 @@ public sealed record ApprovalDecisionResultDto(
+ 
+ public interface IApprovalRequestService
+ {
++    Task<IReadOnlyList<ApprovalRequestDto>> ListAsync(Guid companyId, string? status, CancellationToken cancellationToken);
++    Task<ApprovalRequestDto> GetAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken);
+     Task<ApprovalRequestDto> CreateAsync(Guid companyId, CreateApprovalRequestCommand command, CancellationToken cancellationToken);
+     Task<ApprovalDecisionResultDto> DecideAsync(Guid companyId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+index 7a6ad1c..f421f87 100644
+--- a/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
++++ b/src/VirtualCompany.Api/Controllers/ApprovalsController.cs
+@@ -21,6 +21,35 @@ public sealed class ApprovalsController
+         _approvalRequestService = approvalRequestService;
+     }
+ 
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<ApprovalRequestDto>>> ListAsync(
++        Guid companyId,
++        CancellationToken cancellationToken,
++        [FromQuery] string? status = null)
++    {
++        try
++        {
++            return Ok(await _approvalRequestService.ListAsync(companyId, status, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{approvalId:guid}")]
++    public async Task<ActionResult<ApprovalRequestDto>> GetAsync(
++        Guid companyId,
++        Guid approvalId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _approvalRequestService.GetAsync(companyId, approvalId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++
+     [HttpPost]
+     public async Task<ActionResult<ApprovalRequestDto>> CreateAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 3ee84e1..b47e128 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -25,6 +25,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         _companyToolExecutor = companyToolExecutor;
+     }
+ 
++    private const string DefaultRationaleSummary = "This action exceeded a configured approval threshold.";
++    private const string DefaultAffectedDataSummary = "Affected data details unavailable.";
++    private const int SummaryMaxLength = 220;
++
+     public async Task<ApprovalRequestDto> CreateAsync(
+         Guid companyId,
+         CreateApprovalRequestCommand command,
+@@ -101,7 +105,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        return ToDto(approval);
++        return await ToDtoAsync(approval, cancellationToken);
+     }
+ 
+     public async Task<ApprovalDecisionResultDto> DecideAsync(
+@@ -171,10 +175,54 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+         return new ApprovalDecisionResultDto(
+-            ToDto(approval),
++            await ToDtoAsync(approval, cancellationToken),
+             ToStepDto(decidedStep),
+             approval.CurrentActionableStep is { } nextStep ? ToStepDto(nextStep) : null,
+             finalized);
+     }
+ 
++    public async Task<IReadOnlyList<ApprovalRequestDto>> ListAsync(
++        Guid companyId,
++        string? status,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var query = _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Include(x => x.Steps)
++            .Where(x => x.CompanyId == companyId);
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            var parsedStatus = ApprovalRequestStatusValues.Parse(status);
++            query = query.Where(x => x.Status == parsedStatus);
++        }
++
++        var approvals = await query
++            .OrderByDescending(x => x.CreatedUtc)
++            .ToListAsync(cancellationToken);
++
++        var contexts = await BuildSummaryContextsAsync(companyId, approvals, cancellationToken);
++        return approvals
++            .Select(approval => ToDto(approval, contexts.GetValueOrDefault(approval.Id)))
++            .ToList();
++    }
++
++    public async Task<ApprovalRequestDto> GetAsync(
++        Guid companyId,
++        Guid approvalId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var approval = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Include(x => x.Steps)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == approvalId, cancellationToken);
++
++        if (approval is null)
++        {
++            throw new KeyNotFoundException("Approval request not found.");
++        }
++
++        return await ToDtoAsync(approval, cancellationToken);
++    }
++
+     private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionAsync(
+         ApprovalRequest approval,
+         CancellationToken cancellationToken)
+@@ -519,8 +567,166 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             cancellationToken);
+     }
+ 
+-    private static ApprovalRequestDto ToDto(ApprovalRequest approval) =>
++    private async Task<ApprovalRequestDto> ToDtoAsync(
++        ApprovalRequest approval,
++        CancellationToken cancellationToken)
++    {
++        var contexts = await BuildSummaryContextsAsync(approval.CompanyId, [approval], cancellationToken);
++        return ToDto(approval, contexts.GetValueOrDefault(approval.Id));
++    }
++
++    private async Task<IReadOnlyDictionary<Guid, ApprovalSummaryContext>> BuildSummaryContextsAsync(
++        Guid companyId,
++        IReadOnlyCollection<ApprovalRequest> approvals,
++        CancellationToken cancellationToken)
++    {
++        if (approvals.Count == 0)
++        {
++            return new Dictionary<Guid, ApprovalSummaryContext>();
++        }
++
++        var taskIds = approvals
++            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityTypeValues.Task, StringComparison.OrdinalIgnoreCase))
++            .Select(x => x.TargetEntityId)
++            .Distinct()
++            .ToList();
++        var workflowIds = approvals
++            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityTypeValues.Workflow, StringComparison.OrdinalIgnoreCase))
++            .Select(x => x.TargetEntityId)
++            .Distinct()
++            .ToList();
++        var actionIds = approvals
++            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityTypeValues.Action, StringComparison.OrdinalIgnoreCase))
++            .Select(x => x.TargetEntityId)
++            .Distinct()
++            .ToList();
++
++        var tasks = taskIds.Count == 0
++            ? new Dictionary<Guid, WorkTask>()
++            : await _dbContext.WorkTasks
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && taskIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, cancellationToken);
++
++        var workflows = workflowIds.Count == 0
++            ? new Dictionary<Guid, WorkflowInstance>()
++            : await _dbContext.WorkflowInstances
++                .AsNoTracking()
++                .Include(x => x.Definition)
++                .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, cancellationToken);
++
++        var actions = actionIds.Count == 0
++            ? new Dictionary<Guid, ToolExecutionAttempt>()
++            : await _dbContext.ToolExecutionAttempts
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && actionIds.Contains(x.Id))
++                .ToDictionaryAsync(x => x.Id, cancellationToken);
++
++        return approvals.ToDictionary(
++            approval => approval.Id,
++            approval =>
++            {
++                if (tasks.TryGetValue(approval.TargetEntityId, out var task))
++                {
++                    return new ApprovalSummaryContext(
++                        task.RationaleSummary,
++                        $"Task: {task.Title}",
++                        [new ApprovalAffectedEntityDto(ApprovalTargetEntityTypeValues.Task, task.Id, task.Title)]);
++                }
++
++                if (workflows.TryGetValue(approval.TargetEntityId, out var workflow))
++                {
++                    var label = string.IsNullOrWhiteSpace(workflow.CurrentStep)
++                        ? workflow.Definition.Name
++                        : $"{workflow.Definition.Name} ({workflow.CurrentStep})";
++                    return new ApprovalSummaryContext(
++                        TryReadString(workflow.ContextJson, "rationaleSummary", "rationale"),
++                        $"Workflow: {label}",
++                        [new ApprovalAffectedEntityDto(ApprovalTargetEntityTypeValues.Workflow, workflow.Id, label)]);
++                }
++
++                if (actions.TryGetValue(approval.TargetEntityId, out var action))
++                {
++                    var actionLabel = string.IsNullOrWhiteSpace(action.Scope)
++                        ? $"{action.ToolName} {action.ActionType.ToStorageValue()}"
++                        : $"{action.ToolName} {action.ActionType.ToStorageValue()} ({action.Scope})";
++                    return new ApprovalSummaryContext(
++                        TryReadString(action.PolicyDecision, "explanation", "summary", "message"),
++                        $"Action: {actionLabel}",
++                        [new ApprovalAffectedEntityDto(ApprovalTargetEntityTypeValues.Action, action.Id, actionLabel)]);
++                }
++
++                return new ApprovalSummaryContext(
++                    null,
++                    $"{ToDisplayName(approval.TargetEntityType)}: {approval.TargetEntityId:N}",
++                    [new ApprovalAffectedEntityDto(approval.TargetEntityType, approval.TargetEntityId, ToDisplayName(approval.TargetEntityType))]);
++            });
++    }
++
++    private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)
++    {
++        var thresholdSummary = BuildThresholdSummary(approval.ThresholdContext);
++        var rationaleSummary = Truncate(
++            FirstNonEmpty(
++                summaryContext?.RationaleSummary,
++                TryReadString(approval.PolicyDecision, "explanation", "summary", "message"),
++                TryReadString(approval.ThresholdContext, "rationaleSummary", "rationale", "explanation"),
++                thresholdSummary is null ? null : DefaultRationaleSummary,
++                DefaultRationaleSummary),
++            SummaryMaxLength);
++        var affectedDataSummary = Truncate(summaryContext?.AffectedDataSummary ?? DefaultAffectedDataSummary, SummaryMaxLength);
++
++        return
+         new(
+             approval.Id,
+             approval.CompanyId,
+@@ -536,7 +742,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             CloneNodes(approval.ThresholdContext),
+             approval.Steps.OrderBy(step => step.SequenceNo).Select(ToStepDto).ToList(),
+             approval.CurrentActionableStep is { } currentStep ? ToStepDto(currentStep) : null,
+-            approval.CreatedUtc);
++            approval.DecisionSummary,
++            rationaleSummary,
++            affectedDataSummary,
++            summaryContext?.AffectedEntities ?? [],
++            thresholdSummary,
++            approval.CreatedUtc);
++    }
++
++    private static string? BuildThresholdSummary(IReadOnlyDictionary<string, JsonNode?> thresholdContext)
++    {
++        var thresholdKey = TryReadString(thresholdContext, "thresholdKey");
++        var thresholdValue = TryReadString(thresholdContext, "thresholdValue");
++        var configuredThreshold = TryReadString(thresholdContext, "configuredThreshold");
++
++        if (!string.IsNullOrWhiteSpace(thresholdKey) && !string.IsNullOrWhiteSpace(thresholdValue))
++        {
++            return string.IsNullOrWhiteSpace(configuredThreshold)
++                ? $"Threshold: {thresholdKey} {thresholdValue}"
++                : $"Threshold: {thresholdKey} {thresholdValue} (configured {configuredThreshold})";
++        }
++
++        var approvalTarget = TryReadString(thresholdContext, "approvalTarget");
++        if (!string.IsNullOrWhiteSpace(approvalTarget))
++        {
++            return $"Approval target: {approvalTarget}";
++        }
++
++        return thresholdContext.Count > 0 ? "Configured approval threshold matched." : null;
++    }
++
++    private static string? TryReadString(IReadOnlyDictionary<string, JsonNode?> nodes, params string[] keys)
++    {
++        foreach (var key in keys)
++        {
++            if (!nodes.TryGetValue(key, out var node) || node is null)
++            {
++                continue;
++            }
++
++            if (node is JsonValue value && value.TryGetValue<string>(out var stringValue) && !string.IsNullOrWhiteSpace(stringValue))
++            {
++                return stringValue.Trim();
++            }
++
++            var text = node.ToJsonString();
++            if (!string.IsNullOrWhiteSpace(text))
++            {
++                return text.Trim().Trim('"');
++            }
++        }
++
++        return null;
++    }
++
++    private static string FirstNonEmpty(params string?[] values) =>
++        values.First(value => !string.IsNullOrWhiteSpace(value))!.Trim();
++
++    private static string Truncate(string value, int maxLength) =>
++        value.Length <= maxLength ? value : value[..maxLength].TrimEnd() + "...";
++
++    private static string ToDisplayName(string entityType) =>
++        entityType switch
++        {
++            var value when string.Equals(value, ApprovalTargetEntityTypeValues.Task, StringComparison.OrdinalIgnoreCase) => "Task",
++            var value when string.Equals(value, ApprovalTargetEntityTypeValues.Workflow, StringComparison.OrdinalIgnoreCase) => "Workflow",
++            var value when string.Equals(value, ApprovalTargetEntityTypeValues.Action, StringComparison.OrdinalIgnoreCase) => "Action",
++            _ => entityType
++        };
+ 
+     private static Dictionary<string, JsonNode?> BuildBlockedApprovalPolicyDecision(ApprovalRequest approval)
+     {
+@@ -594,6 +801,11 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+         pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
++    private sealed record ApprovalSummaryContext(
++        string? RationaleSummary,
++        string AffectedDataSummary,
++        IReadOnlyList<ApprovalAffectedEntityDto> AffectedEntities);
++
+     private sealed record LinkedEntityStateTransition(
+         string AuditTargetType,
+         string TargetId,
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 9a54ea9..3449c7b 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -38,6 +38,11 @@ builder.Services.AddScoped(sp => new WorkflowApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new ApprovalApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 940029d..833a50c 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -30,6 +30,11 @@
+                 <span class="bi bi-diagram-3" aria-hidden="true"></span> Workflows
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="approvals">
++                <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
++            </NavLink>
++        </div>
+     </nav>
+ </div>
+ 
+diff --git a/src/VirtualCompany.Web/Services/ApprovalApiClient.cs b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+new file mode 100644
+index 0000000..09b5f21
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+@@ -0,0 +1,143 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class ApprovalApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public ApprovalApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<IReadOnlyList<ApprovalRequestViewModel>> ListAsync(
++        Guid companyId,
++        string? status = "pending",
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<IReadOnlyList<ApprovalRequestViewModel>>(OfflineApprovals(companyId));
++        }
++
++        var uri = string.IsNullOrWhiteSpace(status)
++            ? $"api/companies/{companyId}/approvals"
++            : $"api/companies/{companyId}/approvals?status={Uri.EscapeDataString(status)}";
++        return GetAsync<IReadOnlyList<ApprovalRequestViewModel>>(uri, cancellationToken);
++    }
++
++    public Task<ApprovalRequestViewModel> GetAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineApprovals(companyId).Single(x => x.Id == approvalId));
++        }
++
++        return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/{approvalId}", cancellationToken);
++    }
++
++    public Task<ApprovalDecisionResultViewModel> DecideAsync(
++        Guid companyId,
++        Guid approvalId,
++        ApprovalDecisionRequest request,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var approval = OfflineApprovals(companyId).Single(x => x.Id == approvalId);
++            approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
++            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, IsFinalized = true });
++        }
++
++        return SendAsync<ApprovalDecisionResultViewModel>(
++            HttpMethod.Post,
++            $"api/companies/{companyId}/approvals/{approvalId}/decisions",
++            request,
++            cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri)
++            {
++                Content = JsonContent.Create(payload)
++            };
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
++            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
++    [
++        new()
++        {
++            Id = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"),
++            CompanyId = companyId,
++            TargetEntityType = "task",
++            TargetEntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
++            ApprovalType = "threshold",
++            Status = "pending",
++            RationaleSummary = "This action exceeded a configured approval threshold.",
++            AffectedDataSummary = "Task: Vendor payment run for April",
++            AffectedEntities = [new ApprovalAffectedEntityViewModel { EntityType = "task", EntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"), Label = "Vendor payment run for April" }],
++            ThresholdSummary = "Threshold: amount 25000 (configured 10000)",
++            CreatedAt = DateTime.UtcNow
++        }
++    ];
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class ApprovalRequestViewModel
++{
++    public Guid Id { get; set; }
++    public Guid CompanyId { get; set; }
++    public string TargetEntityType { get; set; } = string.Empty;
++    public Guid TargetEntityId { get; set; }
++    public string RequestedByActorType { get; set; } = string.Empty;
++    public Guid RequestedByActorId { get; set; }
++    public string ApprovalType { get; set; } = string.Empty;
++    public string? RequiredRole { get; set; }
++    public Guid? RequiredUserId { get; set; }
++    public string Status { get; set; } = string.Empty;
++    public Dictionary<string, JsonNode?> ThresholdContext { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public List<ApprovalStepViewModel> Steps { get; set; } = [];
++    public ApprovalStepViewModel? CurrentStep { get; set; }
++    public string? DecisionSummary { get; set; }
++    public string RationaleSummary { get; set; } = string.Empty;
++    public string AffectedDataSummary { get; set; } = string.Empty;
++    public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];
++    public string? ThresholdSummary { get; set; }
++    public DateTime CreatedAt { get; set; }
++}
++
++public sealed class ApprovalAffectedEntityViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public Guid EntityId { get; set; }
++    public string Label { get; set; } = string.Empty;
++}
++
++public sealed class ApprovalStepViewModel
++{
++    public Guid Id { get; set; }
++    public int SequenceNo { get; set; }
++    public string ApproverType { get; set; } = string.Empty;
++    public string ApproverRef { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public Guid? DecidedByUserId { get; set; }
++    public DateTime? DecidedAt { get; set; }
++    public string? Comment { get; set; }
++}
++
++public sealed class ApprovalDecisionRequest
++{
++    public Guid ApprovalId { get; set; }
++    public string Decision { get; set; } = string.Empty;
++    public Guid? StepId { get; set; }
++    public string? Comment { get; set; }
++}
++
++public sealed class ApprovalDecisionResultViewModel
++{
++    public ApprovalRequestViewModel Approval { get; set; } = new();
++    public ApprovalStepViewModel? DecidedStep { get; set; }
++    public ApprovalStepViewModel? NextStep { get; set; }
++    public bool IsFinalized { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Approvals.razor b/src/VirtualCompany.Web/Pages/Approvals.razor
+new file mode 100644
+index 0000000..58fe295
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Approvals.razor
+@@ -0,0 +1,219 @@
++@page "/approvals"
++@inject ApprovalApiClient ApprovalApiClient
++@inject OnboardingApiClient OnboardingApiClient
++@inject NavigationManager Navigation
++@using Microsoft.AspNetCore.Components
++
++<PageTitle>Approvals</PageTitle>
++
++@if (isLoading)
++{
++    <section class="py-4">
++        <h1>Approval inbox</h1>
++        <p class="text-body-secondary mb-0">Loading approval requests...</p>
++    </section>
++}
++else if (CompanyId is null)
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <h1>Choose a company approval inbox</h1>
++                <p class="lead mb-3">Approvals are scoped to a company workspace.</p>
++
++                @if (ActiveMemberships.Count > 0)
++                {
++                    <div class="template-grid mt-4">
++                        @foreach (var membership in ActiveMemberships)
++                        {
++                            <a class="template-card text-decoration-none text-reset" href="@($"/approvals?companyId={membership.CompanyId}")">
++                                <strong>@membership.CompanyName</strong>
++                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
++                            </a>
++                        }
++                    </div>
++                }
++                else
++                {
++                    <p class="text-body-secondary mb-0">No active company membership is available.</p>
++                }
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++            </div>
++        </div>
++    </section>
++}
++else
++{
++    <section class="py-4 dashboard-hero">
++        <div class="dashboard-shell">
++            <div class="wizard-card dashboard-summary">
++                <span class="dashboard-kicker">Approval inbox</span>
++                <h1>@(companyAccess?.CompanyName ?? "Approvals")</h1>
++                <p class="text-body-secondary mb-0">Review the rationale and affected data before deciding.</p>
++
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
++                }
++
++                @if (approvals.Count == 0)
++                {
++                    <p class="text-body-secondary mt-4 mb-0">No pending approvals.</p>
++                }
++                else
++                {
++                    <div class="list-group mt-4">
++                        @foreach (var approval in approvals)
++                        {
++                            <button type="button"
++                                    class="@GetApprovalListItemClass(approval)"
++                                    @onclick="() => SelectApprovalAsync(approval.Id)">
++                                <div class="d-flex w-100 justify-content-between gap-3">
++                                    <div>
++                                        <strong>@approval.ApprovalType approval</strong>
++                                        <div class="text-body-secondary small mt-1">@approval.RationaleSummary</div>
++                                        <div class="small mt-2">@approval.AffectedDataSummary</div>
++                                    </div>
++                                    <span class="badge text-bg-light align-self-start">@approval.Status</span>
++                                </div>
++                            </button>
++                        }
++                    </div>
++                }
++            </div>
++
++            <div class="wizard-card wizard-card--compact">
++                @if (selectedApproval is null)
++                {
++                    <h2 class="h5">Approval detail</h2>
++                    <p class="text-body-secondary mb-0">Select an approval to review the rationale and affected data.</p>
++                }
++                else
++                {
++                    <h2 class="h5">Approval detail</h2>
++                    <dl class="mb-4">
++                        <dt>Status</dt>
++                        <dd>@selectedApproval.Status</dd>
++                        <dt>Requested</dt>
++                        <dd>@selectedApproval.CreatedAt.ToLocalTime().ToString("g")</dd>
++                        <dt>Target</dt>
++                        <dd>@selectedApproval.TargetEntityType</dd>
++                    </dl>
++
++                    <h3 class="h6">Rationale</h3>
++                    <p class="text-body-secondary">@selectedApproval.RationaleSummary</p>
++
++                    <h3 class="h6">Affected data</h3>
++                    <p class="text-body-secondary">@selectedApproval.AffectedDataSummary</p>
++                    @if (selectedApproval.AffectedEntities.Count > 0)
++                    {
++                        <div class="d-flex flex-wrap gap-2 mb-3">
++                            @foreach (var entity in selectedApproval.AffectedEntities)
++                            {
++                                <span class="badge text-bg-light">@entity.EntityType: @entity.Label</span>
++                            }
++                        </div>
++                    }
++
++                    @if (!string.IsNullOrWhiteSpace(selectedApproval.ThresholdSummary))
++                    {
++                        <h3 class="h6">Threshold context</h3>
++                        <p class="text-body-secondary">@selectedApproval.ThresholdSummary</p>
++                    }
++
++                    @if (selectedApproval.CurrentStep is not null && IsPending(selectedApproval))
++                    {
++                        <div class="mb-3">
++                            <label class="form-label" for="approval-comment">Decision comment</label>
++                            <textarea id="approval-comment" class="form-control" rows="3" @bind="decisionComment"></textarea>
++                        </div>
++                        <div class="dashboard-actions">
++                            <button class="btn btn-primary" @onclick="() => DecideAsync("approve")" disabled="@isDeciding">Approve</button>
++                            <button class="btn btn-outline-secondary" @onclick="() => DecideAsync("reject")" disabled="@isDeciding">Reject</button>
++                        </div>
++                    }
++                    else
++                    {
++                        <p class="text-body-secondary mb-0">This approval is not awaiting a decision.</p>
++                    }
++                }
++            </div>
++        </div>
++    </section>
++}
++
++@code {
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    [SupplyParameterFromQuery(Name = "approvalId")]
++    public Guid? ApprovalId { get; set; }
++
++    private bool isLoading = true;
++    private bool isDeciding;
++    private CurrentUserContextViewModel? currentUser;
++    private CompanyAccessViewModel? companyAccess;
++    private List<ApprovalRequestViewModel> approvals = [];
++    private ApprovalRequestViewModel? selectedApproval;
++    private string? decisionComment;
++    private string? errorMessage;
++    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
++        currentUser?.Memberships
++            .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
++            .ToList()
++        ?? [];
++
++    protected override async Task OnParametersSetAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++
++        try
++        {
++            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
++            if (CompanyId is not Guid companyId)
++            {
++                if (currentUser?.ActiveCompany is not null)
++                {
++                    Navigation.NavigateTo($"/approvals?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
++                }
++
++                return;
++            }
++
++            companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
++            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
++            selectedApproval = ApprovalId is Guid approvalId
++                ? await ApprovalApiClient.GetAsync(companyId, approvalId)
++                : approvals.FirstOrDefault();
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++            approvals = [];
++            selectedApproval = null;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task SelectApprovalAsync(Guid approvalId)
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        selectedApproval = await ApprovalApiClient.GetAsync(companyId, approvalId);
++        decisionComment = null;
++        Navigation.NavigateTo($"/approvals?companyId={companyId}&approvalId={approvalId}", replace: true);
++    }
++
++    private async Task DecideAsync(string decision)
++    {
++        if (CompanyId is not Guid companyId || selectedApproval?.CurrentStep is null)
++        {
++            return;
++        }
++
++        isDeciding = true;
++        errorMessage = null;
++        try
++        {
++            var result = await ApprovalApiClient.DecideAsync(
++                companyId,
++                selectedApproval.Id,
++                new ApprovalDecisionRequest
++                {
++                    ApprovalId = selectedApproval.Id,
++                    StepId = selectedApproval.CurrentStep.Id,
++                    Decision = decision,
++                    Comment = decisionComment
++                });
++            selectedApproval = result.Approval;
++            approvals = (await ApprovalApiClient.ListAsync(companyId)).ToList();
++        }
++        catch (OnboardingApiException ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isDeciding = false;
++        }
++    }
++
++    private string GetApprovalListItemClass(ApprovalRequestViewModel approval) =>
++        selectedApproval?.Id == approval.Id
++            ? "list-group-item list-group-item-action active"
++            : "list-group-item list-group-item-action";
++
++    private static bool IsPending(ApprovalRequestViewModel approval) =>
++        string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
++}
+END_OF_PATCH

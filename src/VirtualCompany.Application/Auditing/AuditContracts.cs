@@ -38,7 +38,10 @@ public static class AuditTargetTypes
     public const string ApprovalRequest = "approval_request";
     public const string MemoryItem = "memory_item";
     public const string WorkflowInstance = "workflow_instance";
+    public const string WorkTask = "work_task";
+    public const string LinkedEntity = "linked_entity";
     public const string WorkflowException = "workflow_exception";
+    public const string ExecutionException = "execution_exception";
 }
 
 public static class AuditEventOutcomes
@@ -67,8 +70,16 @@ public static class AuditEventActions
     public const string CompanyDocumentFailed = "company.document.failed";
     public const string MemoryItemExpired = "memory.item.expired";
     public const string MemoryItemDeleted = "memory.item.deleted";
+    public const string ApprovalCreated = "approval.created";
+    public const string ApprovalStepApproved = "approval.step.approved";
+    public const string ApprovalStepRejected = "approval.step.rejected";
+    public const string ApprovalChainAdvanced = "approval.chain.advanced";
+    public const string ApprovalCompleted = "approval.completed";
+    public const string ApprovalRejected = "approval.rejected";
+    public const string ApprovalLinkedEntityStateUpdated = "approval.linked_entity.state_updated";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
     public const string WorkflowInstanceStarted = "workflow.instance.started";
     public const string WorkflowExceptionCreated = "workflow.exception.created";
     public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
+    public const string ExecutionExceptionCreated = "execution.exception.created";
 }
