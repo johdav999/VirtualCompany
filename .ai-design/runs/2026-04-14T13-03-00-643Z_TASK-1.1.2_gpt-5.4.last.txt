@@ -1,0 +1,499 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentTaskCreationDedupeRecord.cs b/src/VirtualCompany.Domain/Entities/AgentTaskCreationDedupeRecord.cs
+new file mode 100644
+index 0000000..0e42b0a
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AgentTaskCreationDedupeRecord.cs
+@@ -0,0 +1,96 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class AgentTaskCreationDedupeRecord : ICompanyOwnedEntity
++{
++    private const int DedupeKeyMaxLength = 128;
++    private const int TriggerSourceMaxLength = 128;
++    private const int TriggerEventIdMaxLength = 200;
++    private const int CorrelationIdMaxLength = 128;
++
++    private AgentTaskCreationDedupeRecord()
++    {
++    }
++
++    public AgentTaskCreationDedupeRecord(
++        Guid id,
++        Guid companyId,
++        string dedupeKey,
++        Guid taskId,
++        Guid agentId,
++        string triggerSource,
++        string triggerEventId,
++        string correlationId,
++        DateTime createdUtc,
++        DateTime expiresUtc)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (taskId == Guid.Empty)
++        {
++            throw new ArgumentException("TaskId is required.", nameof(taskId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId is required.", nameof(agentId));
++        }
++
++        if (expiresUtc <= createdUtc)
++        {
++            throw new ArgumentOutOfRangeException(nameof(expiresUtc), "ExpiresUtc must be after CreatedUtc.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DedupeKey = NormalizeRequired(dedupeKey, nameof(dedupeKey), DedupeKeyMaxLength);
++        TaskId = taskId;
++        AgentId = agentId;
++        TriggerSource = NormalizeRequired(triggerSource, nameof(triggerSource), TriggerSourceMaxLength);
++        TriggerEventId = NormalizeRequired(triggerEventId, nameof(triggerEventId), TriggerEventIdMaxLength);
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        CreatedUtc = EnsureUtc(createdUtc);
++        ExpiresUtc = EnsureUtc(expiresUtc);
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string DedupeKey { get; private set; } = null!;
++    public Guid TaskId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public string TriggerSource { get; private set; } = null!;
++    public string TriggerEventId { get; private set; } = null!;
++    public string CorrelationId { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime ExpiresUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkTask Task { get; private set; } = null!;
++    public Agent Agent { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static DateTime EnsureUtc(DateTime value)
++    {
++        if (value.Kind == DateTimeKind.Utc)
++        {
++            return value;
++        }
++
++        if (value.Kind == DateTimeKind.Local)
++        {
++            return value.ToUniversalTime();
++        }
++
++        return DateTime.SpecifyKind(value, DateTimeKind.Utc);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+index 0f6ed8b..2c5d69f 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+@@ -1,5 +1,7 @@
++using System.Security.Cryptography;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using System.Text;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Agents;
+@@ -168,6 +170,7 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+ 
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+         var deduplicationWindow = TimeSpan.FromSeconds(Math.Max(1, _options.DeduplicationWindowSeconds));
++        var dedupeKey = BuildDedupeKey(request);
+         var duplicate = await _duplicateDetector.FindDuplicateAsync(request, deduplicationWindow, nowUtc, cancellationToken);
+         if (duplicate is not null)
+         {
+@@ -181,6 +184,15 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+                 duplicate.CorrelationId);
+         }
+ 
++        var expiredDedupeRecords = await _dbContext.AgentTaskCreationDedupeRecords
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == request.CompanyId && x.DedupeKey == dedupeKey && x.ExpiresUtc <= nowUtc)
++            .ToListAsync(cancellationToken);
++        if (expiredDedupeRecords.Count > 0)
++        {
++            _dbContext.AgentTaskCreationDedupeRecords.RemoveRange(expiredDedupeRecords);
++        }
++
+         var task = new WorkTask(
+             Guid.NewGuid(),
+             request.CompanyId,
+@@ -204,11 +216,37 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+             request.TriggerEventId);
+         task.SetDueDate(request.DueAt);
+ 
++        _dbContext.AgentTaskCreationDedupeRecords.Add(new AgentTaskCreationDedupeRecord(
++            Guid.NewGuid(),
++            request.CompanyId,
++            dedupeKey,
++            task.Id,
++            request.AgentId,
++            request.TriggerSource,
++            request.TriggerEventId,
++            request.CorrelationId,
++            nowUtc,
++            nowUtc.Add(deduplicationWindow)));
+         _dbContext.WorkTasks.Add(task);
+         await WriteAuditAsync(task, request, nowUtc, cancellationToken);
+         EnqueueTaskPlatformEvent(task);
+-        await _dbContext.SaveChangesAsync(cancellationToken);
+-        await _dashboardCache.InvalidateAsync(request.CompanyId, cancellationToken);
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            await _dashboardCache.InvalidateAsync(request.CompanyId, cancellationToken);
++        }
++        catch (DbUpdateException ex) when (IsAgentTaskDedupeUniqueViolation(ex))
++        {
++            _dbContext.ChangeTracker.Clear();
++            duplicate = await _duplicateDetector.FindDuplicateAsync(request, deduplicationWindow, nowUtc, cancellationToken);
++            if (duplicate is null)
++            {
++                throw;
++            }
++
++            return new CreateAgentInitiatedTaskResult(
++                duplicate.TaskId,
++                duplicate.CompanyId,
++                Created: false,
++                Duplicate: true,
++                duplicate.Status,
++                duplicate.CorrelationId);
++        }
+ 
+         return new CreateAgentInitiatedTaskResult(
+             task.Id,
+@@ -256,6 +294,12 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+                 ["from"] = null,
+                 ["to"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+             {
++                ["companyId"] = task.CompanyId.ToString("N"),
++                ["agentId"] = request.AgentId.ToString("N"),
+                 ["taskId"] = task.Id.ToString("N"),
+                 ["title"] = task.Title,
+                 ["description"] = task.Description,
+@@ -341,7 +385,7 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+         AddRequired(errors, nameof(request.CreationReason), request.CreationReason, RationaleSummaryMaxLength);
+         AddRequired(errors, nameof(request.Type), request.Type, TypeMaxLength);
+         AddRequired(errors, nameof(request.Title), request.Title, TitleMaxLength);
+-        AddOptional(errors, nameof(request.Description), request.Description, DescriptionMaxLength);
++        AddRequired(errors, nameof(request.Description), request.Description, DescriptionMaxLength);
+ 
+         if (!WorkTaskPriorityValues.TryParse(request.Priority, out _))
+         {
+@@ -393,4 +437,28 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+ 
+     private static string Truncate(string value, int maxLength) =>
+         value.Length <= maxLength ? value : value[..maxLength];
++
++    private static string BuildDedupeKey(MappedTaskCreationRequest request)
++    {
++        var material = string.Join(
++            "|",
++            request.CompanyId.ToString("N"),
++            request.TriggerSource.Trim().ToUpperInvariant(),
++            request.TriggerEventId.Trim().ToUpperInvariant(),
++            request.CorrelationId.Trim().ToUpperInvariant());
++        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
++    }
++
++    private static bool IsAgentTaskDedupeUniqueViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("agent_task_creation_dedupe", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("IX_agent_task_creation_dedupe_company_id_dedupe_key", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 7b6bf8d..6bfe00f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -990,6 +990,44 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+     }
+ }
+ 
++internal sealed class AgentTaskCreationDedupeRecordConfiguration : IEntityTypeConfiguration<AgentTaskCreationDedupeRecord>
++{
++    public void Configure(EntityTypeBuilder<AgentTaskCreationDedupeRecord> builder)
++    {
++        builder.ToTable("agent_task_creation_dedupe");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.TaskId).HasColumnName("task_id").IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
++        builder.Property(x => x.TriggerSource).HasColumnName("trigger_source").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.TriggerEventId).HasColumnName("trigger_event_id").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.ExpiresUtc).HasColumnName("expires_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.DedupeKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ExpiresUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerSource, x.TriggerEventId, x.CorrelationId });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Task)
++            .WithMany()
++            .HasForeignKey(x => x.TaskId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Agent)
++            .WithMany()
++            .HasForeignKey(x => x.AgentId)
++            .OnDelete(DeleteBehavior.NoAction);
++    }
++}
++
+ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+ {
+     public void Configure(EntityTypeBuilder<Agent> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 651862f..e4096e8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -34,6 +34,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
++    public DbSet<AgentTaskCreationDedupeRecord> AgentTaskCreationDedupeRecords => Set<AgentTaskCreationDedupeRecord>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<Conversation> Conversations => Set<Conversation>();
+     public DbSet<Message> Messages => Set<Message>();
+@@ -96,6 +97,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<WorkTask>()
+             .HasQueryFilter(task =>
+                 CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<AgentTaskCreationDedupeRecord>()
++            .HasQueryFilter(record =>
++                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<ApprovalRequest>()
+             .HasQueryFilter(request =>
+                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+index a7f7c9d..d0f8842 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+@@ -11,10 +11,16 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+     {
+         protected override void Up(MigrationBuilder migrationBuilder)
+         {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
+             migrationBuilder.AddColumn<string>(
+                 name: "source_type",
+                 table: "tasks",
+-                type: "nvarchar(64)",
++                type: string64Type,
+                 maxLength: 64,
+                 nullable: false,
+                 defaultValue: "user");
+@@ -22,7 +28,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.AddColumn<Guid>(
+                 name: "originating_agent_id",
+                 table: "tasks",
+-                type: "uniqueidentifier",
++                type: guidType,
+                 nullable: true);
+ 
+             migrationBuilder.AddColumn<string>(
+@@ -41,7 +47,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.AddColumn<string>(
+                 name: "trigger_event_id",
+                 table: "tasks",
+-                type: "nvarchar(200)",
++                type: string200Type,
+                 maxLength: 200,
+                 nullable: true);
+ 
+@@ -59,8 +65,64 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                 table: "tasks",
+                 columns: new[] { "company_id", "trigger_source", "trigger_event_id", "correlation_id", "created_at" });
+ 
++            migrationBuilder.CreateTable(
++                name: "agent_task_creation_dedupe",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    dedupe_key = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    task_id = table.Column<Guid>(type: guidType, nullable: false),
++                    agent_id = table.Column<Guid>(type: guidType, nullable: false),
++                    trigger_source = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    trigger_event_id = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                    correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    expires_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_agent_task_creation_dedupe", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_agent_task_creation_dedupe_agents_agent_id",
++                        column: x => x.agent_id,
++                        principalTable: "agents",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.NoAction);
++                    table.ForeignKey(
++                        name: "FK_agent_task_creation_dedupe_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_agent_task_creation_dedupe_tasks_task_id",
++                        column: x => x.task_id,
++                        principalTable: "tasks",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_task_creation_dedupe_company_id_dedupe_key",
++                table: "agent_task_creation_dedupe",
++                columns: new[] { "company_id", "dedupe_key" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_task_creation_dedupe_company_id_expires_at",
++                table: "agent_task_creation_dedupe",
++                columns: new[] { "company_id", "expires_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_task_creation_dedupe_company_id_trigger_source_trigger_event_id_correlation_id",
++                table: "agent_task_creation_dedupe",
++                columns: new[] { "company_id", "trigger_source", "trigger_event_id", "correlation_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_task_creation_dedupe_agent_id",
++                table: "agent_task_creation_dedupe",
++                column: "agent_id");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_agent_task_creation_dedupe_task_id",
++                table: "agent_task_creation_dedupe",
++                column: "task_id");
+         }
+ 
+         protected override void Down(MigrationBuilder migrationBuilder)
+         {
++            migrationBuilder.DropTable(name: "agent_task_creation_dedupe");
++
+             migrationBuilder.DropIndex(
+                 name: "IX_tasks_company_id_originating_agent_id_created_at",
+                 table: "tasks");
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 671e1d2..7509ec4 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -8,12 +8,12 @@
+   "CompanyDocuments": {
+     "MaxUploadBytes": 10485760,
+     "Storage": {
+-      "RootPath": "App_Data/object-storage",
++      "RootPath": "App_Data/object-storage",
++      "BaseUri": ""
++    }
++  },
+   "ProactiveTaskCreation": {
+     "DeduplicationWindowSeconds": 900
+   },
+-      "BaseUri": ""
+-    }
+-  },
+   "KnowledgeChunking": {
+     "TargetChunkLength": 1200,
+     "OverlapLength": 200,
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+index 5cc934e..f31b28d 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -150,6 +150,7 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Contains(nameof(MappedTaskCreationRequest.CreationReason), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.Type), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.Description), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);
+     }
+@@ -176,6 +177,37 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Equal(2, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));
+     }
+ 
++    [Fact]
++    public async Task Duplicate_detection_is_tenant_scoped()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyOneId = Guid.NewGuid();
++        var companyTwoId = Guid.NewGuid();
++        var agentOneId = Guid.NewGuid();
++        var agentTwoId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyOneId, agentOneId);
++        await SeedCompanyAndAgentAsync(dbContext, companyTwoId, agentTwoId);
++        var service = CreateService(dbContext);
++
++        var first = await service.CreateAsync(
++            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyOneId, agentOneId)),
++            CancellationToken.None);
++        var second = await service.CreateAsync(
++            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyTwoId, agentTwoId)),
++            CancellationToken.None);
++
++        Assert.True(first.Created);
++        Assert.True(second.Created);
++        Assert.False(first.Duplicate);
++        Assert.False(second.Duplicate);
++        Assert.Equal(2, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());
++        Assert.Equal(
++            1,
++            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyOneId && x.CorrelationId == "correlation-1"));
++        Assert.Equal(
++            1,
++            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyTwoId && x.CorrelationId == "correlation-1"));
++    }
++
+     private static ProactiveTaskCreationService CreateService(
+         VirtualCompanyDbContext dbContext,
+         ITriggerToTaskMappingService? mapper = null,
+END_OF_PATCH

@@ -1,0 +1,530 @@
+diff --git a/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs b/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs
+index 2d6f3bc..f9f44ad 100644
+--- a/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs
+@@ -20,6 +20,13 @@ public enum ProactiveMessageDeliveryStatus
+     Blocked = 2
+ }
+ 
++public enum ProactiveMessagePolicyDecisionOutcome
++{
++    Allowed = 1,
++    Blocked = 2,
++    RequiresApproval = 3
++}
++
+ public static class ProactiveMessageChannelValues
+ {
+     public static string ToStorageValue(this ProactiveMessageChannel channel) =>
+@@ -95,3 +102,35 @@ public static class ProactiveMessageDeliveryStatusValues
+             _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported proactive message delivery status.")
+         };
+ }
++
++public static class ProactiveMessagePolicyDecisionOutcomeValues
++{
++    public static string ToStorageValue(this ProactiveMessagePolicyDecisionOutcome outcome) =>
++        outcome switch
++        {
++            ProactiveMessagePolicyDecisionOutcome.Allowed => "allow",
++            ProactiveMessagePolicyDecisionOutcome.Blocked => "deny",
++            ProactiveMessagePolicyDecisionOutcome.RequiresApproval => "require_approval",
++            _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "Unsupported proactive message policy decision outcome.")
++        };
++
++    public static bool TryParse(string? value, out ProactiveMessagePolicyDecisionOutcome outcome)
++    {
++        outcome = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Equals("allow", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.Allowed) == ProactiveMessagePolicyDecisionOutcome.Allowed ||
++               trimmed.Equals("allowed", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.Allowed) == ProactiveMessagePolicyDecisionOutcome.Allowed ||
++               trimmed.Equals("deny", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.Blocked) == ProactiveMessagePolicyDecisionOutcome.Blocked ||
++               trimmed.Equals("denied", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.Blocked) == ProactiveMessagePolicyDecisionOutcome.Blocked ||
++               trimmed.Equals("blocked", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.Blocked) == ProactiveMessagePolicyDecisionOutcome.Blocked ||
++               trimmed.Equals("require_approval", StringComparison.OrdinalIgnoreCase) && (outcome = ProactiveMessagePolicyDecisionOutcome.RequiresApproval) == ProactiveMessagePolicyDecisionOutcome.RequiresApproval ||
++               Enum.TryParse(trimmed, ignoreCase: true, out outcome) && Enum.IsDefined(outcome);
++    }
++
++    public static ProactiveMessagePolicyDecisionOutcome Parse(string value) =>
++        TryParse(value, out var outcome)
++            ? outcome
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported proactive message policy decision outcome value.");
++}
+diff --git a/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs b/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs
+new file mode 100644
+index 0000000..de7fc62
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs
+@@ -0,0 +1,149 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
++{
++    private const int RecipientMaxLength = 200;
++    private const int ReasonCodeMaxLength = 200;
++    private const int ReasonSummaryMaxLength = 2000;
++    private const int EvaluatedAutonomyLevelMaxLength = 64;
++
++    private ProactiveMessagePolicyDecision()
++    {
++    }
++
++    public ProactiveMessagePolicyDecision(
++        Guid id,
++        Guid companyId,
++        Guid? proactiveMessageId,
++        ProactiveMessageChannel channel,
++        Guid recipientUserId,
++        string recipient,
++        ProactiveMessageSourceEntityType sourceEntityType,
++        Guid sourceEntityId,
++        Guid originatingAgentId,
++        ProactiveMessagePolicyDecisionOutcome outcome,
++        string? reasonCode,
++        string? reasonSummary,
++        string evaluatedAutonomyLevel,
++        IDictionary<string, JsonNode?>? policyDecision,
++        DateTime createdUtc)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (recipientUserId == Guid.Empty)
++        {
++            throw new ArgumentException("RecipientUserId is required.", nameof(recipientUserId));
++        }
++
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId is required.", nameof(sourceEntityId));
++        }
++
++        if (originatingAgentId == Guid.Empty)
++        {
++            throw new ArgumentException("OriginatingAgentId is required.", nameof(originatingAgentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ProactiveMessageId = proactiveMessageId;
++        Channel = channel;
++        RecipientUserId = recipientUserId;
++        Recipient = NormalizeRequired(recipient, nameof(recipient), RecipientMaxLength);
++        SourceEntityType = sourceEntityType;
++        SourceEntityId = sourceEntityId;
++        OriginatingAgentId = originatingAgentId;
++        Outcome = outcome;
++        ReasonCode = NormalizeOptional(reasonCode, nameof(reasonCode), ReasonCodeMaxLength);
++        ReasonSummary = NormalizeOptional(reasonSummary, nameof(reasonSummary), ReasonSummaryMaxLength);
++        EvaluatedAutonomyLevel = NormalizeRequired(evaluatedAutonomyLevel, nameof(evaluatedAutonomyLevel), EvaluatedAutonomyLevelMaxLength);
++        PolicyDecision = CloneNodes(policyDecision);
++        CreatedUtc = NormalizeUtc(createdUtc);
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? ProactiveMessageId { get; private set; }
++    public ProactiveMessageChannel Channel { get; private set; }
++    public Guid RecipientUserId { get; private set; }
++    public string Recipient { get; private set; } = null!;
++    public ProactiveMessageSourceEntityType SourceEntityType { get; private set; }
++    public Guid SourceEntityId { get; private set; }
++    public Guid OriginatingAgentId { get; private set; }
++    public ProactiveMessagePolicyDecisionOutcome Outcome { get; private set; }
++    public string? ReasonCode { get; private set; }
++    public string? ReasonSummary { get; private set; }
++    public string EvaluatedAutonomyLevel { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ProactiveMessage? ProactiveMessage { get; private set; }
++    public User RecipientUser { get; private set; } = null!;
++    public Agent OriginatingAgent { get; private set; } = null!;
++
++    private static DateTime NormalizeUtc(DateTime value)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException("CreatedUtc is required.", nameof(value));
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength ? trimmed : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 6e248fd..d60e078 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -45,6 +45,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+     public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
++    public DbSet<ProactiveMessagePolicyDecision> ProactiveMessagePolicyDecisions => Set<ProactiveMessagePolicyDecision>();
+     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+@@ -143,6 +144,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ProactiveMessage>()
+             .HasQueryFilter(message =>
+                 CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ProactiveMessagePolicyDecision>()
++            .HasQueryFilter(decision =>
++                CurrentCompanyId.HasValue && decision.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 7bf9f64..3b54dc1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1660,59 +1660,62 @@ internal sealed class ProactiveMessageConfiguration : IEntityTypeConfiguration<Pr
+     }
+ }
+ 
+-internal sealed class ProactiveMessageConfiguration : IEntityTypeConfiguration<ProactiveMessage>
++internal sealed class ProactiveMessagePolicyDecisionConfiguration : IEntityTypeConfiguration<ProactiveMessagePolicyDecision>
+ {
+-    public void Configure(EntityTypeBuilder<ProactiveMessage> builder)
++    public void Configure(EntityTypeBuilder<ProactiveMessagePolicyDecision> builder)
+     {
+-        builder.ToTable("proactive_messages");
++        builder.ToTable("proactive_message_policy_decisions");
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.Id).HasColumnName("id");
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ProactiveMessageId).HasColumnName("proactive_message_id");
+         builder.Property(x => x.Channel)
+             .HasColumnName("channel")
+             .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageChannelValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.RecipientUserId).HasColumnName("recipient_user_id").IsRequired();
+         builder.Property(x => x.Recipient).HasColumnName("recipient").HasMaxLength(200).IsRequired();
+-        builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(200).IsRequired();
+-        builder.Property(x => x.Body).HasColumnName("body").IsRequired();
+         builder.Property(x => x.SourceEntityType)
+             .HasColumnName("source_entity_type")
+             .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageSourceEntityTypeValues.Parse(value))
+             .HasMaxLength(64)
+             .IsRequired();
+         builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").IsRequired();
+         builder.Property(x => x.OriginatingAgentId).HasColumnName("originating_agent_id").IsRequired();
+-        builder.Property(x => x.NotificationId).HasColumnName("notification_id");
+-        builder.Property(x => x.Status)
+-            .HasColumnName("status")
+-            .HasConversion(value => value.ToStorageValue(), value => value == "delivered" ? ProactiveMessageDeliveryStatus.Delivered : ProactiveMessageDeliveryStatus.Blocked)
++        builder.Property(x => x.Outcome)
++            .HasColumnName("outcome")
++            .HasConversion(value => value.ToStorageValue(), value => ProactiveMessagePolicyDecisionOutcomeValues.Parse(value))
+             .HasMaxLength(32)
+             .IsRequired();
+-        builder.Property(x => x.SentUtc).HasColumnName("sent_at").IsRequired();
++        builder.Property(x => x.ReasonCode).HasColumnName("reason_code").HasMaxLength(200);
++        builder.Property(x => x.ReasonSummary).HasColumnName("reason_summary").HasMaxLength(2000);
++        builder.Property(x => x.EvaluatedAutonomyLevel)
++            .HasColumnName("evaluated_autonomy_level")
++            .HasMaxLength(64)
++            .IsRequired();
+         builder.Property(x => x.PolicyDecision)
+             .HasColumnName("policy_decision_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+-        builder.Property(x => x.PolicyDecisionReason).HasColumnName("policy_decision_reason").HasMaxLength(200);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.RecipientUserId, x.SentUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Outcome, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
+-        builder.HasIndex(x => new { x.CompanyId, x.Channel, x.SentUtc });
+-        builder.HasIndex(x => x.NotificationId);
++        builder.HasIndex(x => new { x.CompanyId, x.Channel, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RecipientUserId, x.CreatedUtc });
++        builder.HasIndex(x => x.ProactiveMessageId);
+ 
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.ProactiveMessage).WithMany().HasForeignKey(x => x.ProactiveMessageId).OnDelete(DeleteBehavior.SetNull);
+         builder.HasOne(x => x.RecipientUser).WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
+         builder.HasOne(x => x.OriginatingAgent).WithMany().HasForeignKey(x => x.OriginatingAgentId).OnDelete(DeleteBehavior.Restrict);
+-        builder.HasOne(x => x.Notification).WithMany().HasForeignKey(x => x.NotificationId).OnDelete(DeleteBehavior.SetNull);
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+index 5e6d7bc..5408e0b 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+@@ -56,6 +56,21 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+ 
+         if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Allow, StringComparison.OrdinalIgnoreCase))
+         {
++            var blockedDecision = CreatePolicyDecisionRecord(
++                companyId,
++                null,
++                command,
++                channel,
++                recipient,
++                sourceEntityType,
++                source.SourceEntityId,
++                decision,
++                ProactiveMessagePolicyDecisionOutcomeValues.Parse(decision.Outcome),
++                _timeProvider.GetUtcNow().UtcDateTime);
++
++            _dbContext.ProactiveMessagePolicyDecisions.Add(blockedDecision);
++
+             var block = CreatePolicyBlock(decision);
+             await _auditEventWriter.WriteAsync(
+                 new AuditEventWriteRequest(
+@@ -122,6 +137,22 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+ 
+         _dbContext.ProactiveMessages.Add(message);
+ 
++        var allowedDecision = CreatePolicyDecisionRecord(
++            companyId,
++            message.Id,
++            command,
++            channel,
++            recipient,
++            sourceEntityType,
++            source.SourceEntityId,
++            decision,
++            ProactiveMessagePolicyDecisionOutcome.Allowed,
++            sentUtc);
++
++        _dbContext.ProactiveMessagePolicyDecisions.Add(allowedDecision);
++
+         await _auditEventWriter.WriteAsync(
+             new AuditEventWriteRequest(
+                 companyId,
+@@ -315,6 +346,40 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+             : "This proactive message was blocked by policy and was not delivered.";
+ 
++    private static ProactiveMessagePolicyDecision CreatePolicyDecisionRecord(
++        Guid companyId,
++        Guid? proactiveMessageId,
++        GenerateProactiveMessageCommand command,
++        ProactiveMessageChannel channel,
++        User recipient,
++        ProactiveMessageSourceEntityType sourceEntityType,
++        Guid sourceEntityId,
++        ToolExecutionDecisionDto decision,
++        ProactiveMessagePolicyDecisionOutcome outcome,
++        DateTime createdUtc)
++    {
++        var primaryReasonCode = GetPrimaryReasonCode(decision);
++        var reasonSummary = decision.Reasons?.FirstOrDefault(reason =>
++            string.Equals(reason.Code, primaryReasonCode, StringComparison.OrdinalIgnoreCase))?.Summary
++            ?? decision.Explanation;
++
++        return new ProactiveMessagePolicyDecision(
++            Guid.NewGuid(),
++            companyId,
++            proactiveMessageId,
++            channel,
++            recipient.Id,
++            recipient.DisplayName,
++            sourceEntityType,
++            sourceEntityId,
++            command.AgentId,
++            outcome,
++            primaryReasonCode,
++            reasonSummary,
++            decision.EvaluatedAutonomyLevel,
++            ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision),
++            createdUtc);
++    }
++
++    private static string? GetPrimaryReasonCode(ToolExecutionDecisionDto decision) =>
++        decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code));
++
+     private static ProactiveMessageDto ToDto(ProactiveMessage message) =>
+         new(
+             message.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs
+new file mode 100644
+index 0000000..c7af4d5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs
+@@ -0,0 +1,126 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddProactiveMessagePolicyDecisions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "proactive_message_policy_decisions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                proactive_message_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                recipient_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                recipient = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                source_entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                source_entity_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                originating_agent_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                reason_code = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
++                reason_summary = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                evaluated_autonomy_level = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                policy_decision_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_proactive_message_policy_decisions", x => x.id);
++                table.ForeignKey(
++                    name: "FK_proactive_message_policy_decisions_agents_originating_agent_id",
++                    column: x => x.originating_agent_id,
++                    principalTable: "agents",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_proactive_message_policy_decisions_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_proactive_message_policy_decisions_proactive_messages_proactive_message_id",
++                    column: x => x.proactive_message_id,
++                    principalTable: "proactive_messages",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.SetNull);
++                table.ForeignKey(
++                    name: "FK_proactive_message_policy_decisions_users_recipient_user_id",
++                    column: x => x.recipient_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_company_id_channel_created_at",
++            table: "proactive_message_policy_decisions",
++            columns: new[] { "company_id", "channel", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_company_id_outcome_created_at",
++            table: "proactive_message_policy_decisions",
++            columns: new[] { "company_id", "outcome", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_company_id_recipient_user_id_created_at",
++            table: "proactive_message_policy_decisions",
++            columns: new[] { "company_id", "recipient_user_id", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_company_id_source_entity_type_source_entity_id",
++            table: "proactive_message_policy_decisions",
++            columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_originating_agent_id",
++            table: "proactive_message_policy_decisions",
++            column: "originating_agent_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_proactive_message_id",
++            table: "proactive_message_policy_decisions",
++            column: "proactive_message_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_message_policy_decisions_recipient_user_id",
++            table: "proactive_message_policy_decisions",
++            column: "recipient_user_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "proactive_message_policy_decisions");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+index 4d9a7f3..c18ca87 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+@@ -62,6 +62,16 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal("allow", stored.PolicyDecision["outcome"]!.GetValue<string>());
+         Assert.Equal(seed.AgentId, stored.OriginatingAgentId);
+ 
++        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.ProactiveMessageId == stored.Id);
++        Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Allowed, policyDecision.Outcome);
++        Assert.Equal(seed.AlertId, policyDecision.SourceEntityId);
++        Assert.Equal("alert", policyDecision.SourceEntityType.ToStorageValue());
++        Assert.Equal(ProactiveMessageChannel.Notification, policyDecision.Channel);
++        Assert.Equal(seed.UserId, policyDecision.RecipientUserId);
++        Assert.Equal("level_3", policyDecision.EvaluatedAutonomyLevel);
++        Assert.Equal("policy_checks_passed", policyDecision.ReasonCode);
++        Assert.Equal("allow", policyDecision.PolicyDecision["outcome"]!.GetValue<string>());
++
+         var notification = await dbContext.CompanyNotifications.AsNoTracking().SingleAsync(x => x.Id == stored.NotificationId);
+         Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);
+         Assert.Equal(seed.AlertId, notification.RelatedEntityId);
+@@ -119,6 +129,17 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
+ 
+         Assert.False(await dbContext.ProactiveMessages.AnyAsync(x => x.CompanyId == seed.CompanyId && x.SourceEntityId == seed.TaskId));
+         Assert.False(await dbContext.CompanyNotifications.AnyAsync(x => x.CompanyId == seed.CompanyId && x.RelatedEntityId == seed.TaskId));
++
++        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.CompanyId == seed.CompanyId && x.SourceEntityId == seed.TaskId);
++        Assert.Null(policyDecision.ProactiveMessageId);
++        Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Blocked, policyDecision.Outcome);
++        Assert.Equal(seed.TaskId, policyDecision.SourceEntityId);
++        Assert.Equal("proactive_task", policyDecision.SourceEntityType.ToStorageValue());
++        Assert.Equal(ProactiveMessageChannel.Inbox, policyDecision.Channel);
++        Assert.Equal(seed.UserId, policyDecision.RecipientUserId);
++        Assert.Equal("level_0", policyDecision.EvaluatedAutonomyLevel);
++        Assert.Equal(PolicyDecisionReasonCodes.AutonomyLevelBlocksAction, policyDecision.ReasonCode);
++        Assert.Equal("deny", policyDecision.PolicyDecision["outcome"]!.GetValue<string>());
+     }
+ 
+     [Fact]
+END_OF_PATCH

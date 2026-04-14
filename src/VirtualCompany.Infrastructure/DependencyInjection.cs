@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.BackgroundExecution;
+using VirtualCompany.Application.Alerts;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Approvals;
@@ -15,6 +16,7 @@ using VirtualCompany.Application.Context;
 using VirtualCompany.Application.Chat;
 using StackExchange.Redis;
 using VirtualCompany.Application.ExecutionExceptions;
+using VirtualCompany.Application.Escalations;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Agents;
@@ -25,6 +27,8 @@ using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
+using VirtualCompany.Application.ProactiveMessaging;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Auth;
@@ -90,6 +94,11 @@ public static class DependencyInjection
         services.AddOptions<GroundedContextRetrievalCacheOptions>()
             .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
 
+        services.AddOptions<ProactiveTaskCreationOptions>()
+            .Bind(configuration.GetSection(ProactiveTaskCreationOptions.SectionName))
+            .PostConfigure(options =>
+                options.DeduplicationWindowSeconds = Math.Max(1, options.DeduplicationWindowSeconds));
+
         services.AddOptions<ExecutiveCockpitDashboardCacheOptions>()
             .Bind(configuration.GetSection(ExecutiveCockpitDashboardCacheOptions.SectionName))
             .Validate(options => options.TtlSeconds > 0, "Executive cockpit dashboard cache TTL must be positive.")
@@ -151,6 +160,10 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
         services.AddOptions<WorkflowProgressionOptions>()
             .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));
+        services.AddOptions<AgentScheduledTriggerSchedulerOptions>()
+            .Bind(configuration.GetSection(AgentScheduledTriggerSchedulerOptions.SectionName));
+        services.AddOptions<TriggerWorkerOptions>()
+            .Bind(configuration.GetSection(TriggerWorkerOptions.SectionName));
         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
         services.AddHostedService<WorkflowSchedulerBackgroundService>();
         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
@@ -159,6 +172,7 @@ public static class DependencyInjection
         services.AddScoped<BriefingSchedulerCoordinator>();
         services.AddHostedService<BriefingSchedulerBackgroundService>();
         services.AddHostedService<WorkflowProgressionBackgroundService>();
+        services.AddHostedService<TriggerEvaluationBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
@@ -207,7 +221,29 @@ public static class DependencyInjection
         services.AddScoped<CompanyMemoryService>();
         services.AddScoped<CompanyTaskService>();
         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+        services.AddScoped<ITriggerToTaskMappingService, DefaultTriggerToTaskMappingService>();
+        services.AddScoped<IProactiveTaskDuplicateDetector, EfProactiveTaskDuplicateDetector>();
+        services.AddScoped<IProactiveTaskCreationService, ProactiveTaskCreationService>();
         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+        services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
+        services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
+        services.AddSingleton<ISupportedPlatformEventTypeRegistry>(SupportedPlatformEventTypeRegistry.Instance);
+        services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();
+        services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();
+        services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();
+        services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();
+        services.AddScoped<ITriggerExecutionAttemptRepository, EfTriggerExecutionAttemptRepository>();
+        services.AddScoped<ITriggerExecutionPolicyChecker, AgentTriggerExecutionPolicyChecker>();
+        services.AddScoped<ITriggerOrchestrationDispatcher, SingleAgentTriggerOrchestrationDispatcher>();
+        services.AddScoped<ITriggerAuditEventWriter, TriggerAuditEventWriter>();
+        services.AddScoped<ITriggerExecutionService, TriggerExecutionService>();
+        services.AddScoped<ITriggerEvaluationWorker, TriggerEvaluationWorker>();
+        services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
+        services.AddSingleton<IConditionTriggerEvaluator, ConditionTriggerEvaluator>();
+        services.AddScoped<IConditionTriggerEvaluationRepository, EfConditionTriggerEvaluationRepository>();
+        services.AddScoped<IConditionMetricValueResolver, MissingConditionMetricValueResolver>();
+        services.AddScoped<IConditionEntityFieldValueResolver, MissingConditionEntityFieldValueResolver>();
+        services.AddScoped<IConditionTriggerEvaluationService, ConditionTriggerEvaluationService>();
         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
@@ -221,6 +257,7 @@ public static class DependencyInjection
         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
         services.AddScoped<INotificationInboxService, CompanyNotificationService>();
         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
+        services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
         services.AddScoped<CompanyWorkflowService>();
         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
@@ -231,6 +268,11 @@ public static class DependencyInjection
         services.AddScoped<ExecutionExceptionService>();
         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+        services.AddScoped<CompanyAlertService>();
+        services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
+        services.AddScoped<IEscalationRepository, EfEscalationRepository>();
+        services.AddScoped<IEscalationPolicyEvaluationService, EscalationPolicyEvaluationService>();
+        services.AddScoped<IEscalationQueryService, EfEscalationQueryService>();
         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.1.2",
+  "promptPath": ".ai-design/prompts/TASK-1.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T13:03:00.643Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T13-03-00-643Z_TASK-1.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T13-03-00-643Z_TASK-1.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T13:06:10.525Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "s.Keys);\n     }\n@@ -176,6 +177,37 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(2, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));\n     }\n \n+    [Fact]\n+    public async Task Duplicate_detection_is_tenant_scoped()\n+    {\n+        await using var connection = CreateOpenConnection();\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        var companyOneId = Guid.NewGuid();\n+        var companyTwoId = Guid.NewGuid();\n+        var agentOneId = Guid.NewGuid();\n+        var agentTwoId = Guid.NewGuid();\n+        await SeedCompanyAndAgentAsync(dbContext, companyOneId, agentOneId);\n+        await SeedCompanyAndAgentAsync(dbContext, companyTwoId, agentTwoId);\n+        var service = CreateService(dbContext);\n+\n+        var first = await service.CreateAsync(\n+            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyOneId, agentOneId)),\n+            CancellationToken.None);\n+        var second = await service.CreateAsync(\n+            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyTwoId, agentTwoId)),\n+            CancellationToken.None);\n+\n+        Assert.True(first.Created);\n+        Assert.True(second.Created);\n+        Assert.False(first.Duplicate);\n+        Assert.False(second.Duplicate);\n+        Assert.Equal(2, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());\n+        Assert.Equal(\n+            1,\n+            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyOneId && x.CorrelationId == \"correlation-1\"));\n+        Assert.Equal(\n+            1,\n+            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyTwoId && x.CorrelationId == \"correlation-1\"));\n+    }\n+\n     private static ProactiveTaskCreationService CreateService(\n         VirtualCompanyDbContext dbContext,\n         ITriggerToTaskMappingService? mapper = null,\nEND_OF_PATCH\n",
+  "stderrTail": "-176,6 +177,37 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(2, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));\n     }\n \n+    [Fact]\n+    public async Task Duplicate_detection_is_tenant_scoped()\n+    {\n+        await using var connection = CreateOpenConnection();\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        var companyOneId = Guid.NewGuid();\n+        var companyTwoId = Guid.NewGuid();\n+        var agentOneId = Guid.NewGuid();\n+        var agentTwoId = Guid.NewGuid();\n+        await SeedCompanyAndAgentAsync(dbContext, companyOneId, agentOneId);\n+        await SeedCompanyAndAgentAsync(dbContext, companyTwoId, agentTwoId);\n+        var service = CreateService(dbContext);\n+\n+        var first = await service.CreateAsync(\n+            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyOneId, agentOneId)),\n+            CancellationToken.None);\n+        var second = await service.CreateAsync(\n+            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyTwoId, agentTwoId)),\n+            CancellationToken.None);\n+\n+        Assert.True(first.Created);\n+        Assert.True(second.Created);\n+        Assert.False(first.Duplicate);\n+        Assert.False(second.Duplicate);\n+        Assert.Equal(2, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());\n+        Assert.Equal(\n+            1,\n+            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyOneId && x.CorrelationId == \"correlation-1\"));\n+        Assert.Equal(\n+            1,\n+            await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyTwoId && x.CorrelationId == \"correlation-1\"));\n+    }\n+\n     private static ProactiveTaskCreationService CreateService(\n         VirtualCompanyDbContext dbContext,\n         ITriggerToTaskMappingService? mapper = null,\nEND_OF_PATCH\ntokens used\n75,281\n",
+  "verbosityMode": "summary"
+}

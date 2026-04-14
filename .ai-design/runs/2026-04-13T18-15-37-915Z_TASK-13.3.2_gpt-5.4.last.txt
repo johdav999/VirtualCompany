@@ -1,0 +1,1272 @@
+diff --git a/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs b/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs
+index 07a7a9f..b0c2c2d 100644
+--- a/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs
+@@ -34,4 +34,127 @@ public static class ConditionTriggerStorageValues
+ 
+     public const string FalseToTrueTransitionRepeatMode = "falseToTrueTransition";
+     public const string EveryEvaluationWhileTrueRepeatMode = "everyEvaluationWhileTrue";
++
++    public static string ToStorageValue(this ConditionOperandSourceType sourceType) =>
++        sourceType switch
++        {
++            ConditionOperandSourceType.Metric => MetricSourceType,
++            ConditionOperandSourceType.EntityField => EntityFieldSourceType,
++            _ => throw new ArgumentOutOfRangeException(nameof(sourceType), sourceType, "Unsupported condition source type.")
++        };
++
++    public static string ToStorageValue(this ConditionOperator conditionOperator) =>
++        conditionOperator switch
++        {
++            ConditionOperator.GreaterThan => GreaterThanOperator,
++            ConditionOperator.LessThan => LessThanOperator,
++            ConditionOperator.Equals => EqualsOperator,
++            ConditionOperator.ChangedSinceLastEvaluation => ChangedSinceLastEvaluationOperator,
++            _ => throw new ArgumentOutOfRangeException(nameof(conditionOperator), conditionOperator, "Unsupported condition operator.")
++        };
++
++    public static string ToStorageValue(this ConditionValueType valueType) =>
++        valueType switch
++        {
++            ConditionValueType.Number => NumberValueType,
++            ConditionValueType.String => StringValueType,
++            ConditionValueType.Boolean => BooleanValueType,
++            ConditionValueType.DateTime => DateTimeValueType,
++            _ => throw new ArgumentOutOfRangeException(nameof(valueType), valueType, "Unsupported condition value type.")
++        };
++
++    public static string ToStorageValue(this RepeatFiringMode repeatFiringMode) =>
++        repeatFiringMode switch
++        {
++            RepeatFiringMode.FalseToTrueTransition => FalseToTrueTransitionRepeatMode,
++            RepeatFiringMode.EveryEvaluationWhileTrue => EveryEvaluationWhileTrueRepeatMode,
++            _ => throw new ArgumentOutOfRangeException(nameof(repeatFiringMode), repeatFiringMode, "Unsupported repeat firing mode.")
++        };
++
++    public static bool TryParseSourceType(string? value, out ConditionOperandSourceType sourceType)
++    {
++        sourceType = default;
++
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        sourceType = value.Trim() switch
++        {
++            var source when string.Equals(source, MetricSourceType, StringComparison.OrdinalIgnoreCase) => ConditionOperandSourceType.Metric,
++            var source when string.Equals(source, EntityFieldSourceType, StringComparison.OrdinalIgnoreCase) => ConditionOperandSourceType.EntityField,
++            _ => default
++        };
++
++        return sourceType is not default(ConditionOperandSourceType);
++    }
++
++    public static bool TryParseOperator(string? value, out ConditionOperator conditionOperator)
++    {
++        conditionOperator = default;
++
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        conditionOperator = value.Trim() switch
++        {
++            var op when string.Equals(op, GreaterThanOperator, StringComparison.OrdinalIgnoreCase) => ConditionOperator.GreaterThan,
++            var op when string.Equals(op, LessThanOperator, StringComparison.OrdinalIgnoreCase) => ConditionOperator.LessThan,
++            var op when string.Equals(op, EqualsOperator, StringComparison.OrdinalIgnoreCase) => ConditionOperator.Equals,
++            var op when string.Equals(op, ChangedSinceLastEvaluationOperator, StringComparison.OrdinalIgnoreCase) => ConditionOperator.ChangedSinceLastEvaluation,
++            _ => default
++        };
++
++        return conditionOperator is not default(ConditionOperator);
++    }
++
++    public static bool TryParseValueType(string? value, out ConditionValueType valueType)
++    {
++        valueType = default;
++
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        valueType = value.Trim() switch
++        {
++            var type when string.Equals(type, NumberValueType, StringComparison.OrdinalIgnoreCase) => ConditionValueType.Number,
++            var type when string.Equals(type, StringValueType, StringComparison.OrdinalIgnoreCase) => ConditionValueType.String,
++            var type when string.Equals(type, BooleanValueType, StringComparison.OrdinalIgnoreCase) => ConditionValueType.Boolean,
++            var type when string.Equals(type, DateTimeValueType, StringComparison.OrdinalIgnoreCase) => ConditionValueType.DateTime,
++            _ => default
++        };
++
++        return valueType is not default(ConditionValueType);
++    }
++
++    public static bool TryParseRepeatFiringMode(string? value, out RepeatFiringMode repeatFiringMode)
++    {
++        repeatFiringMode = default;
++
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        repeatFiringMode = value.Trim() switch
++        {
++            var mode when string.Equals(mode, FalseToTrueTransitionRepeatMode, StringComparison.OrdinalIgnoreCase) => RepeatFiringMode.FalseToTrueTransition,
++            var mode when string.Equals(mode, EveryEvaluationWhileTrueRepeatMode, StringComparison.OrdinalIgnoreCase) => RepeatFiringMode.EveryEvaluationWhileTrue,
++            _ => default
++        };
++
++        return repeatFiringMode is not default(RepeatFiringMode);
++    }
++
++    public static ConditionOperandSourceType ParseSourceType(string value) =>
++        TryParseSourceType(value, out var sourceType) ? sourceType : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported condition source type.");
++
++    public static ConditionOperator ParseOperator(string value) =>
++        TryParseOperator(value, out var conditionOperator) ? conditionOperator : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported condition operator.");
++
++    public static ConditionValueType ParseValueType(string value) =>
++        TryParseValueType(value, out var valueType) ? valueType : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported condition value type.");
++
++    public static RepeatFiringMode ParseRepeatFiringMode(string value) =>
++        TryParseRepeatFiringMode(value, out var repeatFiringMode) ? repeatFiringMode : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported repeat firing mode.");
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs b/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs
+index 0c23bd7..8248fac 100644
+--- a/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs
++++ b/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs
+@@ -25,3 +25,121 @@ public sealed record ConditionEvaluationSnapshot(
+         repeatFiringMode is RepeatFiringMode.EveryEvaluationWhileTrue
+             ? Outcome
+             : IsFalseToTrueTransition;
+ }
++
++public sealed class ConditionTriggerEvaluation : ICompanyOwnedEntity
++{
++    private const int ConditionDefinitionIdMaxLength = 200;
++    private const int SourceNameMaxLength = 200;
++    private const int EntityTypeMaxLength = 100;
++    private const int FieldPathMaxLength = 200;
++    private const int DiagnosticMaxLength = 2000;
++
++    private ConditionTriggerEvaluation()
++    {
++        InputValues = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    public ConditionTriggerEvaluation(
++        Guid id,
++        Guid companyId,
++        string conditionDefinitionId,
++        Guid? workflowTriggerId,
++        DateTime evaluatedUtc,
++        ConditionTargetReference target,
++        ConditionOperator conditionOperator,
++        ConditionValueType? valueType,
++        RepeatFiringMode repeatFiringMode,
++        IDictionary<string, JsonNode?> inputValues,
++        bool? previousOutcome,
++        bool currentOutcome,
++        bool fired,
++        string? diagnostic = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (workflowTriggerId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowTriggerId cannot be empty.", nameof(workflowTriggerId));
++        }
++
++        ArgumentNullException.ThrowIfNull(target);
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ConditionDefinitionId = NormalizeRequired(conditionDefinitionId, nameof(conditionDefinitionId), ConditionDefinitionIdMaxLength);
++        WorkflowTriggerId = workflowTriggerId;
++        EvaluatedUtc = NormalizeUtc(evaluatedUtc, nameof(evaluatedUtc));
++        SourceType = target.SourceType;
++        SourceName = NormalizeOptional(target.MetricName, nameof(target.MetricName), SourceNameMaxLength);
++        EntityType = NormalizeOptional(target.EntityType, nameof(target.EntityType), EntityTypeMaxLength);
++        FieldPath = NormalizeOptional(target.FieldPath, nameof(target.FieldPath), FieldPathMaxLength);
++        Operator = conditionOperator;
++        ValueType = valueType;
++        RepeatFiringMode = repeatFiringMode;
++        InputValues = CloneNodes(inputValues);
++        PreviousOutcome = previousOutcome;
++        CurrentOutcome = currentOutcome;
++        Fired = fired;
++        Diagnostic = NormalizeOptional(diagnostic, nameof(diagnostic), DiagnosticMaxLength);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ConditionDefinitionId { get; private set; } = null!;
++    public Guid? WorkflowTriggerId { get; private set; }
++    public DateTime EvaluatedUtc { get; private set; }
++    public ConditionOperandSourceType SourceType { get; private set; }
++    public string? SourceName { get; private set; }
++    public string? EntityType { get; private set; }
++    public string? FieldPath { get; private set; }
++    public ConditionOperator Operator { get; private set; }
++    public ConditionValueType? ValueType { get; private set; }
++    public RepeatFiringMode RepeatFiringMode { get; private set; }
++    public Dictionary<string, JsonNode?> InputValues { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public bool? PreviousOutcome { get; private set; }
++    public bool CurrentOutcome { get; private set; }
++    public bool Fired { get; private set; }
++    public string? Diagnostic { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkflowTrigger? WorkflowTrigger { get; private set; }
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return NormalizeOptional(value, name, maxLength)!;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs b/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs
+new file mode 100644
+index 0000000..7c04c8d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs
+@@ -0,0 +1,310 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record ConditionEvaluationRequest(
++    ConditionExpression Condition,
++    JsonNode? CurrentValue,
++    bool HasPreviousValue,
++    JsonNode? PreviousValue,
++    bool? PreviousOutcome,
++    DateTime EvaluatedUtc);
++
++public sealed record ConditionEvaluationResultDto(
++    DateTime EvaluatedUtc,
++    Dictionary<string, JsonNode?> InputValues,
++    bool Outcome,
++    bool? PreviousOutcome,
++    bool IsFalseToTrueTransition,
++    bool ShouldFire,
++    string? Diagnostic);
++
++public sealed record ConditionResolvedValue(bool Found, JsonNode? Value, string? Diagnostic = null)
++{
++    public static ConditionResolvedValue FoundValue(JsonNode? value) => new(true, value?.DeepClone());
++
++    public static ConditionResolvedValue Missing(string diagnostic) => new(false, null, diagnostic);
++}
++
++public sealed record EvaluateConditionTriggerCommand(
++    Guid CompanyId,
++    string ConditionDefinitionId,
++    Guid? WorkflowTriggerId,
++    ConditionExpression Condition,
++    DateTime EvaluatedUtc,
++    string? EntityId = null);
++
++public interface IConditionTriggerEvaluator
++{
++    ConditionEvaluationResultDto Evaluate(ConditionEvaluationRequest request);
++}
++
++public interface IConditionMetricValueResolver
++{
++    Task<ConditionResolvedValue> ResolveMetricAsync(
++        Guid companyId,
++        string metricName,
++        CancellationToken cancellationToken);
++}
++
++public interface IConditionEntityFieldValueResolver
++{
++    Task<ConditionResolvedValue> ResolveEntityFieldAsync(
++        Guid companyId,
++        string entityType,
++        string fieldPath,
++        string? entityId,
++        CancellationToken cancellationToken);
++}
++
++public interface IConditionTriggerEvaluationRepository
++{
++    Task<ConditionTriggerEvaluation?> GetLatestAsync(
++        Guid companyId,
++        string conditionDefinitionId,
++        CancellationToken cancellationToken);
++
++    Task AddAsync(ConditionTriggerEvaluation evaluation, CancellationToken cancellationToken);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++}
++
++public interface IConditionTriggerEvaluationService
++{
++    Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(
++        EvaluateConditionTriggerCommand command,
++        CancellationToken cancellationToken);
++}
++
++public sealed class ConditionTriggerEvaluator : IConditionTriggerEvaluator
++{
++    public ConditionEvaluationResultDto Evaluate(ConditionEvaluationRequest request)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++        ArgumentNullException.ThrowIfNull(request.Condition);
++
++        var condition = request.Condition;
++        var (outcome, diagnostic) = EvaluateOutcome(
++            condition.Operator,
++            condition.ValueType,
++            request.CurrentValue,
++            request.HasPreviousValue,
++            request.PreviousValue,
++            condition.ComparisonValue);
++
++        var previousOutcome = request.PreviousOutcome;
++        var isFalseToTrueTransition = outcome && previousOutcome != true;
++        var snapshot = new ConditionEvaluationSnapshot(
++            NormalizeUtc(request.EvaluatedUtc),
++            BuildInputValues(condition, request.CurrentValue, request.HasPreviousValue, request.PreviousValue),
++            outcome,
++            previousOutcome,
++            isFalseToTrueTransition);
++
++        return new ConditionEvaluationResultDto(
++            snapshot.EvaluatedUtc,
++            snapshot.InputValues,
++            snapshot.Outcome,
++            snapshot.PreviousOutcome,
++            snapshot.IsFalseToTrueTransition,
++            snapshot.ShouldFire(condition.RepeatFiringMode),
++            diagnostic);
++    }
++
++    private static (bool Outcome, string? Diagnostic) EvaluateOutcome(
++        ConditionOperator conditionOperator,
++        ConditionValueType? valueType,
++        JsonNode? currentValue,
++        bool hasPreviousValue,
++        JsonNode? previousValue,
++        JsonNode? comparisonValue)
++    {
++        if (conditionOperator is ConditionOperator.ChangedSinceLastEvaluation)
++        {
++            if (!hasPreviousValue)
++            {
++                return (false, "No previous value exists for changed-since-last-evaluation comparison.");
++            }
++
++            return (!JsonValuesEqual(currentValue, previousValue), null);
++        }
++
++        if (currentValue is null || comparisonValue is null)
++        {
++            return (false, "Current value and comparison value are required for threshold condition evaluation.");
++        }
++
++        if (valueType is null)
++        {
++            return (false, "Condition value type is required for threshold condition evaluation.");
++        }
++
++        return valueType.Value switch
++        {
++            ConditionValueType.Number => EvaluateNumber(conditionOperator, currentValue, comparisonValue),
++            ConditionValueType.String => EvaluateString(conditionOperator, currentValue, comparisonValue),
++            ConditionValueType.Boolean => EvaluateBoolean(conditionOperator, currentValue, comparisonValue),
++            ConditionValueType.DateTime => EvaluateDateTime(conditionOperator, currentValue, comparisonValue),
++            _ => (false, "Condition value type is not supported.")
++        };
++    }
++
++    private static (bool Outcome, string? Diagnostic) EvaluateNumber(
++        ConditionOperator conditionOperator,
++        JsonNode currentValue,
++        JsonNode comparisonValue)
++    {
++        if (!TryGetDecimal(currentValue, out var current) || !TryGetDecimal(comparisonValue, out var target))
++        {
++            return (false, "Condition value type mismatch: expected numeric current and comparison values.");
++        }
++
++        return conditionOperator switch
++        {
++            ConditionOperator.GreaterThan => (current > target, null),
++            ConditionOperator.LessThan => (current < target, null),
++            ConditionOperator.Equals => (current == target, null),
++            _ => (false, "Condition operator is not supported for numeric comparison.")
++        };
++    }
++
++    private static (bool Outcome, string? Diagnostic) EvaluateString(
++        ConditionOperator conditionOperator,
++        JsonNode currentValue,
++        JsonNode comparisonValue)
++    {
++        if (!TryGetString(currentValue, out var current) || !TryGetString(comparisonValue, out var target))
++        {
++            return (false, "Condition value type mismatch: expected string current and comparison values.");
++        }
++
++        return conditionOperator is ConditionOperator.Equals
++            ? (string.Equals(current, target, StringComparison.Ordinal), null)
++            : (false, "Only equals is supported for string comparisons.");
++    }
++
++    private static (bool Outcome, string? Diagnostic) EvaluateBoolean(
++        ConditionOperator conditionOperator,
++        JsonNode currentValue,
++        JsonNode comparisonValue)
++    {
++        if (!TryGetBoolean(currentValue, out var current) || !TryGetBoolean(comparisonValue, out var target))
++        {
++            return (false, "Condition value type mismatch: expected boolean current and comparison values.");
++        }
++
++        return conditionOperator is ConditionOperator.Equals
++            ? (current == target, null)
++            : (false, "Only equals is supported for boolean comparisons.");
++    }
++
++    private static (bool Outcome, string? Diagnostic) EvaluateDateTime(
++        ConditionOperator conditionOperator,
++        JsonNode currentValue,
++        JsonNode comparisonValue)
++    {
++        if (!TryGetDateTimeOffset(currentValue, out var current) || !TryGetDateTimeOffset(comparisonValue, out var target))
++        {
++            return (false, "Condition value type mismatch: expected datetime current and comparison values.");
++        }
++
++        return conditionOperator switch
++        {
++            ConditionOperator.GreaterThan => (current > target, null),
++            ConditionOperator.LessThan => (current < target, null),
++            ConditionOperator.Equals => (current == target, null),
++            _ => (false, "Condition operator is not supported for datetime comparison.")
++        };
++    }
++
++    private static Dictionary<string, JsonNode?> BuildInputValues(
++        ConditionExpression condition,
++        JsonNode? currentValue,
++        bool hasPreviousValue,
++        JsonNode? previousValue) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["sourceType"] = JsonValue.Create(condition.Target.SourceType.ToStorageValue()),
++            ["metricName"] = condition.Target.MetricName is null ? null : JsonValue.Create(condition.Target.MetricName),
++            ["entityType"] = condition.Target.EntityType is null ? null : JsonValue.Create(condition.Target.EntityType),
++            ["fieldPath"] = condition.Target.FieldPath is null ? null : JsonValue.Create(condition.Target.FieldPath),
++            ["operator"] = JsonValue.Create(condition.Operator.ToStorageValue()),
++            ["valueType"] = condition.ValueType.HasValue ? JsonValue.Create(condition.ValueType.Value.ToStorageValue()) : null,
++            ["comparisonValue"] = condition.ComparisonValue?.DeepClone(),
++            ["currentValue"] = currentValue?.DeepClone(),
++            ["hasPreviousValue"] = JsonValue.Create(hasPreviousValue),
++            ["previousValue"] = previousValue?.DeepClone()
++        };
++
++    private static bool JsonValuesEqual(JsonNode? left, JsonNode? right)
++    {
++        if (left is null || right is null)
++        {
++            return left is null && right is null;
++        }
++
++        return JsonNode.DeepEquals(left, right);
++    }
++
++    private static bool TryGetDecimal(JsonNode? node, out decimal value)
++    {
++        value = 0;
++
++        if (node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        return jsonValue.TryGetValue<decimal>(out value) ||
++               jsonValue.TryGetValue<int>(out var intValue) && Assign(intValue, out value) ||
++               jsonValue.TryGetValue<long>(out var longValue) && Assign(longValue, out value) ||
++               jsonValue.TryGetValue<double>(out var doubleValue) && Assign((decimal)doubleValue, out value) ||
++               jsonValue.TryGetValue<string>(out var text) && decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
++    }
++
++    private static bool TryGetString(JsonNode? node, out string value)
++    {
++        value = string.Empty;
++        return node is JsonValue jsonValue && jsonValue.TryGetValue<string>(out value!);
++    }
++
++    private static bool TryGetBoolean(JsonNode? node, out bool value)
++    {
++        value = false;
++
++        if (node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        return jsonValue.TryGetValue<bool>(out value) ||
++               jsonValue.TryGetValue<string>(out var text) && bool.TryParse(text, out value);
++    }
++
++    private static bool TryGetDateTimeOffset(JsonNode? node, out DateTimeOffset value)
++    {
++        value = default;
++
++        if (node is JsonValue jsonValue && jsonValue.TryGetValue<DateTimeOffset>(out value))
++        {
++            return true;
++        }
++
++        return TryGetString(node, out var text) &&
++               DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out value);
++    }
++
++    private static bool Assign(decimal input, out decimal output)
++    {
++        output = input;
++        return true;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
++
++public sealed class ConditionTriggerEvaluationService : IConditionTriggerEvaluationService
++{
++    private readonly IConditionTriggerEvaluator _evaluator;
++    private readonly IConditionMetricValueResolver _metricValueResolver;
++    private readonly IConditionEntityFieldValueResolver _entityFieldValueResolver;
++    private readonly IConditionTriggerEvaluationRepository _repository;
++
++    public ConditionTriggerEvaluationService(
++        IConditionTriggerEvaluator evaluator,
++        IConditionMetricValueResolver metricValueResolver,
++        IConditionEntityFieldValueResolver entityFieldValueResolver,
++        IConditionTriggerEvaluationRepository repository)
++    {
++        _evaluator = evaluator;
++        _metricValueResolver = metricValueResolver;
++        _entityFieldValueResolver = entityFieldValueResolver;
++        _repository = repository;
++    }
++
++    public async Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(
++        EvaluateConditionTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        ArgumentNullException.ThrowIfNull(command.Condition);
++
++        var currentValue = await ResolveCurrentValueAsync(command, cancellationToken);
++        var latest = await _repository.GetLatestAsync(command.CompanyId, command.ConditionDefinitionId, cancellationToken);
++        var hasPreviousValue = latest?.InputValues.TryGetValue("currentValue", out var previousValue) == true;
++
++        var result = currentValue.Found
++            ? _evaluator.Evaluate(new ConditionEvaluationRequest(
++                command.Condition,
++                currentValue.Value,
++                hasPreviousValue,
++                previousValue,
++                latest?.CurrentOutcome,
++                command.EvaluatedUtc))
++            : BuildMissingValueResult(command, latest?.CurrentOutcome, currentValue.Diagnostic);
++
++        var evaluation = new ConditionTriggerEvaluation(
++            Guid.NewGuid(),
++            command.CompanyId,
++            command.ConditionDefinitionId,
++            command.WorkflowTriggerId,
++            result.EvaluatedUtc,
++            command.Condition.Target,
++            command.Condition.Operator,
++            command.Condition.ValueType,
++            command.Condition.RepeatFiringMode,
++            result.InputValues,
++            result.PreviousOutcome,
++            result.Outcome,
++            result.ShouldFire,
++            result.Diagnostic);
++
++        await _repository.AddAsync(evaluation, cancellationToken);
++        await _repository.SaveChangesAsync(cancellationToken);
++
++        return result;
++    }
++
++    private async Task<ConditionResolvedValue> ResolveCurrentValueAsync(
++        EvaluateConditionTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        var target = command.Condition.Target;
++        return target.SourceType switch
++        {
++            ConditionOperandSourceType.Metric => await _metricValueResolver.ResolveMetricAsync(
++                command.CompanyId,
++                target.MetricName ?? string.Empty,
++                cancellationToken),
++            ConditionOperandSourceType.EntityField => await _entityFieldValueResolver.ResolveEntityFieldAsync(
++                command.CompanyId,
++                target.EntityType ?? string.Empty,
++                target.FieldPath ?? string.Empty,
++                command.EntityId,
++                cancellationToken),
++            _ => ConditionResolvedValue.Missing("Condition target source type is not supported.")
++        };
++    }
++
++    private static ConditionEvaluationResultDto BuildMissingValueResult(
++        EvaluateConditionTriggerCommand command,
++        bool? previousOutcome,
++        string? diagnostic)
++    {
++        var inputValues = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["sourceType"] = JsonValue.Create(command.Condition.Target.SourceType.ToStorageValue()),
++            ["metricName"] = command.Condition.Target.MetricName is null ? null : JsonValue.Create(command.Condition.Target.MetricName),
++            ["entityType"] = command.Condition.Target.EntityType is null ? null : JsonValue.Create(command.Condition.Target.EntityType),
++            ["fieldPath"] = command.Condition.Target.FieldPath is null ? null : JsonValue.Create(command.Condition.Target.FieldPath),
++            ["operator"] = JsonValue.Create(command.Condition.Operator.ToStorageValue()),
++            ["valueType"] = command.Condition.ValueType.HasValue ? JsonValue.Create(command.Condition.ValueType.Value.ToStorageValue()) : null,
++            ["comparisonValue"] = command.Condition.ComparisonValue?.DeepClone(),
++            ["currentValue"] = null,
++            ["hasPreviousValue"] = JsonValue.Create(false),
++            ["previousValue"] = null
++        };
++
++        return new ConditionEvaluationResultDto(
++            command.EvaluatedUtc.Kind == DateTimeKind.Utc ? command.EvaluatedUtc : command.EvaluatedUtc.ToUniversalTime(),
++            inputValues,
++            false,
++            previousOutcome,
++            false,
++            false,
++            diagnostic ?? "Condition value could not be resolved.");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 81c1f62..02c5c7b 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -49,6 +49,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
+     public DbSet<ProcessedWorkflowTriggerEvent> ProcessedWorkflowTriggerEvents => Set<ProcessedWorkflowTriggerEvent>();
+     public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
++    public DbSet<ConditionTriggerEvaluation> ConditionTriggerEvaluations => Set<ConditionTriggerEvaluation>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+@@ -122,6 +123,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<WorkflowException>()
+             .HasQueryFilter(workflowException =>
+                 CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ConditionTriggerEvaluation>()
++            .HasQueryFilter(evaluation =>
++                CurrentCompanyId.HasValue && evaluation.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyKnowledgeDocument>()
+             .HasQueryFilter(document =>
+                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 913d791..1f55a33 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1445,6 +1445,67 @@ internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeCon
+     }
+ }
+ 
++internal sealed class ConditionTriggerEvaluationConfiguration : IEntityTypeConfiguration<ConditionTriggerEvaluation>
++{
++    public void Configure(EntityTypeBuilder<ConditionTriggerEvaluation> builder)
++    {
++        builder.ToTable("condition_trigger_evaluations");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ConditionDefinitionId).HasColumnName("condition_definition_id").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.WorkflowTriggerId).HasColumnName("workflow_trigger_id");
++        builder.Property(x => x.EvaluatedUtc).HasColumnName("evaluated_at").IsRequired();
++        builder.Property(x => x.SourceType)
++            .HasColumnName("source_type")
++            .HasConversion(value => value.ToStorageValue(), value => ConditionTriggerStorageValues.ParseSourceType(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SourceName).HasColumnName("source_name").HasMaxLength(200);
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(100);
++        builder.Property(x => x.FieldPath).HasColumnName("field_path").HasMaxLength(200);
++        builder.Property(x => x.Operator)
++            .HasColumnName("operator")
++            .HasConversion(value => value.ToStorageValue(), value => ConditionTriggerStorageValues.ParseOperator(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.ValueType)
++            .HasColumnName("value_type")
++            .HasConversion(
++                value => value.HasValue ? value.Value.ToStorageValue() : null,
++                value => string.IsNullOrWhiteSpace(value) ? null : ConditionTriggerStorageValues.ParseValueType(value));
++        builder.Property(x => x.RepeatFiringMode)
++            .HasColumnName("repeat_firing_mode")
++            .HasConversion(value => value.ToStorageValue(), value => ConditionTriggerStorageValues.ParseRepeatFiringMode(value))
++            .HasMaxLength(64)
++            .HasDefaultValue(RepeatFiringMode.FalseToTrueTransition)
++            .HasSentinel((RepeatFiringMode)0)
++            .IsRequired();
++        builder.Property(x => x.InputValues)
++            .HasColumnName("input_values_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.PreviousOutcome).HasColumnName("previous_outcome");
++        builder.Property(x => x.CurrentOutcome).HasColumnName("current_outcome").IsRequired();
++        builder.Property(x => x.Fired).HasColumnName("fired").IsRequired();
++        builder.Property(x => x.Diagnostic).HasColumnName("diagnostic").HasMaxLength(2000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ConditionDefinitionId, x.EvaluatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowTriggerId, x.EvaluatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Fired, x.EvaluatedUtc });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.WorkflowTrigger)
++            .WithMany()
++            .HasForeignKey(x => x.WorkflowTriggerId)
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
+ internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<WorkflowException>
+ {
+     public void Configure(EntityTypeBuilder<WorkflowException> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs
+new file mode 100644
+index 0000000..88f77c8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs
+@@ -0,0 +1,64 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class EfConditionTriggerEvaluationRepository : IConditionTriggerEvaluationRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfConditionTriggerEvaluationRepository(VirtualCompanyDbContext dbContext) =>
++        _dbContext = dbContext;
++
++    public async Task<ConditionTriggerEvaluation?> GetLatestAsync(
++        Guid companyId,
++        string conditionDefinitionId,
++        CancellationToken cancellationToken)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (string.IsNullOrWhiteSpace(conditionDefinitionId))
++        {
++            throw new ArgumentException("ConditionDefinitionId is required.", nameof(conditionDefinitionId));
++        }
++
++        return await _dbContext.ConditionTriggerEvaluations
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.ConditionDefinitionId == conditionDefinitionId)
++            .OrderByDescending(x => x.EvaluatedUtc)
++            .ThenByDescending(x => x.CreatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++    }
++
++    public async Task AddAsync(ConditionTriggerEvaluation evaluation, CancellationToken cancellationToken) =>
++        await _dbContext.ConditionTriggerEvaluations.AddAsync(evaluation, cancellationToken);
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++        _dbContext.SaveChangesAsync(cancellationToken);
++}
++
++public sealed class MissingConditionMetricValueResolver : IConditionMetricValueResolver
++{
++    public Task<ConditionResolvedValue> ResolveMetricAsync(
++        Guid companyId,
++        string metricName,
++        CancellationToken cancellationToken) =>
++        Task.FromResult(ConditionResolvedValue.Missing(
++            $"Metric '{metricName}' could not be resolved because no metric resolver has been configured."));
++}
++
++public sealed class MissingConditionEntityFieldValueResolver : IConditionEntityFieldValueResolver
++{
++    public Task<ConditionResolvedValue> ResolveEntityFieldAsync(
++        Guid companyId,
++        string entityType,
++        string fieldPath,
++        string? entityId,
++        CancellationToken cancellationToken) =>
++        Task.FromResult(ConditionResolvedValue.Missing(
++            string.IsNullOrWhiteSpace(entityId)
++                ? $"Entity field '{entityType}.{fieldPath}' could not be resolved without an entity id."
++                : $"Entity field '{entityType}.{fieldPath}' for entity '{entityId}' could not be resolved because no entity-field resolver has been configured."));
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 86f8ccb..09df3a8 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -214,6 +214,11 @@ public static class DependencyInjection
+         services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();
+         services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();
+         services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
++        services.AddSingleton<IConditionTriggerEvaluator, ConditionTriggerEvaluator>();
++        services.AddScoped<IConditionTriggerEvaluationRepository, EfConditionTriggerEvaluationRepository>();
++        services.AddScoped<IConditionMetricValueResolver, MissingConditionMetricValueResolver>();
++        services.AddScoped<IConditionEntityFieldValueResolver, MissingConditionEntityFieldValueResolver>();
++        services.AddScoped<IConditionTriggerEvaluationService, ConditionTriggerEvaluationService>();
+         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+new file mode 100644
+index 0000000..45d6e19
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+@@ -0,0 +1,126 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413233000_AddConditionTriggerEvaluations")]
++public partial class AddConditionTriggerEvaluations : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var boolType = isPostgres ? "boolean" : "bit";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++
++        migrationBuilder.CreateTable(
++            name: "condition_trigger_evaluations",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                condition_definition_id = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: false),
++                workflow_trigger_id = table.Column<Guid>(type: guidType, nullable: true),
++                evaluated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                source_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(32)", maxLength: 32, nullable: false),
++                source_name = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: true),
++                entity_type = table.Column<string>(type: isPostgres ? "character varying(100)" : "nvarchar(100)", maxLength: 100, nullable: true),
++                field_path = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: true),
++                @operator = table.Column<string>(name: "operator", type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                value_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(max)", nullable: true),
++                repeat_firing_mode = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false, defaultValue: "falseToTrueTransition"),
++                input_values_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: isPostgres ? "'{}'::jsonb" : "N'{}'"),
++                previous_outcome = table.Column<bool>(type: boolType, nullable: true),
++                current_outcome = table.Column<bool>(type: boolType, nullable: false),
++                fired = table.Column<bool>(type: boolType, nullable: false),
++                diagnostic = table.Column<string>(type: isPostgres ? "character varying(2000)" : "nvarchar(2000)", maxLength: 2000, nullable: true),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_condition_trigger_evaluations", x => x.id);
++                table.ForeignKey(
++                    name: "FK_condition_trigger_evaluations_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_condition_trigger_evaluations_workflow_triggers_workflow_trigger_id",
++                    column: x => x.workflow_trigger_id,
++                    principalTable: "workflow_triggers",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.SetNull);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_condition_trigger_evaluations_company_id_condition_definition_id_evaluated_at",
++            table: "condition_trigger_evaluations",
++            columns: new[] { "company_id", "condition_definition_id", "evaluated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_condition_trigger_evaluations_company_id_fired_evaluated_at",
++            table: "condition_trigger_evaluations",
++            columns: new[] { "company_id", "fired", "evaluated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_condition_trigger_evaluations_company_id_workflow_trigger_id_evaluated_at",
++            table: "condition_trigger_evaluations",
++            columns: new[] { "company_id", "workflow_trigger_id", "evaluated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_condition_trigger_evaluations_workflow_trigger_id",
++            table: "condition_trigger_evaluations",
++            column: "workflow_trigger_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "condition_trigger_evaluations");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluatorTests.cs
+new file mode 100644
+index 0000000..7a86eba
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluatorTests.cs
+@@ -0,0 +1,141 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ConditionTriggerEvaluatorTests
++{
++    private static readonly DateTime EvaluationUtc = new(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++
++    [Theory]
++    [InlineData(ConditionOperator.GreaterThan, 11, 10, true)]
++    [InlineData(ConditionOperator.GreaterThan, 9, 10, false)]
++    [InlineData(ConditionOperator.LessThan, 9, 10, true)]
++    [InlineData(ConditionOperator.LessThan, 11, 10, false)]
++    [InlineData(ConditionOperator.Equals, 10, 10, true)]
++    [InlineData(ConditionOperator.Equals, 11, 10, false)]
++    public void Evaluate_handles_numeric_threshold_operators(
++        ConditionOperator conditionOperator,
++        int current,
++        int target,
++        bool expectedOutcome)
++    {
++        var result = Evaluate(
++            MetricCondition(conditionOperator, ConditionValueType.Number, JsonValue.Create(target)),
++            JsonValue.Create(current),
++            hasPreviousValue: false,
++            previousValue: null,
++            previousOutcome: false);
++
++        Assert.Equal(expectedOutcome, result.Outcome);
++    }
++
++    [Fact]
++    public void Evaluate_handles_strict_string_equals()
++    {
++        var result = Evaluate(
++            EntityFieldCondition(ConditionOperator.Equals, ConditionValueType.String, JsonValue.Create("blocked")),
++            JsonValue.Create("blocked"),
++            hasPreviousValue: true,
++            previousValue: JsonValue.Create("open"),
++            previousOutcome: false);
++
++        Assert.True(result.Outcome);
++        Assert.True(result.ShouldFire);
++    }
++
++    [Fact]
++    public void Evaluate_changed_since_last_evaluation_is_false_on_first_evaluation()
++    {
++        var result = Evaluate(
++            MetricCondition(ConditionOperator.ChangedSinceLastEvaluation, null, null),
++            JsonValue.Create("green"),
++            hasPreviousValue: false,
++            previousValue: null,
++            previousOutcome: null);
++
++        Assert.False(result.Outcome);
++        Assert.False(result.ShouldFire);
++    }
++
++    [Fact]
++    public void Evaluate_changed_since_last_evaluation_compares_current_and_previous_values()
++    {
++        var result = Evaluate(
++            MetricCondition(ConditionOperator.ChangedSinceLastEvaluation, null, null),
++            JsonValue.Create("red"),
++            hasPreviousValue: true,
++            previousValue: JsonValue.Create("green"),
++            previousOutcome: false);
++
++        Assert.True(result.Outcome);
++        Assert.True(result.ShouldFire);
++    }
++
++    [Theory]
++    [InlineData(false, true, true)]
++    [InlineData(true, true, false)]
++    [InlineData(false, false, false)]
++    [InlineData(true, false, false)]
++    public void Evaluate_fires_only_on_false_to_true_transition_by_default(
++        bool previousOutcome,
++        bool currentMatches,
++        bool expectedFire)
++    {
++        var result = Evaluate(
++            MetricCondition(ConditionOperator.Equals, ConditionValueType.Number, JsonValue.Create(10)),
++            JsonValue.Create(currentMatches ? 10 : 9),
++            hasPreviousValue: true,
++            previousValue: JsonValue.Create(9),
++            previousOutcome: previousOutcome);
++
++        Assert.Equal(expectedFire, result.ShouldFire);
++    }
++
++    [Fact]
++    public void Evaluate_treats_first_true_as_false_to_true_transition()
++    {
++        var result = Evaluate(
++            MetricCondition(ConditionOperator.GreaterThan, ConditionValueType.Number, JsonValue.Create(10)),
++            JsonValue.Create(11),
++            hasPreviousValue: false,
++            previousValue: null,
++            previousOutcome: null);
++
++        Assert.True(result.Outcome);
++        Assert.True(result.ShouldFire);
++    }
++
++    [Fact]
++    public void Evaluate_repeated_firing_fires_while_outcome_remains_true()
++    {
++        var result = Evaluate(
++            MetricCondition(
++                ConditionOperator.GreaterThan,
++                ConditionValueType.Number,
++                JsonValue.Create(10),
++                RepeatFiringMode.EveryEvaluationWhileTrue),
++            JsonValue.Create(11),
++            hasPreviousValue: true,
++            previousValue: JsonValue.Create(12),
++            previousOutcome: true);
++
++        Assert.True(result.Outcome);
++        Assert.True(result.ShouldFire);
++    }
++
++    [Fact]
++    public void Evaluate_type_mismatch_fails_safely_with_diagnostic()
++    {
++        var result = Evaluate(
++            MetricCondition(ConditionOperator.GreaterThan, ConditionValueType.Number, JsonValue.Create(10)),
++            JsonValue.Create("many"),
++            hasPreviousValue: false,
++            previousValue: null,
++            previousOutcome: false);
++
++        Assert.False(result.Outcome);
++        Assert.False(result.ShouldFire);
++        Assert.NotNull(result.Diagnostic);
++    }
++
++    private static ConditionEvaluationResultDto Evaluate(
++        ConditionExpression condition,
++        JsonNode? currentValue,
++        bool hasPreviousValue,
++        JsonNode? previousValue,
++        bool? previousOutcome) =>
++        new ConditionTriggerEvaluator().Evaluate(new ConditionEvaluationRequest(
++            condition,
++            currentValue,
++            hasPreviousValue,
++            previousValue,
++            previousOutcome,
++            EvaluationUtc));
++
++    private static ConditionExpression MetricCondition(
++        ConditionOperator conditionOperator,
++        ConditionValueType? valueType,
++        JsonNode? comparisonValue,
++        RepeatFiringMode repeatFiringMode = RepeatFiringMode.FalseToTrueTransition) =>
++        new(
++            new ConditionTargetReference(ConditionOperandSourceType.Metric, "task.backlog.count", null, null),
++            conditionOperator,
++            valueType,
++            comparisonValue,
++            repeatFiringMode);
++
++    private static ConditionExpression EntityFieldCondition(
++        ConditionOperator conditionOperator,
++        ConditionValueType? valueType,
++        JsonNode? comparisonValue) =>
++        new(
++            new ConditionTargetReference(ConditionOperandSourceType.EntityField, null, "workTask", "status"),
++            conditionOperator,
++            valueType,
++            comparisonValue);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs
+new file mode 100644
+index 0000000..7fb1f69
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs
+@@ -0,0 +1,100 @@
++using System.Text.Json.Nodes;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ConditionTriggerEvaluationPersistenceTests
++{
++    [Fact]
++    public async Task Repository_persists_evaluation_inputs_and_outcome()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        await SeedCompanyAsync(dbContext, companyId);
++        var repository = new EfConditionTriggerEvaluationRepository(dbContext);
++        var evaluatedUtc = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++        var evaluation = CreateEvaluation(companyId, "task-backlog", evaluatedUtc, currentValue: 11, previousOutcome: false, currentOutcome: true, fired: true);
++
++        await repository.AddAsync(evaluation, CancellationToken.None);
++        await repository.SaveChangesAsync(CancellationToken.None);
++
++        var persisted = await repository.GetLatestAsync(companyId, "task-backlog", CancellationToken.None);
++
++        Assert.NotNull(persisted);
++        Assert.Equal(evaluatedUtc, persisted.EvaluatedUtc);
++        Assert.True(persisted.CurrentOutcome);
++        Assert.True(persisted.Fired);
++        Assert.Equal(11, persisted.InputValues["currentValue"]!.GetValue<int>());
++    }
++
++    [Fact]
++    public async Task Repository_returns_latest_prior_evaluation_for_same_tenant_and_definition()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        await SeedCompanyAsync(dbContext, companyId);
++        await SeedCompanyAsync(dbContext, otherCompanyId);
++        var repository = new EfConditionTriggerEvaluationRepository(dbContext);
++
++        await repository.AddAsync(CreateEvaluation(companyId, "task-backlog", new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc), 9, false, false, false), CancellationToken.None);
++        await repository.AddAsync(CreateEvaluation(companyId, "task-backlog", new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc), 11, false, true, true), CancellationToken.None);
++        await repository.AddAsync(CreateEvaluation(otherCompanyId, "task-backlog", new DateTime(2026, 4, 13, 8, 10, 0, DateTimeKind.Utc), 99, false, true, true), CancellationToken.None);
++        await repository.SaveChangesAsync(CancellationToken.None);
++
++        var latest = await repository.GetLatestAsync(companyId, "task-backlog", CancellationToken.None);
++
++        Assert.NotNull(latest);
++        Assert.Equal(companyId, latest.CompanyId);
++        Assert.Equal(new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc), latest.EvaluatedUtc);
++        Assert.Equal(11, latest.InputValues["currentValue"]!.GetValue<int>());
++    }
++
++    private static SqliteConnection CreateOpenConnection()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        connection.Open();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options;
++        var dbContext = new VirtualCompanyDbContext(options);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
++
++    private static async Task SeedCompanyAsync(VirtualCompanyDbContext dbContext, Guid companyId)
++    {
++        dbContext.Companies.Add(new Company(companyId, "Condition Trigger Company"));
++        await dbContext.SaveChangesAsync();
++    }
++
++    private static ConditionTriggerEvaluation CreateEvaluation(
++        Guid companyId,
++        string conditionDefinitionId,
++        DateTime evaluatedUtc,
++        int currentValue,
++        bool? previousOutcome,
++        bool currentOutcome,
++        bool fired) =>
++        new(
++            Guid.NewGuid(),
++            companyId,
++            conditionDefinitionId,
++            null,
++            evaluatedUtc,
++            new ConditionTargetReference(ConditionOperandSourceType.Metric, "task.backlog.count", null, null),
++            ConditionOperator.GreaterThan,
++            ConditionValueType.Number,
++            RepeatFiringMode.FalseToTrueTransition,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["currentValue"] = JsonValue.Create(currentValue),
++                ["previousValue"] = JsonValue.Create(currentValue - 1),
++                ["comparisonValue"] = JsonValue.Create(10)
++            },
++            previousOutcome,
++            currentOutcome,
++            fired);
++}
+END_OF_PATCH

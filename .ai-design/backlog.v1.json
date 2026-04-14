@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-03-29T18:06:26.868Z",
+  "generatedAt": "2026-04-14T15:25:26.905Z",
   "epics": [
     {
       "id": "EP-1",
@@ -1610,6 +1610,1250 @@
             }
           ],
           "acceptanceCriteria": []
+        }
+      ]
+    },
+    {
+      "id": "EP-7",
+      "title": "EP-7: Persistent agent operation and trigger system",
+      "stories": [
+        {
+          "id": "ST-701",
+          "title": "ST-701 - Scheduled agent triggers",
+          "tasks": [
+            {
+              "id": "TASK-13.1.1",
+              "title": "Implement scheduled trigger data model and persistence schema",
+              "tags": [
+                "backend",
+                "db",
+                "triggers"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.1.2",
+              "title": "Build CRUD API endpoints for schedule trigger management with validation",
+              "tags": [
+                "api",
+                "backend",
+                "validation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.1.3",
+              "title": "Add cron parser and next-run calculator with timezone support",
+              "tags": [
+                "scheduler",
+                "time",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can create, update, enable, disable, and delete schedule-based triggers for an agent through a persisted API.",
+            "A trigger supports cron-like expressions with explicit timezone configuration and next-run time calculation.",
+            "When a scheduled trigger is enabled, the system enqueues exactly one execution request for each due schedule window.",
+            "Disabling a scheduled trigger prevents any new executions from being enqueued after the disable timestamp.",
+            "Invalid cron expressions or unsupported timezones are rejected with validation errors and no trigger is persisted."
+          ]
+        },
+        {
+          "id": "ST-702",
+          "title": "ST-702 - Event-driven triggers",
+          "tasks": [
+            {
+              "id": "TASK-13.2.1",
+              "title": "Define event trigger schema and supported event type registry",
+              "tags": [
+                "backend",
+                "events",
+                "schema"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.2.2",
+              "title": "Integrate trigger matching into platform event bus consumers",
+              "tags": [
+                "backend",
+                "integration",
+                "events"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.2.3",
+              "title": "Implement idempotency handling for event-triggered execution requests",
+              "tags": [
+                "idempotency",
+                "workers",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The system allows registration of triggers bound to supported platform event types including task created, task updated, document uploaded, and workflow state changed.",
+            "When a supported event is emitted, matching enabled triggers are evaluated within the same tenant boundary.",
+            "Trigger payloads include event metadata, source entity identifiers, tenant identifier, and correlation identifier.",
+            "Duplicate delivery of the same event does not create duplicate agent executions for the same trigger and event identifier.",
+            "Unsupported event types are rejected during trigger creation."
+          ]
+        },
+        {
+          "id": "ST-703",
+          "title": "ST-703 - Condition-based triggers",
+          "tasks": [
+            {
+              "id": "TASK-13.3.1",
+              "title": "Implement condition expression model and validation rules",
+              "tags": [
+                "backend",
+                "rules",
+                "validation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.3.2",
+              "title": "Build condition evaluator for metric and entity-field comparisons",
+              "tags": [
+                "engine",
+                "backend",
+                "conditions"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.3.3",
+              "title": "Persist condition evaluation state to support edge-triggered firing",
+              "tags": [
+                "db",
+                "state",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can define condition-based triggers using supported operators against named metrics or entity fields.",
+            "The evaluation engine can process threshold conditions such as greater than, less than, equals, and changed since last evaluation.",
+            "A condition trigger fires only when its condition transitions from false to true unless configured for repeated firing.",
+            "Condition evaluation results are persisted with evaluation timestamp, input values, and outcome.",
+            "Invalid condition definitions are rejected with field-level validation errors."
+          ]
+        },
+        {
+          "id": "ST-704",
+          "title": "ST-704 - Trigger evaluation engine and auditability",
+          "tasks": [
+            {
+              "id": "TASK-13.4.1",
+              "title": "Implement background worker for trigger evaluation and execution dispatch",
+              "tags": [
+                "workers",
+                "backend",
+                "scheduler"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.4.2",
+              "title": "Add policy-aware orchestration entry point for trigger-initiated runs",
+              "tags": [
+                "orchestration",
+                "policy",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.4.3",
+              "title": "Create audit event writer for trigger evaluations and executions",
+              "tags": [
+                "audit",
+                "backend",
+                "observability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-13.4.4",
+              "title": "Add retry and dead-letter handling for failed trigger execution jobs",
+              "tags": [
+                "reliability",
+                "queue",
+                "workers"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A background worker evaluates due scheduled triggers and pending condition checks on a recurring polling interval.",
+            "The evaluation engine records an idempotency key per trigger execution attempt and prevents duplicate orchestration starts.",
+            "All trigger executions produce audit records containing trigger id, trigger type, agent id, tenant id, execution status, and correlation id.",
+            "Policy checks are executed before orchestration start, and blocked executions are recorded with denial reason.",
+            "Worker failures are retried according to configured retry policy and failed attempts are visible in audit records."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-1",
+      "title": "EPIC-1 — Proactive agent behavior and initiative",
+      "stories": [
+        {
+          "id": "US-1.1",
+          "title": "ST-A201 — Agent-initiated task creation",
+          "tasks": [
+            {
+              "id": "TASK-1.1.1",
+              "title": "Implement proactive task creation service with trigger-to-task mapping",
+              "tags": [
+                "backend",
+                "tasks",
+                "automation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.1.2",
+              "title": "Add idempotency and deduplication checks for agent-created tasks",
+              "tags": [
+                "backend",
+                "reliability",
+                "idempotency"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.1.3",
+              "title": "Persist task provenance and audit metadata for proactive actions",
+              "tags": [
+                "backend",
+                "audit",
+                "data"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Given a configured trigger or analysis result, the system creates a task without user prompting and persists the originating agent, trigger source, and creation reason.",
+            "Created tasks include required fields: title, description, priority, status, assignee or queue, sourceType='agent', and correlationId.",
+            "Duplicate task creation is prevented for the same trigger event and correlationId within the configured deduplication window.",
+            "Each agent-initiated task creation is recorded in the audit log with tenantId, agentId, timestamp, and payload diff."
+          ]
+        },
+        {
+          "id": "US-1.2",
+          "title": "ST-A202 — Alert generation framework",
+          "tasks": [
+            {
+              "id": "TASK-1.2.1",
+              "title": "Create alert domain model, persistence schema, and CRUD APIs",
+              "tags": [
+                "backend",
+                "alerts",
+                "api"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.2.2",
+              "title": "Implement alert classification and fingerprint-based deduplication pipeline",
+              "tags": [
+                "backend",
+                "classification",
+                "dedupe"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.2.3",
+              "title": "Add alert query filters and pagination to alert retrieval endpoints",
+              "tags": [
+                "backend",
+                "api",
+                "search"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The system generates alerts from agent detections with required fields: type, severity, title, summary, evidence, status, tenantId, and correlationId.",
+            "Alerts are categorized into at least risk, anomaly, and opportunity types, and into at least low, medium, high, and critical severities.",
+            "Alert generation applies deduplication so repeated detections with the same fingerprint do not create multiple open alerts.",
+            "Users can query alerts by tenant, type, severity, status, and createdAt through an API returning paginated results."
+          ]
+        },
+        {
+          "id": "US-1.3",
+          "title": "ST-A203 — Escalation policies",
+          "tasks": [
+            {
+              "id": "TASK-1.3.1",
+              "title": "Implement policy evaluation engine for threshold- and rule-based escalations",
+              "tags": [
+                "backend",
+                "rules",
+                "escalation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.3.2",
+              "title": "Add escalation state tracking to prevent repeated level triggers",
+              "tags": [
+                "backend",
+                "state",
+                "reliability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.3.3",
+              "title": "Expose escalation records and policy evaluation history via API",
+              "tags": [
+                "backend",
+                "api",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The system evaluates escalation policies against alert and task events using configurable thresholds, timers, and rule conditions.",
+            "When an escalation condition is met, the system creates an escalation record with policyId, sourceEntityId, escalationLevel, reason, and triggeredAt.",
+            "Escalations are executed only once per policy level for the same source entity unless the entity is resolved and re-opened.",
+            "Policy evaluation results and escalation actions are written to the audit log and are traceable by correlationId."
+          ]
+        },
+        {
+          "id": "US-1.4",
+          "title": "ST-A204 — Proactive messaging with guardrailed autonomy",
+          "tasks": [
+            {
+              "id": "TASK-1.4.1",
+              "title": "Implement proactive message generation and delivery workflow for inbox and notification channels",
+              "tags": [
+                "backend",
+                "messaging",
+                "notifications"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.4.2",
+              "title": "Integrate autonomy and policy guardrail checks into proactive action execution",
+              "tags": [
+                "backend",
+                "policy",
+                "guardrails"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-1.4.3",
+              "title": "Persist message delivery records and policy decision outcomes",
+              "tags": [
+                "backend",
+                "audit",
+                "data"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When a proactive task, alert, or escalation is created, the system can generate a user-facing message or briefing linked to the originating entity.",
+            "Before sending, the system enforces autonomy level and policy guardrails; blocked actions are not delivered and return a policy decision reason.",
+            "Delivered proactive messages include channel, recipient, subject or title, body, sourceEntityId, and sentAt, and are persisted for retrieval.",
+            "Integration tests verify that allowed actions are delivered and disallowed actions are blocked for at least two distinct autonomy levels."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-2",
+      "title": "EPIC-2 — Strong agent identity and behavioral consistency",
+      "stories": [
+        {
+          "id": "US-2.1",
+          "title": "ST-A301 — Communication style enforcement across response channels",
+          "tasks": [
+            {
+              "id": "TASK-2.1.1",
+              "title": "Add agent communication profile schema for tone, persona, and style constraints",
+              "tags": [
+                "backend",
+                "schema",
+                "identity"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.1.2",
+              "title": "Inject communication profile into chat, task output, and document generation prompt builders",
+              "tags": [
+                "backend",
+                "prompting",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.1.3",
+              "title": "Implement response style validation rules and automated tests for forbidden tone patterns",
+              "tags": [
+                "testing",
+                "validation",
+                "llm"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Given an agent with configured tone, persona, and communication rules, when a chat response, task summary, or generated output is produced, then the prompt payload includes the agent identity profile fields before model invocation.",
+            "Responses generated for the same agent across chat, task, and document output paths include the configured style directives and pass automated rule checks for forbidden tone violations.",
+            "When an agent configuration is updated, subsequent generations use the new style settings without requiring service restart.",
+            "If no explicit identity profile exists for an agent, the system applies a default fallback profile and records the fallback usage in logs."
+          ]
+        },
+        {
+          "id": "US-2.2",
+          "title": "ST-A302 — Role boundary enforcement and delegation behavior",
+          "tasks": [
+            {
+              "id": "TASK-2.2.1",
+              "title": "Create role responsibility policy model with allowed domains, denied domains, and delegation targets",
+              "tags": [
+                "backend",
+                "policy",
+                "roles"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.2.2",
+              "title": "Implement pre-response scope evaluation middleware for agent requests",
+              "tags": [
+                "backend",
+                "middleware",
+                "routing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.2.3",
+              "title": "Add delegation response templates and escalation action wiring for out-of-scope requests",
+              "tags": [
+                "backend",
+                "ux",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.2.4",
+              "title": "Write integration tests covering in-scope processing and out-of-scope delegation paths",
+              "tags": [
+                "testing",
+                "integration",
+                "policy"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Given an agent with defined domain responsibilities, when a request falls outside its allowed scope, then the agent response includes a delegation or escalation action instead of a direct answer.",
+            "Requests classified as in-scope are processed normally and do not trigger boundary violation events.",
+            "Boundary decisions are evaluated against configured allow/deny responsibility rules with deterministic test coverage for at least one in-scope and one out-of-scope scenario per agent role.",
+            "Out-of-scope handling events are persisted with agent id, requested domain, matched rule, and delegation target."
+          ]
+        },
+        {
+          "id": "US-2.3",
+          "title": "ST-A303 — Identity-driven prompt shaping with role, seniority, and behavior patterns",
+          "tasks": [
+            {
+              "id": "TASK-2.3.1",
+              "title": "Extend prompt builder to compose structured identity sections from agent and tenant configuration",
+              "tags": [
+                "backend",
+                "prompting",
+                "config"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.3.2",
+              "title": "Implement instruction precedence rules for tenant policy, agent identity, and task context",
+              "tags": [
+                "backend",
+                "policy",
+                "prompting"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.3.3",
+              "title": "Add non-production prompt preview endpoint with redaction for sensitive fields",
+              "tags": [
+                "api",
+                "debug",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Prompt assembly includes agent role, seniority, business responsibility, collaboration norms, and personality traits in a structured identity section.",
+            "The prompt builder produces different prompt payloads for agents with different identity configurations while preserving shared system safety instructions.",
+            "Prompt preview or debug output exposes the resolved identity section for internal inspection in non-production environments.",
+            "Unit tests verify prompt composition precedence when tenant policy, agent identity, and task context all provide overlapping instructions."
+          ]
+        },
+        {
+          "id": "US-2.4",
+          "title": "ST-A305 — Identity audit signals for traceability and consistency monitoring",
+          "tasks": [
+            {
+              "id": "TASK-2.4.1",
+              "title": "Extend audit event schema to capture agent identity and behavior decision metadata",
+              "tags": [
+                "backend",
+                "audit",
+                "schema"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.4.2",
+              "title": "Emit audit events from generation pipeline and boundary enforcement middleware",
+              "tags": [
+                "backend",
+                "observability",
+                "events"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-2.4.3",
+              "title": "Build internal audit query API for filtering by agent and time range",
+              "tags": [
+                "api",
+                "audit",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each agent generation event stores identity metadata including agent name, role, responsibility domain, prompt profile version, and boundary decision outcome.",
+            "Audit records can be queried by agent id and time range through an internal API endpoint.",
+            "When fallback identity configuration or boundary delegation is used, the audit event includes a machine-readable reason code.",
+            "Automated tests verify audit event creation for normal generation, fallback identity usage, and out-of-scope delegation scenarios."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-3",
+      "title": "EPIC-3 — Executive cockpit as a real control room",
+      "stories": [
+        {
+          "id": "US-3.1",
+          "title": "Department-based executive dashboard composition",
+          "tasks": [
+            {
+              "id": "TASK-3.1.1",
+              "title": "Implement department dashboard configuration schema and persistence",
+              "tags": [
+                "backend",
+                "config",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.1.2",
+              "title": "Build dashboard composition API for department sections and widgets",
+              "tags": [
+                "api",
+                "backend",
+                "dashboard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.1.3",
+              "title": "Render server-driven department layout in executive cockpit UI",
+              "tags": [
+                "frontend",
+                "ui",
+                "dashboard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.1.4",
+              "title": "Add authorization checks for department and widget visibility",
+              "tags": [
+                "auth",
+                "backend",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Dashboard API returns department sections for at least finance, sales, support, and operations in a deterministic display order.",
+            "Each department section includes configured widgets, summary counts, and navigation metadata required by the frontend.",
+            "Users only receive department sections and widgets permitted by their role and tenant scope.",
+            "Frontend renders department sections from server-driven configuration without hardcoded department-specific layouts.",
+            "Automated tests verify section ordering, role-based visibility, and fallback behavior when a department has no data."
+          ]
+        },
+        {
+          "id": "US-3.2",
+          "title": "Agent status cards with workload, health, and recent activity",
+          "tasks": [
+            {
+              "id": "TASK-3.2.1",
+              "title": "Create agent status aggregation service for workload, health, and alerts",
+              "tags": [
+                "backend",
+                "agents",
+                "aggregation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.2.2",
+              "title": "Expose agent status card endpoint with recent activity payload",
+              "tags": [
+                "api",
+                "backend",
+                "agents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.2.3",
+              "title": "Implement agent status card components and detail navigation",
+              "tags": [
+                "frontend",
+                "ui",
+                "agents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each agent card displays current workload, health status, active alerts count, and the 5 most recent actions.",
+            "Agent status values are derived from live system data and refresh within 60 seconds of source updates.",
+            "Selecting an agent card opens a detail view or deep link with the agent's active tasks, workflows, and alerts.",
+            "Health status is computed using defined thresholds for failed runs, stalled work, and policy violations.",
+            "Automated tests validate status calculation, recent action ordering, and deep-link routing."
+          ]
+        },
+        {
+          "id": "US-3.3",
+          "title": "KPI and anomaly surfacing across departments",
+          "tasks": [
+            {
+              "id": "TASK-3.3.1",
+              "title": "Implement KPI query layer and baseline comparison calculations",
+              "tags": [
+                "backend",
+                "metrics",
+                "analytics"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.3.2",
+              "title": "Build anomaly detection rules engine for dashboard metrics",
+              "tags": [
+                "backend",
+                "rules",
+                "anomaly"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.3.3",
+              "title": "Add KPI tiles and anomaly list components with interactive filters",
+              "tags": [
+                "frontend",
+                "ui",
+                "analytics"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Dashboard shows configured KPI tiles per department with current value, comparison baseline, and trend direction.",
+            "Anomalies are flagged when metric values breach configured thresholds or deviate from baseline by configured percentages.",
+            "Each anomaly includes severity, impacted department, timestamp, and a link to the underlying metric or workflow context.",
+            "KPI and anomaly data can be filtered by time range and department without full page reload.",
+            "Automated tests verify anomaly detection logic, severity mapping, and filter behavior."
+          ]
+        },
+        {
+          "id": "US-3.4",
+          "title": "Action-oriented insights and deep links to operational work",
+          "tasks": [
+            {
+              "id": "TASK-3.4.1",
+              "title": "Implement insight scoring and prioritization service for actionable items",
+              "tags": [
+                "backend",
+                "prioritization",
+                "insights"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.4.2",
+              "title": "Create unified deep-link resolver for tasks, workflows, and approvals",
+              "tags": [
+                "backend",
+                "routing",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.4.3",
+              "title": "Build action queue UI with acknowledgment interactions",
+              "tags": [
+                "frontend",
+                "ui",
+                "insights"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.4.4",
+              "title": "Persist per-user insight acknowledgment state",
+              "tags": [
+                "backend",
+                "db",
+                "user-state"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Dashboard displays a prioritized action queue containing approvals, risks, blocked workflows, and opportunities.",
+            "Each action item includes priority, reason, owner, due time or SLA state, and a deep link to the target task, workflow, or approval.",
+            "Priority ordering is consistent with configured scoring rules and remains stable for identical scores.",
+            "Users can mark an insight as acknowledged, and the acknowledgment state persists across refreshes for that user.",
+            "Automated tests verify action scoring, deep-link generation, and acknowledgment persistence."
+          ]
+        },
+        {
+          "id": "US-3.5",
+          "title": "Dashboard performance, caching, and refresh behavior",
+          "tasks": [
+            {
+              "id": "TASK-3.5.1",
+              "title": "Add cache layer for dashboard aggregates and widget payloads",
+              "tags": [
+                "backend",
+                "cache",
+                "performance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.5.2",
+              "title": "Implement event-driven cache invalidation for cockpit data sources",
+              "tags": [
+                "backend",
+                "events",
+                "cache"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.5.3",
+              "title": "Enable partial widget refresh and loading states in cockpit UI",
+              "tags": [
+                "frontend",
+                "performance",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-3.5.4",
+              "title": "Create performance test suite and telemetry for cockpit endpoints",
+              "tags": [
+                "qa",
+                "observability",
+                "performance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Executive cockpit initial load completes in under 2.5 seconds at p95 for cached requests in the staging performance environment.",
+            "Dashboard data endpoints use cache keys scoped by tenant, user role, department filters, and time range.",
+            "Cache invalidation occurs within 60 seconds after relevant task, workflow, approval, or agent status updates.",
+            "Frontend supports partial widget refresh without reloading the full dashboard shell.",
+            "Performance tests and observability dashboards report endpoint latency, cache hit rate, and widget render timing."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-4",
+      "title": "EPIC-4 — Continuous company narrative and event-enriched briefings",
+      "stories": [
+        {
+          "id": "US-4.1",
+          "title": "Build event-driven briefing generation pipeline",
+          "tasks": [
+            {
+              "id": "TASK-4.1.1",
+              "title": "Implement briefing update job producer for supported domain events",
+              "tags": [
+                "backend",
+                "events",
+                "briefings"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.1.2",
+              "title": "Add idempotency, retry, and failure tracking to briefing generation jobs",
+              "tags": [
+                "backend",
+                "queue",
+                "reliability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.1.3",
+              "title": "Wire scheduled daily and weekly briefing triggers into the unified pipeline",
+              "tags": [
+                "scheduler",
+                "backend",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When a supported business event is emitted, a briefing update job is created within 30 seconds with tenant, company, event type, and correlation identifiers persisted.",
+            "Supported event types include task status changes, workflow state changes, approval requests, approval decisions, escalations, and agent-generated alerts.",
+            "Duplicate events with the same idempotency key do not create more than one briefing update job.",
+            "If briefing generation fails, the job is retried according to configured retry policy and the final failure state is recorded with error details.",
+            "Scheduled daily and weekly briefing jobs continue to run and use the same generation pipeline as event-driven jobs."
+          ]
+        },
+        {
+          "id": "US-4.2",
+          "title": "Aggregate cross-agent insights into unified briefing sections",
+          "tasks": [
+            {
+              "id": "TASK-4.2.1",
+              "title": "Create cross-agent insight aggregation service with grouping and conflict detection",
+              "tags": [
+                "backend",
+                "aggregation",
+                "agents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.2.2",
+              "title": "Extend briefing data model to persist agent contribution metadata and source references",
+              "tags": [
+                "database",
+                "backend",
+                "schema"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.2.3",
+              "title": "Expose narrative and structured briefing sections through briefing read APIs",
+              "tags": [
+                "api",
+                "backend",
+                "serialization"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A generated briefing can include contributions from multiple agents and each contribution is stored with agent identifier, source reference, timestamp, and confidence metadata.",
+            "The aggregation service groups related insights into a single section when they share the same company entity, workflow, task, or event correlation identifier.",
+            "If two agents provide conflicting assessments for the same topic, the briefing output marks the section as conflicting and includes both viewpoints.",
+            "The generated briefing payload exposes both narrative text and structured sections in the API response.",
+            "Aggregation excludes agent contributions that are outside the configured tenant and company scope."
+          ]
+        },
+        {
+          "id": "US-4.3",
+          "title": "Link briefing content to tasks, approvals, workflows, and priorities",
+          "tasks": [
+            {
+              "id": "TASK-4.3.1",
+              "title": "Implement priority scoring and section ordering for briefing content",
+              "tags": [
+                "backend",
+                "prioritization",
+                "rules"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.3.2",
+              "title": "Add entity linking from briefing sections to tasks, approvals, and workflows",
+              "tags": [
+                "backend",
+                "linking",
+                "workflows"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.3.3",
+              "title": "Populate structured briefing metrics for alerts, approvals, blocked workflows, and overdue tasks",
+              "tags": [
+                "backend",
+                "metrics",
+                "briefings"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each briefing section referencing operational work includes resolvable links or identifiers to the related task, workflow instance, or approval record.",
+            "Briefing sections are ordered by priority so that alerts, risks, and escalations appear before informational updates.",
+            "Priority is derived from persisted severity rules and can be validated from the structured output without parsing narrative text.",
+            "If a linked task, workflow, or approval is deleted or inaccessible, the briefing API returns a stable placeholder state instead of failing.",
+            "The structured output includes counts for critical alerts, open approvals, blocked workflows, and overdue tasks."
+          ]
+        },
+        {
+          "id": "US-4.4",
+          "title": "Support personalized briefing preferences and delivery controls",
+          "tasks": [
+            {
+              "id": "TASK-4.4.1",
+              "title": "Create persistence and APIs for user briefing preferences and tenant defaults",
+              "tags": [
+                "api",
+                "backend",
+                "preferences"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.4.2",
+              "title": "Apply preference-based filtering during briefing assembly",
+              "tags": [
+                "backend",
+                "filtering",
+                "briefings"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-4.4.3",
+              "title": "Add request validation and error handling for invalid preference payloads",
+              "tags": [
+                "api",
+                "validation",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can save briefing preferences for delivery frequency, included focus areas, and priority threshold through authenticated API endpoints.",
+            "Generated briefings respect the saved user preferences by filtering out excluded focus areas and sections below the configured priority threshold.",
+            "If no user preference exists, the system applies tenant-level defaults and records which defaults were used.",
+            "Preference changes affect the next generated briefing without requiring service restart or manual cache invalidation.",
+            "API validation rejects unsupported focus areas and invalid delivery frequencies with 4xx responses and descriptive error codes."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-5",
+      "title": "EPIC-5 — Agent activity timeline and transparency layer",
+      "stories": [
+        {
+          "id": "US-5.1",
+          "title": "Unified real-time agent activity feed",
+          "tasks": [
+            {
+              "id": "TASK-5.1.1",
+              "title": "Implement tenant-scoped activity event store and feed query API",
+              "tags": [
+                "backend",
+                "api",
+                "timeline"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.1.2",
+              "title": "Publish agent activity events to real-time subscription channel",
+              "tags": [
+                "backend",
+                "realtime",
+                "events"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.1.3",
+              "title": "Build chronological activity feed UI with live updates and pagination",
+              "tags": [
+                "frontend",
+                "ui",
+                "timeline"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A tenant-scoped activity feed endpoint returns agent activity events in reverse chronological order with cursor-based pagination.",
+            "New agent activity events are delivered to connected clients within 2 seconds of event persistence via a real-time subscription channel.",
+            "Each activity event includes eventId, tenantId, agentId, eventType, occurredAt, status, summary, correlationId, and source metadata.",
+            "The feed excludes events from other tenants and returns HTTP 403 for unauthorized access attempts.",
+            "When no events exist for the selected scope, the API returns an empty result set with a valid next cursor value of null."
+          ]
+        },
+        {
+          "id": "US-5.2",
+          "title": "Correlated action timeline across tasks, workflows, approvals, and tools",
+          "tasks": [
+            {
+              "id": "TASK-5.2.1",
+              "title": "Add correlation model and entity link resolution service for activity events",
+              "tags": [
+                "backend",
+                "data",
+                "correlation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.2.2",
+              "title": "Expose correlated timeline API for tasks workflows approvals and tool executions",
+              "tags": [
+                "backend",
+                "api",
+                "orchestration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.2.3",
+              "title": "Implement drill-down correlation panel in the activity timeline UI",
+              "tags": [
+                "frontend",
+                "ui",
+                "drilldown"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Activity events with the same correlationId are grouped into a single timeline view showing related task, workflow, approval, and tool execution records.",
+            "Selecting an activity item displays linked entities and their current statuses without requiring a full page reload.",
+            "If a linked entity is missing or deleted, the timeline renders a visible unavailable state without breaking the rest of the correlation view.",
+            "Correlation queries for a single activity item return results in under 1 second for datasets up to 10,000 related events in performance test fixtures.",
+            "Correlation links are restricted to entities within the same tenant and respect existing authorization rules for tasks, workflows, approvals, and tools."
+          ]
+        },
+        {
+          "id": "US-5.3",
+          "title": "Human-readable activity summaries and transparency metadata",
+          "tasks": [
+            {
+              "id": "TASK-5.3.1",
+              "title": "Create event-to-summary formatter library for supported activity types",
+              "tags": [
+                "backend",
+                "formatting",
+                "transparency"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.3.2",
+              "title": "Attach normalized summary payloads to feed and correlation responses",
+              "tags": [
+                "backend",
+                "api",
+                "serialization"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.3.3",
+              "title": "Add fixture-based tests for summary generation across representative event types",
+              "tags": [
+                "qa",
+                "tests",
+                "formatting"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each supported event type is transformed into a human-readable summary using a deterministic template or formatter before being returned to clients.",
+            "Summaries include actor, action, target, and outcome fields when source data is available, and omit missing fields without rendering placeholder text such as 'undefined' or 'null'.",
+            "The API returns both raw technical payload and normalized summary payload for each activity event.",
+            "For at least 20 predefined event types, automated tests verify the generated summary text matches expected output fixtures.",
+            "Summary generation completes during event ingestion or read-time enrichment without increasing median feed response time above 300 ms in benchmark tests."
+          ]
+        },
+        {
+          "id": "US-5.4",
+          "title": "Filtering, drill-down, and audit deep linking",
+          "tasks": [
+            {
+              "id": "TASK-5.4.1",
+              "title": "Implement server-side filtering and indexed queries for activity feed dimensions",
+              "tags": [
+                "backend",
+                "search",
+                "filters"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.4.2",
+              "title": "Build filter controls and URL state synchronization in the timeline UI",
+              "tags": [
+                "frontend",
+                "ui",
+                "filters"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.4.3",
+              "title": "Add activity detail drawer with audit deep-link handling",
+              "tags": [
+                "frontend",
+                "audit",
+                "drilldown"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-5.4.4",
+              "title": "Write integration tests for filter combinations and audit navigation",
+              "tags": [
+                "qa",
+                "tests",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Users can filter the activity feed by agent, department, task, event type, status, and timeframe, and the returned results match all selected filters.",
+            "Applying or clearing filters updates the URL query string so the current view can be reloaded or shared without losing state.",
+            "Clicking an activity item opens a detail view showing raw payload, summary, correlation links, and a deep link to the corresponding audit record when available.",
+            "If an activity event has an audit record, the detail view includes a working deep link that opens the correct audit detail page for the same tenant.",
+            "Filter and detail interactions are covered by automated integration tests for at least the top 5 filter combinations and the audit deep-link flow."
+          ]
         }
       ]
     }

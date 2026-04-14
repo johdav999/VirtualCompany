@@ -1,0 +1,289 @@
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs
+--- a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs
++++ b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs
+@@ -73,7 +73,7 @@ public interface IEscalationPolicyEvaluationService
+ 
+ public interface IEscalationRepository
+ {
+-    Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken);
++    Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, string sourceEntityType, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken);
+ 
+     Task<EscalationCreationResult> TryCreateAsync(Escalation escalation, CancellationToken cancellationToken);
+ 
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+--- a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
++++ b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+@@ -117,7 +117,7 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+             return new EscalationPolicyEvaluationResult(policy.PolicyId, level.EscalationLevel, false, false, false, levelReason, diagnostic, null);
+         }
+ 
+-        if (await _repository.HasExecutedAsync(input.CompanyId, policy.PolicyId, input.SourceEntityId, level.EscalationLevel, input.LifecycleVersion, cancellationToken))
++        if (await _repository.HasExecutedAsync(input.CompanyId, policy.PolicyId, input.SourceEntityType, input.SourceEntityId, level.EscalationLevel, input.LifecycleVersion, cancellationToken))
+         {
+             await WriteAuditAsync(
+                 input,
+diff --git a/src/VirtualCompany.Domain/Entities/Alert.cs b/src/VirtualCompany.Domain/Entities/Alert.cs
+--- a/src/VirtualCompany.Domain/Entities/Alert.cs
++++ b/src/VirtualCompany.Domain/Entities/Alert.cs
+@@ -69,6 +69,7 @@ public sealed class Alert : ICompanyOwnedEntity
+     public string Fingerprint { get; private set; } = null!;
+     public Guid? SourceAgentId { get; private set; }
+     public int OccurrenceCount { get; private set; }
++    public int SourceLifecycleVersion { get; private set; }
+     public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -91,10 +92,20 @@ public sealed class Alert : ICompanyOwnedEntity
+ 
+     public void UpdateStatus(AlertStatus status)
+     {
++        var wasResolved = Status is AlertStatus.Resolved or AlertStatus.Closed;
++        var isReopened = status is AlertStatus.Open or AlertStatus.Acknowledged;
++
+         Status = status;
+         UpdatedUtc = DateTime.UtcNow;
+-        ResolvedUtc = status == AlertStatus.Resolved ? UpdatedUtc : ResolvedUtc;
+-        ClosedUtc = status == AlertStatus.Closed ? UpdatedUtc : ClosedUtc;
++        if (wasResolved && isReopened)
++        {
++            SourceLifecycleVersion++;
++            ResolvedUtc = null;
++            ClosedUtc = null;
++            return;
++        }
++
++        ResolvedUtc = status == AlertStatus.Resolved ? UpdatedUtc : status == AlertStatus.Open ? null : ResolvedUtc;
++        ClosedUtc = status == AlertStatus.Closed ? UpdatedUtc : status == AlertStatus.Open ? null : ClosedUtc;
+     }
+ 
+     public void RefreshFromDuplicateDetection(AlertSeverity severity, string title, string summary, IReadOnlyDictionary<string, JsonNode?> evidence, string correlationId, Guid? sourceAgentId, IReadOnlyDictionary<string, JsonNode?>? metadata)
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -131,6 +131,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     public string? TriggerSource { get; private set; }
+     public string? CreationReason { get; private set; }
+     public string? TriggerEventId { get; private set; }
++    public int SourceLifecycleVersion { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? CompletedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -186,11 +187,18 @@ public sealed class WorkTask : ICompanyOwnedEntity
+             throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
+         }
+ 
++        var wasCompleted = Status == WorkTaskStatus.Completed;
++        var isReopened = status != WorkTaskStatus.Completed;
++
+         Status = status;
+         OutputPayload = CloneNodes(outputPayload);
+         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
+         ConfidenceScore = confidenceScore;
+         CompletedUtc = status == WorkTaskStatus.Completed ? DateTime.UtcNow : null;
++        if (wasCompleted && isReopened)
++        {
++            SourceLifecycleVersion++;
++        }
++
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+@@ -18,6 +18,7 @@ public sealed class EfEscalationRepository : IEscalationRepository
+     public async Task<bool> HasExecutedAsync(
+         Guid companyId,
+         Guid policyId,
++        string sourceEntityType,
+         Guid sourceEntityId,
+         int escalationLevel,
+         int lifecycleVersion,
+@@ -27,6 +28,7 @@ public sealed class EfEscalationRepository : IEscalationRepository
+                 escalation =>
+                     escalation.CompanyId == companyId &&
+                     escalation.PolicyId == policyId &&
++                    escalation.SourceEntityType == sourceEntityType &&
+                     escalation.SourceEntityId == sourceEntityId &&
+                     escalation.EscalationLevel == escalationLevel &&
+                     escalation.LifecycleVersion == lifecycleVersion,
+@@ -51,6 +53,7 @@ public sealed class EfEscalationRepository : IEscalationRepository
+                     item =>
+                         item.CompanyId == escalation.CompanyId &&
+                         item.PolicyId == escalation.PolicyId &&
++                        item.SourceEntityType == escalation.SourceEntityType &&
+                         item.SourceEntityId == escalation.SourceEntityId &&
+                         item.EscalationLevel == escalation.EscalationLevel &&
+                         item.LifecycleVersion == escalation.LifecycleVersion,
+@@ -72,7 +75,7 @@ public sealed class EfEscalationRepository : IEscalationRepository
+                 (current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                  current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
+-                 current.Message.Contains("IX_escalations_company_id_policy_id_source_entity_id_escalation_level_lifecycle_version", StringComparison.OrdinalIgnoreCase)))
++                 current.Message.Contains("IX_escalations_company_id_policy_id_source_entity_type_source_entity_id_escalation_level_lifecycle_version", StringComparison.OrdinalIgnoreCase)))
+             {
+                 return true;
+             }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1008,6 +1008,7 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.SourceLifecycleVersion).HasColumnName("source_lifecycle_version").HasDefaultValue(0).IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
+         builder.HasIndex(x => new { x.CompanyId, x.AssignedAgentId });
+@@ -1870,6 +1871,7 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
+         builder.Property(x => x.OccurrenceCount).HasColumnName("occurrence_count").HasDefaultValue(1).IsRequired();
++        builder.Property(x => x.SourceLifecycleVersion).HasColumnName("source_lifecycle_version").HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.Metadata)
+             .HasColumnName("metadata_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+@@ -1916,7 +1918,7 @@ internal sealed class EscalationConfiguration : IEntityTypeConfiguration<Escalati
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
+-        builder.HasIndex(x => new { x.CompanyId, x.PolicyId, x.SourceEntityId, x.EscalationLevel, x.LifecycleVersion })
++        builder.HasIndex(x => new { x.CompanyId, x.PolicyId, x.SourceEntityType, x.SourceEntityId, x.EscalationLevel, x.LifecycleVersion })
+             .IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+         builder.HasIndex(x => new { x.CompanyId, x.TriggeredUtc });
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414133000_AddEscalationLifecycleVersions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414133000_AddEscalationLifecycleVersions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414133000_AddEscalationLifecycleVersions.cs
+@@ -0,0 +1,84 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    [Migration("20260414133000_AddEscalationLifecycleVersions")]
++    public partial class AddEscalationLifecycleVersions : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<int>(
++                name: "source_lifecycle_version",
++                table: "tasks",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.AddColumn<int>(
++                name: "source_lifecycle_version",
++                table: "alerts",
++                type: "int",
++                nullable: false,
++                defaultValue: 0);
++
++            migrationBuilder.DropIndex(
++                name: "IX_escalations_company_id_policy_id_source_entity_id_escalation_level_lifecycle_version",
++                table: "escalations");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_policy_id_source_entity_type_source_entity_id_escalation_level_lifecycle_version",
++                table: "escalations",
++                columns: new[] { "company_id", "policy_id", "source_entity_type", "source_entity_id", "escalation_level", "lifecycle_version" },
++                unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_escalations_company_id_policy_id_source_entity_type_source_entity_id_escalation_level_lifecycle_version",
++                table: "escalations");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_policy_id_source_entity_id_escalation_level_lifecycle_version",
++                table: "escalations",
++                columns: new[] { "company_id", "policy_id", "source_entity_id", "escalation_level", "lifecycle_version" },
++                unique: true);
++
++            migrationBuilder.DropColumn(
++                name: "source_lifecycle_version",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "source_lifecycle_version",
++                table: "alerts");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+--- a/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+@@ -190,6 +190,43 @@ public sealed class EscalationPolicyEvaluatorTests
+         Assert.Contains(repository.Escalations, x => x.LifecycleVersion == 1);
+     }
+ 
++    [Fact]
++    public async Task Evaluate_allows_same_source_id_for_different_source_entity_types()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++        var policy = Policy(Level(
++            1,
++            "Critical severity.",
++            new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical")));
++
++        await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?> { ["severity"] = JsonValue.Create("critical") }),
++                [policy]),
++            CancellationToken.None);
++        var alert = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                AlertInput(new Dictionary<string, JsonNode?> { ["severity"] = JsonValue.Create("critical") }),
++                [policy]),
++            CancellationToken.None);
++
++        Assert.Equal(2, repository.Escalations.Count);
++        Assert.True(alert.Results.Single().EscalationCreated);
++        Assert.Contains(repository.Escalations, x => x.SourceEntityType == EscalationSourceEntityTypes.WorkTask);
++        Assert.Contains(repository.Escalations, x => x.SourceEntityType == EscalationSourceEntityTypes.Alert);
++    }
++
++    [Fact]
++    public void Source_entities_increment_lifecycle_when_reopened_after_resolution()
++    {
++        var task = new WorkTask(Guid.NewGuid(), CompanyId, "ops", "Investigate incident", null, WorkTaskPriority.High, null, null, AuditActorTypes.System, null);
++        task.UpdateStatus(WorkTaskStatus.Completed);
++        task.UpdateStatus(WorkTaskStatus.InProgress);
++
++        var alert = new Alert(Guid.NewGuid(), CompanyId, AlertType.Anomaly, AlertSeverity.High, "Anomaly", "Investigate anomaly.", new Dictionary<string, JsonNode?> { ["signal"] = JsonValue.Create("x") }, "correlation-1", "fp-1");
++        alert.UpdateStatus(AlertStatus.Resolved);
++        alert.UpdateStatus(AlertStatus.Open);
++
++        Assert.Equal(1, task.SourceLifecycleVersion);
++        Assert.Equal(1, alert.SourceLifecycleVersion);
++    }
++
+     [Fact]
+     public async Task Evaluate_fails_closed_and_audits_invalid_condition_config()
+     {
+@@ -258,12 +295,13 @@ public sealed class EscalationPolicyEvaluatorTests
+     {
+         public List<Escalation> Escalations { get; } = [];
+ 
+-        public Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken) =>
++        public Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, string sourceEntityType, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken) =>
+             Task.FromResult(Escalations.Any(x =>
+                 x.CompanyId == companyId &&
+                 x.PolicyId == policyId &&
++                x.SourceEntityType == sourceEntityType &&
+                 x.SourceEntityId == sourceEntityId &&
+                 x.EscalationLevel == escalationLevel &&
+                 x.LifecycleVersion == lifecycleVersion));
+@@ -273,6 +311,7 @@ public sealed class EscalationPolicyEvaluatorTests
+             var existing = Escalations.SingleOrDefault(x =>
+                 x.CompanyId == escalation.CompanyId &&
+                 x.PolicyId == escalation.PolicyId &&
++                x.SourceEntityType == escalation.SourceEntityType &&
+                 x.SourceEntityId == escalation.SourceEntityId &&
+                 x.EscalationLevel == escalation.EscalationLevel &&
+                 x.LifecycleVersion == escalation.LifecycleVersion);
+END_OF_PATCH

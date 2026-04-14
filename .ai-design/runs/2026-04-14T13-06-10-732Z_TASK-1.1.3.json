@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.1.3",
+  "promptPath": ".ai-design/prompts/TASK-1.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T13:06:10.732Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T13-06-10-732Z_TASK-1.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T13-06-10-732Z_TASK-1.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T13:08:19.093Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "varchar(2000)\";\n             migrationBuilder.AddColumn<string>(\n                 name: \"source_type\",\n                 table: \"tasks\",\n@@ -36,14 +37,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n             migrationBuilder.AddColumn<string>(\n                 name: \"trigger_source\",\n                 table: \"tasks\",\n-                type: \"nvarchar(128)\",\n+                type: string128Type,\n                 maxLength: 128,\n                 nullable: true);\n \n             migrationBuilder.AddColumn<string>(\n                 name: \"creation_reason\",\n                 table: \"tasks\",\n-                type: \"nvarchar(2000)\",\n+                type: string2000Type,\n                 maxLength: 2000,\n                 nullable: true);\n \ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -120,6 +120,15 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(first.TaskId, second.TaskId);\n         Assert.Equal(1, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());\n         Assert.Equal(1, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));\n+\n+        var dedupeReceipt = await dbContext.AgentTaskCreationDedupeRecords\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync();\n+        Assert.Equal(first.TaskId, dedupeReceipt.TaskId);\n+        Assert.Equal(\"condition\", dedupeReceipt.TriggerSource);\n+        Assert.Equal(\"trigger-event-1\", dedupeReceipt.TriggerEventId);\n+        Assert.Equal(\"correlation-1\", dedupeReceipt.CorrelationId);\n+        Assert.True(dedupeReceipt.ExpiresUtc > dedupeReceipt.CreatedUtc);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "          migrationBuilder.AddColumn<string>(\n                 name: \"source_type\",\n                 table: \"tasks\",\n@@ -36,14 +37,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n             migrationBuilder.AddColumn<string>(\n                 name: \"trigger_source\",\n                 table: \"tasks\",\n-                type: \"nvarchar(128)\",\n+                type: string128Type,\n                 maxLength: 128,\n                 nullable: true);\n \n             migrationBuilder.AddColumn<string>(\n                 name: \"creation_reason\",\n                 table: \"tasks\",\n-                type: \"nvarchar(2000)\",\n+                type: string2000Type,\n                 maxLength: 2000,\n                 nullable: true);\n \ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 0000000..0000000 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -120,6 +120,15 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(first.TaskId, second.TaskId);\n         Assert.Equal(1, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());\n         Assert.Equal(1, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));\n+\n+        var dedupeReceipt = await dbContext.AgentTaskCreationDedupeRecords\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync();\n+        Assert.Equal(first.TaskId, dedupeReceipt.TaskId);\n+        Assert.Equal(\"condition\", dedupeReceipt.TriggerSource);\n+        Assert.Equal(\"trigger-event-1\", dedupeReceipt.TriggerEventId);\n+        Assert.Equal(\"correlation-1\", dedupeReceipt.CorrelationId);\n+        Assert.True(dedupeReceipt.ExpiresUtc > dedupeReceipt.CreatedUtc);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n74,476\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,110 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+@@ -83,6 +83,35 @@ public sealed class EfProactiveTaskDuplicateDetector : IProactiveTaskDuplicateDe
+         DateTime nowUtc,
+         CancellationToken cancellationToken)
+     {
++        var dedupeKey = BuildDedupeKey(request);
++        var receiptDuplicate = await (
++            from receipt in _dbContext.AgentTaskCreationDedupeRecords.IgnoreQueryFilters().AsNoTracking()
++            join task in _dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking()
++                on receipt.TaskId equals task.Id
++            where receipt.CompanyId == request.CompanyId &&
++                receipt.DedupeKey == dedupeKey &&
++                receipt.ExpiresUtc > nowUtc
++            orderby receipt.CreatedUtc descending
++            select new
++            {
++                task.Id,
++                task.CompanyId,
++                task.Status,
++                CorrelationId = task.CorrelationId ?? receipt.CorrelationId
++            })
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (receiptDuplicate is not null)
++        {
++            return new WorkTaskDuplicateMatch(
++                receiptDuplicate.Id,
++                receiptDuplicate.CompanyId,
++                receiptDuplicate.Status.ToStorageValue(),
++                receiptDuplicate.CorrelationId);
++        }
++
++        // Legacy fallback for tasks created before receipts existed, or if a receipt was pruned
++        // while the task still falls inside the configured deduplication window.
+         var windowStartUtc = nowUtc - deduplicationWindow;
+         var duplicate = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+@@ -105,6 +134,19 @@ public sealed class EfProactiveTaskDuplicateDetector : IProactiveTaskDuplicateDe
+                 duplicate.Status.ToStorageValue(),
+                 duplicate.CorrelationId ?? request.CorrelationId);
+     }
++
++    private static string BuildDedupeKey(MappedTaskCreationRequest request)
++    {
++        var material = string.Join(
++            "|",
++            request.CompanyId.ToString("N"),
++            request.TriggerSource.Trim().ToUpperInvariant(),
++            request.TriggerEventId.Trim().ToUpperInvariant(),
++            request.CorrelationId.Trim().ToUpperInvariant());
++
++        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
++    }
+ }
+ 
+ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+@@ -18,6 +18,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
+             var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
+             var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++            var string2000Type = isPostgres ? "character varying(2000)" : "nvarchar(2000)";
+             migrationBuilder.AddColumn<string>(
+                 name: "source_type",
+                 table: "tasks",
+@@ -36,14 +37,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.AddColumn<string>(
+                 name: "trigger_source",
+                 table: "tasks",
+-                type: "nvarchar(128)",
++                type: string128Type,
+                 maxLength: 128,
+                 nullable: true);
+ 
+             migrationBuilder.AddColumn<string>(
+                 name: "creation_reason",
+                 table: "tasks",
+-                type: "nvarchar(2000)",
++                type: string2000Type,
+                 maxLength: 2000,
+                 nullable: true);
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -120,6 +120,15 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Equal(first.TaskId, second.TaskId);
+         Assert.Equal(1, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());
+         Assert.Equal(1, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));
++
++        var dedupeReceipt = await dbContext.AgentTaskCreationDedupeRecords
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync();
++        Assert.Equal(first.TaskId, dedupeReceipt.TaskId);
++        Assert.Equal("condition", dedupeReceipt.TriggerSource);
++        Assert.Equal("trigger-event-1", dedupeReceipt.TriggerEventId);
++        Assert.Equal("correlation-1", dedupeReceipt.CorrelationId);
++        Assert.True(dedupeReceipt.ExpiresUtc > dedupeReceipt.CreatedUtc);
+     }
+ 
+     [Fact]
+END_OF_PATCH

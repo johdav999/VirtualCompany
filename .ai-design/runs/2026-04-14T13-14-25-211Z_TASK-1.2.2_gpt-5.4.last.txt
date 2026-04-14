@@ -1,0 +1,148 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -40,8 +40,13 @@ public sealed class CompanyAlertService : ICompanyAlertService
+ 
+         var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
+         _dbContext.Alerts.Add(alert);
+-        await SaveCreateAsync(alert, cancellationToken);
+-        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
++        var deduplicated = await SaveCreateAsync(alert, cancellationToken);
++        if (deduplicated is not null)
++        {
++            return deduplicated;
++        }
++
++        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+     }
+ 
+     public async Task<AlertMutationResultDto> CreateOrDeduplicateFromDetectionAsync(Guid companyId, CreateDetectionAlertCommand command, CancellationToken cancellationToken)
+@@ -62,8 +67,13 @@ public sealed class CompanyAlertService : ICompanyAlertService
+ 
+         var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
+         _dbContext.Alerts.Add(alert);
+-        await SaveCreateAsync(alert, cancellationToken);
+-        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
++        var deduplicated = await SaveCreateAsync(alert, cancellationToken);
++        if (deduplicated is not null)
++        {
++            return deduplicated;
++        }
++
++        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+     }
+ 
+     public async Task<AlertDto> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
+@@ -161,11 +171,12 @@ public sealed class CompanyAlertService : ICompanyAlertService
+             .FirstOrDefaultAsync(cancellationToken);
+     }
+ 
+-    private async Task SaveCreateAsync(Alert alert, CancellationToken cancellationToken)
++    private async Task<AlertMutationResultDto?> SaveCreateAsync(Alert alert, CancellationToken cancellationToken)
+     {
+         try
+         {
+             await _dbContext.SaveChangesAsync(cancellationToken);
++            return null;
+         }
+         catch (DbUpdateException ex) when (IsDedupUniqueViolation(ex))
+         {
+@@ -179,6 +190,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+ 
+             existing.RefreshFromDuplicateDetection(alert.Severity, alert.Title, alert.Summary, alert.Evidence, alert.CorrelationId, alert.SourceAgentId, alert.Metadata);
+             await _dbContext.SaveChangesAsync(cancellationToken);
++            return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
+         }
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1880,7 +1880,7 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
+         builder.HasIndex(x => new { x.CompanyId, x.Severity });
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
+         builder.HasIndex(x => new { x.CompanyId, x.Fingerprint });
+-        builder.HasIndex(x => new { x.CompanyId, x.Fingerprint, x.Status })
++        builder.HasIndex(x => new { x.CompanyId, x.Fingerprint })
+             .HasFilter("\"status\" IN ('open', 'acknowledged')")
+             .IsUnique();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+@@ -71,9 +71,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.CreateIndex(name: "IX_alerts_company_id_fingerprint", table: "alerts", columns: new[] { "company_id", "fingerprint" });
+             migrationBuilder.CreateIndex(name: "IX_alerts_source_agent_id", table: "alerts", column: "source_agent_id");
+             migrationBuilder.CreateIndex(
+-                name: "IX_alerts_company_id_fingerprint_status_open",
++                name: "IX_alerts_company_id_fingerprint_open",
+                 table: "alerts",
+-                columns: new[] { "company_id", "fingerprint", "status" },
++                columns: new[] { "company_id", "fingerprint" },
+                 unique: true,
+                 filter: openFilter);
+         }
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@ -38,6 +38,42 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         Assert.Single(list!.Items);
+     }
+ 
++    [Fact]
++    public async Task Alert_creation_accepts_required_classifications()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++        var types = new[] { "risk", "anomaly", "opportunity" };
++        var severities = new[] { "low", "medium", "high", "critical" };
++
++        foreach (var type in types)
++        {
++            foreach (var severity in severities)
++            {
++                var fingerprint = $"fp-{type}-{severity}";
++                var response = await client.PostAsJsonAsync(
++                    $"/api/companies/{seed.CompanyId}/alerts/detections",
++                    CreatePayload(seed.CompanyId, type, severity, "open", fingerprint, seed.AgentId));
++
++                Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++                var created = await response.Content.ReadFromJsonAsync<AlertMutationResponse>();
++                Assert.NotNull(created);
++                Assert.Equal(type, created!.Alert.Type);
++                Assert.Equal(severity, created.Alert.Severity);
++                Assert.Equal("open", created.Alert.Status);
++            }
++        }
++    }
++
++    [Fact]
++    public async Task Same_fingerprint_in_different_companies_creates_separate_open_alerts()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var first = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/detections", CreatePayload(seed.CompanyId, "risk", "high", "open", "fp-cross-company", seed.AgentId));
++        var second = await client.PostAsJsonAsync($"/api/companies/{seed.OtherCompanyId}/alerts/detections", CreatePayload(seed.OtherCompanyId, "risk", "high", "open", "fp-cross-company", null));
++
++        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
++        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
++    }
++
+     [Fact]
+     public async Task Query_supports_filters_pagination_and_tenant_scoping()
+     {
+@@ -46,7 +82,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+ 
+         await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts", CreatePayload(seed.CompanyId, "risk", "critical", "open", "fp-risk", seed.AgentId));
+         await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts", CreatePayload(seed.CompanyId, "opportunity", "low", "open", "fp-opp", seed.AgentId));
+-        await client.PostAsJsonAsync($"/api/companies/{seed.OtherCompanyId}/alerts", CreatePayload(seed.OtherCompanyId, "risk", "critical", "open", "fp-other", null));
++        await client.PostAsJsonAsync($"/api/companies/{seed.OtherCompanyId}/alerts", CreatePayload(seed.OtherCompanyId, "risk", "critical", "open", "fp-risk", null));
+ 
+         var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/alerts?type=risk&severity=critical&status=open&createdFrom=2000-01-01T00:00:00Z&createdTo=2100-01-01T00:00:00Z&skip=0&take=1");
+ 
+END_OF_PATCH

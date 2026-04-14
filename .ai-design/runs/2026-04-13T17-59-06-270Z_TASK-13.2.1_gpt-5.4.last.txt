@@ -1,0 +1,896 @@
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+new file mode 100644
+index 0000000..6d7d621
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -0,0 +1,39 @@
++namespace VirtualCompany.Domain.Events;
++
++public interface ISupportedPlatformEventTypeRegistry
++{
++    IReadOnlyCollection<string> SupportedEventTypes { get; }
++
++    bool IsSupported(string? eventType);
++}
++
++public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEventTypeRegistry
++{
++    public const string TaskCreated = "task.created";
++    public const string TaskUpdated = "task.updated";
++    public const string DocumentUploaded = "document.uploaded";
++    public const string WorkflowStateChanged = "workflow.state_changed";
++
++    private static readonly string[] EventTypes =
++    [
++        TaskCreated,
++        TaskUpdated,
++        DocumentUploaded,
++        WorkflowStateChanged
++    ];
++
++    private static readonly HashSet<string> EventTypeSet =
++        new(EventTypes, StringComparer.OrdinalIgnoreCase);
++
++    public static SupportedPlatformEventTypeRegistry Instance { get; } = new();
++
++    private SupportedPlatformEventTypeRegistry()
++    {
++    }
++
++    public IReadOnlyCollection<string> SupportedEventTypes => EventTypes;
++
++    public bool IsSupported(string? eventType) =>
++        !string.IsNullOrWhiteSpace(eventType) && EventTypeSet.Contains(eventType.Trim());
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Event type is required. Supported event types: {string.Join(", ", EventTypes)}."
++            : $"Unsupported event type '{attemptedValue}'. Supported event types: {string.Join(", ", EventTypes)}.";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+index 0a2f332..4058f2e 100644
+--- a/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/WorkflowEntities.cs
+@@ -154,6 +154,7 @@ public sealed class WorkflowTrigger : ICompanyOwnedEntity
+     public Company Company { get; private set; } = null!;
+     public WorkflowDefinition Definition { get; private set; } = null!;
++    public ICollection<ProcessedWorkflowTriggerEvent> ProcessedEvents { get; } = new List<ProcessedWorkflowTriggerEvent>();
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+@@ -304,6 +305,69 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
+         nodes is null || nodes.Count == 0
+             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class ProcessedWorkflowTriggerEvent : ICompanyOwnedEntity
++{
++    private const int EventIdMaxLength = 200;
++
++    private ProcessedWorkflowTriggerEvent()
++    {
++    }
++
++    public ProcessedWorkflowTriggerEvent(
++        Guid id,
++        Guid companyId,
++        Guid workflowTriggerId,
++        string eventId,
++        DateTime processedUtc,
++        Guid? createdWorkflowInstanceId = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (workflowTriggerId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowTriggerId is required.", nameof(workflowTriggerId));
++        }
++
++        if (createdWorkflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("CreatedWorkflowInstanceId cannot be empty.", nameof(createdWorkflowInstanceId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        WorkflowTriggerId = workflowTriggerId;
++        EventId = NormalizeRequired(eventId, nameof(eventId), EventIdMaxLength);
++        ProcessedUtc = NormalizeUtc(processedUtc, nameof(processedUtc));
++        CreatedWorkflowInstanceId = createdWorkflowInstanceId;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid WorkflowTriggerId { get; private set; }
++    public string EventId { get; private set; } = null!;
++    public Guid? CreatedWorkflowInstanceId { get; private set; }
++    public DateTime ProcessedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public WorkflowTrigger WorkflowTrigger { get; private set; } = null!;
++    public WorkflowInstance? CreatedWorkflowInstance { get; private set; }
++
++    public void MarkExecutionCreated(Guid workflowInstanceId)
++    {
++        if (workflowInstanceId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowInstanceId is required.", nameof(workflowInstanceId));
++        }
++
++        CreatedWorkflowInstanceId = workflowInstanceId;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength) =>
++        string.IsNullOrWhiteSpace(value)
++            ? throw new ArgumentException($"{name} is required.", name)
++            : value.Trim().Length > maxLength ? throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.") : value.Trim();
++
++    private static DateTime NormalizeUtc(DateTime value, string name) =>
++        value == default ? throw new ArgumentException($"{name} is required.", name) : value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+ }
+ 
+ public sealed class WorkflowException : ICompanyOwnedEntity
+diff --git a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+index 27f4955..9102a28 100644
+--- a/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
++++ b/src/VirtualCompany.Application/Workflows/WorkflowContracts.cs
+@@ -51,6 +51,18 @@ public sealed record TriggerScheduledWorkflowsCommand(
+     string? ScheduleKey = null,
+     Dictionary<string, JsonNode?>? ContextJson = null);
+ 
++public sealed record PlatformEventEnvelope(
++    string EventId,
++    string EventType,
++    DateTime OccurredAtUtc,
++    Guid CompanyId,
++    string CorrelationId,
++    string SourceEntityType,
++    string SourceEntityId,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record PlatformEventTriggerResult(
++    PlatformEventEnvelope Event,
++    IReadOnlyList<WorkflowInstanceDto> StartedInstances);
++
+ public sealed record InternalWorkflowEvent(
+     Guid CompanyId,
+     string EventName,
+@@ -267,5 +279,7 @@ public interface IInternalWorkflowEventTriggerService
+ {
+     Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken);
++
++    Task<PlatformEventTriggerResult> HandleAsync(PlatformEventEnvelope workflowEvent, CancellationToken cancellationToken);
+ }
+ 
+ public sealed class WorkflowValidationException : Exception
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 4b53a89..4d58588 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -47,6 +47,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
++    public DbSet<ProcessedWorkflowTriggerEvent> ProcessedWorkflowTriggerEvents => Set<ProcessedWorkflowTriggerEvent>();
+     public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+@@ -116,6 +117,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<WorkflowInstance>()
+             .HasQueryFilter(instance =>
+                 CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ProcessedWorkflowTriggerEvent>()
++            .HasQueryFilter(processedEvent =>
++                CurrentCompanyId.HasValue && processedEvent.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowException>()
+             .HasQueryFilter(workflowException =>
+                 CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 71e7192..7900db1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1344,6 +1344,9 @@ internal sealed class WorkflowTriggerConfiguration : IEntityTypeConfiguration<Wor
+         builder.HasOne(x => x.Definition)
+             .WithMany(x => x.Triggers)
+             .HasForeignKey(x => x.DefinitionId)
+             .OnDelete(DeleteBehavior.Restrict);
++        builder.HasMany(x => x.ProcessedEvents)
++            .WithOne(x => x.WorkflowTrigger)
++            .HasForeignKey(x => x.WorkflowTriggerId);
+     }
+ }
+ 
+@@ -1408,6 +1411,42 @@ internal sealed class WorkflowInstanceConfiguration : IEntityTypeConfiguration<Wo
+     }
+ }
+ 
++internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeConfiguration<ProcessedWorkflowTriggerEvent>
++{
++    public void Configure(EntityTypeBuilder<ProcessedWorkflowTriggerEvent> builder)
++    {
++        builder.ToTable("processed_workflow_trigger_events");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.WorkflowTriggerId).HasColumnName("workflow_trigger_id").IsRequired();
++        builder.Property(x => x.EventId).HasColumnName("event_id").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.CreatedWorkflowInstanceId).HasColumnName("created_workflow_instance_id");
++        builder.Property(x => x.ProcessedUtc).HasColumnName("processed_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowTriggerId, x.EventId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
++        builder.HasIndex(x => x.WorkflowTriggerId);
++        builder.HasIndex(x => x.CreatedWorkflowInstanceId)
++            .HasFilter("[created_workflow_instance_id] IS NOT NULL");
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.WorkflowTrigger)
++            .WithMany(x => x.ProcessedEvents)
++            .HasForeignKey(x => x.WorkflowTriggerId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.CreatedWorkflowInstance)
++            .WithMany()
++            .HasForeignKey(x => x.CreatedWorkflowInstanceId)
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
+ internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<WorkflowException>
+ {
+     public void Configure(EntityTypeBuilder<WorkflowException> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 7d64f1e..2d75613 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -6,6 +6,7 @@ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -25,6 +26,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ILogger<CompanyWorkflowService> _logger;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
++    private readonly ISupportedPlatformEventTypeRegistry _supportedEventTypes;
+ 
+     public CompanyWorkflowService(
+         VirtualCompanyDbContext dbContext,
+@@ -32,7 +34,8 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         IAuditEventWriter auditEventWriter,
+         ICompanyOutboxEnqueuer outboxEnqueuer,
++        ISupportedPlatformEventTypeRegistry supportedEventTypes,
+         ILogger<CompanyWorkflowService> logger)
+     {
+         _dbContext = dbContext;
+@@ -40,6 +43,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         _auditEventWriter = auditEventWriter;
+         _outboxEnqueuer = outboxEnqueuer;
++        _supportedEventTypes = supportedEventTypes;
+         _logger = logger;
+     }
+@@ -370,7 +374,27 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+     public async Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken)
+     {
+-        if (workflowEvent.CompanyId == Guid.Empty)
++        var eventType = string.IsNullOrWhiteSpace(workflowEvent.EventName) ? string.Empty : workflowEvent.EventName.Trim();
++        var eventId = string.IsNullOrWhiteSpace(workflowEvent.EventRef)
++            ? $"{eventType}:{Guid.NewGuid():N}"
++            : workflowEvent.EventRef.Trim();
++        var result = await HandleAsync(
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                DateTime.UtcNow,
++                workflowEvent.CompanyId,
++                eventId,
++                "unknown",
++                eventId,
++                CloneNodes(workflowEvent.Payload)),
++            cancellationToken);
++
++        return new InternalWorkflowEventTriggerResult(result.Event.EventType, result.StartedInstances);
++    }
++
++    public async Task<PlatformEventTriggerResult> HandleAsync(PlatformEventEnvelope workflowEvent, CancellationToken cancellationToken)
++    {
++        if (workflowEvent.CompanyId == Guid.Empty)
+         {
+             throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+             {
+@@ -378,53 +402,71 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+             });
+         }
+ 
+-        if (string.IsNullOrWhiteSpace(workflowEvent.EventName))
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(workflowEvent.EventId), workflowEvent.EventId, TriggerRefMaxLength);
++        AddRequired(errors, nameof(workflowEvent.EventType), workflowEvent.EventType, EventNameMaxLength);
++        AddRequired(errors, nameof(workflowEvent.CorrelationId), workflowEvent.CorrelationId, TriggerRefMaxLength);
++        AddRequired(errors, nameof(workflowEvent.SourceEntityType), workflowEvent.SourceEntityType, 100);
++        AddRequired(errors, nameof(workflowEvent.SourceEntityId), workflowEvent.SourceEntityId, 200);
++        if (workflowEvent.OccurredAtUtc == default)
+         {
+-            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                [nameof(workflowEvent.EventName)] = ["EventName is required."]
+-            });
++            AddError(errors, nameof(workflowEvent.OccurredAtUtc), "OccurredAtUtc is required.");
+         }
+ 
+-        var eventName = workflowEvent.EventName.Trim();
+-        var eventRef = string.IsNullOrWhiteSpace(workflowEvent.EventRef)
+-            ? $"{eventName}:{DateTime.UtcNow:O}"
+-            : workflowEvent.EventRef.Trim();
++        if (!_supportedEventTypes.IsSupported(workflowEvent.EventType))
++        {
++            AddError(errors, nameof(workflowEvent.EventType), SupportedPlatformEventTypeRegistry.BuildValidationMessage(workflowEvent.EventType));
++        }
++
++        ThrowIfInvalid(errors);
++
++        var eventId = workflowEvent.EventId.Trim();
++        var eventType = workflowEvent.EventType.Trim();
++        var occurredAtUtc = workflowEvent.OccurredAtUtc.Kind == DateTimeKind.Utc
++            ? workflowEvent.OccurredAtUtc
++            : workflowEvent.OccurredAtUtc.ToUniversalTime();
++        var normalizedEvent = workflowEvent with
++        {
++            EventId = eventId,
++            EventType = eventType,
++            OccurredAtUtc = occurredAtUtc,
++            CorrelationId = workflowEvent.CorrelationId.Trim(),
++            SourceEntityType = workflowEvent.SourceEntityType.Trim(),
++            SourceEntityId = workflowEvent.SourceEntityId.Trim(),
++            Metadata = CloneNodes(workflowEvent.Metadata)
++        };
+ 
+         var triggeredDefinitions = await _dbContext.WorkflowTriggers
+             .IgnoreQueryFilters()
+-            .AsNoTracking()
+             .Include(x => x.Definition)
+             .Where(x =>
+                 x.CompanyId == workflowEvent.CompanyId &&
+                 x.IsEnabled &&
+-                x.EventName == eventName &&
++                x.EventName == eventType &&
+                 x.Definition.CompanyId == workflowEvent.CompanyId &&
+                 x.Definition.Active &&
+                 x.Definition.TriggerType == WorkflowTriggerType.Event)
+@@ -438,44 +480,33 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+             .Select(group => group.OrderByDescending(x => x.Definition.Version).First()))
+         {
+-            if (await HasExistingInstanceAsync(workflowEvent.CompanyId, trigger.DefinitionId, WorkflowTriggerType.Event, eventRef, cancellationToken))
++            var processedEvent = await TryReserveProcessedTriggerEventAsync(
++                workflowEvent.CompanyId,
++                trigger.Id,
++                eventId,
++                cancellationToken);
++            if (processedEvent is null)
+             {
+                 _logger.LogInformation(
+-                    "Skipped duplicate event workflow start for definition {DefinitionId}, event {EventName}, and ref {EventRef}.",
++                    "Skipped duplicate event workflow start for trigger {TriggerId}, event {EventType}, and id {EventId}.",
++                    trigger.Id,
++                    eventType,
++                    eventId);
++                continue;
++            }
++
++            if (await HasExistingInstanceAsync(workflowEvent.CompanyId, trigger.DefinitionId, WorkflowTriggerType.Event, eventId, cancellationToken))
++            {
++                _logger.LogInformation(
++                    "Skipped duplicate event workflow start for definition {DefinitionId}, event {EventType}, and id {EventId}.",
+                     trigger.DefinitionId,
+-                    eventName,
+-                    eventRef);
++                    eventType,
++                    eventId);
+                 continue;
+             }
+ 
+-            var input = CloneNodes(workflowEvent.Payload);
+-            input["eventName"] = JsonValue.Create(eventName);
+-            input["eventRef"] = JsonValue.Create(eventRef);
+-
+-            started.Add(await StartInstanceCoreAsync(
+-                workflowEvent.CompanyId,
+-                new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
+-                requireMembership: false,
+-                cancellationToken));
+-        }
+-
+-        var jsonMatchedDefinitions = await _dbContext.WorkflowDefinitions
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x =>
+-                (x.CompanyId == workflowEvent.CompanyId || x.CompanyId == null) &&
+-                x.Active &&
+-                x.TriggerType == WorkflowTriggerType.Event)
+-            .ToListAsync(cancellationToken);
+-
+-        foreach (var definition in ResolveLatestDefinitionsByCode(
+-            jsonMatchedDefinitions.Where(x => MatchesEvent(x, eventName)),
+-            workflowEvent.CompanyId))
+-        {
+-            if (started.Any(x => x.DefinitionId == definition.Id) ||
+-                await HasExistingInstanceAsync(workflowEvent.CompanyId, definition.Id, WorkflowTriggerType.Event, eventRef, cancellationToken))
+-            {
+-                continue;
+-            }
+-
+-            var input = CloneNodes(workflowEvent.Payload);
+-            input["eventName"] = JsonValue.Create(eventName);
+-            input["eventRef"] = JsonValue.Create(eventRef);
++            var input = BuildEventInput(normalizedEvent);
+ 
+-            started.Add(await StartInstanceCoreAsync(
++            var instance = await StartInstanceCoreAsync(
+                 workflowEvent.CompanyId,
+-                new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
++                new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventId),
+                 requireMembership: false,
+-                cancellationToken));
++                cancellationToken);
++            processedEvent.MarkExecutionCreated(instance.Id);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            started.Add(instance);
+         }
+ 
+-        return new InternalWorkflowEventTriggerResult(eventName, started);
++        return new PlatformEventTriggerResult(normalizedEvent, started);
+     }
+@@ -980,6 +1011,11 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+         AddRequired(errors, nameof(command.EventName), command.EventName, EventNameMaxLength);
++        if (!string.IsNullOrWhiteSpace(command.EventName) &&
++            !_supportedEventTypes.IsSupported(command.EventName))
++        {
++            AddError(errors, nameof(command.EventName), SupportedPlatformEventTypeRegistry.BuildValidationMessage(command.EventName));
++        }
+         ThrowIfInvalid(errors);
+     }
+@@ -1199,6 +1235,55 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         return false;
+     }
+ 
++    private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(
++        Guid companyId,
++        Guid triggerId,
++        string eventId,
++        CancellationToken cancellationToken)
++    {
++        var processedEvent = new ProcessedWorkflowTriggerEvent(
++            Guid.NewGuid(),
++            companyId,
++            triggerId,
++            eventId,
++            DateTime.UtcNow);
++        await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return processedEvent;
++        }
++        catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))
++        {
++            _dbContext.Entry(processedEvent).State = EntityState.Detached;
++            return null;
++        }
++    }
++
++    private static bool IsDuplicateProcessedTriggerEvent(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("processed_workflow_trigger_events", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("IX_processed_workflow_trigger_events_company_id_workflow_trigger_id_event_id", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
++    private static Dictionary<string, JsonNode?> BuildEventInput(PlatformEventEnvelope workflowEvent) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["eventId"] = JsonValue.Create(workflowEvent.EventId),
++            ["eventType"] = JsonValue.Create(workflowEvent.EventType),
++            ["occurredAtUtc"] = JsonValue.Create(workflowEvent.OccurredAtUtc),
++            ["companyId"] = JsonValue.Create(workflowEvent.CompanyId),
++            ["correlationId"] = JsonValue.Create(workflowEvent.CorrelationId),
++            ["sourceEntityType"] = JsonValue.Create(workflowEvent.SourceEntityType),
++            ["sourceEntityId"] = JsonValue.Create(workflowEvent.SourceEntityId),
++            ["metadata"] = new JsonObject(CloneNodes(workflowEvent.Metadata).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase))
++        };
++
+     private static string? ResolveCorrelationId(StartWorkflowInstanceCommand command) =>
+         TryGetString(command.InputPayload, "correlationId") ?? command.TriggerRef;
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c5a1e7c..6bcbe87 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -25,6 +25,7 @@ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Mobile;
+ using VirtualCompany.Application.Notifications;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -215,6 +216,7 @@ public static class DependencyInjection
+         services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
+         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
++        services.AddSingleton<ISupportedPlatformEventTypeRegistry>(SupportedPlatformEventTypeRegistry.Instance);
+         services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();
+         services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();
+         services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413223000_AddEventDrivenTriggerRegistryAndIdempotency.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413223000_AddEventDrivenTriggerRegistryAndIdempotency.cs
+new file mode 100644
+index 0000000..4a7d1e5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413223000_AddEventDrivenTriggerRegistryAndIdempotency.cs
+@@ -0,0 +1,83 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413223000_AddEventDrivenTriggerRegistryAndIdempotency")]
++public partial class AddEventDrivenTriggerRegistryAndIdempotency : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var eventIdType = isPostgres ? "character varying(200)" : "nvarchar(200)";
++
++        migrationBuilder.CreateTable(
++            name: "processed_workflow_trigger_events",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                workflow_trigger_id = table.Column<Guid>(type: guidType, nullable: false),
++                event_id = table.Column<string>(type: eventIdType, maxLength: 200, nullable: false),
++                created_workflow_instance_id = table.Column<Guid>(type: guidType, nullable: true),
++                processed_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_processed_workflow_trigger_events", x => x.id);
++                table.ForeignKey(
++                    name: "FK_processed_workflow_trigger_events_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_processed_workflow_trigger_events_workflow_instances_created_workflow_instance_id",
++                    column: x => x.created_workflow_instance_id,
++                    principalTable: "workflow_instances",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.SetNull);
++                table.ForeignKey(
++                    name: "FK_processed_workflow_trigger_events_workflow_triggers_workflow_trigger_id",
++                    column: x => x.workflow_trigger_id,
++                    principalTable: "workflow_triggers",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_processed_workflow_trigger_events_company_id_processed_at",
++            table: "processed_workflow_trigger_events",
++            columns: new[] { "company_id", "processed_at" });
++        migrationBuilder.CreateIndex(
++            name: "IX_processed_workflow_trigger_events_company_id_workflow_trigger_id_event_id",
++            table: "processed_workflow_trigger_events",
++            columns: new[] { "company_id", "workflow_trigger_id", "event_id" },
++            unique: true);
++        migrationBuilder.CreateIndex(
++            name: "IX_processed_workflow_trigger_events_created_workflow_instance_id",
++            table: "processed_workflow_trigger_events",
++            column: "created_workflow_instance_id",
++            filter: isPostgres ? "created_workflow_instance_id IS NOT NULL" : "[created_workflow_instance_id] IS NOT NULL");
++        migrationBuilder.CreateIndex(
++            name: "IX_processed_workflow_trigger_events_workflow_trigger_id",
++            table: "processed_workflow_trigger_events",
++            column: "workflow_trigger_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "processed_workflow_trigger_events");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+new file mode 100644
+index 0000000..4ee8fc6
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -0,0 +1,195 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public WorkflowEventTriggerFoundationTests(TestWebApplicationFactory factory) =>
++        _factory = factory;
++
++    [Fact]
++    public void Supported_event_registry_contains_canonical_platform_events()
++    {
++        var registry = SupportedPlatformEventTypeRegistry.Instance;
++
++        Assert.Contains(SupportedPlatformEventTypeRegistry.TaskCreated, registry.SupportedEventTypes);
++        Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);
++        Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);
++        Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);
++        Assert.True(registry.IsSupported("TASK.CREATED"));
++        Assert.False(registry.IsSupported("task.deleted"));
++    }
++
++    [Fact]
++    public async Task Trigger_creation_rejects_unsupported_event_type()
++    {
++        var seed = await SeedMembershipAsync("event-trigger-invalid", "event-trigger-invalid@example.com", "Event Trigger Invalid");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var definition = await CreateEventDefinitionAsync(client, seed.CompanyId, "unsupported-event-definition");
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition.Id}/triggers", new
++        {
++            eventName = "task.deleted",
++            criteriaJson = new Dictionary<string, JsonNode?>(),
++            isEnabled = true
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Event_envelope_matches_enabled_same_tenant_triggers_only()
++    {
++        var seed = await SeedTwoMembershipsAsync();
++        var enabledDefinitionId = Guid.NewGuid();
++        var disabledDefinitionId = Guid.NewGuid();
++        var otherDefinitionId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                enabledDefinitionId,
++                seed.CompanyId,
++                "task-created-enabled",
++                "Task created enabled",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("enabled-step")));
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                disabledDefinitionId,
++                seed.CompanyId,
++                "task-created-disabled",
++                "Task created disabled",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("disabled-step")));
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                otherDefinitionId,
++                seed.OtherCompanyId,
++                "task-created-other",
++                "Task created other",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("other-step")));
++
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                enabledDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskCreated));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                disabledDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskCreated,
++                isEnabled: false));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.OtherCompanyId,
++                otherDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskCreated));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var eventTriggers = scope.ServiceProvider.GetRequiredService<IInternalWorkflowEventTriggerService>();
++        var result = await eventTriggers.HandleAsync(
++            BuildEnvelope(seed.CompanyId, "evt-task-created-1", SupportedPlatformEventTypeRegistry.TaskCreated),
++            CancellationToken.None);
++
++        var instance = Assert.Single(result.StartedInstances);
++        Assert.Equal(enabledDefinitionId, instance.DefinitionId);
++        Assert.Equal(seed.CompanyId, instance.CompanyId);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var allStarted = await dbContext.WorkflowInstances.IgnoreQueryFilters().Where(x => x.TriggerRef == "evt-task-created-1").ToListAsync();
++        Assert.Single(allStarted);
++    }
++
++    [Fact]
++    public async Task Duplicate_event_delivery_creates_one_execution_per_trigger_and_event_id()
++    {
++        var seed = await SeedMembershipAsync("event-trigger-idempotent", "event-trigger-idempotent@example.com", "Event Trigger Idempotent");
++        var definitionId = Guid.NewGuid();
++        var triggerId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                definitionId,
++                seed.CompanyId,
++                "document-uploaded",
++                "Document uploaded",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("index-document")));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                triggerId,
++                seed.CompanyId,
++                definitionId,
++                SupportedPlatformEventTypeRegistry.DocumentUploaded));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var eventTriggers = scope.ServiceProvider.GetRequiredService<IInternalWorkflowEventTriggerService>();
++        var envelope = BuildEnvelope(seed.CompanyId, "evt-document-uploaded-1", SupportedPlatformEventTypeRegistry.DocumentUploaded);
++
++        var first = await eventTriggers.HandleAsync(envelope, CancellationToken.None);
++        var second = await eventTriggers.HandleAsync(envelope, CancellationToken.None);
++
++        Assert.Single(first.StartedInstances);
++        Assert.Empty(second.StartedInstances);
++
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.Equal(1, await dbContext.ProcessedWorkflowTriggerEvents.IgnoreQueryFilters().CountAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.WorkflowTriggerId == triggerId &&
++            x.EventId == envelope.EventId));
++        Assert.Equal(1, await dbContext.WorkflowInstances.IgnoreQueryFilters().CountAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.DefinitionId == definitionId &&
++            x.TriggerRef == envelope.EventId));
++    }
++
++    [Fact]
++    public void Platform_event_envelope_carries_required_metadata_contract()
++    {
++        var companyId = Guid.NewGuid();
++        var envelope = BuildEnvelope(companyId, "evt-contract-1", SupportedPlatformEventTypeRegistry.WorkflowStateChanged);
++
++        Assert.Equal("evt-contract-1", envelope.EventId);
++        Assert.Equal(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, envelope.EventType);
++        Assert.Equal(companyId, envelope.CompanyId);
++        Assert.Equal("corr-evt-contract-1", envelope.CorrelationId);
++        Assert.Equal("work_task", envelope.SourceEntityType);
++        Assert.Equal("source-evt-contract-1", envelope.SourceEntityId);
++        Assert.True(envelope.Metadata.ContainsKey("source"));
++    }
++
++    private static PlatformEventEnvelope BuildEnvelope(Guid companyId, string eventId, string eventType) =>
++        new(
++            eventId,
++            eventType,
++            DateTime.Parse("2026-04-13T08:00:00Z").ToUniversalTime(),
++            companyId,
++            $"corr-{eventId}",
++            "work_task",
++            $"source-{eventId}",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["source"] = JsonValue.Create("test")
++            });
++
++    private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["steps"] = new JsonArray(new JsonObject { ["id"] = stepId, ["type"] = "task" })
++        };
++
++    private async Task<WorkflowDefinitionDto> CreateEventDefinitionAsync(HttpClient client, Guid companyId, string code)
++    {
++        var response = await client.PostAsJsonAsync($"/api/companies/{companyId}/workflows/definitions", new
++        {
++            code,
++            name = code,
++            department = "Operations",
++            triggerType = "event",
++            definitionJson = ValidDefinition("event-step")
++        });
++
++        response.EnsureSuccessStatusCode();
++        return (await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>())!;
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<SeededWorkflowTenant> SeedMembershipAsync(string subject, string email, string displayName)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, "Workflow Event Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new SeededWorkflowTenant(companyId, subject, email, displayName);
++    }
++
++    private async Task<CrossTenantWorkflowSeed> SeedTwoMembershipsAsync()
++    {
++        var first = await SeedMembershipAsync("workflow-event-owner-a", "workflow-event-owner-a@example.com", "Workflow Event Owner A");
++        var second = await SeedMembershipAsync("workflow-event-owner-b", "workflow-event-owner-b@example.com", "Workflow Event Owner B");
++        return new CrossTenantWorkflowSeed(first.CompanyId, first.Subject, first.Email, first.DisplayName, second.CompanyId, second.Subject, second.Email, second.DisplayName);
++    }
++
++    private sealed record SeededWorkflowTenant(Guid CompanyId, string Subject, string Email, string DisplayName);
++
++    private sealed record CrossTenantWorkflowSeed(
++        Guid CompanyId,
++        string Subject,
++        string Email,
++        string DisplayName,
++        Guid OtherCompanyId,
++        string OtherSubject,
++        string OtherEmail,
++        string OtherDisplayName);
++}
+END_OF_PATCH

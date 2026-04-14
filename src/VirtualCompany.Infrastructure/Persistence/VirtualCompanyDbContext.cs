@@ -31,7 +31,11 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
     public DbSet<Agent> Agents => Set<Agent>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+    public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
+    public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
+    public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();
     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+    public DbSet<AgentTaskCreationDedupeRecord> AgentTaskCreationDedupeRecords => Set<AgentTaskCreationDedupeRecord>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<Conversation> Conversations => Set<Conversation>();
     public DbSet<Message> Messages => Set<Message>();
@@ -39,15 +43,21 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+    public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
+    public DbSet<ProactiveMessagePolicyDecision> ProactiveMessagePolicyDecisions => Set<ProactiveMessagePolicyDecision>();
     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
     public DbSet<WorkflowInstance> WorkflowInstances => Set<WorkflowInstance>();
+    public DbSet<ProcessedWorkflowTriggerEvent> ProcessedWorkflowTriggerEvents => Set<ProcessedWorkflowTriggerEvent>();
     public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
+    public DbSet<ConditionTriggerEvaluation> ConditionTriggerEvaluations => Set<ConditionTriggerEvaluation>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+    public DbSet<Alert> Alerts => Set<Alert>();
+    public DbSet<Escalation> Escalations => Set<Escalation>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -74,9 +84,21 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ToolExecutionAttempt>()
             .HasQueryFilter(attempt =>
                 CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<AgentScheduledTrigger>()
+            .HasQueryFilter(trigger =>
+                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<TriggerExecutionAttempt>()
+            .HasQueryFilter(attempt =>
+                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<AgentScheduledTriggerEnqueueWindow>()
+            .HasQueryFilter(window =>
+                CurrentCompanyId.HasValue && window.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<WorkTask>()
             .HasQueryFilter(task =>
                 CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<AgentTaskCreationDedupeRecord>()
+            .HasQueryFilter(record =>
+                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
@@ -98,6 +120,12 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyNotification>()
             .HasQueryFilter(notification =>
                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ProactiveMessage>()
+            .HasQueryFilter(message =>
+                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ProactiveMessagePolicyDecision>()
+            .HasQueryFilter(decision =>
+                CurrentCompanyId.HasValue && decision.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<WorkflowDefinition>()
             .HasQueryFilter(definition =>
                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
@@ -107,9 +135,15 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<WorkflowInstance>()
             .HasQueryFilter(instance =>
                 CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ProcessedWorkflowTriggerEvent>()
+            .HasQueryFilter(processedEvent =>
+                CurrentCompanyId.HasValue && processedEvent.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<WorkflowException>()
             .HasQueryFilter(workflowException =>
                 CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ConditionTriggerEvaluation>()
+            .HasQueryFilter(evaluation =>
+                CurrentCompanyId.HasValue && evaluation.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanyKnowledgeDocument>()
             .HasQueryFilter(document =>
                 CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
@@ -125,5 +159,11 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ContextRetrievalSource>()
             .HasQueryFilter(source =>
                 CurrentCompanyId.HasValue && source.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Alert>()
+            .HasQueryFilter(alert =>
+                CurrentCompanyId.HasValue && alert.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<Escalation>()
+            .HasQueryFilter(escalation =>
+                CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
     }
 }

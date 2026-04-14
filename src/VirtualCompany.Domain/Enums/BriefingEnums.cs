@@ -31,7 +31,8 @@ public enum CompanyNotificationType
     ApprovalRequested = 1,
     Escalation = 2,
     WorkflowFailure = 3,
-    BriefingAvailable = 4
+    BriefingAvailable = 4,
+    ProactiveMessage = 5
 }
 
 public enum CompanyNotificationPriority
@@ -51,6 +52,7 @@ public static class CompanyNotificationTypeValues
             CompanyNotificationType.Escalation => "escalation",
             CompanyNotificationType.WorkflowFailure => "workflow_failure",
             CompanyNotificationType.BriefingAvailable => "briefing_available",
+            CompanyNotificationType.ProactiveMessage => "proactive_message",
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported notification type.")
         };
 }

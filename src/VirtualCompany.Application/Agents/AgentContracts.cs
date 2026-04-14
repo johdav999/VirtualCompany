@@ -313,13 +313,45 @@ public sealed class AgentApprovalRequirementInput
 
 public sealed class AgentTriggerConditionInput
 {
+    [JsonPropertyName("event")]
     public string? Event { get; set; }
+
+    [JsonPropertyName("type")]
     public string? Type { get; set; }
+
+    [JsonPropertyName("source")]
     public string? Source { get; set; }
+
+    [JsonPropertyName("condition")]
+    public ConditionExpressionInput? Condition { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
 }
+
+public sealed class ConditionExpressionInput
+{
+    public ConditionTargetReferenceInput? Target { get; set; }
+    public string? Operator { get; set; }
+    public string? ValueType { get; set; }
+    public JsonElement? ComparisonValue { get; set; }
+    public string? RepeatFiringMode { get; set; }
+}
+
+public sealed class ConditionTargetReferenceInput
+{
+    public string? SourceType { get; set; }
+    public string? MetricName { get; set; }
+    public string? EntityType { get; set; }
+    public string? FieldPath { get; set; }
+}
+
+public sealed record ConditionEvaluationSnapshotDto(
+    DateTime EvaluatedUtc,
+    Dictionary<string, JsonNode?> InputValues,
+    bool Outcome,
+    bool? PreviousOutcome,
+    bool IsFalseToTrueTransition);
 
 public sealed class AgentWorkingHoursInput
 {

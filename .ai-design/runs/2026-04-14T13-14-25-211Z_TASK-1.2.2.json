@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.2.2",
+  "promptPath": ".ai-design/prompts/TASK-1.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T13:14:25.211Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T13-14-25-211Z_TASK-1.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T13-14-25-211Z_TASK-1.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T13:16:08.388Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "            Assert.Equal(severity, created.Alert.Severity);\n+                Assert.Equal(\"open\", created.Alert.Status);\n+            }\n+        }\n+    }\n+\n+    [Fact]\n+    public async Task Same_fingerprint_in_different_companies_creates_separate_open_alerts()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var first = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts/detections\", CreatePayload(seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-cross-company\", seed.AgentId));\n+        var second = await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts/detections\", CreatePayload(seed.OtherCompanyId, \"risk\", \"high\", \"open\", \"fp-cross-company\", null));\n+\n+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);\n+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Query_supports_filters_pagination_and_tenant_scoping()\n     {\n@@ -46,7 +82,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n \n         await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts\", CreatePayload(seed.CompanyId, \"risk\", \"critical\", \"open\", \"fp-risk\", seed.AgentId));\n         await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts\", CreatePayload(seed.CompanyId, \"opportunity\", \"low\", \"open\", \"fp-opp\", seed.AgentId));\n-        await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts\", CreatePayload(seed.OtherCompanyId, \"risk\", \"critical\", \"open\", \"fp-other\", null));\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts\", CreatePayload(seed.OtherCompanyId, \"risk\", \"critical\", \"open\", \"fp-risk\", null));\n \n         var response = await client.GetAsync($\"/api/companies/{seed.CompanyId}/alerts?type=risk&severity=critical&status=open&createdFrom=2000-01-01T00:00:00Z&createdTo=2100-01-01T00:00:00Z&skip=0&take=1\");\n \nEND_OF_PATCH\n",
+  "stderrTail": "Equal(severity, created.Alert.Severity);\n+                Assert.Equal(\"open\", created.Alert.Status);\n+            }\n+        }\n+    }\n+\n+    [Fact]\n+    public async Task Same_fingerprint_in_different_companies_creates_separate_open_alerts()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var first = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts/detections\", CreatePayload(seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-cross-company\", seed.AgentId));\n+        var second = await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts/detections\", CreatePayload(seed.OtherCompanyId, \"risk\", \"high\", \"open\", \"fp-cross-company\", null));\n+\n+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);\n+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Query_supports_filters_pagination_and_tenant_scoping()\n     {\n@@ -46,7 +82,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n \n         await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts\", CreatePayload(seed.CompanyId, \"risk\", \"critical\", \"open\", \"fp-risk\", seed.AgentId));\n         await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/alerts\", CreatePayload(seed.CompanyId, \"opportunity\", \"low\", \"open\", \"fp-opp\", seed.AgentId));\n-        await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts\", CreatePayload(seed.OtherCompanyId, \"risk\", \"critical\", \"open\", \"fp-other\", null));\n+        await client.PostAsJsonAsync($\"/api/companies/{seed.OtherCompanyId}/alerts\", CreatePayload(seed.OtherCompanyId, \"risk\", \"critical\", \"open\", \"fp-risk\", null));\n \n         var response = await client.GetAsync($\"/api/companies/{seed.CompanyId}/alerts?type=risk&severity=critical&status=open&createdFrom=2000-01-01T00:00:00Z&createdTo=2100-01-01T00:00:00Z&skip=0&take=1\");\n \nEND_OF_PATCH\ntokens used\n63,603\n",
+  "verbosityMode": "summary"
+}

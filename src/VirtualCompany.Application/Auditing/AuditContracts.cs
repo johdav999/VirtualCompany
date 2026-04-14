@@ -143,6 +143,9 @@ public static class AuditTargetTypes
     public const string CompanyMembership = "company_membership";
     public const string Agent = "agent";
     public const string AgentToolExecution = "agent_tool_execution";
+    public const string EscalationPolicy = "escalation_policy";
+    public const string TriggerEvaluation = "trigger_evaluation";
+    public const string TriggerExecutionAttempt = "trigger_execution_attempt";
     public const string CompanyDocument = "company_document";
     public const string ApprovalRequest = "approval_request";
     public const string MemoryItem = "memory_item";
@@ -153,6 +156,7 @@ public static class AuditTargetTypes
     public const string WorkflowException = "workflow_exception";
     public const string ExecutionException = "execution_exception";
     public const string CompanyNotification = "company_notification";
+    public const string ProactiveMessage = "proactive_message";
 }
 
 public static class AuditEventOutcomes
@@ -193,6 +197,23 @@ public static class AuditEventActions
     public const string ApprovalLinkedEntityStateUpdated = "approval.linked_entity.state_updated";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
     public const string WorkflowInstanceStarted = "workflow.instance.started";
+    public const string EscalationPolicyEvaluationStarted = "escalation.policy_evaluation.started";
+    public const string EscalationPolicyEvaluationCompleted = "escalation.policy_evaluation.completed";
+    public const string EscalationPolicyEvaluationResult = "escalation.policy_evaluation.result";
+    public const string EscalationCreated = "escalation.created";
+    public const string EscalationDuplicateSkipped = "escalation.duplicate_skipped";
+    public const string TriggerEvaluationStarted = "trigger.evaluation.started";
+    public const string TriggerEvaluationSkipped = "trigger.evaluation.skipped";
+    public const string TriggerExecutionAttemptStarted = "trigger.execution_attempt.started";
+    public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
+    public const string TriggerExecutionAttemptDuplicateSkipped = "trigger.execution_attempt.duplicate_skipped";
+    public const string TriggerExecutionAttemptBlocked = "trigger.execution_attempt.blocked";
+    public const string TriggerOrchestrationStartRequested = "trigger.orchestration.start_requested";
+    public const string TriggerExecutionAttemptDispatched = "trigger.execution_attempt.dispatched";
+    public const string TriggerExecutionAttemptRetryScheduled = "trigger.execution_attempt.retry_scheduled";
+    public const string TriggerExecutionAttemptDeadLettered = "trigger.execution_attempt.dead_lettered";
+    public const string TriggerExecutionAttemptFailed = "trigger.execution_attempt.failed";
+    public const string AgentInitiatedTaskCreated = "agent.initiated_task.created";
     public const string WorkflowExceptionCreated = "workflow.exception.created";
     public const string WorkflowExceptionReviewed = "workflow.exception.reviewed";
     public const string ExecutionExceptionCreated = "execution.exception.created";
@@ -207,4 +228,6 @@ public static class AuditEventActions
     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
     public const string CompanyNotificationActioned = "company.notification.actioned";
+    public const string ProactiveMessageDelivered = "proactive_message.delivered";
+    public const string ProactiveMessageBlocked = "proactive_message.blocked";
 }

@@ -1,0 +1,1282 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ProactiveMessagesController.cs b/src/VirtualCompany.Api/Controllers/ProactiveMessagesController.cs
+new file mode 100644
+index 0000000..0f133c5
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ProactiveMessagesController.cs
+@@ -0,0 +1,72 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.ProactiveMessaging;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/proactive-messages")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class ProactiveMessagesController : ControllerBase
++{
++    private readonly IProactiveMessageService _proactiveMessages;
++
++    public ProactiveMessagesController(IProactiveMessageService proactiveMessages)
++    {
++        _proactiveMessages = proactiveMessages;
++    }
++
++    [HttpPost("deliveries")]
++    public async Task<ActionResult<ProactiveMessageDeliveryResultDto>> GenerateAndDeliverAsync(
++        Guid companyId,
++        [FromBody] GenerateProactiveMessageCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _proactiveMessages.GenerateAndDeliverAsync(companyId, command, cancellationToken);
++            if (result.Delivered && result.Message is not null)
++            {
++                return CreatedAtAction(nameof(ListAsync), new { companyId }, result);
++            }
++
++            return Ok(result);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or InvalidOperationException)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(command)] = [ex.Message]
++            })
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<IReadOnlyList<ProactiveMessageDto>>> ListAsync(
++        Guid companyId,
++        [FromQuery] ListProactiveMessagesQuery query,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _proactiveMessages.ListAsync(companyId, query, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index de04731..50017ed 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -153,6 +153,7 @@ public static class AuditTargetTypes
+     public const string WorkflowException = "workflow_exception";
+     public const string ExecutionException = "execution_exception";
+     public const string CompanyNotification = "company_notification";
++    public const string ProactiveMessage = "proactive_message";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -207,4 +208,6 @@ public static class AuditEventActions
+     public const string MultiAgentWorkerFailed = "multi_agent.worker.failed";
+     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
+     public const string CompanyNotificationActioned = "company.notification.actioned";
++    public const string ProactiveMessageDelivered = "proactive_message.delivered";
++    public const string ProactiveMessageBlocked = "proactive_message.blocked";
+ }
+diff --git a/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs b/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs
+new file mode 100644
+index 0000000..2514e7d
+--- /dev/null
++++ b/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs
+@@ -0,0 +1,59 @@
++using VirtualCompany.Application.Agents;
++
++namespace VirtualCompany.Application.ProactiveMessaging;
++
++public sealed record GenerateProactiveMessageCommand(
++    Guid AgentId,
++    string SourceEntityType,
++    Guid SourceEntityId,
++    string Channel,
++    Guid? RecipientUserId = null);
++
++public sealed record ProactiveMessageDto(
++    Guid Id,
++    Guid CompanyId,
++    string Channel,
++    Guid RecipientUserId,
++    string Recipient,
++    string Subject,
++    string Body,
++    string SourceEntityType,
++    Guid SourceEntityId,
++    string Status,
++    DateTime SentAt,
++    Guid? NotificationId);
++
++public sealed record ProactiveMessagePolicyBlockDto(
++    string Code,
++    string UserFacingMessage,
++    IReadOnlyList<string> ReasonCodes,
++    string RationaleSummary,
++    ToolExecutionDecisionDto PolicyDecision);
++
++public sealed record ProactiveMessageDeliveryResultDto(
++    string Status,
++    ProactiveMessageDto? Message,
++    ProactiveMessagePolicyBlockDto? PolicyBlock)
++{
++    public bool Delivered => string.Equals(Status, "delivered", StringComparison.OrdinalIgnoreCase);
++}
++
++public sealed record ListProactiveMessagesQuery(
++    string? Channel = null,
++    string? SourceEntityType = null,
++    Guid? SourceEntityId = null,
++    int Skip = 0,
++    int Take = 100);
++
++public interface IProactiveMessageService
++{
++    Task<ProactiveMessageDeliveryResultDto> GenerateAndDeliverAsync(
++        Guid companyId,
++        GenerateProactiveMessageCommand command,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<ProactiveMessageDto>> ListAsync(
++        Guid companyId,
++        ListProactiveMessagesQuery query,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/ProactiveMessage.cs b/src/VirtualCompany.Domain/Entities/ProactiveMessage.cs
+new file mode 100644
+index 0000000..c5358c1
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ProactiveMessage.cs
+@@ -0,0 +1,130 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class ProactiveMessage : ICompanyOwnedEntity
++{
++    private const int RecipientMaxLength = 200;
++    private const int SubjectMaxLength = 200;
++    private const int BodyMaxLength = 16000;
++    private const int PolicyDecisionReasonMaxLength = 200;
++
++    private ProactiveMessage()
++    {
++    }
++
++    public ProactiveMessage(
++        Guid id,
++        Guid companyId,
++        ProactiveMessageChannel channel,
++        Guid recipientUserId,
++        string recipient,
++        string subject,
++        string body,
++        ProactiveMessageSourceEntityType sourceEntityType,
++        Guid sourceEntityId,
++        Guid originatingAgentId,
++        Guid? notificationId,
++        DateTime sentUtc,
++        IDictionary<string, JsonNode?>? policyDecision,
++        string? policyDecisionReason)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (recipientUserId == Guid.Empty)
++        {
++            throw new ArgumentException("RecipientUserId is required.", nameof(recipientUserId));
++        }
++
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId is required.", nameof(sourceEntityId));
++        }
++
++        if (originatingAgentId == Guid.Empty)
++        {
++            throw new ArgumentException("OriginatingAgentId is required.", nameof(originatingAgentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Channel = channel;
++        RecipientUserId = recipientUserId;
++        Recipient = NormalizeRequired(recipient, nameof(recipient), RecipientMaxLength);
++        Subject = NormalizeRequired(subject, nameof(subject), SubjectMaxLength);
++        Body = NormalizeRequired(body, nameof(body), BodyMaxLength);
++        SourceEntityType = sourceEntityType;
++        SourceEntityId = sourceEntityId;
++        OriginatingAgentId = originatingAgentId;
++        NotificationId = notificationId;
++        Status = ProactiveMessageDeliveryStatus.Delivered;
++        SentUtc = NormalizeUtc(sentUtc);
++        PolicyDecision = CloneNodes(policyDecision);
++        PolicyDecisionReason = NormalizeOptional(policyDecisionReason, nameof(policyDecisionReason), PolicyDecisionReasonMaxLength);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public ProactiveMessageChannel Channel { get; private set; }
++    public Guid RecipientUserId { get; private set; }
++    public string Recipient { get; private set; } = null!;
++    public string Subject { get; private set; } = null!;
++    public string Body { get; private set; } = null!;
++    public ProactiveMessageSourceEntityType SourceEntityType { get; private set; }
++    public Guid SourceEntityId { get; private set; }
++    public Guid OriginatingAgentId { get; private set; }
++    public Guid? NotificationId { get; private set; }
++    public ProactiveMessageDeliveryStatus Status { get; private set; }
++    public DateTime SentUtc { get; private set; }
++    public Dictionary<string, JsonNode?> PolicyDecision { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? PolicyDecisionReason { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User RecipientUser { get; private set; } = null!;
++    public Agent OriginatingAgent { get; private set; } = null!;
++    public CompanyNotification? Notification { get; private set; }
++
++    private static DateTime NormalizeUtc(DateTime value)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException("SentUtc is required.", nameof(value));
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength ? trimmed : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 9ade04b..4ddc304 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -31,7 +31,8 @@ public enum CompanyNotificationType
+     ApprovalRequested = 1,
+     Escalation = 2,
+     WorkflowFailure = 3,
+-    BriefingAvailable = 4
++    BriefingAvailable = 4,
++    ProactiveMessage = 5
+ }
+ 
+ public enum CompanyNotificationPriority
+@@ -51,6 +52,7 @@ public static class CompanyNotificationTypeValues
+             CompanyNotificationType.Escalation => "escalation",
+             CompanyNotificationType.WorkflowFailure => "workflow_failure",
+             CompanyNotificationType.BriefingAvailable => "briefing_available",
++            CompanyNotificationType.ProactiveMessage => "proactive_message",
+             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported notification type.")
+         };
+ }
+diff --git a/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs b/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs
+new file mode 100644
+index 0000000..64165d7
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ProactiveMessagingEnums.cs
+@@ -0,0 +1,95 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ProactiveMessageChannel
++{
++    Inbox = 1,
++    Notification = 2
++}
++
++public enum ProactiveMessageSourceEntityType
++{
++    ProactiveTask = 1,
++    Alert = 2,
++    Escalation = 3
++}
++
++public enum ProactiveMessageDeliveryStatus
++{
++    Delivered = 1,
++    Blocked = 2
++}
++
++public static class ProactiveMessageChannelValues
++{
++    public static string ToStorageValue(this ProactiveMessageChannel channel) =>
++        channel switch
++        {
++            ProactiveMessageChannel.Inbox => "inbox",
++            ProactiveMessageChannel.Notification => "notification",
++            _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, "Unsupported proactive message channel.")
++        };
++
++    public static bool TryParse(string? value, out ProactiveMessageChannel channel)
++    {
++        channel = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Equals("inbox", StringComparison.OrdinalIgnoreCase) && (channel = ProactiveMessageChannel.Inbox) == ProactiveMessageChannel.Inbox ||
++               trimmed.Equals("notification", StringComparison.OrdinalIgnoreCase) && (channel = ProactiveMessageChannel.Notification) == ProactiveMessageChannel.Notification ||
++               Enum.TryParse(trimmed, ignoreCase: true, out channel) && Enum.IsDefined(channel);
++    }
++
++    public static ProactiveMessageChannel Parse(string value) =>
++        TryParse(value, out var channel)
++            ? channel
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported proactive message channel value.");
++}
++
++public static class ProactiveMessageSourceEntityTypeValues
++{
++    public static string ToStorageValue(this ProactiveMessageSourceEntityType sourceEntityType) =>
++        sourceEntityType switch
++        {
++            ProactiveMessageSourceEntityType.ProactiveTask => "proactive_task",
++            ProactiveMessageSourceEntityType.Alert => "alert",
++            ProactiveMessageSourceEntityType.Escalation => "escalation",
++            _ => throw new ArgumentOutOfRangeException(nameof(sourceEntityType), sourceEntityType, "Unsupported proactive message source entity type.")
++        };
++
++    public static bool TryParse(string? value, out ProactiveMessageSourceEntityType sourceEntityType)
++    {
++        sourceEntityType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Equals("proactive_task", StringComparison.OrdinalIgnoreCase) && (sourceEntityType = ProactiveMessageSourceEntityType.ProactiveTask) == ProactiveMessageSourceEntityType.ProactiveTask ||
++               trimmed.Equals("work_task", StringComparison.OrdinalIgnoreCase) && (sourceEntityType = ProactiveMessageSourceEntityType.ProactiveTask) == ProactiveMessageSourceEntityType.ProactiveTask ||
++               trimmed.Equals("task", StringComparison.OrdinalIgnoreCase) && (sourceEntityType = ProactiveMessageSourceEntityType.ProactiveTask) == ProactiveMessageSourceEntityType.ProactiveTask ||
++               trimmed.Equals("alert", StringComparison.OrdinalIgnoreCase) && (sourceEntityType = ProactiveMessageSourceEntityType.Alert) == ProactiveMessageSourceEntityType.Alert ||
++               trimmed.Equals("escalation", StringComparison.OrdinalIgnoreCase) && (sourceEntityType = ProactiveMessageSourceEntityType.Escalation) == ProactiveMessageSourceEntityType.Escalation ||
++               Enum.TryParse(trimmed, ignoreCase: true, out sourceEntityType) && Enum.IsDefined(sourceEntityType);
++    }
++
++    public static ProactiveMessageSourceEntityType Parse(string value) =>
++        TryParse(value, out var sourceEntityType)
++            ? sourceEntityType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported proactive message source entity type value.");
++}
++
++public static class ProactiveMessageDeliveryStatusValues
++{
++    public static string ToStorageValue(this ProactiveMessageDeliveryStatus status) =>
++        status switch
++        {
++            ProactiveMessageDeliveryStatus.Delivered => "delivered",
++            ProactiveMessageDeliveryStatus.Blocked => "blocked",
++            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported proactive message delivery status.")
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+new file mode 100644
+index 0000000..b313ec6
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+@@ -0,0 +1,337 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.ProactiveMessaging;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyProactiveMessageService : IProactiveMessageService
++{
++    private const string ToolName = "proactive_messaging";
++    private const string DeliveryScope = "proactive_delivery";
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
++    private readonly IPolicyGuardrailEngine _policyGuardrailEngine;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyProactiveMessageService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IAgentRuntimeProfileResolver agentRuntimeProfileResolver,
++        IPolicyGuardrailEngine policyGuardrailEngine,
++        IAuditEventWriter auditEventWriter,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
++        _policyGuardrailEngine = policyGuardrailEngine;
++        _auditEventWriter = auditEventWriter;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<ProactiveMessageDeliveryResultDto> GenerateAndDeliverAsync(
++        Guid companyId,
++        GenerateProactiveMessageCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var channel = ProactiveMessageChannelValues.Parse(command.Channel);
++        var sourceEntityType = ProactiveMessageSourceEntityTypeValues.Parse(command.SourceEntityType);
++        var source = await LoadSourceAsync(companyId, sourceEntityType, command.SourceEntityId, cancellationToken);
++        var recipient = await ResolveRecipientAsync(companyId, command.RecipientUserId ?? membership.UserId, cancellationToken);
++        var generated = GenerateMessage(source);
++        var decision = await EvaluatePolicyAsync(companyId, command, channel, sourceEntityType, cancellationToken);
++
++        if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Allow, StringComparison.OrdinalIgnoreCase))
++        {
++            var block = CreatePolicyBlock(decision);
++            await _auditEventWriter.WriteAsync(
++                new AuditEventWriteRequest(
++                    companyId,
++                    AuditActorTypes.Agent,
++                    command.AgentId,
++                    AuditEventActions.ProactiveMessageBlocked,
++                    AuditTargetTypes.ProactiveMessage,
++                    command.SourceEntityId.ToString("N"),
++                    AuditEventOutcomes.Denied,
++                    RationaleSummary: block.RationaleSummary,
++                    DataSources: ["proactive_messaging", "policy_guardrail"],
++                    Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["sourceEntityType"] = sourceEntityType.ToStorageValue(),
++                        ["sourceEntityId"] = command.SourceEntityId.ToString("N"),
++                        ["channel"] = channel.ToStorageValue(),
++                        ["recipientUserId"] = recipient.Id.ToString("N"),
++                        ["policyOutcome"] = decision.Outcome,
++                        ["primaryReasonCode"] = decision.ReasonCodes.FirstOrDefault()
++                    }),
++                cancellationToken);
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new ProactiveMessageDeliveryResultDto("blocked", null, block);
++        }
++
++        var sentUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        CompanyNotification? notification = null;
++        if (channel == ProactiveMessageChannel.Notification)
++        {
++            notification = new CompanyNotification(
++                Guid.NewGuid(),
++                companyId,
++                recipient.Id,
++                CompanyNotificationType.ProactiveMessage,
++                CompanyNotificationPriority.Normal,
++                generated.Subject,
++                generated.Body,
++                sourceEntityType.ToStorageValue(),
++                source.SourceEntityId,
++                null,
++                JsonSerializer.Serialize(new
++                {
++                    proactive = true,
++                    sourceEntityType = sourceEntityType.ToStorageValue(),
++                    sourceEntityId = source.SourceEntityId
++                }),
++                $"proactive-message:{companyId:N}:{recipient.Id:N}:{sourceEntityType.ToStorageValue()}:{source.SourceEntityId:N}:{channel.ToStorageValue()}",
++                channel: CompanyNotificationChannel.InApp);
++            _dbContext.CompanyNotifications.Add(notification);
++        }
++
++        var message = new ProactiveMessage(
++            Guid.NewGuid(),
++            companyId,
++            channel,
++            recipient.Id,
++            recipient.DisplayName,
++            generated.Subject,
++            generated.Body,
++            sourceEntityType,
++            source.SourceEntityId,
++            command.AgentId,
++            notification?.Id,
++            sentUtc,
++            ToolExecutionPolicyDecisionJsonSerializer.Serialize(decision),
++            decision.ReasonCodes.FirstOrDefault());
++
++        _dbContext.ProactiveMessages.Add(message);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.Agent,
++                command.AgentId,
++                AuditEventActions.ProactiveMessageDelivered,
++                AuditTargetTypes.ProactiveMessage,
++                message.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                RationaleSummary: "Proactive message delivered after policy guardrail approval.",
++                DataSources: ["proactive_messaging", "policy_guardrail"],
++                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["sourceEntityType"] = sourceEntityType.ToStorageValue(),
++                    ["sourceEntityId"] = source.SourceEntityId.ToString("N"),
++                    ["channel"] = channel.ToStorageValue(),
++                    ["recipientUserId"] = recipient.Id.ToString("N"),
++                    ["policyOutcome"] = decision.Outcome,
++                    ["notificationId"] = notification?.Id.ToString("N")
++                }),
++            cancellationToken);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new ProactiveMessageDeliveryResultDto("delivered", ToDto(message), null);
++    }
++
++    public async Task<IReadOnlyList<ProactiveMessageDto>> ListAsync(
++        Guid companyId,
++        ListProactiveMessagesQuery query,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var messages = _dbContext.ProactiveMessages
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.RecipientUserId == membership.UserId);
++
++        if (!string.IsNullOrWhiteSpace(query.Channel))
++        {
++            var channel = ProactiveMessageChannelValues.Parse(query.Channel);
++            messages = messages.Where(x => x.Channel == channel);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.SourceEntityType))
++        {
++            var sourceEntityType = ProactiveMessageSourceEntityTypeValues.Parse(query.SourceEntityType);
++            messages = messages.Where(x => x.SourceEntityType == sourceEntityType);
++        }
++
++        if (query.SourceEntityId is Guid sourceEntityId && sourceEntityId != Guid.Empty)
++        {
++            messages = messages.Where(x => x.SourceEntityId == sourceEntityId);
++        }
++
++        return await messages
++            .OrderByDescending(x => x.SentUtc)
++            .ThenByDescending(x => x.Id)
++            .Skip(Math.Max(0, query.Skip))
++            .Take(Math.Clamp(query.Take, 1, 200))
++            .Select(x => ToDto(x))
++            .ToListAsync(cancellationToken);
++    }
++
++    private async Task<ToolExecutionDecisionDto> EvaluatePolicyAsync(
++        Guid companyId,
++        GenerateProactiveMessageCommand command,
++        ProactiveMessageChannel channel,
++        ProactiveMessageSourceEntityType sourceEntityType,
++        CancellationToken cancellationToken)
++    {
++        var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, command.AgentId, cancellationToken);
++        return _policyGuardrailEngine.Evaluate(new PolicyEvaluationRequest(
++            companyId,
++            command.AgentId,
++            runtimeProfile.CompanyId,
++            runtimeProfile.Status,
++            runtimeProfile.AutonomyLevel,
++            runtimeProfile.CanReceiveAssignments,
++            CloneNodes(runtimeProfile.ToolPermissions),
++            CloneNodes(runtimeProfile.DataScopes),
++            CloneNodes(runtimeProfile.ApprovalThresholds),
++            CloneNodes(runtimeProfile.EscalationRules),
++            ToolName,
++            ToolActionType.Execute,
++            DeliveryScope,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["channel"] = JsonValue.Create(channel.ToStorageValue()),
++                ["sourceEntityType"] = JsonValue.Create(sourceEntityType.ToStorageValue()),
++                ["sourceEntityId"] = JsonValue.Create(command.SourceEntityId),
++                ["recipientUserId"] = command.RecipientUserId.HasValue ? JsonValue.Create(command.RecipientUserId.Value) : null
++            },
++            null,
++            null,
++            null,
++            SensitiveAction: false,
++            Guid.NewGuid(),
++            null));
++    }
++
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken) =>
++        await _membershipContextResolver.ResolveAsync(companyId, cancellationToken)
++        ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++
++    private async Task<User> ResolveRecipientAsync(Guid companyId, Guid recipientUserId, CancellationToken cancellationToken)
++    {
++        var activeMembership = await _dbContext.CompanyMemberships
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.CompanyId == companyId &&
++                     x.UserId == recipientUserId &&
++                     x.Status == CompanyMembershipStatus.Active,
++                cancellationToken);
++
++        if (!activeMembership)
++        {
++            throw new KeyNotFoundException("Proactive message recipient is not an active company member.");
++        }
++
++        return await _dbContext.Users.SingleAsync(x => x.Id == recipientUserId, cancellationToken);
++    }
++
++    private async Task<ProactiveMessageSource> LoadSourceAsync(
++        Guid companyId,
++        ProactiveMessageSourceEntityType sourceEntityType,
++        Guid sourceEntityId,
++        CancellationToken cancellationToken)
++    {
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("Source entity id is required.", nameof(sourceEntityId));
++        }
++
++        return sourceEntityType switch
++        {
++            ProactiveMessageSourceEntityType.ProactiveTask => await _dbContext.WorkTasks
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.Id == sourceEntityId)
++                .Select(x => new ProactiveMessageSource(x.Id, x.Title, x.Description ?? x.CreationReason ?? "A proactive task needs attention."))
++                .SingleOrDefaultAsync(cancellationToken)
++                ?? throw new KeyNotFoundException("Proactive task source entity was not found."),
++
++            ProactiveMessageSourceEntityType.Alert => await _dbContext.Alerts
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.Id == sourceEntityId)
++                .Select(x => new ProactiveMessageSource(x.Id, x.Title, x.Summary))
++                .SingleOrDefaultAsync(cancellationToken)
++                ?? throw new KeyNotFoundException("Alert source entity was not found."),
++
++            ProactiveMessageSourceEntityType.Escalation => await _dbContext.Escalations
++                .AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.Id == sourceEntityId)
++                .Select(x => new ProactiveMessageSource(x.Id, $"Escalation level {x.EscalationLevel}", x.Reason))
++                .SingleOrDefaultAsync(cancellationToken)
++                ?? throw new KeyNotFoundException("Escalation source entity was not found."),
++
++            _ => throw new ArgumentOutOfRangeException(nameof(sourceEntityType), sourceEntityType, "Unsupported proactive source entity type.")
++        };
++    }
++
++    private static ProactiveGeneratedMessage GenerateMessage(ProactiveMessageSource source)
++    {
++        var subject = $"Proactive update: {source.Title}";
++        var body = $"A proactive update is ready for review.\n\n{source.Summary}";
++        return new ProactiveGeneratedMessage(subject, body);
++    }
++
++    private static ProactiveMessagePolicyBlockDto CreatePolicyBlock(ToolExecutionDecisionDto decision)
++    {
++        var primaryReasonCode = decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code)) ?? "policy_denied";
++        var rationale = decision.Reasons?.FirstOrDefault(x => string.Equals(x.Code, primaryReasonCode, StringComparison.OrdinalIgnoreCase))?.Summary
++            ?? "Proactive delivery was blocked before any message side effects.";
++
++        return new ProactiveMessagePolicyBlockDto(
++            "policy_denied",
++            BuildUserFacingBlockMessage(decision),
++            decision.ReasonCodes.ToArray(),
++            rationale,
++            decision);
++    }
++
++    private static string BuildUserFacingBlockMessage(ToolExecutionDecisionDto decision) =>
++        string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase)
++            ? "This proactive message requires approval and was not delivered."
++            : "This proactive message was blocked by policy and was not delivered.";
++
++    private static ProactiveMessageDto ToDto(ProactiveMessage message) =>
++        new(
++            message.Id,
++            message.CompanyId,
++            message.Channel.ToStorageValue(),
++            message.RecipientUserId,
++            message.Recipient,
++            message.Subject,
++            message.Body,
++            message.SourceEntityType.ToStorageValue(),
++            message.SourceEntityId,
++            message.Status.ToStorageValue(),
++            message.SentUtc,
++            message.NotificationId);
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private sealed record ProactiveMessageSource(Guid SourceEntityId, string Title, string Summary);
++
++    private sealed record ProactiveGeneratedMessage(string Subject, string Body);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 190d4f4..dd8b5ef 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -25,6 +25,7 @@ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Mobile;
+ using VirtualCompany.Application.Notifications;
++using VirtualCompany.Application.ProactiveMessaging;
+ using VirtualCompany.Infrastructure.Auditing;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Auth;
+@@ -221,6 +222,7 @@ public static class DependencyInjection
+         services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+         services.AddScoped<INotificationInboxService, CompanyNotificationService>();
+         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
++        services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index d5f59a4..33ee6db 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1208,6 +1208,7 @@ internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguratio
+             "escalation" => CompanyNotificationType.Escalation,
+             "workflow_failure" => CompanyNotificationType.WorkflowFailure,
+             "briefing_available" => CompanyNotificationType.BriefingAvailable,
++            "proactive_message" => CompanyNotificationType.ProactiveMessage,
+             _ => CompanyNotificationType.BriefingAvailable
+         };
+ 
+@@ -1463,6 +1464,58 @@ internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<
+     }
+ }
+ 
++internal sealed class ProactiveMessageConfiguration : IEntityTypeConfiguration<ProactiveMessage>
++{
++    public void Configure(EntityTypeBuilder<ProactiveMessage> builder)
++    {
++        builder.ToTable("proactive_messages");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Channel)
++            .HasColumnName("channel")
++            .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageChannelValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.RecipientUserId).HasColumnName("recipient_user_id").IsRequired();
++        builder.Property(x => x.Recipient).HasColumnName("recipient").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Body).HasColumnName("body").IsRequired();
++        builder.Property(x => x.SourceEntityType)
++            .HasColumnName("source_entity_type")
++            .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageSourceEntityTypeValues.Parse(value))
++            .HasMaxLength(64)
++            .IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").IsRequired();
++        builder.Property(x => x.OriginatingAgentId).HasColumnName("originating_agent_id").IsRequired();
++        builder.Property(x => x.NotificationId).HasColumnName("notification_id");
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => value == "delivered" ? ProactiveMessageDeliveryStatus.Delivered : ProactiveMessageDeliveryStatus.Blocked)
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.SentUtc).HasColumnName("sent_at").IsRequired();
++        builder.Property(x => x.PolicyDecision)
++            .HasColumnName("policy_decision_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.PolicyDecisionReason).HasColumnName("policy_decision_reason").HasMaxLength(200);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.RecipientUserId, x.SentUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.Channel, x.SentUtc });
++        builder.HasIndex(x => x.NotificationId);
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.RecipientUser).WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.OriginatingAgent).WithMany().HasForeignKey(x => x.OriginatingAgentId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Notification).WithMany().HasForeignKey(x => x.NotificationId).OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
+ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
+ {
+     public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414170000_AddProactiveMessages.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414170000_AddProactiveMessages.cs
+new file mode 100644
+index 0000000..b1e8a9f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414170000_AddProactiveMessages.cs
+@@ -0,0 +1,103 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddProactiveMessages : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "proactive_messages",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                recipient_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                recipient = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                subject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                body = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                source_entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                source_entity_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                originating_agent_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                notification_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                sent_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                policy_decision_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                policy_decision_reason = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_proactive_messages", x => x.id);
++                table.ForeignKey(
++                    name: "FK_proactive_messages_agents_originating_agent_id",
++                    column: x => x.originating_agent_id,
++                    principalTable: "agents",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_proactive_messages_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_proactive_messages_company_notifications_notification_id",
++                    column: x => x.notification_id,
++                    principalTable: "company_notifications",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.SetNull);
++                table.ForeignKey(
++                    name: "FK_proactive_messages_users_recipient_user_id",
++                    column: x => x.recipient_user_id,
++                    principalTable: "users",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_company_id_channel_sent_at",
++            table: "proactive_messages",
++            columns: new[] { "company_id", "channel", "sent_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_company_id_recipient_user_id_sent_at",
++            table: "proactive_messages",
++            columns: new[] { "company_id", "recipient_user_id", "sent_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_company_id_source_entity_type_source_entity_id",
++            table: "proactive_messages",
++            columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_notification_id",
++            table: "proactive_messages",
++            column: "notification_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_originating_agent_id",
++            table: "proactive_messages",
++            column: "originating_agent_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_proactive_messages_recipient_user_id",
++            table: "proactive_messages",
++            column: "recipient_user_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "proactive_messages");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0d2a0e3..3481930 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -39,6 +39,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
++    public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
+     public DbSet<ApprovalStep> ApprovalSteps => Set<ApprovalStep>();
+     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
+     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
+@@ -98,6 +99,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyNotification>()
+             .HasQueryFilter(notification =>
+                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<ProactiveMessage>()
++            .HasQueryFilter(message =>
++                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkflowDefinition>()
+             .HasQueryFilter(definition =>
+                 CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+new file mode 100644
+index 0000000..bf12c0d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+@@ -0,0 +1,287 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ProactiveMessagingIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Level_3_agent_delivers_notification_channel_and_persists_proactive_message()
++    {
++        var seed = await SeedAsync(AgentAutonomyLevel.Level3);
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/proactive-messages/deliveries", new
++        {
++            agentId = seed.AgentId,
++            sourceEntityType = "alert",
++            sourceEntityId = seed.AlertId,
++            channel = "notification",
++            recipientUserId = seed.UserId
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<ProactiveMessageDeliveryResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal("delivered", result!.Status);
++        Assert.NotNull(result.Message);
++        Assert.Null(result.PolicyBlock);
++        Assert.Equal("notification", result.Message!.Channel);
++        Assert.Equal(seed.UserId, result.Message.RecipientUserId);
++        Assert.Equal("Founder", result.Message.Recipient);
++        Assert.Equal("alert", result.Message.SourceEntityType);
++        Assert.Equal(seed.AlertId, result.Message.SourceEntityId);
++        Assert.Contains("Proactive update:", result.Message.Subject);
++        Assert.Contains("Cash threshold alert", result.Message.Body);
++        Assert.NotEqual(default, result.Message.SentAt);
++        Assert.NotNull(result.Message.NotificationId);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var stored = await dbContext.ProactiveMessages.AsNoTracking().SingleAsync(x => x.Id == result.Message.Id);
++        Assert.Equal(ProactiveMessageChannel.Notification, stored.Channel);
++        Assert.Equal(ProactiveMessageDeliveryStatus.Delivered, stored.Status);
++        Assert.Equal(seed.AlertId, stored.SourceEntityId);
++        Assert.Equal("allow", stored.PolicyDecision["outcome"]!.GetValue<string>());
++        Assert.Equal(seed.AgentId, stored.OriginatingAgentId);
++
++        var notification = await dbContext.CompanyNotifications.AsNoTracking().SingleAsync(x => x.Id == stored.NotificationId);
++        Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);
++        Assert.Equal(seed.AlertId, notification.RelatedEntityId);
++        Assert.Equal(seed.UserId, notification.UserId);
++
++        var listed = await client.GetFromJsonAsync<List<ProactiveMessageListItemResponse>>(
++            $"/api/companies/{seed.CompanyId}/proactive-messages?sourceEntityType=alert&sourceEntityId={seed.AlertId}");
++        var listItem = Assert.Single(listed!);
++        Assert.Equal(result.Message.Id, listItem.Id);
++        Assert.Equal("notification", listItem.Channel);
++    }
++
++    [Fact]
++    public async Task Level_0_agent_blocks_inbox_delivery_before_message_persistence_with_policy_reason()
++    {
++        var seed = await SeedAsync(AgentAutonomyLevel.Level0);
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/proactive-messages/deliveries", new
++        {
++            agentId = seed.AgentId,
++            sourceEntityType = "proactive_task",
++            sourceEntityId = seed.TaskId,
++            channel = "inbox",
++            recipientUserId = seed.UserId
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<ProactiveMessageDeliveryResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal("blocked", result!.Status);
++        Assert.Null(result.Message);
++        Assert.NotNull(result.PolicyBlock);
++        Assert.Equal("policy_denied", result.PolicyBlock!.Code);
++        Assert.Contains(PolicyDecisionReasonCodes.AutonomyLevelBlocksAction, result.PolicyBlock.ReasonCodes);
++        Assert.Equal("deny", result.PolicyBlock.PolicyDecision.Outcome);
++        Assert.Equal("level_0", result.PolicyBlock.PolicyDecision.EvaluatedAutonomyLevel);
++        Assert.Equal("This proactive message was blocked by policy and was not delivered.", result.PolicyBlock.UserFacingMessage);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        Assert.False(await dbContext.ProactiveMessages.AnyAsync(x => x.CompanyId == seed.CompanyId && x.SourceEntityId == seed.TaskId));
++        Assert.False(await dbContext.CompanyNotifications.AnyAsync(x => x.CompanyId == seed.CompanyId && x.RelatedEntityId == seed.TaskId));
++    }
++
++    [Fact]
++    public async Task Level_3_agent_delivers_inbox_channel_for_escalation_without_notification_record()
++    {
++        var seed = await SeedAsync(AgentAutonomyLevel.Level3);
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/proactive-messages/deliveries", new
++        {
++            agentId = seed.AgentId,
++            sourceEntityType = "escalation",
++            sourceEntityId = seed.EscalationId,
++            channel = "inbox",
++            recipientUserId = seed.UserId
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<ProactiveMessageDeliveryResponse>();
++
++        Assert.NotNull(result);
++        Assert.Equal("delivered", result!.Status);
++        Assert.NotNull(result.Message);
++        Assert.Equal("inbox", result.Message!.Channel);
++        Assert.Equal(seed.EscalationId, result.Message.SourceEntityId);
++        Assert.Null(result.Message.NotificationId);
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var stored = await dbContext.ProactiveMessages.AsNoTracking().SingleAsync(x => x.Id == result.Message.Id);
++        Assert.Equal(ProactiveMessageChannel.Inbox, stored.Channel);
++        Assert.Null(stored.NotificationId);
++        Assert.Equal("escalation", stored.SourceEntityType.ToStorageValue());
++    }
++
++    private async Task<SeededProactiveMessaging> SeedAsync(AgentAutonomyLevel autonomyLevel)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var alertId = Guid.NewGuid();
++        var escalationId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                CompanyMembershipRole.Owner,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "ops",
++                "Nora Ops",
++                "Operations Lead",
++                "Operations",
++                null,
++                AgentSeniority.Senior,
++                AgentStatus.Active,
++                autonomyLevel: autonomyLevel,
++                tools: Payload(("allowed", new JsonArray(JsonValue.Create("proactive_messaging")))),
++                scopes: Payload(("execute", new JsonArray(JsonValue.Create("proactive_delivery")))),
++                thresholds: Payload(("delivery", new JsonObject { ["proactiveMessagesPerHour"] = 100 })),
++                escalationRules: Payload(("escalateTo", JsonValue.Create("owner")))));
++            dbContext.WorkTasks.Add(new WorkTask(
++                taskId,
++                companyId,
++                "proactive",
++                "Review proactive cash task",
++                "Cash forecast needs a proactive review.",
++                WorkTaskPriority.High,
++                agentId,
++                null,
++                "agent",
++                agentId,
++                sourceType: "proactive_task",
++                originatingAgentId: agentId,
++                creationReason: "Detected cash variance."));
++            dbContext.Alerts.Add(new Alert(
++                alertId,
++                companyId,
++                AlertType.Risk,
++                AlertSeverity.High,
++                "Cash threshold alert",
++                "Cash threshold alert requires attention.",
++                Payload(("signal", JsonValue.Create("cash"))),
++                $"corr-{alertId:N}",
++                $"fp-{alertId:N}",
++                agentId));
++            dbContext.Escalations.Add(new Escalation(
++                escalationId,
++                companyId,
++                Guid.NewGuid(),
++                alertId,
++                "alert",
++                1,
++                "Alert breached escalation threshold.",
++                DateTime.UtcNow,
++                $"corr-{escalationId:N}",
++                0));
++            return Task.CompletedTask;
++        });
++
++        return new SeededProactiveMessaging(companyId, userId, agentId, taskId, alertId, escalationId);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        return client;
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record SeededProactiveMessaging(Guid CompanyId, Guid UserId, Guid AgentId, Guid TaskId, Guid AlertId, Guid EscalationId);
++
++    private sealed class ProactiveMessageDeliveryResponse
++    {
++        public string Status { get; set; } = string.Empty;
++        public ProactiveMessageListItemResponse? Message { get; set; }
++        public ProactivePolicyBlockResponse? PolicyBlock { get; set; }
++    }
++
++    private sealed class ProactiveMessageListItemResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string Channel { get; set; } = string.Empty;
++        public Guid RecipientUserId { get; set; }
++        public string Recipient { get; set; } = string.Empty;
++        public string Subject { get; set; } = string.Empty;
++        public string Body { get; set; } = string.Empty;
++        public string SourceEntityType { get; set; } = string.Empty;
++        public Guid SourceEntityId { get; set; }
++        public string Status { get; set; } = string.Empty;
++        public DateTime SentAt { get; set; }
++        public Guid? NotificationId { get; set; }
++    }
++
++    private sealed class ProactivePolicyBlockResponse
++    {
++        public string Code { get; set; } = string.Empty;
++        public string UserFacingMessage { get; set; } = string.Empty;
++        public List<string> ReasonCodes { get; set; } = [];
++        public string RationaleSummary { get; set; } = string.Empty;
++        public PolicyDecisionResponse PolicyDecision { get; set; } = new();
++    }
++
++    private sealed class PolicyDecisionResponse
++    {
++        public string Outcome { get; set; } = string.Empty;
++        public string EvaluatedAutonomyLevel { get; set; } = string.Empty;
++        public List<string> ReasonCodes { get; set; } = [];
++        public Dictionary<string, JsonElement> Metadata { get; set; } = [];
++    }
++}
+END_OF_PATCH

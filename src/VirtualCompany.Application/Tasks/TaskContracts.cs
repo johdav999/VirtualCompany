@@ -105,6 +105,11 @@ public sealed record TaskDetailDto(
     Guid? ParentTaskId,
     Guid? WorkflowInstanceId,
     string CreatedByActorType,
+    string SourceType,
+    Guid? OriginatingAgentId,
+    string? TriggerSource,
+    string? CreationReason,
+    string? TriggerEventId,
     Guid? CreatedByActorId,
     Dictionary<string, JsonNode?> InputPayload,
     Dictionary<string, JsonNode?> OutputPayload,
@@ -137,6 +142,80 @@ public sealed record TaskListResultDto(
     int TotalCount,
     int Skip,
     int Take);
+
+public sealed record ProactiveTaskTrigger(
+    Guid CompanyId,
+    Guid AgentId,
+    string TriggerSource,
+    string TriggerEventId,
+    string CorrelationId,
+    string CreationReason,
+    Dictionary<string, JsonNode?>? Payload,
+    string? TaskType = null,
+    string? TaskTitle = null,
+    string? TaskDescription = null,
+    string? TaskPriority = null,
+    DateTime? DueAt = null,
+    Guid? AssignedAgentId = null);
+
+public sealed record MappedTaskCreationRequest(
+    Guid CompanyId,
+    Guid AgentId,
+    string TriggerSource,
+    string TriggerEventId,
+    string CorrelationId,
+    string CreationReason,
+    string Type,
+    string Title,
+    string? Description,
+    string Priority,
+    DateTime? DueAt,
+    Guid? AssignedAgentId,
+    Dictionary<string, JsonNode?> InputPayload);
+
+public sealed record CreateAgentInitiatedTaskCommand(ProactiveTaskTrigger Trigger);
+
+public sealed record CreateAgentInitiatedTaskResult(
+    Guid TaskId,
+    Guid CompanyId,
+    bool Created,
+    bool Duplicate,
+    string Status,
+    string CorrelationId);
+
+public sealed class ProactiveTaskCreationOptions
+{
+    public const string SectionName = "ProactiveTaskCreation";
+
+    public int DeduplicationWindowSeconds { get; set; } = 900;
+}
+
+public interface ITriggerToTaskMappingService
+{
+    MappedTaskCreationRequest Map(ProactiveTaskTrigger trigger);
+}
+
+public interface IProactiveTaskDuplicateDetector
+{
+    Task<WorkTaskDuplicateMatch?> FindDuplicateAsync(
+        MappedTaskCreationRequest request,
+        TimeSpan deduplicationWindow,
+        DateTime nowUtc,
+        CancellationToken cancellationToken);
+}
+
+public sealed record WorkTaskDuplicateMatch(
+    Guid TaskId,
+    Guid CompanyId,
+    string Status,
+    string CorrelationId);
+
+public interface IProactiveTaskCreationService
+{
+    Task<CreateAgentInitiatedTaskResult> CreateAsync(
+        CreateAgentInitiatedTaskCommand command,
+        CancellationToken cancellationToken);
+}
 
 public interface ICompanyTaskCommandService
 {

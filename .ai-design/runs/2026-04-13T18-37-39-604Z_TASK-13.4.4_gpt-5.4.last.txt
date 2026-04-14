@@ -1,0 +1,632 @@
+diff --git a/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs
+index 2f7a3cf..2e5dd6d 100644
+--- a/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs
+@@ -6,7 +6,9 @@ public enum TriggerExecutionAttemptStatus
+     Blocked = 3,
+     DuplicateSkipped = 4,
+     Failed = 5,
+-    Retried = 6
++    Retried = 6,
++    RetryScheduled = 7,
++    DeadLettered = 8
+ }
+ 
+ public static class TriggerExecutionAttemptStatusValues
+@@ -19,7 +21,9 @@ public static class TriggerExecutionAttemptStatusValues
+         [TriggerExecutionAttemptStatus.Blocked] = "blocked",
+         [TriggerExecutionAttemptStatus.DuplicateSkipped] = "duplicate_skipped",
+         [TriggerExecutionAttemptStatus.Failed] = "failed",
+-        [TriggerExecutionAttemptStatus.Retried] = "retried"
++        [TriggerExecutionAttemptStatus.Retried] = "retried",
++        [TriggerExecutionAttemptStatus.RetryScheduled] = "retry_scheduled",
++        [TriggerExecutionAttemptStatus.DeadLettered] = "dead_lettered"
+     };
+ 
+     private static readonly IReadOnlyDictionary<string, TriggerExecutionAttemptStatus> ReverseValues =
+diff --git a/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+index 8c2d5aa..f1dbff1 100644
+--- a/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
++++ b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+@@ -73,14 +73,18 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+     public string? DispatchReferenceId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
++    public DateTime? NextRetryUtc { get; private set; }
+     public DateTime? CompletedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Agent? Agent { get; private set; }
+ 
+     public bool HasFinalOutcome =>
+         Status is TriggerExecutionAttemptStatus.Dispatched
+             or TriggerExecutionAttemptStatus.Blocked
+-            or TriggerExecutionAttemptStatus.DuplicateSkipped;
++            or TriggerExecutionAttemptStatus.DuplicateSkipped
++            or TriggerExecutionAttemptStatus.Failed
++            or TriggerExecutionAttemptStatus.DeadLettered;
+ 
+     public void MarkRetried(int retryAttempt)
+     {
+@@ -88,6 +92,8 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         Status = TriggerExecutionAttemptStatus.Retried;
+         UpdatedUtc = DateTime.UtcNow;
++        CompletedUtc = null;
++        NextRetryUtc = null;
+     }
+ 
+     public void MarkDispatched(string? dispatchReferenceType, string? dispatchReferenceId)
+@@ -98,6 +104,7 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         DispatchReferenceId = NormalizeOptional(dispatchReferenceId, nameof(dispatchReferenceId), DispatchReferenceIdMaxLength);
+         FailureDetails = null;
+         DenialReason = null;
++        NextRetryUtc = null;
+         CompletedUtc = DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+     }
+@@ -108,6 +115,7 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         Status = TriggerExecutionAttemptStatus.Blocked;
+         DenialReason = NormalizeRequired(denialReason, nameof(denialReason), DenialReasonMaxLength);
+         FailureDetails = null;
++        NextRetryUtc = null;
+         CompletedUtc = DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+     }
+@@ -117,6 +125,7 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         Status = TriggerExecutionAttemptStatus.DuplicateSkipped;
+         DenialReason = NormalizeOptional(reason, nameof(reason), DenialReasonMaxLength);
++        NextRetryUtc = null;
+         CompletedUtc = DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+     }
+@@ -126,9 +135,28 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         Status = TriggerExecutionAttemptStatus.Failed;
+         FailureDetails = NormalizeRequired(failureDetails, nameof(failureDetails), FailureDetailsMaxLength);
++        NextRetryUtc = null;
+         CompletedUtc = DateTime.UtcNow;
+         UpdatedUtc = CompletedUtc.Value;
+     }
+ 
++    public void MarkRetryScheduled(string failureDetails, DateTime nextRetryUtc)
++    {
++        Status = TriggerExecutionAttemptStatus.RetryScheduled;
++        FailureDetails = NormalizeRequired(failureDetails, nameof(failureDetails), FailureDetailsMaxLength);
++        NextRetryUtc = nextRetryUtc.Kind == DateTimeKind.Utc ? nextRetryUtc : nextRetryUtc.ToUniversalTime();
++        CompletedUtc = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkDeadLettered(string failureDetails)
++    {
++        Status = TriggerExecutionAttemptStatus.DeadLettered;
++        FailureDetails = NormalizeRequired(failureDetails, nameof(failureDetails), FailureDetailsMaxLength);
++        NextRetryUtc = null;
++        CompletedUtc = DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
+     private static DateTime NormalizeUtc(DateTime value, string name)
+     {
+         if (value == default)
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 530c58d..cc1b510 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -217,6 +217,8 @@ public static class AuditEventActions
+     public const string TriggerExecutionAttemptDuplicateSkipped = "trigger.execution_attempt.duplicate_skipped";
+     public const string TriggerExecutionAttemptFailed = "trigger.execution_attempt.failed";
+     public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
++    public const string TriggerExecutionAttemptRetryScheduled = "trigger.execution_attempt.retry_scheduled";
++    public const string TriggerExecutionAttemptDeadLettered = "trigger.execution_attempt.dead_lettered";
+     public const string TriggerOrchestrationStartRequested = "trigger.orchestration_start.requested";
+ }
+diff --git a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+index 8c37611..bf40086 100644
+--- a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+@@ -41,7 +41,8 @@ public sealed record TriggerExecutionRunResult(
+     int Blocked,
+     int DuplicateSkipped,
+     int Failed,
+-    int Retried);
++    int Retried,
++    int DeadLettered = 0);
+ 
+ public sealed record TriggerAuditEventContext(
+     Guid CompanyId,
+@@ -54,14 +55,15 @@ public sealed record TriggerAuditEventContext(
+ public sealed record TriggerExecutionAttemptReservation(
+     TriggerExecutionAttempt Attempt,
+     bool Created,
+-    bool DuplicateFinalOutcome);
++    bool DuplicateFinalOutcome,
++    bool RetryDeferred = false);
+ 
+ public interface ITriggerExecutionAttemptRepository
+ {
+     Task<TriggerExecutionAttemptReservation> ReserveAsync(
+         TriggerExecutionWorkItem workItem,
+-        int retryAttempt,
+         CancellationToken cancellationToken);
+ 
+     Task SaveChangesAsync(CancellationToken cancellationToken);
+@@ -116,6 +118,7 @@ public interface ITriggerAuditEventWriter
+ 
+     Task WriteRetryScheduledAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken);
+     Task WriteExecutionFailedAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken);
++    Task WriteDeadLetteredAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken);
+ }
+ 
+ public interface ITriggerEvaluationWorker
+@@ -124,7 +127,8 @@ public interface ITriggerEvaluationWorker
+         DateTime dueAtUtc,
+         int batchSize,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0);
+ }
+ 
+ public interface ITriggerExecutionService
+@@ -132,11 +136,13 @@ public interface ITriggerExecutionService
+     Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
+         TriggerExecutionWorkItem workItem,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0);
+ 
+     Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
+         AgentScheduledTriggerExecutionRequestMessage message,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0);
+ }
+ 
+ public sealed class TriggerExecutionPermanentException : Exception
+diff --git a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+index 6e2a03f..7471d65 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+@@ -39,7 +39,6 @@ public sealed class EfTriggerExecutionAttemptRepository : ITriggerExecutionAttem
+     public async Task<TriggerExecutionAttemptReservation> ReserveAsync(
+         TriggerExecutionWorkItem workItem,
+-        int retryAttempt,
+         CancellationToken cancellationToken)
+     {
+         ArgumentNullException.ThrowIfNull(workItem);
+@@ -55,7 +54,7 @@ public sealed class EfTriggerExecutionAttemptRepository : ITriggerExecutionAttem
+             workItem.CorrelationId,
+             workItem.IdempotencyKey,
+-            retryAttempt);
++            retryAttempt: 1);
+ 
+         await _dbContext.TriggerExecutionAttempts.AddAsync(attempt, cancellationToken);
+         try
+@@ -72,12 +71,17 @@ public sealed class EfTriggerExecutionAttemptRepository : ITriggerExecutionAttem
+                 .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey, cancellationToken);
+ 
+             if (existing.HasFinalOutcome)
+             {
+                 return new TriggerExecutionAttemptReservation(existing, false, true);
+             }
+ 
+-            existing.MarkRetried(retryAttempt);
++            if (existing.Status == TriggerExecutionAttemptStatus.RetryScheduled &&
++                existing.NextRetryUtc.HasValue &&
++                existing.NextRetryUtc.Value > DateTime.UtcNow)
++            {
++                return new TriggerExecutionAttemptReservation(existing, false, false, true);
++            }
++
++            existing.MarkRetried(existing.RetryAttemptCount + 1);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             return new TriggerExecutionAttemptReservation(existing, false, false);
+         }
+@@ -316,11 +320,21 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
+         WriteAttemptAsync(
+             attempt,
+-            AuditEventActions.TriggerExecutionAttemptRetried,
++            AuditEventActions.TriggerExecutionAttemptRetryScheduled,
+             AuditEventOutcomes.Pending,
+             "Transient trigger execution failure recorded; retry remains eligible under the idempotency key.",
+             null,
+             cancellationToken);
+ 
++    public Task WriteDeadLetteredAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken) =>
++        WriteAttemptAsync(
++            attempt,
++            AuditEventActions.TriggerExecutionAttemptDeadLettered,
++            AuditEventOutcomes.Failed,
++            attempt.FailureDetails,
++            new Dictionary<string, string?> { ["deadLettered"] = "true" },
++            cancellationToken);
++
+     public Task WriteExecutionFailedAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken) =>
+         WriteAttemptAsync(
+             attempt,
+@@ -392,6 +406,8 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
+             ["failureDetails"] = attempt.FailureDetails,
+             ["dispatchReferenceType"] = attempt.DispatchReferenceType,
+-            ["dispatchReferenceId"] = attempt.DispatchReferenceId
++            ["dispatchReferenceId"] = attempt.DispatchReferenceId,
++            ["nextRetryUtc"] = attempt.NextRetryUtc?.ToString("O"),
++            ["deadLettered"] = (attempt.Status == TriggerExecutionAttemptStatus.DeadLettered).ToString()
+         };
+ 
+         MergeMetadata(metadata, extraMetadata);
+@@ -455,7 +471,8 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
+     public async Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
+         AgentScheduledTriggerExecutionRequestMessage message,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0)
+     {
+         var idempotencyKey = string.IsNullOrWhiteSpace(message.IdempotencyKey)
+             ? TriggerExecutionIdempotency.ForScheduledAgentTrigger(message.CompanyId, message.TriggerId, message.ScheduledAtUtc)
+@@ -479,34 +496,28 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
+                 ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
+             });
+ 
+-        return await EvaluateAndDispatchAsync(workItem, maxRetryAttempts, cancellationToken);
++        return await EvaluateAndDispatchAsync(workItem, maxRetryAttempts, cancellationToken, retryBackoffSeconds);
+     }
+ 
+     public async Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
+         TriggerExecutionWorkItem workItem,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0)
+     {
+-        var retryAttempt = 1;
+-        TriggerExecutionAttemptReservation reservation;
+-        while (true)
+-        {
+-            reservation = await _attemptRepository.ReserveAsync(workItem, retryAttempt, cancellationToken);
+-            if (reservation.Created || reservation.DuplicateFinalOutcome || retryAttempt >= Math.Max(1, maxRetryAttempts))
+-            {
+-                break;
+-            }
+-
+-            retryAttempt = reservation.Attempt.RetryAttemptCount + 1;
+-        }
+-
++        var effectiveMaxRetryAttempts = Math.Max(1, maxRetryAttempts);
++        var reservation = await _attemptRepository.ReserveAsync(workItem, cancellationToken);
+         var attempt = reservation.Attempt;
+         if (reservation.DuplicateFinalOutcome)
+         {
+             await _triggerAuditEventWriter.WriteDuplicatePreventedAsync(attempt, cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             return attempt.Status == TriggerExecutionAttemptStatus.DuplicateSkipped ? attempt.Status : TriggerExecutionAttemptStatus.DuplicateSkipped;
+         }
+ 
++        if (reservation.RetryDeferred)
++        {
++            return TriggerExecutionAttemptStatus.RetryScheduled;
++        }
++
+         await _triggerAuditEventWriter.WriteExecutionAttemptCreatedAsync(attempt, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -545,16 +556,31 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
+         }
+         catch (Exception ex) when (ex is not OperationCanceledException)
+         {
+-            attempt.MarkFailed(ex.Message);
++            if (attempt.RetryAttemptCount >= effectiveMaxRetryAttempts)
++            {
++                attempt.MarkDeadLettered(ex.Message);
++                await _attemptRepository.SaveChangesAsync(cancellationToken);
++                await _triggerAuditEventWriter.WriteExecutionFailedAsync(attempt, cancellationToken);
++                await _triggerAuditEventWriter.WriteDeadLetteredAsync(attempt, cancellationToken);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                return TriggerExecutionAttemptStatus.DeadLettered;
++            }
++
++            attempt.MarkRetryScheduled(
++                ex.Message,
++                DateTime.UtcNow.Add(ComputeRetryDelay(attempt.RetryAttemptCount, retryBackoffSeconds)));
+             await _attemptRepository.SaveChangesAsync(cancellationToken);
+             await _triggerAuditEventWriter.WriteExecutionFailedAsync(attempt, cancellationToken);
+-            if (attempt.RetryAttemptCount < Math.Max(1, maxRetryAttempts))
+-            {
+-                await _triggerAuditEventWriter.WriteRetryScheduledAsync(attempt, cancellationToken);
+-            }
+-
++            await _triggerAuditEventWriter.WriteRetryScheduledAsync(attempt, cancellationToken);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             throw;
+         }
+     }
+ 
++    private static TimeSpan ComputeRetryDelay(int attemptCount, int retryBackoffSeconds)
++    {
++        var baseDelaySeconds = Math.Max(0, retryBackoffSeconds);
++        var multiplier = Math.Pow(2, Math.Max(0, attemptCount - 1));
++        return TimeSpan.FromSeconds(Math.Min(3600, baseDelaySeconds * multiplier));
++    }
++
+     private async Task MarkSourceTriggerRunAsync(TriggerExecutionWorkItem workItem, CancellationToken cancellationToken)
+     {
+         if (!string.Equals(workItem.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
+@@ -607,7 +633,8 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+         DateTime dueAtUtc,
+         int batchSize,
+         int maxRetryAttempts,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken,
++        int retryBackoffSeconds = 0)
+     {
+         var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc ? dueAtUtc : dueAtUtc.ToUniversalTime();
+         var effectiveBatchSize = Math.Max(1, batchSize);
+@@ -629,6 +656,7 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+         var failed = 0;
+         var retried = 0;
++        var deadLettered = 0;
+ 
+         foreach (var trigger in scheduled)
+         {
+@@ -653,10 +681,14 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+                     idempotencyKey),
+                 maxRetryAttempts,
+-                cancellationToken);
++                cancellationToken,
++                retryBackoffSeconds);
+ 
+-            await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, normalizedDueAtUtc, nextRunUtc, cancellationToken);
+-            Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried);
++            if (outcome != TriggerExecutionAttemptStatus.RetryScheduled)
++            {
++                await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, normalizedDueAtUtc, nextRunUtc, cancellationToken);
++            }
++
++            Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
+         }
+ 
+@@ -741,11 +773,12 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+                         }),
+                     maxRetryAttempts,
+-                    cancellationToken);
++                    cancellationToken,
++                    retryBackoffSeconds);
+ 
+-                Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried);
++                Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
+             }
+         }
+ 
+-        return new TriggerExecutionRunResult(scheduledEvaluated, conditionEvaluated, dispatched, blocked, duplicateSkipped, failed, retried);
++        return new TriggerExecutionRunResult(scheduledEvaluated, conditionEvaluated, dispatched, blocked, duplicateSkipped, failed, retried, deadLettered);
+     }
+ 
+@@ -842,7 +875,8 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+         ref int blocked,
+         ref int duplicateSkipped,
+         ref int failed,
+-        ref int retried)
++        ref int retried,
++        ref int deadLettered)
+     {
+         switch (outcome)
+         {
+@@ -861,6 +895,12 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+             case TriggerExecutionAttemptStatus.Retried:
+                 retried++;
+                 break;
++            case TriggerExecutionAttemptStatus.RetryScheduled:
++                retried++;
++                break;
++            case TriggerExecutionAttemptStatus.DeadLettered:
++                deadLettered++;
++                break;
+         }
+     }
+ }
+@@ -912,7 +952,8 @@ public sealed class TriggerEvaluationBackgroundService : BackgroundService
+                         _timeProvider.GetUtcNow().UtcDateTime,
+                         Math.Max(1, options.BatchSize),
+                         Math.Max(1, options.MaxRetryAttempts),
+-                        stoppingToken);
++                        stoppingToken,
++                        Math.Max(0, options.RetryBackoffSeconds));
+ 
+                     if (result.ScheduledTriggersEvaluated > 0 || result.ConditionChecksEvaluated > 0)
+                     {
+@@ -920,14 +961,15 @@ public sealed class TriggerEvaluationBackgroundService : BackgroundService
+                             "Trigger evaluation completed. Scheduled: {Scheduled}. Conditions: {Conditions}. Dispatched: {Dispatched}. Blocked: {Blocked}. Duplicates: {Duplicates}. Failed: {Failed}.",
+                             result.ScheduledTriggersEvaluated,
+                             result.ConditionChecksEvaluated,
+                             result.Dispatched,
+                             result.Blocked,
+                             result.DuplicateSkipped,
+-                            result.Failed);
++                            result.Failed + result.DeadLettered);
+                     }
+                 }
+             }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 73f3905..50f8563 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1764,6 +1764,7 @@ internal sealed class TriggerExecutionAttemptConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.DispatchReferenceId).HasColumnName("dispatch_reference_id").HasMaxLength(128);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.NextRetryUtc).HasColumnName("next_retry_at");
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+ 
+         builder.HasIndex(x => x.IdempotencyKey).IsUnique();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414100000_AddTriggerExecutionDeadLetterRetryState.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414100000_AddTriggerExecutionDeadLetterRetryState.cs
+new file mode 100644
+index 0000000..f86206a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414100000_AddTriggerExecutionDeadLetterRetryState.cs
+@@ -0,0 +1,24 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260414100000_AddTriggerExecutionDeadLetterRetryState")]
++public partial class AddTriggerExecutionDeadLetterRetryState : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var dateTimeType = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL"
++            ? "timestamp with time zone"
++            : "datetime2";
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "next_retry_at",
++            table: "trigger_execution_attempts",
++            type: dateTimeType,
++            nullable: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder) =>
++        migrationBuilder.DropColumn(name: "next_retry_at", table: "trigger_execution_attempts");
++}
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index f98ad11..22f9463 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -63,6 +63,15 @@
+     "BatchSize": 50,
+     "LockKey": "workflow-scheduler"
+   },
++  "TriggerWorker": {
++    "Enabled": true,
++    "PollingIntervalSeconds": 30,
++    "BatchSize": 50,
++    "MaxRetryAttempts": 3,
++    "RetryBackoffSeconds": 10,
++    "LockKey": "trigger-evaluation-worker",
++    "LockTtlSeconds": 120
++  },
+   "WorkflowProgression": {
+     "Enabled": true,
+     "PollIntervalSeconds": 10,
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 296e204..8fa235c 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -62,6 +62,15 @@
+     "BatchSize": 50,
+     "LockKey": "workflow-scheduler"
+   },
++  "TriggerWorker": {
++    "Enabled": true,
++    "PollingIntervalSeconds": 10,
++    "BatchSize": 50,
++    "MaxRetryAttempts": 3,
++    "RetryBackoffSeconds": 10,
++    "LockKey": "trigger-evaluation-worker",
++    "LockTtlSeconds": 120
++  },
+   "RedisExecutionCoordination": {
+     "KeyPrefix": "vc",
+     "DefaultLockLeaseSeconds": 120,
+diff --git a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+index ad7a2fd..78e2f57 100644
+--- a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+@@ -121,18 +121,23 @@ public sealed class TriggerExecutionServiceTests
+         var failedAttempt = await dbContext.TriggerExecutionAttempts
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey);
+-        Assert.Equal(TriggerExecutionAttemptStatus.Failed, failedAttempt.Status);
++        Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled, failedAttempt.Status);
+         Assert.Equal("Transient orchestration outage.", failedAttempt.FailureDetails);
++        Assert.NotNull(failedAttempt.NextRetryUtc);
+ 
+         var failedAudit = await dbContext.AuditEvents
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptFailed);
+         Assert.Equal(companyId, failedAudit.CompanyId);
+         Assert.Equal(AuditEventOutcomes.Failed, failedAudit.Outcome);
+-        Assert.Equal(TriggerExecutionAttemptStatus.Failed.ToStorageValue(), failedAudit.Metadata["executionStatus"]);
++        Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled.ToStorageValue(), failedAudit.Metadata["executionStatus"]);
+         Assert.Equal("Transient orchestration outage.", failedAudit.Metadata["failureDetails"]);
+ 
+-        var retryOutcome = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
++        var retryDeferred = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
++        Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled, retryDeferred);
++        Assert.Equal(1, dispatcher.DispatchCount);
++
++        failedAttempt.MarkRetried(failedAttempt.RetryAttemptCount + 1);
++        await dbContext.SaveChangesAsync();
++        var retryOutcome = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
+ 
+         Assert.Equal(TriggerExecutionAttemptStatus.Dispatched, retryOutcome);
+         Assert.Equal(2, dispatcher.DispatchCount);
+@@ -153,6 +158,39 @@ public sealed class TriggerExecutionServiceTests
+             .AnyAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptDispatched));
+     }
+ 
++    [Fact]
++    public async Task Transient_failure_after_retry_exhaustion_dead_letters_attempt_and_records_audit()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var dispatcher = new CountingDispatcher(alwaysFail: true);
++        var service = CreateService(
++            dbContext,
++            new StubPolicyChecker(TriggerExecutionPolicyDecision.Allow()),
++            dispatcher);
++        var workItem = CreateWorkItem(companyId, agentId);
++
++        var outcome = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 1, CancellationToken.None);
++
++        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered, outcome);
++        Assert.Equal(1, dispatcher.DispatchCount);
++
++        var attempt = await dbContext.TriggerExecutionAttempts
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey);
++        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered, attempt.Status);
++        Assert.Equal("Transient orchestration outage.", attempt.FailureDetails);
++        Assert.Null(attempt.NextRetryUtc);
++
++        var audit = await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptDeadLettered);
++        Assert.Equal(AuditEventOutcomes.Failed, audit.Outcome);
++        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered.ToStorageValue(), audit.Metadata["executionStatus"]);
++        Assert.Equal("true", audit.Metadata["deadLettered"]);
++    }
++
+     private static TriggerExecutionService CreateService(
+         VirtualCompanyDbContext dbContext,
+         ITriggerExecutionPolicyChecker policyChecker,
+@@ -237,11 +275,12 @@ public sealed class TriggerExecutionServiceTests
+     {
+         private readonly bool _failFirstDispatch;
++        private readonly bool _alwaysFail;
+ 
+-        public CountingDispatcher(bool failFirstDispatch = false)
++        public CountingDispatcher(bool failFirstDispatch = false, bool alwaysFail = false)
+         {
+             _failFirstDispatch = failFirstDispatch;
++            _alwaysFail = alwaysFail;
+         }
+ 
+         public int DispatchCount { get; private set; }
+@@ -251,7 +290,7 @@ public sealed class TriggerExecutionServiceTests
+             CancellationToken cancellationToken)
+         {
+             DispatchCount++;
+-            if (_failFirstDispatch && DispatchCount == 1)
++            if (_alwaysFail || _failFirstDispatch && DispatchCount == 1)
+             {
+                 throw new InvalidOperationException("Transient orchestration outage.");
+             }
+END_OF_PATCH

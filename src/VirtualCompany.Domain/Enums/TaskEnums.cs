@@ -150,3 +150,9 @@ public static class WorkTaskPriorityValues
             ? $"Task priority is required. Allowed values: {string.Join(", ", AllowedValues)}."
             : $"Unsupported task priority value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
 }
+
+public static class WorkTaskSourceTypes
+{
+    public const string User = "user";
+    public const string Agent = "agent";
+}

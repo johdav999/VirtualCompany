@@ -11,6 +11,9 @@ public sealed class WorkTask : ICompanyOwnedEntity
     private const int ActorTypeMaxLength = 64;
     private const int RationaleSummaryMaxLength = 2000;
     private const int CorrelationIdMaxLength = 128;
+    private const int SourceTypeMaxLength = 64;
+    private const int TriggerSourceMaxLength = 128;
+    private const int TriggerEventIdMaxLength = 200;
 
     private WorkTask()
     {
@@ -32,7 +35,12 @@ public sealed class WorkTask : ICompanyOwnedEntity
         IDictionary<string, JsonNode?>? outputPayload = null,
         string? rationaleSummary = null,
         decimal? confidenceScore = null,
-        string? correlationId = null)
+        string? correlationId = null,
+        string? sourceType = null,
+        Guid? originatingAgentId = null,
+        string? triggerSource = null,
+        string? creationReason = null,
+        string? triggerEventId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -59,6 +67,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
             throw new ArgumentException("WorkflowInstanceId cannot be empty.", nameof(workflowInstanceId));
         }
 
+        if (originatingAgentId == Guid.Empty)
+        {
+            throw new ArgumentException("OriginatingAgentId cannot be empty.", nameof(originatingAgentId));
+        }
+
         if (confidenceScore is < 0 or > 1)
         {
             throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
@@ -83,6 +96,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
         ConfidenceScore = confidenceScore;
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
         WorkflowInstanceId = workflowInstanceId;
+        SourceType = NormalizeRequired(sourceType ?? WorkTaskSourceTypes.User, nameof(sourceType), SourceTypeMaxLength);
+        OriginatingAgentId = originatingAgentId;
+        TriggerSource = NormalizeOptional(triggerSource, nameof(triggerSource), TriggerSourceMaxLength);
+        CreationReason = NormalizeOptional(creationReason, nameof(creationReason), RationaleSummaryMaxLength);
+        TriggerEventId = NormalizeOptional(triggerEventId, nameof(triggerEventId), TriggerEventIdMaxLength);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
     }
@@ -106,6 +124,12 @@ public sealed class WorkTask : ICompanyOwnedEntity
     public decimal? ConfidenceScore { get; private set; }
     public string? CorrelationId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
+    public string SourceType { get; private set; } = WorkTaskSourceTypes.User;
+    public Guid? OriginatingAgentId { get; private set; }
+    public string? TriggerSource { get; private set; }
+    public string? CreationReason { get; private set; }
+    public string? TriggerEventId { get; private set; }
+    public int SourceLifecycleVersion { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? CompletedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
@@ -172,11 +196,19 @@ public sealed class WorkTask : ICompanyOwnedEntity
             throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
         }
 
+        var wasCompleted = Status == WorkTaskStatus.Completed;
+        var isReopened = status != WorkTaskStatus.Completed;
+
         Status = status;
         OutputPayload = CloneNodes(outputPayload);
         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
         ConfidenceScore = confidenceScore;
         CompletedUtc = status == WorkTaskStatus.Completed ? DateTime.UtcNow : null;
+        if (wasCompleted && isReopened)
+        {
+            SourceLifecycleVersion++;
+        }
+
         UpdatedUtc = DateTime.UtcNow;
     }
 

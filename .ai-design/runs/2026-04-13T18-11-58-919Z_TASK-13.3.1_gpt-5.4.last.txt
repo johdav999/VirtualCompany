@@ -1,0 +1,655 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 6f1d67a..a21a7b4 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -288,13 +288,48 @@ public sealed class AgentApprovalRequirementInput
+ 
+ public sealed class AgentTriggerConditionInput
+ {
++    [JsonPropertyName("event")]
+     public string? Event { get; set; }
++
++    [JsonPropertyName("type")]
+     public string? Type { get; set; }
++
++    [JsonPropertyName("source")]
+     public string? Source { get; set; }
+ 
++    [JsonPropertyName("condition")]
++    public ConditionExpressionInput? Condition { get; set; }
++
+     [JsonExtensionData]
+     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
+ }
+ 
++public sealed class ConditionExpressionInput
++{
++    public ConditionTargetReferenceInput? Target { get; set; }
++    public string? Operator { get; set; }
++    public string? ValueType { get; set; }
++    public JsonElement? ComparisonValue { get; set; }
++    public string? RepeatFiringMode { get; set; }
++}
++
++public sealed class ConditionTargetReferenceInput
++{
++    public string? SourceType { get; set; }
++    public string? MetricName { get; set; }
++    public string? EntityType { get; set; }
++    public string? FieldPath { get; set; }
++}
++
++public sealed record ConditionEvaluationSnapshotDto(
++    DateTime EvaluatedUtc,
++    Dictionary<string, JsonNode?> InputValues,
++    bool Outcome,
++    bool? PreviousOutcome,
++    bool IsFalseToTrueTransition);
++
+ public sealed class AgentWorkingHoursInput
+ {
+     public string? Timezone { get; set; }
+diff --git a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+index 4e4a6e1..a17bbde 100644
+--- a/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
++++ b/src/VirtualCompany.Application/Agents/UpdateAgentOperatingProfileCommandValidator.cs
+@@ -37,6 +37,13 @@ public static class UpdateAgentOperatingProfileCommandValidator
+         "write"
+     };
+ 
++    private static readonly HashSet<string> SupportedConditionSourceTypes = new(StringComparer.OrdinalIgnoreCase) { "metric", "entityField" };
++    private static readonly HashSet<string> SupportedConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan", "equals", "changedSinceLastEvaluation" };
++    private static readonly HashSet<string> ThresholdConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan", "equals" };
++    private static readonly HashSet<string> NumericConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan" };
++    private static readonly HashSet<string> SupportedConditionValueTypes = new(StringComparer.OrdinalIgnoreCase) { "number", "string", "boolean", "datetime" };
++    private static readonly HashSet<string> SupportedRepeatFiringModes = new(StringComparer.OrdinalIgnoreCase) { "falseToTrueTransition", "everyEvaluationWhileTrue" };
++
+     public static void ValidateAndThrow(UpdateAgentOperatingProfileCommand command)
+     {
+         ArgumentNullException.ThrowIfNull(command);
+@@ -383,6 +390,7 @@ public static class UpdateAgentOperatingProfileCommandValidator
+ 
+             var hasEvent = TryGetNonEmptyString(condition["event"], out var eventName);
+             var hasType = TryGetNonEmptyString(condition["type"], out var typeName);
++            var isConditionTrigger = hasType && string.Equals(typeName, "condition", StringComparison.OrdinalIgnoreCase);
+ 
+             if (!hasEvent && !hasType)
+             {
+@@ -400,9 +408,199 @@ public static class UpdateAgentOperatingProfileCommandValidator
+             {
+                 AddError(errors, $"{conditionPath}.type", $"Trigger types must be {MaxTextValueLength} characters or fewer.");
+             }
++
++            if (isConditionTrigger || condition.ContainsKey("condition"))
++            {
++                ValidateConditionExpression(errors, $"{conditionPath}.condition", condition["condition"]);
++            }
+         }
+     }
+ 
++    private static void ValidateConditionExpression(
++        IDictionary<string, List<string>> errors,
++        string path,
++        JsonNode? node)
++    {
++        if (node is not JsonObject condition)
++        {
++            AddError(errors, path, "Condition expression is required.");
++            return;
++        }
++
++        ValidateConditionTarget(errors, $"{path}.target", condition["target"]);
++
++        var hasOperator = TryGetNonEmptyString(condition["operator"], out var operatorName);
++        if (!hasOperator)
++        {
++            AddError(errors, $"{path}.operator", "Condition operator is required.");
++        }
++        else if (!SupportedConditionOperators.Contains(operatorName))
++        {
++            AddError(errors, $"{path}.operator", $"Condition operator '{operatorName}' is not supported.");
++        }
++
++        var hasValueType = TryGetNonEmptyString(condition["valueType"], out var valueType);
++        if (hasValueType && !SupportedConditionValueTypes.Contains(valueType))
++        {
++            AddError(errors, $"{path}.valueType", $"Condition value type '{valueType}' is not supported.");
++        }
++
++        var hasComparisonValue = condition.TryGetPropertyValue("comparisonValue", out var comparisonValue) &&
++            comparisonValue is not null;
++
++        if (!hasOperator)
++        {
++            return;
++        }
++
++        if (ThresholdConditionOperators.Contains(operatorName))
++        {
++            if (!hasComparisonValue)
++            {
++                AddError(errors, $"{path}.comparisonValue", "Comparison value is required for threshold condition operators.");
++            }
++
++            if (!hasValueType)
++            {
++                AddError(errors, $"{path}.valueType", "Condition value type is required for threshold condition operators.");
++            }
++        }
++
++        if (NumericConditionOperators.Contains(operatorName))
++        {
++            if (hasValueType && !string.Equals(valueType, "number", StringComparison.OrdinalIgnoreCase))
++            {
++                AddError(errors, $"{path}.valueType", "Greater-than and less-than conditions require number value type.");
++            }
++        }
++
++        if (string.Equals(operatorName, "changedSinceLastEvaluation", StringComparison.OrdinalIgnoreCase) &&
++            hasComparisonValue)
++        {
++            AddError(errors, $"{path}.comparisonValue", "Comparison value must be omitted for changed-since-last-evaluation conditions.");
++        }
++
++        if (hasComparisonValue && hasValueType)
++        {
++            ValidateConditionComparisonValue(errors, $"{path}.comparisonValue", comparisonValue, valueType);
++        }
++
++        if (condition.TryGetPropertyValue("repeatFiringMode", out var repeatModeNode) &&
++            repeatModeNode is not null)
++        {
++            if (!TryGetNonEmptyString(repeatModeNode, out var repeatMode))
++            {
++                AddError(errors, $"{path}.repeatFiringMode", "Repeat firing mode must be a non-empty string.");
++            }
++            else if (!SupportedRepeatFiringModes.Contains(repeatMode))
++            {
++                AddError(errors, $"{path}.repeatFiringMode", $"Repeat firing mode '{repeatMode}' is not supported.");
++            }
++        }
++    }
++
++    private static void ValidateConditionTarget(
++        IDictionary<string, List<string>> errors,
++        string path,
++        JsonNode? node)
++    {
++        if (node is not JsonObject target)
++        {
++            AddError(errors, path, "Condition target is required.");
++            return;
++        }
++
++        if (!TryGetNonEmptyString(target["sourceType"], out var sourceType))
++        {
++            AddError(errors, $"{path}.sourceType", "Condition target source type is required.");
++            return;
++        }
++
++        if (!SupportedConditionSourceTypes.Contains(sourceType))
++        {
++            AddError(errors, $"{path}.sourceType", $"Condition target source type '{sourceType}' is not supported.");
++            return;
++        }
++
++        var hasMetricName = TryGetNonEmptyString(target["metricName"], out var metricName);
++        var hasEntityType = TryGetNonEmptyString(target["entityType"], out var entityType);
++        var hasFieldPath = TryGetNonEmptyString(target["fieldPath"], out var fieldPath);
++
++        if (string.Equals(sourceType, "metric", StringComparison.OrdinalIgnoreCase))
++        {
++            if (!hasMetricName)
++            {
++                AddError(errors, $"{path}.metricName", "Metric name is required for metric condition targets.");
++            }
++            else if (metricName.Length > MaxIdentifierLength || !IsValidIdentifier(metricName))
++            {
++                AddError(errors, $"{path}.metricName", "Metric name must be a valid identifier.");
++            }
++
++            if (hasEntityType)
++            {
++                AddError(errors, $"{path}.entityType", "Entity type must be omitted for metric condition targets.");
++            }
++
++            if (hasFieldPath)
++            {
++                AddError(errors, $"{path}.fieldPath", "Field path must be omitted for metric condition targets.");
++            }
++
++            return;
++        }
++
++        if (!hasEntityType)
++        {
++            AddError(errors, $"{path}.entityType", "Entity type is required for entity field condition targets.");
++        }
++        else if (entityType.Length > MaxIdentifierLength || !IsValidIdentifier(entityType))
++        {
++            AddError(errors, $"{path}.entityType", "Entity type must be a valid identifier.");
++        }
++
++        if (!hasFieldPath)
++        {
++            AddError(errors, $"{path}.fieldPath", "Field path is required for entity field condition targets.");
++        }
++        else if (fieldPath.Length > MaxIdentifierLength || !IsValidIdentifier(fieldPath))
++        {
++            AddError(errors, $"{path}.fieldPath", "Field path must be a valid identifier.");
++        }
++
++        if (hasMetricName)
++        {
++            AddError(errors, $"{path}.metricName", "Metric name must be omitted for entity field condition targets.");
++        }
++    }
++
++    private static void ValidateConditionComparisonValue(
++        IDictionary<string, List<string>> errors,
++        string path,
++        JsonNode? comparisonValue,
++        string valueType)
++    {
++        if (string.Equals(valueType, "number", StringComparison.OrdinalIgnoreCase))
++        {
++            if (!TryGetNumber(comparisonValue, out _) &&
++                (!TryGetNonEmptyString(comparisonValue, out var numberText) ||
++                 !decimal.TryParse(numberText, NumberStyles.Number, CultureInfo.InvariantCulture, out _)))
++            {
++                AddError(errors, path, "Comparison value must be numeric.");
++            }
++
++            return;
++        }
++
++        if (string.Equals(valueType, "string", StringComparison.OrdinalIgnoreCase))
++        {
++            if (!TryGetNonEmptyString(comparisonValue, out _))
++            {
++                AddError(errors, path, "Comparison value must be a non-empty string.");
++            }
++
++            return;
++        }
++
++        if (string.Equals(valueType, "boolean", StringComparison.OrdinalIgnoreCase))
++        {
++            if (comparisonValue is not JsonValue booleanValue ||
++                (!booleanValue.TryGetValue<bool>(out _) &&
++                 (!booleanValue.TryGetValue<string>(out var booleanText) || !bool.TryParse(booleanText, out _))))
++            {
++                AddError(errors, path, "Comparison value must be boolean.");
++            }
++
++            return;
++        }
++
++        if (string.Equals(valueType, "datetime", StringComparison.OrdinalIgnoreCase) &&
++            (!TryGetNonEmptyString(comparisonValue, out var dateTimeText) ||
++             !DateTimeOffset.TryParse(dateTimeText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _)))
++        {
++            AddError(errors, path, "Comparison value must be a valid datetime.");
++        }
++    }
++
+     private static void ValidateWorkingHours(
+         IDictionary<string, List<string>> errors,
+         string key,
+diff --git a/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs b/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs
+new file mode 100644
+index 0000000..1242c03
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ConditionTriggerModels.cs
+@@ -0,0 +1,31 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed record ConditionExpression(
++    ConditionTargetReference Target,
++    ConditionOperator Operator,
++    ConditionValueType? ValueType,
++    JsonNode? ComparisonValue,
++    RepeatFiringMode RepeatFiringMode = RepeatFiringMode.FalseToTrueTransition);
++
++public sealed record ConditionTargetReference(
++    ConditionOperandSourceType SourceType,
++    string? MetricName,
++    string? EntityType,
++    string? FieldPath);
++
++public sealed record ConditionEvaluationSnapshot(
++    DateTime EvaluatedUtc,
++    Dictionary<string, JsonNode?> InputValues,
++    bool Outcome,
++    bool? PreviousOutcome,
++    bool IsFalseToTrueTransition)
++{
++    public bool ShouldFire(RepeatFiringMode repeatFiringMode) =>
++        repeatFiringMode is RepeatFiringMode.EveryEvaluationWhileTrue
++            ? Outcome
++            : IsFalseToTrueTransition;
++}
+diff --git a/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs b/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs
+new file mode 100644
+index 0000000..31d7cce
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ConditionTriggerEnums.cs
+@@ -0,0 +1,44 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ConditionOperandSourceType
++{
++    Metric = 1,
++    EntityField = 2
++}
++
++public enum ConditionOperator
++{
++    GreaterThan = 1,
++    LessThan = 2,
++    Equals = 3,
++    ChangedSinceLastEvaluation = 4
++}
++
++public enum ConditionValueType
++{
++    Number = 1,
++    String = 2,
++    Boolean = 3,
++    DateTime = 4
++}
++
++public enum RepeatFiringMode
++{
++    FalseToTrueTransition = 1,
++    EveryEvaluationWhileTrue = 2
++}
++
++public static class ConditionTriggerStorageValues
++{
++    public const string MetricSourceType = "metric";
++    public const string EntityFieldSourceType = "entityField";
++
++    public const string GreaterThanOperator = "greaterThan";
++    public const string LessThanOperator = "lessThan";
++    public const string EqualsOperator = "equals";
++    public const string ChangedSinceLastEvaluationOperator = "changedSinceLastEvaluation";
++
++    public const string NumberValueType = "number";
++    public const string StringValueType = "string";
++    public const string BooleanValueType = "boolean";
++    public const string DateTimeValueType = "datetime";
++
++    public const string FalseToTrueTransitionRepeatMode = "falseToTrueTransition";
++    public const string EveryEvaluationWhileTrueRepeatMode = "everyEvaluationWhileTrue";
++}
+diff --git a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+index 327f7a2..ffbcb14 100644
+--- a/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/UpdateAgentOperatingProfileCommandValidatorTests.cs
+@@ -116,6 +116,171 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+     }
+ 
++    [Fact]
++    public void ValidateAndThrow_allows_valid_metric_threshold_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "task.backlog.count"),
++                "greaterThan",
++                "number",
++                "10")));
++
++        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_allows_valid_entity_field_equals_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("entityField", entityType: "workTask", fieldPath: "status"),
++                "equals",
++                "string",
++                "\"blocked\"")));
++
++        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_allows_valid_changed_since_last_evaluation_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "agent.health.status"),
++                "changedSinceLastEvaluation")));
++
++        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_missing_condition_target()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                null,
++                "greaterThan",
++                "number",
++                "10")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.target", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_missing_comparison_value_for_threshold_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "task.backlog.count"),
++                "greaterThan",
++                "number")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_comparison_value_for_changed_since_last_evaluation_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "agent.health.status"),
++                "changedSinceLastEvaluation",
++                comparisonValueJson: "\"green\"")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_non_numeric_value_type_for_greater_than_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "task.backlog.count"),
++                "greaterThan",
++                "string",
++                "\"10\"")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.valueType", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_blank_metric_name_for_metric_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: " "),
++                "equals",
++                "number",
++                "1")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.target.metricName", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_blank_field_path_for_entity_field_condition()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("entityField", entityType: "workTask", fieldPath: " "),
++                "equals",
++                "string",
++                "\"blocked\"")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.target.fieldPath", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_malformed_literal_value_for_declared_type()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "task.backlog.count"),
++                "greaterThan",
++                "number",
++                "\"many\"")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_rejects_invalid_repeat_firing_mode()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(
++                Target("metric", metricName: "task.backlog.count"),
++                "greaterThan",
++                "number",
++                "10",
++                "always")));
++
++        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
++
++        Assert.Contains("TriggerLogic.conditions[0].condition.repeatFiringMode", exception.Errors.Keys);
++    }
++
++    [Fact]
++    public void ValidateAndThrow_defaults_condition_to_false_to_true_transition_when_repeat_mode_is_omitted()
++    {
++        var command = ValidCommandWithTriggerLogic(TriggerLogic(
++            true,
++            ConditionTrigger(Target("metric", metricName: "task.backlog.count"), "lessThan", "number", "5")));
++
++        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
++    }
++
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
+     {
+         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+@@ -183,6 +348,43 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+             }).ToList()
+         };
+ 
++    private static AgentTriggerLogicInput TriggerLogic(bool? enabled, params AgentTriggerConditionInput[] conditions) =>
++        new()
++        {
++            Enabled = enabled,
++            Conditions = conditions.ToList()
++        };
++
++    private static AgentTriggerConditionInput ConditionTrigger(
++        ConditionTargetReferenceInput? target,
++        string operatorName,
++        string? valueType = null,
++        string? comparisonValueJson = null,
++        string? repeatFiringMode = null) =>
++        new()
++        {
++            Type = "condition",
++            Condition = new ConditionExpressionInput
++            {
++                Target = target,
++                Operator = operatorName,
++                ValueType = valueType,
++                ComparisonValue = comparisonValueJson is null ? null : JsonValueElement(comparisonValueJson),
++                RepeatFiringMode = repeatFiringMode
++            }
++        };
++
++    private static ConditionTargetReferenceInput Target(
++        string sourceType,
++        string? metricName = null,
++        string? entityType = null,
++        string? fieldPath = null) =>
++        new()
++        {
++            SourceType = sourceType,
++            MetricName = metricName,
++            EntityType = entityType,
++            FieldPath = fieldPath
++        };
++
+     private static Dictionary<string, JsonNode?> WorkingHours(string? timezone, params JsonObject[] windows) =>
+         Payload(
+             ("timezone", timezone is null ? null : JsonValue.Create(timezone)),
+@@ -196,4 +398,34 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
+         payload.TryGetValue(key, out var node) && node is JsonArray array
+             ? array.Select(item => item?.GetValue<string>() ?? string.Empty).ToList()
+             : [];
++
++    private static JsonElement JsonValueElement(string json)
++    {
++        using var document = JsonDocument.Parse(json);
++        return document.RootElement.Clone();
++    }
++
++    private static UpdateAgentOperatingProfileCommand ValidCommandWithTriggerLogic(AgentTriggerLogicInput triggerLogic) =>
++        new(
++            "restricted",
++            "Finance gatekeeper for exception approvals.",
++            Objectives(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
++            Kpis(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
++            ToolPermissions(("allowed", new JsonArray(JsonValue.Create("erp")))),
++            DataScopes(("read", new JsonArray(JsonValue.Create("finance")))),
++            Thresholds(("approval", new JsonObject { ["expenseUsd"] = 2500 })),
++            Escalation(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create("owner"))),
++            triggerLogic,
++            WorkingHours(
++                "UTC",
++                new JsonObject
++                {
++                    ["day"] = "monday",
++                    ["start"] = "08:00",
++                    ["end"] = "16:00"
++                }),
++            "level_2");
+ }
+END_OF_PATCH

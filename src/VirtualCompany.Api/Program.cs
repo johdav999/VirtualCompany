@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Data.Common;
+using System.ComponentModel;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
 using VirtualCompany.Infrastructure;
@@ -79,37 +81,13 @@ using (var scope = app.Services.CreateScope())
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseInitialization");
     var templateSeeder = scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>();
     var workflowDefinitionSeeder = scope.ServiceProvider.GetRequiredService<CompanyWorkflowDefinitionSeeder>();
-    if (dbContext.Database.IsRelational())
-    {
-        if (applyMigrationsOnStartup)
-        {
-            await dbContext.Database.MigrateAsync();
-            await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
-            await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
-            await EnsureSqlServerDirectChatSchemaAsync(dbContext);
-            await EnsureSqlServerAuditEventSchemaAsync(dbContext);
-        }
-        else
-        {
-            var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
-            if (pendingMigrations.Any())
-            {
-                var pendingList = string.Join(", ", pendingMigrations);
-                logger.LogCritical(
-                    "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
-                    pendingList);
-                throw new InvalidOperationException(
-                    $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
-            }
-        }
-    }
-    else if (app.Environment.IsDevelopment())
-    {
-        await dbContext.Database.EnsureCreatedAsync();
-    }
-
-    await templateSeeder.SeedAsync();
-    await workflowDefinitionSeeder.SeedAsync();
+    await InitializeDatabaseAsync(
+        app,
+        dbContext,
+        logger,
+        templateSeeder,
+        workflowDefinitionSeeder,
+        applyMigrationsOnStartup);
 }
 
 app.MapVirtualCompanyHealthEndpoints();
@@ -815,6 +793,125 @@ static async Task<bool> SqlServerColumnExistsAsync(DbConnection connection, stri
 
     var result = await command.ExecuteScalarAsync();
     return result is not DBNull && result is not null;
+}
+
+static async Task InitializeDatabaseAsync(
+    WebApplication app,
+    VirtualCompanyDbContext dbContext,
+    ILogger logger,
+    CompanySetupTemplateSeeder templateSeeder,
+    CompanyWorkflowDefinitionSeeder workflowDefinitionSeeder,
+    bool applyMigrationsOnStartup)
+{
+    if (dbContext.Database.IsRelational())
+    {
+        await WaitForSqlServerReadyAsync(dbContext, logger, app.Lifetime.ApplicationStopping);
+
+        if (applyMigrationsOnStartup)
+        {
+            await dbContext.Database.MigrateAsync(app.Lifetime.ApplicationStopping);
+            await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
+            await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
+            await EnsureSqlServerDirectChatSchemaAsync(dbContext);
+            await EnsureSqlServerAuditEventSchemaAsync(dbContext);
+        }
+        else
+        {
+            var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync(app.Lifetime.ApplicationStopping);
+            if (pendingMigrations.Any())
+            {
+                var pendingList = string.Join(", ", pendingMigrations);
+                logger.LogCritical(
+                    "Database schema is not up to date. Pending migrations: {PendingMigrations}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.",
+                    pendingList);
+                throw new InvalidOperationException(
+                    $"Database schema is not up to date. Pending migrations: {pendingList}. Enable DatabaseInitialization:ApplyMigrationsOnStartup or run 'dotnet ef database update' before starting the API.");
+            }
+        }
+    }
+    else if (app.Environment.IsDevelopment())
+    {
+        await dbContext.Database.EnsureCreatedAsync(app.Lifetime.ApplicationStopping);
+    }
+
+    await templateSeeder.SeedAsync();
+    await workflowDefinitionSeeder.SeedAsync();
+}
+
+static async Task WaitForSqlServerReadyAsync(
+    VirtualCompanyDbContext dbContext,
+    ILogger logger,
+    CancellationToken cancellationToken)
+{
+    var providerName = dbContext.Database.ProviderName;
+    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    var connectionString = dbContext.Database.GetConnectionString();
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException("The VirtualCompanyDb connection string is not configured.");
+    }
+
+    var builder = new SqlConnectionStringBuilder(connectionString)
+    {
+        ConnectRetryCount = 0
+    };
+
+    var maxAttempts = 8;
+    var delay = TimeSpan.FromSeconds(2);
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            await using var connection = new SqlConnection(builder.ConnectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1";
+            await command.ExecuteScalarAsync(cancellationToken);
+            return;
+        }
+        catch (Exception ex) when (IsTransientSqlStartupException(ex) && attempt < maxAttempts)
+        {
+            logger.LogWarning(
+                ex,
+                "SQL Server was not ready during application startup. Retrying database initialization in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).",
+                delay.TotalSeconds,
+                attempt,
+                maxAttempts);
+
+            await Task.Delay(delay, cancellationToken);
+        }
+    }
+
+    throw new InvalidOperationException("SQL Server did not become ready before database initialization completed.");
+}
+
+static bool IsTransientSqlStartupException(Exception exception)
+{
+    if (exception is SqlException sqlException)
+    {
+        foreach (SqlError error in sqlException.Errors)
+        {
+            if (error.Number is 10054 or 233 or 4060 or 18456 or 258 or 53 or -2)
+            {
+                return true;
+            }
+        }
+    }
+
+    if (exception is Win32Exception win32Exception && win32Exception.NativeErrorCode == 10054)
+    {
+        return true;
+    }
+
+    return exception.InnerException is not null && IsTransientSqlStartupException(exception.InnerException);
 }
 
 public partial class Program;

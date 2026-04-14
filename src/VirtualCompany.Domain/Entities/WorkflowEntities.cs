@@ -167,6 +167,7 @@ public sealed class WorkflowTrigger : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public WorkflowDefinition Definition { get; private set; } = null!;
+    public ICollection<ProcessedWorkflowTriggerEvent> ProcessedEvents { get; } = new List<ProcessedWorkflowTriggerEvent>();
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
@@ -297,6 +298,74 @@ public sealed class WorkflowInstance : ICompanyOwnedEntity
         nodes is null || nodes.Count == 0
             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class ProcessedWorkflowTriggerEvent : ICompanyOwnedEntity
+{
+    private const int EventIdMaxLength = 200;
+
+    private ProcessedWorkflowTriggerEvent()
+    {
+    }
+
+    public ProcessedWorkflowTriggerEvent(
+        Guid id,
+        Guid companyId,
+        Guid workflowTriggerId,
+        string eventId,
+        DateTime processedUtc,
+        Guid? createdWorkflowInstanceId = null)
+    {
+        if (companyId == Guid.Empty)
+        {
+            throw new ArgumentException("CompanyId is required.", nameof(companyId));
+        }
+
+        if (workflowTriggerId == Guid.Empty)
+        {
+            throw new ArgumentException("WorkflowTriggerId is required.", nameof(workflowTriggerId));
+        }
+
+        if (createdWorkflowInstanceId == Guid.Empty)
+        {
+            throw new ArgumentException("CreatedWorkflowInstanceId cannot be empty.", nameof(createdWorkflowInstanceId));
+        }
+
+        Id = id == Guid.Empty ? Guid.NewGuid() : id;
+        CompanyId = companyId;
+        WorkflowTriggerId = workflowTriggerId;
+        EventId = NormalizeRequired(eventId, nameof(eventId), EventIdMaxLength);
+        ProcessedUtc = NormalizeUtc(processedUtc, nameof(processedUtc));
+        CreatedWorkflowInstanceId = createdWorkflowInstanceId;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid CompanyId { get; private set; }
+    public Guid WorkflowTriggerId { get; private set; }
+    public string EventId { get; private set; } = null!;
+    public Guid? CreatedWorkflowInstanceId { get; private set; }
+    public DateTime ProcessedUtc { get; private set; }
+    public Company Company { get; private set; } = null!;
+    public WorkflowTrigger WorkflowTrigger { get; private set; } = null!;
+    public WorkflowInstance? CreatedWorkflowInstance { get; private set; }
+
+    public void MarkExecutionCreated(Guid workflowInstanceId)
+    {
+        if (workflowInstanceId == Guid.Empty)
+        {
+            throw new ArgumentException("WorkflowInstanceId is required.", nameof(workflowInstanceId));
+        }
+
+        CreatedWorkflowInstanceId = workflowInstanceId;
+    }
+
+    private static string NormalizeRequired(string value, string name, int maxLength) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException($"{name} is required.", name)
+            : value.Trim().Length > maxLength ? throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.") : value.Trim();
+
+    private static DateTime NormalizeUtc(DateTime value, string name) =>
+        value == default ? throw new ArgumentException($"{name} is required.", name) : value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
 }
 
 public sealed class WorkflowException : ICompanyOwnedEntity

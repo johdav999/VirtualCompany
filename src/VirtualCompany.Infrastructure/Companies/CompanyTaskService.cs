@@ -1,12 +1,15 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Tasks;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -25,15 +28,18 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAgentAssignmentGuard _agentAssignmentGuard;
     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
 
     public CompanyTaskService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAgentAssignmentGuard agentAssignmentGuard,
-        IExecutiveCockpitDashboardCache dashboardCache)
+        IExecutiveCockpitDashboardCache dashboardCache,
+        ICompanyOutboxEnqueuer outboxEnqueuer)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
+        _outboxEnqueuer = outboxEnqueuer;
         _agentAssignmentGuard = agentAssignmentGuard;
         _dashboardCache = dashboardCache;
     }
@@ -96,6 +102,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
 
         _dbContext.WorkTasks.Add(task);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        EnqueueTaskPlatformEvent(task, SupportedPlatformEventTypeRegistry.TaskCreated, task.CreatedUtc, task.CorrelationId);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
@@ -151,6 +158,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+        EnqueueTaskPlatformEvent(task, SupportedPlatformEventTypeRegistry.TaskUpdated, task.UpdatedUtc, task.CorrelationId);
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
     }
 
@@ -326,6 +334,46 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         }
     }
 
+    private void EnqueueTaskPlatformEvent(
+        WorkTask task,
+        string eventType,
+        DateTime occurredAtUtc,
+        string? correlationId)
+    {
+        var eventId = eventType == SupportedPlatformEventTypeRegistry.TaskCreated
+            ? $"{eventType}:{task.Id:N}"
+            : $"{eventType}:{task.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
+        var effectiveCorrelationId = string.IsNullOrWhiteSpace(correlationId)
+            ? eventId
+            : correlationId.Trim();
+
+        _outboxEnqueuer.Enqueue(
+            task.CompanyId,
+            eventType,
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                occurredAtUtc.Kind == DateTimeKind.Utc ? occurredAtUtc : occurredAtUtc.ToUniversalTime(),
+                task.CompanyId,
+                effectiveCorrelationId,
+                "work_task",
+                task.Id.ToString("N"),
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
+                    ["title"] = JsonValue.Create(task.Title),
+                    ["type"] = JsonValue.Create(task.Type),
+                    ["status"] = JsonValue.Create(task.Status.ToStorageValue()),
+                    ["priority"] = JsonValue.Create(task.Priority.ToStorageValue()),
+                    ["assignedAgentId"] = task.AssignedAgentId.HasValue ? JsonValue.Create(task.AssignedAgentId.Value.ToString("N")) : null,
+                    ["parentTaskId"] = task.ParentTaskId.HasValue ? JsonValue.Create(task.ParentTaskId.Value.ToString("N")) : null,
+                    ["workflowInstanceId"] = task.WorkflowInstanceId.HasValue ? JsonValue.Create(task.WorkflowInstanceId.Value.ToString("N")) : null
+                }),
+            effectiveCorrelationId,
+            idempotencyKey: $"platform-event:{task.CompanyId:N}:{eventId}",
+            causationId: task.Id.ToString("N"));
+    }
+
     private static WorkTaskPriority ResolvePriority(string? priority) =>
         string.IsNullOrWhiteSpace(priority)
             ? WorkTaskPriorityValues.DefaultPriority
@@ -345,6 +393,11 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             task.ParentTaskId,
             task.WorkflowInstanceId,
             task.CreatedByActorType,
+            task.SourceType,
+            task.OriginatingAgentId,
+            task.TriggerSource,
+            task.CreationReason,
+            task.TriggerEventId,
             task.CreatedByActorId,
             CloneNodes(task.InputPayload),
             CloneNodes(task.OutputPayload),

@@ -1,0 +1,1018 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs b/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs
+@@ -49,9 +49,10 @@ public sealed class AgentScheduledTrigger : ICompanyOwnedEntity
+         TimeZoneId = NormalizeRequired(timeZoneId, nameof(timeZoneId), TimeZoneIdMaxLength);
+         IsEnabled = isEnabled;
+         NextRunUtc = isEnabled ? NormalizeUtc(nextRunUtc, nameof(nextRunUtc)) : null;
+-        DisabledUtc = isEnabled ? null : DateTime.UtcNow;
+         Metadata = CloneNodes(metadata);
+         CreatedUtc = DateTime.UtcNow;
++        EnabledUtc = isEnabled ? CreatedUtc : null;
++        DisabledUtc = isEnabled ? null : CreatedUtc;
+         UpdatedUtc = CreatedUtc;
+     }
+ 
+@@ -65,6 +66,7 @@ public sealed class AgentScheduledTrigger : ICompanyOwnedEntity
+     public string TimeZoneId { get; private set; } = null!;
+     public bool IsEnabled { get; private set; }
+     public DateTime? NextRunUtc { get; private set; }
++    public DateTime? EnabledUtc { get; private set; }
+     public DateTime? LastEvaluatedUtc { get; private set; }
+     public DateTime? LastEnqueuedUtc { get; private set; }
+     public DateTime? LastRunUtc { get; private set; }
+@@ -102,6 +104,7 @@ public sealed class AgentScheduledTrigger : ICompanyOwnedEntity
+     {
+         IsEnabled = true;
+         DisabledUtc = null;
++        EnabledUtc = DateTime.UtcNow;
+         NextRunUtc = NormalizeUtc(nextRunUtc, nameof(nextRunUtc));
+         UpdatedUtc = DateTime.UtcNow;
+     }
+diff --git a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+@@ -1,3 +1,4 @@
++using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Entities;
+ 
+@@ -24,6 +25,7 @@ public sealed record AgentScheduledTriggerDto(
+     DateTime? LastEvaluatedAt,
+     DateTime? LastEnqueuedAt,
+     DateTime? LastRunAt,
++    DateTime? EnabledAt,
+     DateTime? DisabledAt,
+     Dictionary<string, JsonNode?> Metadata,
+     DateTime CreatedAt,
+@@ -38,6 +40,22 @@ public sealed record ScheduledTriggerEnqueueWindowDto(
+     string? ExecutionRequestId,
+     DateTime CreatedAt);
+ 
++public sealed record CreateAgentScheduledTriggerCommand(
++    string Name,
++    string? Code,
++    string CronExpression,
++    string TimeZoneId,
++    bool Enabled = true,
++    Dictionary<string, JsonNode?>? Metadata = null);
++
++public sealed record UpdateAgentScheduledTriggerCommand(
++    string Name,
++    string? Code,
++    string CronExpression,
++    string TimeZoneId,
++    Dictionary<string, JsonNode?>? Metadata = null);
++
++public sealed record AgentScheduledTriggerStateCommand(Dictionary<string, JsonNode?>? Metadata = null);
++
+ public interface IScheduleExpressionValidator
+ {
+     ScheduleValidationResult ValidateCronExpression(string? cronExpression);
+@@ -50,6 +68,30 @@ public interface IScheduledTriggerNextRunCalculator
+     DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc);
+ }
+ 
++public interface IAgentScheduledTriggerService
++{
++    Task<IReadOnlyList<AgentScheduledTriggerDto>> ListAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken);
++
++    Task<AgentScheduledTriggerDto> GetAsync(Guid companyId, Guid agentId, Guid triggerId, CancellationToken cancellationToken);
++
++    Task<AgentScheduledTriggerDto> CreateAsync(
++        Guid companyId,
++        Guid agentId,
++        CreateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken);
++
++    Task<AgentScheduledTriggerDto> UpdateAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        UpdateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken);
++
++    Task<AgentScheduledTriggerDto> EnableAsync(Guid companyId, Guid agentId, Guid triggerId, CancellationToken cancellationToken);
++    Task<AgentScheduledTriggerDto> DisableAsync(Guid companyId, Guid agentId, Guid triggerId, CancellationToken cancellationToken);
++    Task DeleteAsync(Guid companyId, Guid agentId, Guid triggerId, CancellationToken cancellationToken);
++}
++
+ public interface IAgentScheduledTriggerRepository
+ {
+     Task<AgentScheduledTrigger?> GetByIdAsync(
+@@ -86,10 +128,22 @@ public interface IAgentScheduledTriggerRepository
+         CancellationToken cancellationToken);
+ }
+ 
++public sealed class AgentScheduledTriggerValidationException : Exception
++{
++    public AgentScheduledTriggerValidationException(IDictionary<string, string[]> errors)
++        : base("Agent scheduled trigger validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
++
+ public static class AgentScheduledTriggerDtoMapper
+ {
+     public static AgentScheduledTriggerDto ToDto(this AgentScheduledTrigger trigger) =>
+-        new(trigger.Id, trigger.CompanyId, trigger.AgentId, trigger.Name, trigger.Code, trigger.CronExpression, trigger.TimeZoneId, trigger.IsEnabled, trigger.NextRunUtc, trigger.LastEvaluatedUtc, trigger.LastEnqueuedUtc, trigger.LastRunUtc, trigger.DisabledUtc, trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase), trigger.CreatedUtc, trigger.UpdatedUtc);
++        new(trigger.Id, trigger.CompanyId, trigger.AgentId, trigger.Name, trigger.Code, trigger.CronExpression, trigger.TimeZoneId, trigger.IsEnabled, trigger.NextRunUtc, trigger.LastEvaluatedUtc, trigger.LastEnqueuedUtc, trigger.LastRunUtc, trigger.EnabledUtc, trigger.DisabledUtc, trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase), trigger.CreatedUtc, trigger.UpdatedUtc);
+ 
+     public static ScheduledTriggerEnqueueWindowDto ToDto(this AgentScheduledTriggerEnqueueWindow window) =>
+         new(window.Id, window.CompanyId, window.ScheduledTriggerId, window.WindowStartUtc, window.WindowEndUtc, window.EnqueuedUtc, window.ExecutionRequestId, window.CreatedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+@@ -1,8 +1,10 @@
++using System.Text;
+ using Cronos;
+ using Microsoft.EntityFrameworkCore;
+ using TimeZoneConverter;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+@@ -157,3 +159,244 @@ public sealed class EfAgentScheduledTriggerRepository : IAgentScheduledTriggerRe
+                message.Contains("constraint", StringComparison.OrdinalIgnoreCase);
+     }
+ }
++
++public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
++{
++    private const int NameMaxLength = 200;
++    private const int CodeMaxLength = 100;
++    private const int CronExpressionMaxLength = 200;
++    private const int TimeZoneIdMaxLength = 100;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly IAgentScheduledTriggerRepository _repository;
++    private readonly IScheduleExpressionValidator _validator;
++    private readonly IScheduledTriggerNextRunCalculator _nextRunCalculator;
++    private readonly TimeProvider _timeProvider;
++
++    public AgentScheduledTriggerService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        IAgentScheduledTriggerRepository repository,
++        IScheduleExpressionValidator validator,
++        IScheduledTriggerNextRunCalculator nextRunCalculator,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _repository = repository;
++        _validator = validator;
++        _nextRunCalculator = nextRunCalculator;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<IReadOnlyList<AgentScheduledTriggerDto>> ListAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        await EnsureAgentExistsAsync(companyId, agentId, cancellationToken);
++
++        var triggers = await _repository.ListByAgentAsync(companyId, agentId, cancellationToken);
++        return triggers.Select(x => x.ToDto()).ToList();
++    }
++
++    public async Task<AgentScheduledTriggerDto> GetAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
++        return trigger.ToDto();
++    }
++
++    public async Task<AgentScheduledTriggerDto> CreateAsync(
++        Guid companyId,
++        Guid agentId,
++        CreateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        await EnsureAgentExistsAsync(companyId, agentId, cancellationToken);
++
++        var normalized = Validate(command);
++        await EnsureCodeIsUniqueAsync(companyId, normalized.Code, null, cancellationToken);
++        var nextRunUtc = normalized.Enabled
++            ? RequireNextRun(normalized.CronExpression, normalized.TimeZoneId, NowUtc())
++            : null;
++
++        var trigger = new AgentScheduledTrigger(
++            Guid.NewGuid(),
++            companyId,
++            agentId,
++            normalized.Name,
++            normalized.Code,
++            normalized.CronExpression,
++            normalized.TimeZoneId,
++            nextRunUtc,
++            normalized.Enabled,
++            command.Metadata);
++
++        await _repository.AddAsync(trigger, cancellationToken);
++        await _repository.SaveChangesAsync(cancellationToken);
++
++        return trigger.ToDto();
++    }
++
++    public async Task<AgentScheduledTriggerDto> UpdateAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        UpdateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
++
++        var normalized = Validate(command);
++        await EnsureCodeIsUniqueAsync(companyId, normalized.Code, triggerId, cancellationToken);
++        var nextRunUtc = trigger.IsEnabled
++            ? RequireNextRun(normalized.CronExpression, normalized.TimeZoneId, NowUtc())
++            : null;
++
++        trigger.UpdateSchedule(
++            normalized.Name,
++            normalized.Code,
++            normalized.CronExpression,
++            normalized.TimeZoneId,
++            nextRunUtc,
++            command.Metadata);
++
++        await _repository.SaveChangesAsync(cancellationToken);
++        return trigger.ToDto();
++    }
++
++    public async Task<AgentScheduledTriggerDto> EnableAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
++        var nextRunUtc = RequireNextRun(trigger.CronExpression, trigger.TimeZoneId, NowUtc());
++
++        trigger.Enable(nextRunUtc);
++        await _repository.SaveChangesAsync(cancellationToken);
++        return trigger.ToDto();
++    }
++
++    public async Task<AgentScheduledTriggerDto> DisableAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
++
++        trigger.Disable(NowUtc());
++        await _repository.SaveChangesAsync(cancellationToken);
++        return trigger.ToDto();
++    }
++
++    public async Task DeleteAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
++
++        await _repository.DeleteAsync(trigger, cancellationToken);
++        await _repository.SaveChangesAsync(cancellationToken);
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private async Task EnsureAgentExistsAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++    {
++        var exists = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++
++        if (!exists)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++    }
++
++    private async Task<AgentScheduledTrigger> GetTriggerForAgentAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        await EnsureAgentExistsAsync(companyId, agentId, cancellationToken);
++
++        var trigger = await _repository.GetByIdAsync(companyId, triggerId, cancellationToken);
++        if (trigger is null || trigger.AgentId != agentId)
++        {
++            throw new KeyNotFoundException("Schedule trigger not found.");
++        }
++
++        return trigger;
++    }
++
++    private async Task EnsureCodeIsUniqueAsync(
++        Guid companyId,
++        string code,
++        Guid? currentTriggerId,
++        CancellationToken cancellationToken)
++    {
++        var exists = await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId && x.Code == code && (!currentTriggerId.HasValue || x.Id != currentTriggerId.Value), cancellationToken);
++
++        if (exists)
++        {
++            throw new AgentScheduledTriggerValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(CreateAgentScheduledTriggerCommand.Code)] = ["Code must be unique within the company."]
++            });
++        }
++    }
++
++    private DateTime NowUtc() => _timeProvider.GetUtcNow().UtcDateTime;
++
++    private DateTime RequireNextRun(string cronExpression, string timeZoneId, DateTime referenceUtc) =>
++        _nextRunCalculator.GetNextRunUtc(cronExpression, timeZoneId, referenceUtc)
++        ?? throw new AgentScheduledTriggerValidationException(new Dictionary<string, string[]>
++        {
++            [nameof(CreateAgentScheduledTriggerCommand.CronExpression)] = ["Cron expression does not have a future occurrence."]
++        });
++
++    private NormalizedCreateCommand Validate(CreateAgentScheduledTriggerCommand command)
++    {
++        var normalized = ValidateScheduleFields(command.Name, command.Code, command.CronExpression, command.TimeZoneId);
++        return new NormalizedCreateCommand(normalized.Name, normalized.Code, normalized.CronExpression, normalized.TimeZoneId, command.Enabled);
++    }
++
++    private NormalizedScheduleCommand Validate(UpdateAgentScheduledTriggerCommand command) =>
++        ValidateScheduleFields(command.Name, command.Code, command.CronExpression, command.TimeZoneId);
++
++    private NormalizedScheduleCommand ValidateScheduleFields(string name, string? code, string cronExpression, string timeZoneId)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        var normalizedName = NormalizeRequired(errors, nameof(CreateAgentScheduledTriggerCommand.Name), name, NameMaxLength);
++        var normalizedCode = NormalizeCode(errors, code, normalizedName);
++        var normalizedCron = NormalizeRequired(errors, nameof(CreateAgentScheduledTriggerCommand.CronExpression), cronExpression, CronExpressionMaxLength);
++        var normalizedTimeZone = NormalizeRequired(errors, nameof(CreateAgentScheduledTriggerCommand.TimeZoneId), timeZoneId, TimeZoneIdMaxLength);
++
++        var cronValidation = _validator.ValidateCronExpression(normalizedCron);
++        if (!cronValidation.IsValid)
++        {
++            AddError(errors, nameof(CreateAgentScheduledTriggerCommand.CronExpression), cronValidation.Error!);
++        }
++
++        var timezoneValidation = _validator.ValidateTimeZoneId(normalizedTimeZone);
++        if (!timezoneValidation.IsValid)
++        {
++            AddError(errors, nameof(CreateAgentScheduledTriggerCommand.TimeZoneId), timezoneValidation.Error!);
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new AgentScheduledTriggerValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++
++        return new NormalizedScheduleCommand(normalizedName, normalizedCode, normalizedCron, normalizedTimeZone);
++    }
++
++    private static string NormalizeRequired(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string? value,
++        int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, $"{key} is required.");
++            return string.Empty;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string NormalizeCode(IDictionary<string, List<string>> errors, string? requestedCode, string fallbackName)
++    {
++        var code = string.IsNullOrWhiteSpace(requestedCode)
++            ? Slugify(fallbackName)
++            : requestedCode.Trim();
++
++        if (string.IsNullOrWhiteSpace(code))
++        {
++            AddError(errors, nameof(CreateAgentScheduledTriggerCommand.Code), "Code is required.");
++            return string.Empty;
++        }
++
++        if (code.Length > CodeMaxLength)
++        {
++            AddError(errors, nameof(CreateAgentScheduledTriggerCommand.Code), $"Code must be {CodeMaxLength} characters or fewer.");
++        }
++
++        return code.ToUpperInvariant();
++    }
++
++    private static string Slugify(string value)
++    {
++        var builder = new StringBuilder(CodeMaxLength);
++        foreach (var character in value)
++        {
++            if (char.IsLetterOrDigit(character))
++            {
++                builder.Append(char.ToUpperInvariant(character));
++            }
++            else if (builder.Length > 0 && builder[^1] != '-')
++            {
++                builder.Append('-');
++            }
++
++            if (builder.Length >= CodeMaxLength)
++            {
++                break;
++            }
++        }
++
++        return builder.ToString().Trim('-');
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private sealed record NormalizedScheduleCommand(string Name, string Code, string CronExpression, string TimeZoneId);
++    private sealed record NormalizedCreateCommand(string Name, string Code, string CronExpression, string TimeZoneId, bool Enabled);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1568,6 +1568,7 @@ internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfigurat
+         builder.Property(x => x.TimeZoneId).HasColumnName("timezone").HasMaxLength(100).IsRequired();
+         builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
+         builder.Property(x => x.NextRunUtc).HasColumnName("next_run_at");
++        builder.Property(x => x.EnabledUtc).HasColumnName("enabled_at");
+         builder.Property(x => x.LastEvaluatedUtc).HasColumnName("last_evaluated_at");
+         builder.Property(x => x.LastEnqueuedUtc).HasColumnName("last_enqueued_at");
+         builder.Property(x => x.LastRunUtc).HasColumnName("last_run_at");
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+@@ -37,6 +37,7 @@ public partial class AddAgentScheduledTriggers : Migration
+                 timezone = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
+                 is_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: true),
+                 next_run_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                enabled_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
+                 last_evaluated_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
+                 last_enqueued_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
+                 last_run_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -211,6 +211,7 @@ public static class DependencyInjection
+         services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
+         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
+         services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();
++        services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();
+         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -12,12 +12,17 @@ public sealed class AgentsController : ControllerBase
+ {
+     private readonly ICompanyAgentService _agentService;
+     private readonly IAgentToolExecutionService _agentToolExecutionService;
++    private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
+ 
+-    public AgentsController(ICompanyAgentService agentService, IAgentToolExecutionService agentToolExecutionService)
++    public AgentsController(
++        ICompanyAgentService agentService,
++        IAgentToolExecutionService agentToolExecutionService,
++        IAgentScheduledTriggerService agentScheduledTriggerService)
+     {
+         _agentService = agentService;
+         _agentToolExecutionService = agentToolExecutionService;
++        _agentScheduledTriggerService = agentScheduledTriggerService;
+     }
+ 
+     [HttpGet("templates")]
+@@ -130,6 +135,164 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("{agentId:guid}/schedule-triggers")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<IReadOnlyList<AgentScheduledTriggerDto>>> ListScheduleTriggersAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var triggers = await _agentScheduledTriggerService.ListAsync(companyId, agentId, cancellationToken);
++            return Ok(triggers);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{agentId:guid}/schedule-triggers/{triggerId:guid}", Name = nameof(GetScheduleTriggerAsync))]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentScheduledTriggerDto>> GetScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var trigger = await _agentScheduledTriggerService.GetAsync(companyId, agentId, triggerId, cancellationToken);
++            return Ok(trigger);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("{agentId:guid}/schedule-triggers")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentScheduledTriggerDto>> CreateScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        [FromBody] CreateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var trigger = await _agentScheduledTriggerService.CreateAsync(companyId, agentId, command, cancellationToken);
++            return CreatedAtAction(
++                nameof(GetScheduleTriggerAsync),
++                new { companyId, agentId, triggerId = trigger.Id },
++                trigger);
++        }
++        catch (AgentScheduledTriggerValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("{agentId:guid}/schedule-triggers/{triggerId:guid}")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentScheduledTriggerDto>> UpdateScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        [FromBody] UpdateAgentScheduledTriggerCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var trigger = await _agentScheduledTriggerService.UpdateAsync(companyId, agentId, triggerId, command, cancellationToken);
++            return Ok(trigger);
++        }
++        catch (AgentScheduledTriggerValidationException ex)
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
++            {
++                Title = "Validation failed",
++                Status = StatusCodes.Status400BadRequest
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("{agentId:guid}/schedule-triggers/{triggerId:guid}/enable")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentScheduledTriggerDto>> EnableScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var trigger = await _agentScheduledTriggerService.EnableAsync(companyId, agentId, triggerId, cancellationToken);
++            return Ok(trigger);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("{agentId:guid}/schedule-triggers/{triggerId:guid}/disable")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<ActionResult<AgentScheduledTriggerDto>> DisableScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var trigger = await _agentScheduledTriggerService.DisableAsync(companyId, agentId, triggerId, cancellationToken);
++            return Ok(trigger);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpDelete("{agentId:guid}/schedule-triggers/{triggerId:guid}")]
++    [Authorize(Policy = CompanyPolicies.CompanyManager)]
++    public async Task<IActionResult> DeleteScheduleTriggerAsync(
++        Guid companyId,
++        Guid agentId,
++        Guid triggerId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _agentScheduledTriggerService.DeleteAsync(companyId, agentId, triggerId, cancellationToken);
++            return NoContent();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("{agentId:guid}/executions")]
+     public async Task<ActionResult<ExecuteAgentToolResultDto>> ExecuteToolAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerApiIntegrationTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerApiIntegrationTests.cs
+@@ -0,0 +1,270 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentScheduledTriggerApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentScheduledTriggerApiIntegrationTests(TestWebApplicationFactory factory) =>
++        _factory = factory;
++
++    [Fact]
++    public async Task Create_valid_trigger_persists_and_returns_next_run()
++    {
++        var seed = await SeedManagerAndAgentAsync();
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++        var code = $"daily-{Guid.NewGuid():N}";
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers", new
++        {
++            name = "Daily standup",
++            code,
++            cronExpression = "0 9 * * *",
++            timeZoneId = "Europe/Stockholm",
++            enabled = true,
++            metadata = new { source = "test" }
++        });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ScheduleTriggerResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.AgentId, payload!.AgentId);
++        Assert.Equal(code.ToUpperInvariant(), payload.Code);
++        Assert.True(payload.IsEnabled);
++        Assert.NotNull(payload.NextRunAt);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var stored = await dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Id == payload.Id);
++
++        Assert.Equal(seed.CompanyId, stored.CompanyId);
++        Assert.Equal(seed.AgentId, stored.AgentId);
++        Assert.Equal("0 9 * * *", stored.CronExpression);
++        Assert.Equal("Europe/Stockholm", stored.TimeZoneId);
++        Assert.True(stored.IsEnabled);
++        Assert.NotNull(stored.NextRunUtc);
++        Assert.NotNull(stored.EnabledUtc);
++    }
++
++    [Theory]
++    [InlineData("not a cron", "UTC", "CronExpression")]
++    [InlineData("0 9 * * *", "Mars/Olympus", "TimeZoneId")]
++    public async Task Create_invalid_schedule_returns_validation_error_and_does_not_persist(
++        string cronExpression,
++        string timeZoneId,
++        string expectedField)
++    {
++        var seed = await SeedManagerAndAgentAsync();
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers", new
++        {
++            name = "Invalid schedule",
++            code = $"invalid-{Guid.NewGuid():N}",
++            cronExpression,
++            timeZoneId,
++            enabled = true
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.NotNull(problem);
++        Assert.Contains(expectedField, problem!.Errors.Keys);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.False(await dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == seed.CompanyId && x.AgentId == seed.AgentId && x.Name == "Invalid schedule"));
++    }
++
++    [Fact]
++    public async Task Update_enable_disable_and_delete_change_persisted_state()
++    {
++        var seed = await SeedManagerAgentAndDisabledTriggerAsync();
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++
++        var updateResponse = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers/{seed.TriggerId}", new
++        {
++            name = "Updated weekday standup",
++            code = $"updated-{Guid.NewGuid():N}",
++            cronExpression = "30 10 * * 1-5",
++            timeZoneId = "UTC"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
++        var updated = await updateResponse.Content.ReadFromJsonAsync<ScheduleTriggerResponse>();
++        Assert.NotNull(updated);
++        Assert.False(updated!.IsEnabled);
++        Assert.Null(updated.NextRunAt);
++
++        var enableResponse = await client.PostAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers/{seed.TriggerId}/enable", null);
++        Assert.Equal(HttpStatusCode.OK, enableResponse.StatusCode);
++        var enabled = await enableResponse.Content.ReadFromJsonAsync<ScheduleTriggerResponse>();
++        Assert.NotNull(enabled);
++        Assert.True(enabled!.IsEnabled);
++        Assert.NotNull(enabled.NextRunAt);
++        Assert.NotNull(enabled.EnabledAt);
++        Assert.Null(enabled.DisabledAt);
++
++        var disableResponse = await client.PostAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers/{seed.TriggerId}/disable", null);
++        Assert.Equal(HttpStatusCode.OK, disableResponse.StatusCode);
++        var disabled = await disableResponse.Content.ReadFromJsonAsync<ScheduleTriggerResponse>();
++        Assert.NotNull(disabled);
++        Assert.False(disabled!.IsEnabled);
++        Assert.Null(disabled.NextRunAt);
++        Assert.NotNull(disabled.DisabledAt);
++
++        var deleteResponse = await client.DeleteAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/schedule-triggers/{seed.TriggerId}");
++        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        Assert.False(await dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.Id == seed.TriggerId));
++    }
++
++    [Fact]
++    public async Task Schedule_trigger_endpoints_are_tenant_scoped()
++    {
++        var seed = await SeedCrossCompanyTriggerAsync();
++        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.OtherCompanyAgentId}/schedule-triggers/{seed.OtherCompanyTriggerId}");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<ScheduleSeed> SeedManagerAndAgentAsync()
++    {
++        var managerUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
++            dbContext.Companies.Add(new Company(companyId, "Company A"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                managerUserId,
++                CompanyMembershipRole.Manager,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(
++                agentId,
++                companyId,
++                "operations",
++                "Avery Ops",
++                "Operations Coordinator",
++                "Operations",
++                null,
++                AgentSeniority.Mid,
++                AgentStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new ScheduleSeed(companyId, agentId, Guid.Empty);
++    }
++
++    private async Task<ScheduleSeed> SeedManagerAgentAndDisabledTriggerAsync()
++    {
++        var seed = await SeedManagerAndAgentAsync();
++        var triggerId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.AgentScheduledTriggers.Add(new AgentScheduledTrigger(
++                triggerId,
++                seed.CompanyId,
++                seed.AgentId,
++                "Weekday standup",
++                $"weekday-{Guid.NewGuid():N}",
++                "0 9 * * 1-5",
++                "UTC",
++                null,
++                false));
++            return Task.CompletedTask;
++        });
++
++        return seed with { TriggerId = triggerId };
++    }
++
++    private async Task<CrossCompanyScheduleSeed> SeedCrossCompanyTriggerAsync()
++    {
++        var managerUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++        var otherCompanyTriggerId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(managerUserId, "manager@example.com", "Manager", "dev-header", "manager"));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Company A"),
++                new Company(otherCompanyId, "Company B"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                managerUserId,
++                CompanyMembershipRole.Manager,
++                CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(agentId, companyId, "operations", "Company A Ops", "Operations", "Operations", null, AgentSeniority.Mid, AgentStatus.Active),
++                new Agent(otherCompanyAgentId, otherCompanyId, "support", "Company B Support", "Support", "Support", null, AgentSeniority.Mid, AgentStatus.Active));
++            dbContext.AgentScheduledTriggers.Add(new AgentScheduledTrigger(
++                otherCompanyTriggerId,
++                otherCompanyId,
++                otherCompanyAgentId,
++                "Other tenant trigger",
++                $"other-{Guid.NewGuid():N}",
++                "0 9 * * *",
++                "UTC",
++                DateTime.UtcNow.AddHours(1),
++                true));
++            return Task.CompletedTask;
++        });
++
++        return new CrossCompanyScheduleSeed(companyId, otherCompanyAgentId, otherCompanyTriggerId);
++    }
++
++    private sealed record ScheduleSeed(Guid CompanyId, Guid AgentId, Guid TriggerId);
++    private sealed record CrossCompanyScheduleSeed(Guid CompanyId, Guid OtherCompanyAgentId, Guid OtherCompanyTriggerId);
++
++    private sealed class ScheduleTriggerResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public Guid AgentId { get; set; }
++        public string Name { get; set; } = string.Empty;
++        public string Code { get; set; } = string.Empty;
++        public string CronExpression { get; set; } = string.Empty;
++        public string TimeZoneId { get; set; } = string.Empty;
++        public bool IsEnabled { get; set; }
++        public DateTime? NextRunAt { get; set; }
++        public DateTime? EnabledAt { get; set; }
++        public DateTime? DisabledAt { get; set; }
++        public Dictionary<string, JsonElement> Metadata { get; set; } = [];
++    }
++
++    private sealed class ValidationProblemResponse
++    {
++        public string? Title { get; set; }
++        public Dictionary<string, string[]> Errors { get; set; } = [];
++    }
++}
+END_OF_PATCH

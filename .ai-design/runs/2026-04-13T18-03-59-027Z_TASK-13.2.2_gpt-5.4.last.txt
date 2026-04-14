@@ -1,0 +1,452 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+@@ -72,10 +72,6 @@ public sealed record AgentScheduledTriggerExecutionRequestMessage(
+     string CorrelationId,
+     string IdempotencyKey);
+ 
+-    ScheduleValidationResult ValidateCronExpression(string? cronExpression);
+-
+-    ScheduleValidationResult ValidateTimeZoneId(string? timeZoneId);
+-}
+-
+ public interface IScheduledTriggerNextRunCalculator
+ {
+     DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc);
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -1,4 +1,5 @@
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ 
+ namespace VirtualCompany.Application.Companies;
+ 
+@@ -12,6 +13,10 @@ public static class CompanyOutboxTopics
+     public const string MembershipRoleChanged = "company.membership.role_changed";
+     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
+     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
++    public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
++    public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
++    public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
++    public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Domain.Entities;
+@@ -166,6 +167,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
++    private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+@@ -178,6 +180,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         VirtualCompanyDbContext dbContext,
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+         ICompanyNotificationDispatcher notificationDispatcher,
++        IInternalWorkflowEventTriggerService workflowEventTriggerService,
+         IOptions<CompanyOutboxDispatcherOptions> options,
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+@@ -191,6 +194,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _dbContext = dbContext;
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+         _notificationDispatcher = notificationDispatcher;
++        _workflowEventTriggerService = workflowEventTriggerService;
+         _options = options;
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+@@ -411,6 +415,25 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 await _dbContext.SaveChangesAsync(cancellationToken);
+                 break;
+             }
++            case CompanyOutboxTopics.TaskCreated:
++            case CompanyOutboxTopics.TaskUpdated:
++            case CompanyOutboxTopics.DocumentUploaded:
++            case CompanyOutboxTopics.WorkflowStateChanged:
++            {
++                var payload = Deserialize<PlatformEventEnvelope>(message);
++                if (payload.CompanyId != message.CompanyId)
++                {
++                    throw new CompanyOutboxPermanentException("Platform event outbox payload tenant does not match the outbox message tenant.");
++                }
++
++                if (!string.Equals(payload.EventType, message.Topic, StringComparison.OrdinalIgnoreCase))
++                {
++                    throw new CompanyOutboxPermanentException($"Platform event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
++                }
++
++                await _workflowEventTriggerService.HandleAsync(
++                    payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
++                    cancellationToken);
++                break;
++            }
+             case CompanyOutboxTopics.InvitationCreated:
+             case CompanyOutboxTopics.InvitationResent:
+             case CompanyOutboxTopics.InvitationRevoked:
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -1,11 +1,14 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Tasks;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -21,14 +24,17 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAgentAssignmentGuard _agentAssignmentGuard;
+     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public CompanyTaskService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         IAgentAssignmentGuard agentAssignmentGuard,
+-        IExecutiveCockpitDashboardCache dashboardCache)
++        IExecutiveCockpitDashboardCache dashboardCache,
++        ICompanyOutboxEnqueuer outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
++        _outboxEnqueuer = outboxEnqueuer;
+         _agentAssignmentGuard = agentAssignmentGuard;
+         _dashboardCache = dashboardCache;
+     }
+@@ -97,6 +103,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+ 
+         _dbContext.WorkTasks.Add(task);
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        EnqueueTaskPlatformEvent(task, SupportedPlatformEventTypeRegistry.TaskCreated, task.CreatedUtc, task.CorrelationId);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+@@ -156,6 +163,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
++        EnqueueTaskPlatformEvent(task, SupportedPlatformEventTypeRegistry.TaskUpdated, task.UpdatedUtc, task.CorrelationId);
+         return await GetByIdAsync(companyId, task.Id, cancellationToken);
+     }
+ 
+@@ -323,6 +331,44 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+         }
+     }
+ 
++    private void EnqueueTaskPlatformEvent(
++        WorkTask task,
++        string eventType,
++        DateTime occurredAtUtc,
++        string? correlationId)
++    {
++        var eventId = eventType == SupportedPlatformEventTypeRegistry.TaskCreated
++            ? $"{eventType}:{task.Id:N}"
++            : $"{eventType}:{task.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
++        var effectiveCorrelationId = string.IsNullOrWhiteSpace(correlationId)
++            ? eventId
++            : correlationId.Trim();
++
++        _outboxEnqueuer.Enqueue(
++            task.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc.Kind == DateTimeKind.Utc ? occurredAtUtc : occurredAtUtc.ToUniversalTime(),
++                task.CompanyId,
++                effectiveCorrelationId,
++                "work_task",
++                task.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
++                    ["title"] = JsonValue.Create(task.Title),
++                    ["type"] = JsonValue.Create(task.Type),
++                    ["status"] = JsonValue.Create(task.Status.ToStorageValue()),
++                    ["priority"] = JsonValue.Create(task.Priority.ToStorageValue()),
++                    ["assignedAgentId"] = task.AssignedAgentId.HasValue ? JsonValue.Create(task.AssignedAgentId.Value.ToString("N")) : null,
++                    ["parentTaskId"] = task.ParentTaskId.HasValue ? JsonValue.Create(task.ParentTaskId.Value.ToString("N")) : null,
++                    ["workflowInstanceId"] = task.WorkflowInstanceId.HasValue ? JsonValue.Create(task.WorkflowInstanceId.Value.ToString("N")) : null
++                }),
++            effectiveCorrelationId,
++            idempotencyKey: $"platform-event:{task.CompanyId:N}:{eventId}",
++            causationId: task.Id.ToString("N"));
++    }
++
+     private static WorkTaskPriority ResolvePriority(string? priority) =>
+         string.IsNullOrWhiteSpace(priority)
+             ? WorkTaskPriorityValues.DefaultPriority
+diff --git a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
++++ b/src/VirtualCompany.Infrastructure/Documents/CompanyDocumentService.cs
+@@ -3,11 +3,14 @@ using System.Security.Cryptography;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Documents;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -26,6 +29,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+     private readonly CompanyDocumentOptions _options;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+     private readonly ILogger<CompanyDocumentService> _logger;
+ 
+     public CompanyDocumentService(
+@@ -37,6 +41,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         ICorrelationContextAccessor correlationContextAccessor,
+         IDocumentIngestionOrchestrator ingestionOrchestrator,
+         IOptions<CompanyDocumentOptions> options,
++        ICompanyOutboxEnqueuer outboxEnqueuer,
+         ILogger<CompanyDocumentService> logger)
+     {
+         _dbContext = dbContext;
+@@ -48,6 +53,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         _correlationContextAccessor = correlationContextAccessor;
+         _ingestionOrchestrator = ingestionOrchestrator;
+         _options = options.Value;
++        _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
+     }
+ 
+@@ -130,6 +136,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+         }
+ 
+         // Upload persistence stops at the virus-scan gate. Downstream processing starts only after scan clearance.
++        EnqueueDocumentUploadedEvent(document);
+         await _ingestionOrchestrator.ProcessUploadedAsync(companyId, documentId, cancellationToken);
+         await EnqueueAuditEventAsync(
+             companyId,
+@@ -175,6 +182,42 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
+             : null;
+     }
+ 
++    private void EnqueueDocumentUploadedEvent(CompanyKnowledgeDocument document)
++    {
++        var eventType = SupportedPlatformEventTypeRegistry.DocumentUploaded;
++        var eventId = $"{eventType}:{document.Id:N}";
++        var correlationId = string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
++            ? eventId
++            : _correlationContextAccessor.CorrelationId;
++        var occurredAtUtc = document.UploadedUtc ?? document.CreatedUtc;
++
++        _outboxEnqueuer.Enqueue(
++            document.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc.Kind == DateTimeKind.Utc ? occurredAtUtc : occurredAtUtc.ToUniversalTime(),
++                document.CompanyId,
++                correlationId,
++                "company_document",
++                document.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["documentId"] = JsonValue.Create(document.Id.ToString("N")),
++                    ["title"] = JsonValue.Create(document.Title),
++                    ["documentType"] = JsonValue.Create(document.DocumentType.ToStorageValue()),
++                    ["sourceType"] = JsonValue.Create(document.SourceType.ToStorageValue()),
++                    ["sourceRef"] = JsonValue.Create(document.SourceRef),
++                    ["originalFileName"] = JsonValue.Create(document.OriginalFileName),
++                    ["contentType"] = JsonValue.Create(document.ContentType),
++                    ["fileExtension"] = JsonValue.Create(document.FileExtension),
++                    ["fileSizeBytes"] = JsonValue.Create(document.FileSizeBytes),
++                    ["ingestionStatus"] = JsonValue.Create(document.IngestionStatus.ToStorageValue())
++                }),
++            correlationId,
++            idempotencyKey: $"platform-event:{document.CompanyId:N}:{eventId}",
++            causationId: document.Id.ToString("N"));
++    }
++
+     private async Task EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -720,6 +720,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         {
+             await EnsureOpenWorkflowExceptionAsync(instance, state, command.OutputPayload, cancellationToken);
+         }
++        EnqueueWorkflowStateChangedEvent(instance, state, command.OutputPayload);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+@@ -904,6 +905,45 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             causationId: workflowException.Id.ToString("N"));
+     }
+ 
++    private void EnqueueWorkflowStateChangedEvent(
++        WorkflowInstance instance,
++        WorkflowInstanceStatus state,
++        Dictionary<string, JsonNode?>? outputPayload)
++    {
++        var eventType = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
++        var occurredAtUtc = instance.UpdatedUtc.Kind == DateTimeKind.Utc
++            ? instance.UpdatedUtc
++            : instance.UpdatedUtc.ToUniversalTime();
++        var eventId = $"{eventType}:{instance.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
++        var correlationId = ResolveCorrelationId(new StartWorkflowInstanceCommand(
++            instance.DefinitionId,
++            instance.TriggerId,
++            instance.InputPayload,
++            instance.TriggerSource.ToStorageValue(),
++            instance.TriggerRef)) ?? eventId;
++
++        _outboxEnqueuer.Enqueue(
++            instance.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc,
++                instance.CompanyId,
++                correlationId,
++                "workflow_instance",
++                instance.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["workflowInstanceId"] = JsonValue.Create(instance.Id.ToString("N")),
++                    ["workflowDefinitionId"] = JsonValue.Create(instance.DefinitionId.ToString("N")),
++                    ["workflowTriggerId"] = instance.TriggerId.HasValue ? JsonValue.Create(instance.TriggerId.Value.ToString("N")) : null,
++                    ["state"] = JsonValue.Create(state.ToStorageValue()),
++                    ["currentStep"] = JsonValue.Create(instance.CurrentStep),
++                    ["triggerSource"] = JsonValue.Create(instance.TriggerSource.ToStorageValue()),
++                    ["triggerRef"] = JsonValue.Create(instance.TriggerRef),
++                    ["output"] = new JsonObject(CloneNodes(outputPayload).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase))
++                }),
++            correlationId,
++            idempotencyKey: $"platform-event:{instance.CompanyId:N}:{eventId}",
++            causationId: instance.Id.ToString("N"));
++    }
++
+     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -1,8 +1,10 @@
+ using System.Net;
+ using System.Net.Http.Json;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -14,6 +16,8 @@ namespace VirtualCompany.Api.Tests;
+ 
+ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebApplicationFactory>
+ {
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++
+     private readonly TestWebApplicationFactory _factory;
+ 
+     public WorkflowEventTriggerFoundationTests(TestWebApplicationFactory factory) =>
+@@ -128,6 +132,58 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+             x.TriggerRef == envelope.EventId));
+     }
+ 
++    [Fact]
++    public async Task Outbox_platform_event_consumer_matches_workflow_triggers()
++    {
++        var seed = await SeedMembershipAsync("event-trigger-outbox", "event-trigger-outbox@example.com", "Event Trigger Outbox");
++        var definitionId = Guid.NewGuid();
++        var triggerId = Guid.NewGuid();
++        var outboxMessageId = Guid.NewGuid();
++        var envelope = BuildEnvelope(seed.CompanyId, "evt-task-created-outbox-1", SupportedPlatformEventTypeRegistry.TaskCreated);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                definitionId,
++                seed.CompanyId,
++                "task-created-outbox",
++                "Task created outbox",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("outbox-step")));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                triggerId,
++                seed.CompanyId,
++                definitionId,
++                SupportedPlatformEventTypeRegistry.TaskCreated));
++            dbContext.CompanyOutboxMessages.Add(new CompanyOutboxMessage(
++                outboxMessageId,
++                seed.CompanyId,
++                CompanyOutboxTopics.TaskCreated,
++                JsonSerializer.Serialize(envelope, SerializerOptions),
++                correlationId: envelope.CorrelationId,
++                messageType: typeof(PlatformEventEnvelope).FullName,
++                idempotencyKey: $"platform-event:{seed.CompanyId:N}:{envelope.EventId}",
++                causationId: envelope.SourceEntityId));
++            return Task.CompletedTask;
++        });
++
++        await using (var scope = _factory.Services.CreateAsyncScope())
++        {
++            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            var handledCount = await processor.DispatchPendingAsync(CancellationToken.None);
++
++            Assert.Equal(1, handledCount);
++        }
++
++        await using var assertionScope = _factory.Services.CreateAsyncScope();
++        var dbContext = assertionScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var instance = await dbContext.WorkflowInstances.IgnoreQueryFilters().SingleAsync(x => x.TriggerRef == envelope.EventId);
++        var outboxMessage = await dbContext.CompanyOutboxMessages.IgnoreQueryFilters().SingleAsync(x => x.Id == outboxMessageId);
++
++        Assert.Equal(seed.CompanyId, instance.CompanyId);
++        Assert.Equal(definitionId, instance.DefinitionId);
++        Assert.Equal(triggerId, instance.TriggerId);
++        Assert.NotNull(outboxMessage.ProcessedUtc);
++        Assert.Equal(CompanyOutboxMessageStatus.Dispatched, outboxMessage.Status);
++    }
++
+     [Fact]
+     public void Platform_event_envelope_carries_required_metadata_contract()
+     {
+END_OF_PATCH

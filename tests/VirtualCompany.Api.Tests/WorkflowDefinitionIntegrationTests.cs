@@ -7,6 +7,7 @@ using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.BackgroundJobs;
@@ -749,7 +750,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
                 Guid.NewGuid(),
                 seed.CompanyId,
                 definitionId,
-                "company.document.processed"));
+                SupportedPlatformEventTypeRegistry.DocumentUploaded));
 
             dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
                 Guid.NewGuid(),
@@ -768,7 +769,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         var result = await eventTriggers.HandleAsync(
             new InternalWorkflowEvent(
                 seed.CompanyId,
-                "company.document.processed",
+                SupportedPlatformEventTypeRegistry.DocumentUploaded,
                 "doc-1",
                 new Dictionary<string, JsonNode?>
                 {
@@ -777,7 +778,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
             CancellationToken.None);
 
         var instance = Assert.Single(result.StartedInstances);
-        Assert.Equal("company.document.processed", result.EventName);
+        Assert.Equal(SupportedPlatformEventTypeRegistry.DocumentUploaded, result.EventName);
         Assert.Equal(seed.CompanyId, instance.CompanyId);
         Assert.Equal(definitionId, instance.DefinitionId);
         Assert.Equal("event", instance.TriggerSource);
@@ -805,7 +806,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
             active = true,
             definitionJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["event"] = new JsonObject { ["eventName"] = "company.event.versioned" },
+                ["event"] = new JsonObject { ["eventName"] = SupportedPlatformEventTypeRegistry.WorkflowStateChanged },
                 ["steps"] = new JsonArray(new JsonObject { ["id"] = "old-event-step" })
             }
         });
@@ -814,7 +815,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
 
         var triggerResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{initial!.Id}/triggers", new
         {
-            eventName = "company.event.versioned",
+            eventName = SupportedPlatformEventTypeRegistry.WorkflowStateChanged,
             criteriaJson = new Dictionary<string, JsonNode?>(),
             isEnabled = true
         });
@@ -828,7 +829,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
             active = true,
             definitionJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["event"] = new JsonObject { ["eventName"] = "company.event.versioned" },
+                ["event"] = new JsonObject { ["eventName"] = SupportedPlatformEventTypeRegistry.WorkflowStateChanged },
                 ["steps"] = new JsonArray(new JsonObject { ["id"] = "new-event-step" })
             }
         });
@@ -841,7 +842,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         var result = await eventTriggers.HandleAsync(
             new InternalWorkflowEvent(
                 seed.CompanyId,
-                "company.event.versioned",
+                SupportedPlatformEventTypeRegistry.WorkflowStateChanged,
                 "event-version-1",
                 new Dictionary<string, JsonNode?>()),
             CancellationToken.None);
@@ -861,7 +862,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
             .AnyAsync(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.DefinitionId == version.Id &&
-                x.EventName == "company.event.versioned" &&
+                x.EventName == SupportedPlatformEventTypeRegistry.WorkflowStateChanged &&
                 x.IsEnabled);
         Assert.True(copiedTriggerExists);
     }

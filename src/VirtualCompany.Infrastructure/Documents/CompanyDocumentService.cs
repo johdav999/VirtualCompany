@@ -3,11 +3,14 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -25,6 +28,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
     private readonly CompanyDocumentOptions _options;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly ILogger<CompanyDocumentService> _logger;
 
     public CompanyDocumentService(
@@ -36,6 +40,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         ICorrelationContextAccessor correlationContextAccessor,
         IDocumentIngestionOrchestrator ingestionOrchestrator,
         IOptions<CompanyDocumentOptions> options,
+        ICompanyOutboxEnqueuer outboxEnqueuer,
         ILogger<CompanyDocumentService> logger)
     {
         _dbContext = dbContext;
@@ -46,6 +51,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         _correlationContextAccessor = correlationContextAccessor;
         _ingestionOrchestrator = ingestionOrchestrator;
         _options = options.Value;
+        _outboxEnqueuer = outboxEnqueuer;
         _logger = logger;
     }
 
@@ -146,6 +152,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         }
 
         // Upload persistence stops at the virus-scan gate. Downstream processing starts only after scan clearance.
+        EnqueueDocumentUploadedEvent(document);
         await _ingestionOrchestrator.ProcessUploadedAsync(companyId, documentId, cancellationToken);
         await EnqueueAuditEventAsync(
             companyId,
@@ -183,6 +190,44 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
 
         return document is null ? null : MapDto(document);
+    }
+
+    private void EnqueueDocumentUploadedEvent(CompanyKnowledgeDocument document)
+    {
+        var eventType = SupportedPlatformEventTypeRegistry.DocumentUploaded;
+        var eventId = $"{eventType}:{document.Id:N}";
+        var correlationId = string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
+            ? eventId
+            : _correlationContextAccessor.CorrelationId;
+        var occurredAtUtc = document.UploadedUtc ?? document.CreatedUtc;
+
+        _outboxEnqueuer.Enqueue(
+            document.CompanyId,
+            eventType,
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                occurredAtUtc.Kind == DateTimeKind.Utc ? occurredAtUtc : occurredAtUtc.ToUniversalTime(),
+                document.CompanyId,
+                correlationId,
+                "company_document",
+                document.Id.ToString("N"),
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["documentId"] = JsonValue.Create(document.Id.ToString("N")),
+                    ["title"] = JsonValue.Create(document.Title),
+                    ["documentType"] = JsonValue.Create(document.DocumentType.ToStorageValue()),
+                    ["sourceType"] = JsonValue.Create(document.SourceType.ToStorageValue()),
+                    ["sourceRef"] = JsonValue.Create(document.SourceRef),
+                    ["originalFileName"] = JsonValue.Create(document.OriginalFileName),
+                    ["contentType"] = JsonValue.Create(document.ContentType),
+                    ["fileExtension"] = JsonValue.Create(document.FileExtension),
+                    ["fileSizeBytes"] = JsonValue.Create(document.FileSizeBytes),
+                    ["ingestionStatus"] = JsonValue.Create(document.IngestionStatus.ToStorageValue())
+                }),
+            correlationId,
+            idempotencyKey: $"platform-event:{document.CompanyId:N}:{eventId}",
+            causationId: document.Id.ToString("N"));
     }
 
     private async Task EnsureReadAccessAsync(Guid companyId, CancellationToken cancellationToken)

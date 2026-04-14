@@ -1,0 +1,1051 @@
+diff --git a/src/VirtualCompany.Domain/Enums/TaskEnums.cs b/src/VirtualCompany.Domain/Enums/TaskEnums.cs
+index 7efc1f0..c4f19c7 100644
+--- a/src/VirtualCompany.Domain/Enums/TaskEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/TaskEnums.cs
+@@ -127,3 +127,9 @@ public static class WorkTaskPriorityValues
+         string.IsNullOrWhiteSpace(attemptedValue)
+             ? $"Task priority is required. Allowed values: {string.Join(", ", AllowedValues)}."
+             : $"Unsupported task priority value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
+ }
++
++public static class WorkTaskSourceTypes
++{
++    public const string User = "user";
++    public const string Agent = "agent";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+index 1f4d5e7..8c69e0a 100644
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -13,6 +13,9 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     private const int ActorTypeMaxLength = 64;
+     private const int RationaleSummaryMaxLength = 2000;
+     private const int CorrelationIdMaxLength = 128;
++    private const int SourceTypeMaxLength = 64;
++    private const int TriggerSourceMaxLength = 128;
++    private const int TriggerEventIdMaxLength = 200;
+ 
+     private WorkTask()
+     {
+@@ -33,7 +36,12 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         IDictionary<string, JsonNode?>? outputPayload = null,
+         string? rationaleSummary = null,
+         decimal? confidenceScore = null,
+-        string? correlationId = null)
++        string? correlationId = null,
++        string? sourceType = null,
++        Guid? originatingAgentId = null,
++        string? triggerSource = null,
++        string? creationReason = null,
++        string? triggerEventId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -64,6 +72,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
+             throw new ArgumentException("WorkflowInstanceId cannot be empty.", nameof(workflowInstanceId));
+         }
+ 
++        if (originatingAgentId == Guid.Empty)
++        {
++            throw new ArgumentException("OriginatingAgentId cannot be empty.", nameof(originatingAgentId));
++        }
++
+         if (confidenceScore is < 0 or > 1)
+         {
+             throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
+@@ -89,6 +102,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         ConfidenceScore = confidenceScore;
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
+         WorkflowInstanceId = workflowInstanceId;
++        SourceType = NormalizeRequired(sourceType ?? WorkTaskSourceTypes.User, nameof(sourceType), SourceTypeMaxLength);
++        OriginatingAgentId = originatingAgentId;
++        TriggerSource = NormalizeOptional(triggerSource, nameof(triggerSource), TriggerSourceMaxLength);
++        CreationReason = NormalizeOptional(creationReason, nameof(creationReason), RationaleSummaryMaxLength);
++        TriggerEventId = NormalizeOptional(triggerEventId, nameof(triggerEventId), TriggerEventIdMaxLength);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -111,6 +129,11 @@ public sealed class WorkTask : ICompanyOwnedEntity
+     public decimal? ConfidenceScore { get; private set; }
+     public string? CorrelationId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
++    public string SourceType { get; private set; } = WorkTaskSourceTypes.User;
++    public Guid? OriginatingAgentId { get; private set; }
++    public string? TriggerSource { get; private set; }
++    public string? CreationReason { get; private set; }
++    public string? TriggerEventId { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public DateTime? CompletedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 0c7b1b2..f0d8d7a 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -176,6 +176,7 @@ public static class AuditEventActions
+     public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
+     public const string TriggerExecutionAttemptRetryScheduled = "trigger.execution_attempt.retry_scheduled";
+     public const string TriggerExecutionAttemptDeadLettered = "trigger.execution_attempt.dead_lettered";
+     public const string TriggerOrchestrationStartRequested = "trigger.orchestration_start.requested";
++    public const string AgentInitiatedTaskCreated = "agent_initiated.task.created";
+ }
+diff --git a/src/VirtualCompany.Application/Tasks/TaskContracts.cs b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+index 66cc431..ea6b7af 100644
+--- a/src/VirtualCompany.Application/Tasks/TaskContracts.cs
++++ b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+@@ -106,6 +106,11 @@ public sealed record TaskDetailDto(
+     Guid? ParentTaskId,
+     Guid? WorkflowInstanceId,
+     string CreatedByActorType,
++    string SourceType,
++    Guid? OriginatingAgentId,
++    string? TriggerSource,
++    string? CreationReason,
++    string? TriggerEventId,
+     Guid? CreatedByActorId,
+     Dictionary<string, JsonNode?> InputPayload,
+     Dictionary<string, JsonNode?> OutputPayload,
+@@ -138,6 +143,78 @@ public sealed record TaskListResultDto(
+     int Skip,
+     int Take);
+ 
++public sealed record ProactiveTaskTrigger(
++    Guid CompanyId,
++    Guid AgentId,
++    string TriggerSource,
++    string TriggerEventId,
++    string CorrelationId,
++    string CreationReason,
++    Dictionary<string, JsonNode?>? Payload,
++    string? TaskType = null,
++    string? TaskTitle = null,
++    string? TaskDescription = null,
++    string? TaskPriority = null,
++    DateTime? DueAt = null,
++    Guid? AssignedAgentId = null);
++
++public sealed record MappedTaskCreationRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    string TriggerSource,
++    string TriggerEventId,
++    string CorrelationId,
++    string CreationReason,
++    string Type,
++    string Title,
++    string? Description,
++    string Priority,
++    DateTime? DueAt,
++    Guid? AssignedAgentId,
++    Dictionary<string, JsonNode?> InputPayload);
++
++public sealed record CreateAgentInitiatedTaskCommand(ProactiveTaskTrigger Trigger);
++
++public sealed record CreateAgentInitiatedTaskResult(
++    Guid TaskId,
++    Guid CompanyId,
++    bool Created,
++    bool Duplicate,
++    string Status,
++    string CorrelationId);
++
++public sealed class ProactiveTaskCreationOptions
++{
++    public const string SectionName = "ProactiveTaskCreation";
++
++    public int DeduplicationWindowSeconds { get; set; } = 900;
++}
++
++public interface ITriggerToTaskMappingService
++{
++    MappedTaskCreationRequest Map(ProactiveTaskTrigger trigger);
++}
++
++public interface IProactiveTaskDuplicateDetector
++{
++    Task<WorkTaskDuplicateMatch?> FindDuplicateAsync(
++        MappedTaskCreationRequest request,
++        TimeSpan deduplicationWindow,
++        DateTime nowUtc,
++        CancellationToken cancellationToken);
++}
++
++public sealed record WorkTaskDuplicateMatch(
++    Guid TaskId,
++    Guid CompanyId,
++    string Status,
++    string CorrelationId);
++
++public interface IProactiveTaskCreationService
++{
++    Task<CreateAgentInitiatedTaskResult> CreateAsync(
++        CreateAgentInitiatedTaskCommand command,
++        CancellationToken cancellationToken);
++}
++
+ public interface ICompanyTaskCommandService
+ {
+     Task<TaskCommandResultDto> CreateTaskAsync(Guid companyId, CreateTaskCommand command, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 45aeea7..934b52a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -966,6 +966,11 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.Property(x => x.RationaleSummary).HasColumnName("rationale_summary").HasMaxLength(2000);
+         builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("numeric(5,4)");
+         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64).HasDefaultValue(WorkTaskSourceTypes.User).IsRequired();
++        builder.Property(x => x.OriginatingAgentId).HasColumnName("originating_agent_id");
++        builder.Property(x => x.TriggerSource).HasColumnName("trigger_source").HasMaxLength(128);
++        builder.Property(x => x.CreationReason).HasColumnName("creation_reason").HasMaxLength(2000);
++        builder.Property(x => x.TriggerEventId).HasColumnName("trigger_event_id").HasMaxLength(200);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+@@ -979,6 +984,8 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
+         builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
+         builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerSource, x.TriggerEventId, x.CorrelationId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.OriginatingAgentId, x.CreatedUtc });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+index 4d59c88..4a0cfb2 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyTaskService.cs
+@@ -327,6 +327,11 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
+             task.ParentTaskId,
+             task.WorkflowInstanceId,
+             task.CreatedByActorType,
++            task.SourceType,
++            task.OriginatingAgentId,
++            task.TriggerSource,
++            task.CreationReason,
++            task.TriggerEventId,
+             task.CreatedByActorId,
+             CloneNodes(task.InputPayload),
+             CloneNodes(task.OutputPayload),
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+new file mode 100644
+index 0000000..6fa2320
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+@@ -0,0 +1,260 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class DefaultTriggerToTaskMappingService : ITriggerToTaskMappingService
++{
++    public MappedTaskCreationRequest Map(ProactiveTaskTrigger trigger)
++    {
++        ArgumentNullException.ThrowIfNull(trigger);
++
++        var payload = CloneNodes(trigger.Payload);
++        payload["triggerSource"] = JsonValue.Create(trigger.TriggerSource);
++        payload["triggerEventId"] = JsonValue.Create(trigger.TriggerEventId);
++        payload["correlationId"] = JsonValue.Create(trigger.CorrelationId);
++        payload["originatingAgentId"] = JsonValue.Create(trigger.AgentId.ToString("N"));
++
++        var title = FirstNonBlank(
++            trigger.TaskTitle,
++            ReadString(payload, "title"),
++            ReadString(payload, "taskTitle"),
++            trigger.CreationReason);
++        var description = FirstNonBlank(
++            trigger.TaskDescription,
++            ReadString(payload, "description"),
++            ReadString(payload, "analysisSummary"),
++            trigger.CreationReason);
++
++        return new MappedTaskCreationRequest(
++            trigger.CompanyId,
++            trigger.AgentId,
++            trigger.TriggerSource,
++            trigger.TriggerEventId,
++            trigger.CorrelationId,
++            trigger.CreationReason,
++            FirstNonBlank(trigger.TaskType, ReadString(payload, "taskType"), "proactive"),
++            title,
++            description,
++            FirstNonBlank(trigger.TaskPriority, ReadString(payload, "priority"), WorkTaskPriority.Normal.ToStorageValue()),
++            trigger.DueAt,
++            trigger.AssignedAgentId ?? trigger.AgentId,
++            payload);
++    }
++
++    private static string FirstNonBlank(params string?[] values) =>
++        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
++        payload.TryGetValue(key, out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var text) &&
++        !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class EfProactiveTaskDuplicateDetector : IProactiveTaskDuplicateDetector
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfProactiveTaskDuplicateDetector(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<WorkTaskDuplicateMatch?> FindDuplicateAsync(
++        MappedTaskCreationRequest request,
++        TimeSpan deduplicationWindow,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var windowStartUtc = nowUtc - deduplicationWindow;
++        var duplicate = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == request.CompanyId &&
++                x.SourceType == WorkTaskSourceTypes.Agent &&
++                x.TriggerSource == request.TriggerSource &&
++                x.TriggerEventId == request.TriggerEventId &&
++                x.CorrelationId == request.CorrelationId &&
++                x.CreatedUtc >= windowStartUtc)
++            .OrderByDescending(x => x.CreatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        return duplicate is null
++            ? null
++            : new WorkTaskDuplicateMatch(
++                duplicate.Id,
++                duplicate.CompanyId,
++                duplicate.Status.ToStorageValue(),
++                duplicate.CorrelationId ?? request.CorrelationId);
++    }
++}
++
++public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
++{
++    private const int TypeMaxLength = 100;
++    private const int TitleMaxLength = 200;
++    private const int DescriptionMaxLength = 4000;
++    private const int RationaleSummaryMaxLength = 2000;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ITriggerToTaskMappingService _mapper;
++    private readonly IProactiveTaskDuplicateDetector _duplicateDetector;
++    private readonly IAgentAssignmentGuard _agentAssignmentGuard;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
++    private readonly IExecutiveCockpitDashboardCache _dashboardCache;
++    private readonly TimeProvider _timeProvider;
++    private readonly ProactiveTaskCreationOptions _options;
++
++    public ProactiveTaskCreationService(
++        VirtualCompanyDbContext dbContext,
++        ITriggerToTaskMappingService mapper,
++        IProactiveTaskDuplicateDetector duplicateDetector,
++        IAgentAssignmentGuard agentAssignmentGuard,
++        IAuditEventWriter auditEventWriter,
++        ICompanyOutboxEnqueuer outboxEnqueuer,
++        IExecutiveCockpitDashboardCache dashboardCache,
++        TimeProvider timeProvider,
++        IOptions<ProactiveTaskCreationOptions> options)
++    {
++        _dbContext = dbContext;
++        _mapper = mapper;
++        _duplicateDetector = duplicateDetector;
++        _agentAssignmentGuard = agentAssignmentGuard;
++        _auditEventWriter = auditEventWriter;
++        _outboxEnqueuer = outboxEnqueuer;
++        _dashboardCache = dashboardCache;
++        _timeProvider = timeProvider;
++        _options = options.Value;
++    }
++
++    public async Task<CreateAgentInitiatedTaskResult> CreateAsync(
++        CreateAgentInitiatedTaskCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        ArgumentNullException.ThrowIfNull(command.Trigger);
++
++        var request = _mapper.Map(command.Trigger);
++        Validate(request);
++
++        await EnsureAgentBelongsToTenantAsync(request.CompanyId, request.AgentId, nameof(request.AgentId), cancellationToken);
++        await _agentAssignmentGuard.EnsureAgentCanReceiveNewTasksAsync(
++            request.CompanyId,
++            request.AssignedAgentId!.Value,
++            nameof(request.AssignedAgentId),
++            cancellationToken);
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var deduplicationWindow = TimeSpan.FromSeconds(Math.Max(1, _options.DeduplicationWindowSeconds));
++        var duplicate = await _duplicateDetector.FindDuplicateAsync(request, deduplicationWindow, nowUtc, cancellationToken);
++        if (duplicate is not null)
++        {
++            return new CreateAgentInitiatedTaskResult(
++                duplicate.TaskId,
++                duplicate.CompanyId,
++                Created: false,
++                Duplicate: true,
++                duplicate.Status,
++                duplicate.CorrelationId);
++        }
++
++        var task = new WorkTask(
++            Guid.NewGuid(),
++            request.CompanyId,
++            request.Type,
++            request.Title,
++            request.Description,
++            WorkTaskPriorityValues.Parse(request.Priority),
++            request.AssignedAgentId,
++            parentTaskId: null,
++            AuditActorTypes.Agent,
++            request.AgentId,
++            request.InputPayload,
++            workflowInstanceId: null,
++            outputPayload: null,
++            request.CreationReason,
++            confidenceScore: null,
++            request.CorrelationId,
++            WorkTaskSourceTypes.Agent,
++            request.AgentId,
++            request.TriggerSource,
++            request.CreationReason,
++            request.TriggerEventId);
++        task.SetDueDate(request.DueAt);
++
++        _dbContext.WorkTasks.Add(task);
++        await WriteAuditAsync(task, request, nowUtc, cancellationToken);
++        EnqueueTaskPlatformEvent(task);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        await _dashboardCache.InvalidateAsync(request.CompanyId, cancellationToken);
++
++        return new CreateAgentInitiatedTaskResult(
++            task.Id,
++            task.CompanyId,
++            Created: true,
++            Duplicate: false,
++            task.Status.ToStorageValue(),
++            task.CorrelationId ?? request.CorrelationId);
++    }
++
++    private async Task EnsureAgentBelongsToTenantAsync(
++        Guid companyId,
++        Guid agentId,
++        string fieldName,
++        CancellationToken cancellationToken)
++    {
++        var exists = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
++        if (!exists)
++        {
++            throw new TaskValidationException(
++                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++                {
++                    [fieldName] = ["AgentId must reference an agent in the same company."]
++                });
++        }
++    }
++
++    private Task WriteAuditAsync(
++        WorkTask task,
++        MappedTaskCreationRequest request,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var diff = JsonSerializer.Serialize(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["from"] = null,
++            ["to"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["taskId"] = task.Id.ToString("N"),
++                ["title"] = task.Title,
++                ["description"] = task.Description,
++                ["priority"] = task.Priority.ToStorageValue(),
++                ["status"] = task.Status.ToStorageValue(),
++                ["assignedAgentId"] = task.AssignedAgentId?.ToString("N"),
++                ["sourceType"] = task.SourceType,
++                ["originatingAgentId"] = task.OriginatingAgentId?.ToString("N"),
++                ["triggerSource"] = task.TriggerSource,
++                ["triggerEventId"] = task.TriggerEventId,
++                ["correlationId"] = task.CorrelationId,
++                ["creationReason"] = task.CreationReason
++            }
++        });
++
++        return _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                task.CompanyId,
++                AuditActorTypes.Agent,
++                request.AgentId,
++                AuditEventActions.AgentInitiatedTaskCreated,
++                AuditTargetTypes.WorkTask,
++                task.Id.ToString("N"),
++                AuditEventOutcomes.Succeeded,
++                request.CreationReason,
++                ["proactive_task_creation", request.TriggerSource],
++                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = task.CompanyId.ToString("N"),
++                    ["agentId"] = request.AgentId.ToString("N"),
++                    ["taskId"] = task.Id.ToString("N"),
++                    ["triggerSource"] = request.TriggerSource,
++                    ["triggerEventId"] = request.TriggerEventId,
++                    ["correlationId"] = request.CorrelationId,
++                    ["sourceType"] = WorkTaskSourceTypes.Agent,
++                    ["payloadDiff"] = Truncate(diff, 512)
++                },
++                request.CorrelationId,
++                nowUtc),
++            cancellationToken);
++    }
++
++    private void EnqueueTaskPlatformEvent(WorkTask task)
++    {
++        var eventId = $"{SupportedPlatformEventTypeRegistry.TaskCreated}:{task.Id:N}";
++        _outboxEnqueuer.Enqueue(
++            task.CompanyId,
++            SupportedPlatformEventTypeRegistry.TaskCreated,
++            new PlatformEventEnvelope(
++                eventId,
++                SupportedPlatformEventTypeRegistry.TaskCreated,
++                task.CreatedUtc,
++                task.CompanyId,
++                task.CorrelationId ?? eventId,
++                "work_task",
++                task.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
++                    ["title"] = JsonValue.Create(task.Title),
++                    ["type"] = JsonValue.Create(task.Type),
++                    ["status"] = JsonValue.Create(task.Status.ToStorageValue()),
++                    ["priority"] = JsonValue.Create(task.Priority.ToStorageValue()),
++                    ["assignedAgentId"] = task.AssignedAgentId.HasValue ? JsonValue.Create(task.AssignedAgentId.Value.ToString("N")) : null,
++                    ["sourceType"] = JsonValue.Create(task.SourceType),
++                    ["triggerSource"] = JsonValue.Create(task.TriggerSource),
++                    ["triggerEventId"] = JsonValue.Create(task.TriggerEventId)
++                }),
++            task.CorrelationId ?? eventId,
++            idempotencyKey: $"platform-event:{task.CompanyId:N}:{eventId}",
++            causationId: task.Id.ToString("N"));
++    }
++
++    private static void Validate(MappedTaskCreationRequest request)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(request.CompanyId), request.CompanyId);
++        AddRequired(errors, nameof(request.AgentId), request.AgentId);
++        AddRequired(errors, nameof(request.AssignedAgentId), request.AssignedAgentId);
++        AddRequired(errors, nameof(request.TriggerSource), request.TriggerSource, 128);
++        AddRequired(errors, nameof(request.TriggerEventId), request.TriggerEventId, 200);
++        AddRequired(errors, nameof(request.CorrelationId), request.CorrelationId, 128);
++        AddRequired(errors, nameof(request.CreationReason), request.CreationReason, RationaleSummaryMaxLength);
++        AddRequired(errors, nameof(request.Type), request.Type, TypeMaxLength);
++        AddRequired(errors, nameof(request.Title), request.Title, TitleMaxLength);
++        AddOptional(errors, nameof(request.Description), request.Description, DescriptionMaxLength);
++
++        if (!WorkTaskPriorityValues.TryParse(request.Priority, out _))
++        {
++            AddError(errors, nameof(request.Priority), WorkTaskPriorityValues.BuildValidationMessage(request.Priority));
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new TaskValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static void AddRequired(IDictionary<string, List<string>> errors, string key, Guid? value)
++    {
++        if (!value.HasValue || value.Value == Guid.Empty)
++        {
++            AddError(errors, key, $"{key} is required.");
++        }
++    }
++
++    private static void AddRequired(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, $"{key} is required.");
++            return;
++        }
++
++        AddOptional(errors, key, value, maxLength);
++    }
++
++    private static void AddOptional(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (!string.IsNullOrWhiteSpace(value) && value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private static string Truncate(string value, int maxLength) =>
++        value.Length <= maxLength ? value : value[..maxLength];
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 158b1c0..2e17ca4 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -102,6 +102,11 @@ public static class DependencyInjection
+         services.AddOptions<GroundedContextRetrievalCacheOptions>()
+             .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
+ 
++        services.AddOptions<ProactiveTaskCreationOptions>()
++            .Bind(configuration.GetSection(ProactiveTaskCreationOptions.SectionName))
++            .PostConfigure(options =>
++                options.DeduplicationWindowSeconds = Math.Max(1, options.DeduplicationWindowSeconds));
++
+         services.AddOptions<ExecutiveCockpitDashboardCacheOptions>()
+             .Bind(configuration.GetSection(ExecutiveCockpitDashboardCacheOptions.SectionName))
+             .Validate(options => options.TtlSeconds > 0, "Executive cockpit dashboard cache TTL must be positive.")
+@@ -211,6 +216,9 @@ public static class DependencyInjection
+         services.AddScoped<CompanyMemoryService>();
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
++        services.AddScoped<ITriggerToTaskMappingService, DefaultTriggerToTaskMappingService>();
++        services.AddScoped<IProactiveTaskDuplicateDetector, EfProactiveTaskDuplicateDetector>();
++        services.AddScoped<IProactiveTaskCreationService, ProactiveTaskCreationService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+         services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
+         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 9c0b5a0..9b1ec5e 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -12,6 +12,9 @@
+   "CompanyDocuments": {
+     "StorageRootPath": "App_Data/company-documents"
+   },
++  "ProactiveTaskCreation": {
++    "DeduplicationWindowSeconds": 900
++  },
+   "Knowledge": {
+     "Chunking": {
+       "MaxChunkCharacters": 1800,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+new file mode 100644
+index 0000000..80cc765
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+@@ -0,0 +1,101 @@
++using System;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    [Migration("20260414110000_AddAgentInitiatedTaskCreation")]
++    public partial class AddAgentInitiatedTaskCreation : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "source_type",
++                table: "tasks",
++                type: "nvarchar(64)",
++                maxLength: 64,
++                nullable: false,
++                defaultValue: "user");
++
++            migrationBuilder.AddColumn<Guid>(
++                name: "originating_agent_id",
++                table: "tasks",
++                type: "uniqueidentifier",
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "trigger_source",
++                table: "tasks",
++                type: "nvarchar(128)",
++                maxLength: 128,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "creation_reason",
++                table: "tasks",
++                type: "nvarchar(2000)",
++                maxLength: 2000,
++                nullable: true);
++
++            migrationBuilder.AddColumn<string>(
++                name: "trigger_event_id",
++                table: "tasks",
++                type: "nvarchar(200)",
++                maxLength: 200,
++                nullable: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_tasks_company_id_originating_agent_id_created_at",
++                table: "tasks",
++                columns: new[] { "company_id", "originating_agent_id", "created_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_tasks_company_id_trigger_source_trigger_event_id_correlation_id_created_at",
++                table: "tasks",
++                columns: new[] { "company_id", "trigger_source", "trigger_event_id", "correlation_id", "created_at" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex(
++                name: "IX_tasks_company_id_originating_agent_id_created_at",
++                table: "tasks");
++
++            migrationBuilder.DropIndex(
++                name: "IX_tasks_company_id_trigger_source_trigger_event_id_correlation_id_created_at",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "source_type",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "originating_agent_id",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "trigger_source",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "creation_reason",
++                table: "tasks");
++
++            migrationBuilder.DropColumn(
++                name: "trigger_event_id",
++                table: "tasks");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+new file mode 100644
+index 0000000..5f3b2b9
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -0,0 +1,323 @@
++using System.Text.Json.Nodes;
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Tasks;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auditing;
++using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ProactiveTaskCreationServiceTests
++{
++    [Fact]
++    public void Mapper_creates_normalized_agent_task_request_from_trigger_payload()
++    {
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var mapper = new DefaultTriggerToTaskMappingService();
++
++        var mapped = mapper.Map(new ProactiveTaskTrigger(
++            companyId,
++            agentId,
++            "condition",
++            "trigger-event-1",
++            "correlation-1",
++            "Inventory drift crossed the threshold.",
++            new Dictionary<string, JsonNode?>
++            {
++                ["title"] = JsonValue.Create("Review inventory drift"),
++                ["priority"] = JsonValue.Create("high")
++            }));
++
++        Assert.Equal(companyId, mapped.CompanyId);
++        Assert.Equal(agentId, mapped.AgentId);
++        Assert.Equal(agentId, mapped.AssignedAgentId);
++        Assert.Equal("condition", mapped.TriggerSource);
++        Assert.Equal("trigger-event-1", mapped.TriggerEventId);
++        Assert.Equal("correlation-1", mapped.CorrelationId);
++        Assert.Equal("Review inventory drift", mapped.Title);
++        Assert.Equal("high", mapped.Priority);
++        Assert.Equal("agent", mapped.InputPayload["originatingAgentId"] is null ? null : "agent");
++    }
++
++    [Fact]
++    public async Task CreateAsync_persists_agent_metadata_and_audit_event()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var service = CreateService(dbContext);
++
++        var result = await service.CreateAsync(
++            new CreateAgentInitiatedTaskCommand(CreateTrigger(companyId, agentId)),
++            CancellationToken.None);
++
++        Assert.True(result.Created);
++        Assert.False(result.Duplicate);
++
++        var task = await dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == result.TaskId);
++        Assert.Equal(companyId, task.CompanyId);
++        Assert.Equal("Review inventory drift", task.Title);
++        Assert.Equal("Inventory drift crossed the threshold.", task.Description);
++        Assert.Equal(WorkTaskPriority.High, task.Priority);
++        Assert.Equal(WorkTaskStatus.New, task.Status);
++        Assert.Equal(agentId, task.AssignedAgentId);
++        Assert.Equal(WorkTaskSourceTypes.Agent, task.SourceType);
++        Assert.Equal(agentId, task.OriginatingAgentId);
++        Assert.Equal("condition", task.TriggerSource);
++        Assert.Equal("trigger-event-1", task.TriggerEventId);
++        Assert.Equal("Inventory drift crossed the threshold.", task.CreationReason);
++        Assert.Equal("correlation-1", task.CorrelationId);
++        Assert.Equal(AuditActorTypes.Agent, task.CreatedByActorType);
++        Assert.Equal(agentId, task.CreatedByActorId);
++
++        var audit = await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated);
++        Assert.Equal(companyId, audit.CompanyId);
++        Assert.Equal(AuditActorTypes.Agent, audit.ActorType);
++        Assert.Equal(agentId, audit.ActorId);
++        Assert.Equal(result.TaskId.ToString("N"), audit.TargetId);
++        Assert.Equal(AuditEventOutcomes.Succeeded, audit.Outcome);
++        Assert.Equal("correlation-1", audit.CorrelationId);
++        Assert.Equal(agentId.ToString("N"), audit.Metadata["agentId"]);
++        Assert.Equal(companyId.ToString("N"), audit.Metadata["companyId"]);
++        Assert.Equal("condition", audit.Metadata["triggerSource"]);
++        Assert.Contains("Review inventory drift", audit.Metadata["payloadDiff"]);
++        Assert.True(audit.OccurredUtc > DateTime.UtcNow.AddMinutes(-1));
++    }
++
++    [Fact]
++    public async Task CreateAsync_returns_duplicate_without_second_task_or_audit_inside_deduplication_window()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var service = CreateService(dbContext);
++        var command = new CreateAgentInitiatedTaskCommand(CreateTrigger(companyId, agentId));
++
++        var first = await service.CreateAsync(command, CancellationToken.None);
++        var second = await service.CreateAsync(command, CancellationToken.None);
++
++        Assert.True(first.Created);
++        Assert.False(first.Duplicate);
++        Assert.False(second.Created);
++        Assert.True(second.Duplicate);
++        Assert.Equal(first.TaskId, second.TaskId);
++        Assert.Equal(1, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());
++        Assert.Equal(1, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));
++    }
++
++    [Fact]
++    public async Task CreateAsync_validates_required_mapped_fields()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var service = CreateService(
++            dbContext,
++            mapper: new StubMapper(new MappedTaskCreationRequest(
++                companyId,
++                agentId,
++                "",
++                "",
++                "",
++                "",
++                "",
++                "",
++                null,
++                "",
++                null,
++                null,
++                [])));
++
++        var ex = await Assert.ThrowsAsync<TaskValidationException>(() =>
++            service.CreateAsync(
++                new CreateAgentInitiatedTaskCommand(CreateTrigger(companyId, agentId)),
++                CancellationToken.None));
++
++        Assert.Contains(nameof(MappedTaskCreationRequest.TriggerSource), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.TriggerEventId), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.CorrelationId), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.CreationReason), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.Type), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);
++    }
++
++    [Fact]
++    public async Task Duplicate_detector_scopes_by_company_trigger_event_correlation_and_window()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var service = CreateService(dbContext, options: new ProactiveTaskCreationOptions { DeduplicationWindowSeconds = 1 });
++        var command = new CreateAgentInitiatedTaskCommand(CreateTrigger(companyId, agentId));
++
++        var first = await service.CreateAsync(command, CancellationToken.None);
++        await Task.Delay(1100);
++        var second = await service.CreateAsync(command, CancellationToken.None);
++
++        Assert.True(first.Created);
++        Assert.True(second.Created);
++        Assert.NotEqual(first.TaskId, second.TaskId);
++        Assert.Equal(2, await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync());
++        Assert.Equal(2, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.Action == AuditEventActions.AgentInitiatedTaskCreated));
++    }
++
++    private static ProactiveTaskCreationService CreateService(
++        VirtualCompanyDbContext dbContext,
++        ITriggerToTaskMappingService? mapper = null,
++        ProactiveTaskCreationOptions? options = null) =>
++        new(
++            dbContext,
++            mapper ?? new DefaultTriggerToTaskMappingService(),
++            new EfProactiveTaskDuplicateDetector(dbContext),
++            new CompanyAgentAssignmentGuard(dbContext),
++            new AuditEventWriter(dbContext),
++            new NoOpOutboxEnqueuer(),
++            new NoOpDashboardCache(),
++            TimeProvider.System,
++            Options.Create(options ?? new ProactiveTaskCreationOptions()));
++
++    private static ProactiveTaskTrigger CreateTrigger(Guid companyId, Guid agentId) =>
++        new(
++            companyId,
++            agentId,
++            "condition",
++            "trigger-event-1",
++            "correlation-1",
++            "Inventory drift crossed the threshold.",
++            new Dictionary<string, JsonNode?>
++            {
++                ["title"] = JsonValue.Create("Review inventory drift"),
++                ["description"] = JsonValue.Create("Inventory drift crossed the threshold."),
++                ["priority"] = JsonValue.Create("high")
++            });
++
++    private static SqliteConnection CreateOpenConnection()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        connection.Open();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options;
++        var dbContext = new VirtualCompanyDbContext(options);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
++
++    private static async Task SeedCompanyAndAgentAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid agentId)
++    {
++        dbContext.Companies.Add(new Company(companyId, "Proactive Task Test Company"));
++        dbContext.Agents.Add(new Agent(
++            agentId,
++            companyId,
++            "proactive-agent",
++            "Proactive Agent",
++            "Operations Agent",
++            "Operations",
++            null,
++            AgentSeniority.Mid,
++            AgentStatus.Active,
++            AgentAutonomyLevel.Assisted));
++        await dbContext.SaveChangesAsync();
++    }
++
++    private sealed class StubMapper : ITriggerToTaskMappingService
++    {
++        private readonly MappedTaskCreationRequest _request;
++
++        public StubMapper(MappedTaskCreationRequest request)
++        {
++            _request = request;
++        }
++
++        public MappedTaskCreationRequest Map(ProactiveTaskTrigger trigger) => _request;
++    }
++
++    private sealed class NoOpDashboardCache : IExecutiveCockpitDashboardCache
++    {
++        public Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken) => Task.CompletedTask;
++    }
++
++    private sealed class NoOpOutboxEnqueuer : ICompanyOutboxEnqueuer
++    {
++        public void Enqueue(
++            Guid companyId,
++            string topic,
++            PlatformEventEnvelope payload,
++            string? correlationId,
++            string? idempotencyKey = null,
++            string? causationId = null)
++        {
++        }
++    }
++}
+END_OF_PATCH

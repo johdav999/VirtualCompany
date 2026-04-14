@@ -1,0 +1,804 @@
+diff --git a/src/VirtualCompany.Api/Controllers/EscalationsController.cs b/src/VirtualCompany.Api/Controllers/EscalationsController.cs
+new file mode 100644
+index 0000000..5e5b55c
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/EscalationsController.cs
+@@ -0,0 +1,100 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Escalations;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/escalations")]
++[Authorize(Policy = CompanyPolicies.AuditReview)]
++[RequireCompanyContext]
++public sealed class EscalationsController : ControllerBase
++{
++    private readonly IEscalationQueryService _escalationQueries;
++
++    public EscalationsController(IEscalationQueryService escalationQueries)
++    {
++        _escalationQueries = escalationQueries;
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<EscalationRecordListResult>> ListAsync(
++        Guid companyId,
++        CancellationToken cancellationToken,
++        [FromQuery] Guid? sourceEntityId = null,
++        [FromQuery] string? sourceEntityType = null,
++        [FromQuery] Guid? policyId = null,
++        [FromQuery] string? correlationId = null,
++        [FromQuery] DateTime? fromUtc = null,
++        [FromQuery] DateTime? toUtc = null,
++        [FromQuery] int? skip = null,
++        [FromQuery] int? take = null)
++    {
++        try
++        {
++            return Ok(await _escalationQueries.ListEscalationsAsync(
++                companyId,
++                new EscalationRecordFilter(
++                    sourceEntityId,
++                    sourceEntityType,
++                    policyId,
++                    correlationId,
++                    fromUtc,
++                    toUtc,
++                    skip,
++                    take),
++                cancellationToken));
++        }
++        catch (ArgumentException ex) when (ex.ParamName == "filter")
++        {
++            ModelState.AddModelError("filter", ex.Message);
++            return ValidationProblem(ModelState);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{escalationId:guid}")]
++    public async Task<ActionResult<EscalationRecordDto>> GetAsync(
++        Guid companyId,
++        Guid escalationId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _escalationQueries.GetEscalationAsync(companyId, escalationId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("history")]
++    public async Task<ActionResult<PolicyEvaluationHistoryResult>> ListPolicyEvaluationHistoryAsync(
++        Guid companyId,
++        CancellationToken cancellationToken,
++        [FromQuery] Guid? sourceEntityId = null,
++        [FromQuery] string? sourceEntityType = null,
++        [FromQuery] Guid? policyId = null,
++        [FromQuery] string? correlationId = null,
++        [FromQuery] DateTime? fromUtc = null,
++        [FromQuery] DateTime? toUtc = null,
++        [FromQuery] int? skip = null,
++        [FromQuery] int? take = null)
++    {
++        try
++        {
++            return Ok(await _escalationQueries.ListPolicyEvaluationHistoryAsync(
++                companyId,
++                new PolicyEvaluationHistoryFilter(sourceEntityId, sourceEntityType, policyId, correlationId, fromUtc, toUtc, skip, take),
++                cancellationToken));
++        }
++        catch (ArgumentException ex) when (ex.ParamName == "filter")
++        {
++            ModelState.AddModelError("filter", ex.Message);
++            return ValidationProblem(ModelState);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationQueryContracts.cs b/src/VirtualCompany.Application/Escalations/EscalationQueryContracts.cs
+new file mode 100644
+index 0000000..6c9b2c1
+--- /dev/null
++++ b/src/VirtualCompany.Application/Escalations/EscalationQueryContracts.cs
+@@ -0,0 +1,74 @@
++namespace VirtualCompany.Application.Escalations;
++
++public sealed record EscalationRecordFilter(
++    Guid? SourceEntityId = null,
++    string? SourceEntityType = null,
++    Guid? PolicyId = null,
++    string? CorrelationId = null,
++    DateTime? FromUtc = null,
++    DateTime? ToUtc = null,
++    int? Skip = null,
++    int? Take = null);
++
++public sealed record EscalationRecordDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid PolicyId,
++    Guid SourceEntityId,
++    string SourceEntityType,
++    int EscalationLevel,
++    string Reason,
++    DateTime TriggeredAt,
++    string? CorrelationId,
++    string Status,
++    DateTime CreatedAt,
++    int LifecycleVersion,
++    DateTime? ResolvedAt = null,
++    DateTime? ReopenedAt = null);
++
++public sealed record EscalationRecordListResult(
++    IReadOnlyList<EscalationRecordDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
++
++public sealed record PolicyEvaluationHistoryFilter(
++    Guid? SourceEntityId = null,
++    string? SourceEntityType = null,
++    Guid? PolicyId = null,
++    string? CorrelationId = null,
++    DateTime? FromUtc = null,
++    DateTime? ToUtc = null,
++    int? Skip = null,
++    int? Take = null);
++
++public sealed record PolicyEvaluationHistoryItemDto(
++    Guid AuditEventId,
++    Guid CompanyId,
++    Guid? PolicyId,
++    Guid? SourceEntityId,
++    string? SourceEntityType,
++    int? EscalationLevel,
++    string Action,
++    string Outcome,
++    bool? ConditionsMet,
++    string? EvaluationResult,
++    string? Reason,
++    DateTime EvaluatedAt,
++    string? CorrelationId,
++    Guid? EscalationRecordId,
++    string TargetType,
++    string TargetId,
++    IReadOnlyDictionary<string, string?> Metadata);
++
++public sealed record PolicyEvaluationHistoryResult(
++    IReadOnlyList<PolicyEvaluationHistoryItemDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take);
++
++public interface IEscalationQueryService
++{
++    Task<EscalationRecordListResult> ListEscalationsAsync(
++        Guid companyId,
++        EscalationRecordFilter filter,
++        CancellationToken cancellationToken);
++
++    Task<EscalationRecordDto> GetEscalationAsync(Guid companyId, Guid escalationId, CancellationToken cancellationToken);
++
++    Task<PolicyEvaluationHistoryResult> ListPolicyEvaluationHistoryAsync(
++        Guid companyId,
++        PolicyEvaluationHistoryFilter filter,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+index 03f0f60..95e8d4e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+@@ -1,7 +1,10 @@
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Escalations;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+@@ -65,3 +68,244 @@ public sealed class EfEscalationRepository : IEscalationRepository
+         return false;
+     }
+ }
++
++public sealed class EfEscalationQueryService : IEscalationQueryService
++{
++    private const int DefaultTake = 50;
++    private const int MaxTake = 200;
++
++    private static readonly string[] PolicyEvaluationActions =
++    [
++        AuditEventActions.EscalationPolicyEvaluationStarted,
++        AuditEventActions.EscalationPolicyEvaluationCompleted,
++        AuditEventActions.EscalationPolicyEvaluationResult,
++        AuditEventActions.EscalationCreated,
++        AuditEventActions.EscalationDuplicateSkipped
++    ];
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++
++    public EfEscalationQueryService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor companyContextAccessor)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<EscalationRecordListResult> ListEscalationsAsync(
++        Guid companyId,
++        EscalationRecordFilter filter,
++        CancellationToken cancellationToken)
++    {
++        EnsureEscalationReviewAccess(companyId);
++        ValidateDateRange(filter.FromUtc, filter.ToUtc, nameof(filter));
++
++        var skip = Math.Max(filter.Skip ?? 0, 0);
++        var take = Math.Clamp(filter.Take ?? DefaultTake, 1, MaxTake);
++
++        var query = _dbContext.Escalations
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        if (filter.SourceEntityId is Guid sourceEntityId)
++        {
++            query = query.Where(x => x.SourceEntityId == sourceEntityId);
++        }
++
++        if (!string.IsNullOrWhiteSpace(filter.SourceEntityType))
++        {
++            var sourceEntityType = filter.SourceEntityType.Trim();
++            query = query.Where(x => x.SourceEntityType == sourceEntityType);
++        }
++
++        if (filter.PolicyId is Guid policyId)
++        {
++            query = query.Where(x => x.PolicyId == policyId);
++        }
++
++        if (!string.IsNullOrWhiteSpace(filter.CorrelationId))
++        {
++            var correlationId = filter.CorrelationId.Trim();
++            query = query.Where(x => x.CorrelationId == correlationId);
++        }
++
++        if (filter.FromUtc is DateTime fromUtc)
++        {
++            query = query.Where(x => x.TriggeredUtc >= fromUtc);
++        }
++
++        if (filter.ToUtc is DateTime toUtc)
++        {
++            query = query.Where(x => x.TriggeredUtc <= toUtc);
++        }
++
++        var totalCount = await query.CountAsync(cancellationToken);
++        var items = await query
++            .OrderByDescending(x => x.TriggeredUtc)
++            .ThenByDescending(x => x.CreatedUtc)
++            .ThenBy(x => x.EscalationLevel)
++            .Skip(skip)
++            .Take(take)
++            .Select(x => MapEscalationRecord(x))
++            .ToListAsync(cancellationToken);
++
++        return new EscalationRecordListResult(items, totalCount, skip, take);
++    }
++
++    public async Task<EscalationRecordDto> GetEscalationAsync(
++        Guid companyId,
++        Guid escalationId,
++        CancellationToken cancellationToken)
++    {
++        EnsureEscalationReviewAccess(companyId);
++
++        var escalation = await _dbContext.Escalations
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == escalationId, cancellationToken)
++            ?? throw new KeyNotFoundException("Escalation record was not found.");
++
++        return MapEscalationRecord(escalation);
++    }
++
++    public async Task<PolicyEvaluationHistoryResult> ListPolicyEvaluationHistoryAsync(
++        Guid companyId,
++        PolicyEvaluationHistoryFilter filter,
++        CancellationToken cancellationToken)
++    {
++        EnsureEscalationReviewAccess(companyId);
++        ValidateDateRange(filter.FromUtc, filter.ToUtc, nameof(filter));
++
++        var skip = Math.Max(filter.Skip ?? 0, 0);
++        var take = Math.Clamp(filter.Take ?? DefaultTake, 1, MaxTake);
++
++        var query = _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && PolicyEvaluationActions.Contains(x.Action));
++
++        if (!string.IsNullOrWhiteSpace(filter.CorrelationId))
++        {
++            var correlationId = filter.CorrelationId.Trim();
++            query = query.Where(x => x.CorrelationId == correlationId);
++        }
++
++        if (filter.FromUtc is DateTime fromUtc)
++        {
++            query = query.Where(x => x.OccurredUtc >= fromUtc);
++        }
++
++        if (filter.ToUtc is DateTime toUtc)
++        {
++            query = query.Where(x => x.OccurredUtc <= toUtc);
++        }
++
++        var candidateEvents = await query
++            .OrderByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.Action)
++            .ToListAsync(cancellationToken);
++
++        var filteredEvents = candidateEvents
++            .Where(x => MatchesPolicyEvaluationFilter(x, filter))
++            .ToList();
++
++        var page = filteredEvents
++            .Skip(skip)
++            .Take(take)
++            .ToList();
++
++        return new PolicyEvaluationHistoryResult(
++            page.Select(MapPolicyEvaluationHistoryItem).ToList(),
++            filteredEvents.Count,
++            skip,
++            take);
++    }
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new UnauthorizedAccessException("Company context is required.");
++        }
++
++        if (!_companyContextAccessor.IsResolved ||
++            _companyContextAccessor.CompanyId is not Guid currentCompanyId ||
++            currentCompanyId != companyId)
++        {
++            throw new UnauthorizedAccessException("Escalation history is scoped to the active company context.");
++        }
++    }
++
++    private void EnsureEscalationReviewAccess(Guid companyId)
++    {
++        EnsureTenant(companyId);
++
++        var membership = _companyContextAccessor.Membership;
++        if (membership is null ||
++            membership.CompanyId != companyId ||
++            membership.Status != CompanyMembershipStatus.Active ||
++            !CanReviewEscalations(membership.MembershipRole))
++        {
++            throw new UnauthorizedAccessException("Escalation history requires escalation review access.");
++        }
++    }
++
++    private static bool CanReviewEscalations(CompanyMembershipRole role) =>
++        role is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager;
++
++    private static void ValidateDateRange(DateTime? fromUtc, DateTime? toUtc, string paramName)
++    {
++        if (fromUtc is DateTime requestedFromUtc &&
++            toUtc is DateTime requestedToUtc &&
++            requestedFromUtc > requestedToUtc)
++        {
++            throw new ArgumentException("Escalation history from date must be on or before the to date.", paramName);
++        }
++    }
++
++    private static bool MatchesPolicyEvaluationFilter(AuditEvent auditEvent, PolicyEvaluationHistoryFilter filter) =>
++        MatchesMetadataGuid(auditEvent, "policyId", filter.PolicyId) &&
++        MatchesMetadataGuid(auditEvent, "sourceEntityId", filter.SourceEntityId) &&
++        MatchesMetadataText(auditEvent, "sourceEntityType", filter.SourceEntityType);
++
++    private static bool MatchesMetadataGuid(AuditEvent auditEvent, string key, Guid? expected)
++    {
++        if (!expected.HasValue)
++        {
++            return true;
++        }
++
++        return auditEvent.Metadata.TryGetValue(key, out var value) &&
++            Guid.TryParse(value, out var parsed) &&
++            parsed == expected.Value;
++    }
++
++    private static bool MatchesMetadataText(AuditEvent auditEvent, string key, string? expected)
++    {
++        if (string.IsNullOrWhiteSpace(expected))
++        {
++            return true;
++        }
++
++        return auditEvent.Metadata.TryGetValue(key, out var value) &&
++            string.Equals(value, expected.Trim(), StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static EscalationRecordDto MapEscalationRecord(Escalation escalation) =>
++        new(
++            escalation.Id,
++            escalation.CompanyId,
++            escalation.PolicyId,
++            escalation.SourceEntityId,
++            escalation.SourceEntityType,
++            escalation.EscalationLevel,
++            escalation.Reason,
++            escalation.TriggeredUtc,
++            escalation.CorrelationId,
++            escalation.Status.ToStorageValue(),
++            escalation.CreatedUtc,
++            escalation.LifecycleVersion);
++
++    private static PolicyEvaluationHistoryItemDto MapPolicyEvaluationHistoryItem(AuditEvent auditEvent)
++    {
++        var policyId = TryGetGuid(auditEvent.Metadata, "policyId");
++        var sourceEntityId = TryGetGuid(auditEvent.Metadata, "sourceEntityId");
++        var sourceEntityType = TryGetValue(auditEvent.Metadata, "sourceEntityType");
++        var escalationLevel = TryGetInt(auditEvent.Metadata, "escalationLevel");
++        var conditionsMet = TryGetBool(auditEvent.Metadata, "conditionsMet");
++        var escalationRecordId = TryGetGuid(auditEvent.Metadata, "escalationId");
++        var diagnostic = TryGetValue(auditEvent.Metadata, "diagnostic");
++        var evaluationResult = auditEvent.Action switch
++        {
++            AuditEventActions.EscalationPolicyEvaluationStarted => "started",
++            AuditEventActions.EscalationPolicyEvaluationCompleted => "completed",
++            AuditEventActions.EscalationCreated => "created",
++            AuditEventActions.EscalationDuplicateSkipped => "duplicate_skipped",
++            AuditEventActions.EscalationPolicyEvaluationResult when conditionsMet == true => "matched",
++            AuditEventActions.EscalationPolicyEvaluationResult when conditionsMet == false => "not_matched",
++            _ => auditEvent.Outcome
++        };
++
++        return new PolicyEvaluationHistoryItemDto(
++            auditEvent.Id,
++            auditEvent.CompanyId,
++            policyId,
++            sourceEntityId,
++            sourceEntityType,
++            escalationLevel,
++            auditEvent.Action,
++            auditEvent.Outcome,
++            conditionsMet,
++            evaluationResult,
++            auditEvent.RationaleSummary ?? diagnostic,
++            auditEvent.OccurredUtc,
++            auditEvent.CorrelationId,
++            escalationRecordId,
++            auditEvent.TargetType,
++            auditEvent.TargetId,
++            new Dictionary<string, string?>(auditEvent.Metadata, StringComparer.OrdinalIgnoreCase));
++    }
++
++    private static Guid? TryGetGuid(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value) && Guid.TryParse(value, out var parsed)
++            ? parsed
++            : null;
++
++    private static int? TryGetInt(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value) && int.TryParse(value, out var parsed)
++            ? parsed
++            : null;
++
++    private static bool? TryGetBool(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value) && bool.TryParse(value, out var parsed)
++            ? parsed
++            : null;
++
++    private static string? TryGetValue(IReadOnlyDictionary<string, string?> metadata, string key) =>
++        metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
++            ? value
++            : null;
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index b6dd770..ea6122c 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -269,6 +269,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
+         services.AddScoped<IEscalationRepository, EfEscalationRepository>();
+         services.AddScoped<IEscalationPolicyEvaluationService, EscalationPolicyEvaluationService>();
++        services.AddScoped<IEscalationQueryService, EfEscalationQueryService>();
+         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+diff --git a/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs
+new file mode 100644
+index 0000000..438c41d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs
+@@ -0,0 +1,251 @@
++using System.Net;
++using System.Net.Http.Json;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Escalations;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public EscalationApiIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Escalation_list_filters_by_source_policy_correlation_and_tenant()
++    {
++        var seed = await SeedEscalationHistoryAsync("list");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Reviewer");
++
++        var all = await client.GetFromJsonAsync<EscalationRecordListResult>(
++            $"/api/companies/{seed.CompanyId}/escalations");
++        var bySource = await client.GetFromJsonAsync<EscalationRecordListResult>(
++            $"/api/companies/{seed.CompanyId}/escalations?sourceEntityId={seed.SourceEntityId}&sourceEntityType=work_task");
++        var byPolicy = await client.GetFromJsonAsync<EscalationRecordListResult>(
++            $"/api/companies/{seed.CompanyId}/escalations?policyId={seed.PolicyId}");
++        var byCorrelation = await client.GetFromJsonAsync<EscalationRecordListResult>(
++            $"/api/companies/{seed.CompanyId}/escalations?correlationId=corr-escalation-list");
++
++        Assert.NotNull(all);
++        Assert.NotNull(bySource);
++        Assert.NotNull(byPolicy);
++        Assert.NotNull(byCorrelation);
++        var allItem = Assert.Single(all!.Items);
++        Assert.Equal(seed.EscalationId, allItem.Id);
++        Assert.Equal(seed.PolicyId, allItem.PolicyId);
++        Assert.Equal(seed.SourceEntityId, allItem.SourceEntityId);
++        Assert.Equal("work_task", allItem.SourceEntityType);
++        Assert.Equal(2, allItem.EscalationLevel);
++        Assert.Equal("Critical task breached response target.", allItem.Reason);
++        Assert.Equal("corr-escalation-list", allItem.CorrelationId);
++        Assert.Equal(EscalationStatus.Triggered.ToStorageValue(), allItem.Status);
++        Assert.Single(bySource!.Items);
++        Assert.Single(byPolicy!.Items);
++        Assert.Single(byCorrelation!.Items);
++    }
++
++    [Fact]
++    public async Task Escalation_detail_does_not_return_cross_tenant_records()
++    {
++        var seed = await SeedEscalationHistoryAsync("detail");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Reviewer");
++
++        var ownResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/escalations/{seed.EscalationId}");
++        var crossTenantResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/escalations/{seed.OtherEscalationId}");
++
++        Assert.Equal(HttpStatusCode.OK, ownResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantResponse.StatusCode);
++    }
++
++    [Fact]
++    public async Task Policy_evaluation_history_filters_by_correlation_and_projects_audit_traceability()
++    {
++        var seed = await SeedEscalationHistoryAsync("history");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Reviewer");
++
++        var result = await client.GetFromJsonAsync<PolicyEvaluationHistoryResult>(
++            $"/api/companies/{seed.CompanyId}/escalations/history?correlationId=corr-escalation-history&sourceEntityId={seed.SourceEntityId}&policyId={seed.PolicyId}");
++
++        Assert.NotNull(result);
++        Assert.Equal(2, result!.TotalCount);
++        Assert.All(result.Items, item =>
++        {
++            Assert.Equal(seed.CompanyId, item.CompanyId);
++            Assert.Equal(seed.PolicyId, item.PolicyId);
++            Assert.Equal(seed.SourceEntityId, item.SourceEntityId);
++            Assert.Equal("corr-escalation-history", item.CorrelationId);
++        });
++        Assert.Contains(result.Items, item =>
++            item.Action == AuditEventActions.EscalationPolicyEvaluationResult &&
++            item.ConditionsMet == true &&
++            item.EvaluationResult == "matched");
++        Assert.Contains(result.Items, item =>
++            item.Action == AuditEventActions.EscalationCreated &&
++            item.EscalationRecordId == seed.EscalationId);
++    }
++
++    [Fact]
++    public async Task Escalation_history_forbids_members_without_audit_review_role()
++    {
++        var seed = await SeedEscalationHistoryAsync("forbidden", CompanyMembershipRole.Employee);
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Employee");
++
++        var listResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/escalations");
++        var historyResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/escalations/history");
++
++        Assert.Equal(HttpStatusCode.Forbidden, listResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.Forbidden, historyResponse.StatusCode);
++    }
++
++    private async Task<EscalationHistorySeed> SeedEscalationHistoryAsync(
++        string suffix,
++        CompanyMembershipRole role = CompanyMembershipRole.Manager)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var policyId = Guid.NewGuid();
++        var otherPolicyId = Guid.NewGuid();
++        var sourceEntityId = Guid.NewGuid();
++        var otherSourceEntityId = Guid.NewGuid();
++        var escalationId = Guid.NewGuid();
++        var otherEscalationId = Guid.NewGuid();
++        var correlationId = $"corr-escalation-{suffix}";
++        var otherCorrelationId = $"corr-other-escalation-{suffix}";
++        var subject = $"escalation-reviewer-{suffix}-{Guid.NewGuid():N}";
++        var email = $"{subject}@example.com";
++        var triggeredAt = new DateTime(2026, 4, 14, 9, 15, 0, DateTimeKind.Utc);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, "Escalation Reviewer", "dev-header", subject));
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Escalation Company"),
++                new Company(otherCompanyId, "Other Escalation Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(
++                Guid.NewGuid(),
++                companyId,
++                userId,
++                role,
++                CompanyMembershipStatus.Active));
++
++            dbContext.Escalations.AddRange(
++                new Escalation(
++                    escalationId,
++                    companyId,
++                    policyId,
++                    sourceEntityId,
++                    EscalationSourceEntityTypes.WorkTask,
++                    2,
++                    "Critical task breached response target.",
++                    triggeredAt,
++                    correlationId,
++                    0),
++                new Escalation(
++                    otherEscalationId,
++                    otherCompanyId,
++                    otherPolicyId,
++                    otherSourceEntityId,
++                    EscalationSourceEntityTypes.WorkTask,
++                    1,
++                    "Other tenant escalation.",
++                    triggeredAt,
++                    otherCorrelationId,
++                    0));
++
++            dbContext.AuditEvents.AddRange(
++                new AuditEvent(
++                    Guid.NewGuid(),
++                    companyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.EscalationPolicyEvaluationResult,
++                    AuditTargetTypes.EscalationPolicy,
++                    sourceEntityId.ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Critical task breached response target.",
++                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
++                    new Dictionary<string, string?>
++                    {
++                        ["policyId"] = policyId.ToString(),
++                        ["policyName"] = "Critical task response policy",
++                        ["sourceEntityId"] = sourceEntityId.ToString(),
++                        ["sourceEntityType"] = EscalationSourceEntityTypes.WorkTask,
++                        ["escalationLevel"] = "2",
++                        ["conditionsMet"] = "true"
++                    },
++                    correlationId,
++                    triggeredAt),
++                new AuditEvent(
++                    Guid.NewGuid(),
++                    companyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.EscalationCreated,
++                    AuditTargetTypes.EscalationPolicy,
++                    sourceEntityId.ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Critical task breached response target.",
++                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
++                    new Dictionary<string, string?>
++                    {
++                        ["policyId"] = policyId.ToString(),
++                        ["policyName"] = "Critical task response policy",
++                        ["sourceEntityId"] = sourceEntityId.ToString(),
++                        ["sourceEntityType"] = EscalationSourceEntityTypes.WorkTask,
++                        ["escalationLevel"] = "2",
++                        ["conditionsMet"] = "true",
++                        ["escalationId"] = escalationId.ToString()
++                    },
++                    correlationId,
++                    triggeredAt.AddSeconds(1)),
++                new AuditEvent(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.EscalationPolicyEvaluationResult,
++                    AuditTargetTypes.EscalationPolicy,
++                    otherSourceEntityId.ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Other tenant policy matched.",
++                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
++                    new Dictionary<string, string?>
++                    {
++                        ["policyId"] = otherPolicyId.ToString(),
++                        ["sourceEntityId"] = otherSourceEntityId.ToString(),
++                        ["sourceEntityType"] = EscalationSourceEntityTypes.WorkTask,
++                        ["escalationLevel"] = "1",
++                        ["conditionsMet"] = "true"
++                    },
++                    otherCorrelationId,
++                    triggeredAt));
++
++            return Task.CompletedTask;
++        });
++
++        return new EscalationHistorySeed(
++            companyId,
++            otherCompanyId,
++            policyId,
++            sourceEntityId,
++            escalationId,
++            otherEscalationId,
++            subject,
++            email);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private sealed record EscalationHistorySeed(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        Guid PolicyId,
++        Guid SourceEntityId,
++        Guid EscalationId,
++        Guid OtherEscalationId,
++        string Subject,
++        string Email);
++}
+END_OF_PATCH

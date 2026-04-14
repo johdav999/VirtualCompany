@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.1.3",
+  "promptPath": ".ai-design/prompts/TASK-13.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T17:55:41.940Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T17-55-41-940Z_TASK-13.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T17-55-41-940Z_TASK-13.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T17:58:28.296Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": " }\n+    }\n+}\ndiff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs\nindex 36f8a7c..d93e8cf 100644\n--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs\n+++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs\n@@ -132,6 +132,8 @@ public static class DependencyInjection\n             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));\n         services.AddOptions<WorkflowProgressionOptions>()\n             .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));\n+        services.AddOptions<AgentScheduledTriggerSchedulerOptions>()\n+            .Bind(configuration.GetSection(AgentScheduledTriggerSchedulerOptions.SectionName));\n         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();\n         services.AddHostedService<WorkflowSchedulerBackgroundService>();\n         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();\n@@ -205,6 +207,9 @@ public static class DependencyInjection\n         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();\n         services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();\n         services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();\n+        services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();\n+        services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();\n+        services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();\n         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.\n         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();\n         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();\nEND_OF_PATCH\n",
+  "stderrTail": "-git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs\nindex 36f8a7c..d93e8cf 100644\n--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs\n+++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs\n@@ -132,6 +132,8 @@ public static class DependencyInjection\n             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));\n         services.AddOptions<WorkflowProgressionOptions>()\n             .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));\n+        services.AddOptions<AgentScheduledTriggerSchedulerOptions>()\n+            .Bind(configuration.GetSection(AgentScheduledTriggerSchedulerOptions.SectionName));\n         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();\n         services.AddHostedService<WorkflowSchedulerBackgroundService>();\n         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();\n@@ -205,6 +207,9 @@ public static class DependencyInjection\n         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();\n         services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();\n         services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();\n+        services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();\n+        services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();\n+        services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();\n         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.\n         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();\n         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();\nEND_OF_PATCH\ntokens used\n82,048\n",
+  "verbosityMode": "summary"
+}

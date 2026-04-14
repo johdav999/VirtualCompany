@@ -1,0 +1,270 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AlertsController.cs b/src/VirtualCompany.Api/Controllers/AlertsController.cs
+index 5c9aef0..d1d4d8b 100644
+--- a/src/VirtualCompany.Api/Controllers/AlertsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AlertsController.cs
+@@ -84,13 +84,15 @@ public sealed class AlertsController : ControllerBase
+         [FromQuery] string? status,
+         [FromQuery] DateTime? createdFrom,
+         [FromQuery] DateTime? createdTo,
++        [FromQuery] int? page,
++        [FromQuery] int? pageSize,
+         [FromQuery] int? skip,
+         [FromQuery] int? take,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _alerts.ListAsync(companyId, new ListAlertsQuery(type, severity, status, createdFrom, createdTo, skip, take), cancellationToken));
++            return Ok(await _alerts.ListAsync(companyId, new ListAlertsQuery(type, severity, status, createdFrom, createdTo, page, pageSize, skip, take), cancellationToken));
+         }
+         catch (AlertValidationException ex)
+         {
+diff --git a/src/VirtualCompany.Application/Alerts/AlertContracts.cs b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+index 4f0338e..7db8249 100644
+--- a/src/VirtualCompany.Application/Alerts/AlertContracts.cs
++++ b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+@@ -41,6 +41,8 @@ public sealed record ListAlertsQuery(
+     string? Status,
+     DateTime? CreatedFrom,
+     DateTime? CreatedTo,
++    int? Page,
++    int? PageSize,
+     int? Skip,
+     int? Take);
+ 
+@@ -66,7 +68,14 @@ public sealed record AlertDto(
+ 
+ public sealed record AlertMutationResultDto(AlertDto Alert, bool Created, bool Deduplicated);
+ 
+-public sealed record AlertListResultDto(IReadOnlyList<AlertDto> Items, int TotalCount, int Skip, int Take);
++public sealed record AlertListResultDto(
++    IReadOnlyList<AlertDto> Items,
++    int TotalCount,
++    int Skip,
++    int Take,
++    int Page,
++    int PageSize,
++    int TotalPages);
+ 
+ public interface ICompanyAlertService
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index f898a84..f137f50 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -118,16 +118,19 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         }
+ 
+         var totalCount = await alerts.CountAsync(cancellationToken);
+-        var skip = Math.Max(0, query.Skip ?? 0);
+-        var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
++        var pageSize = Math.Clamp(query.PageSize ?? query.Take ?? DefaultPageSize, 1, MaxPageSize);
++        var skip = query.Page.HasValue
++            ? (query.Page.Value - 1) * pageSize
++            : Math.Max(0, query.Skip ?? 0);
++        var page = query.Page ?? (skip / pageSize) + 1;
+         var items = await alerts
+             .OrderByDescending(x => x.CreatedUtc)
+-            .ThenBy(x => x.Id)
++            .ThenByDescending(x => x.Id)
+             .Skip(skip)
+-            .Take(take)
++            .Take(pageSize)
+             .ToListAsync(cancellationToken);
++        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+ 
+-        return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, take);
++        return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, pageSize, page, pageSize, totalPages);
+     }
+ 
+     public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)
+@@ -259,14 +262,29 @@ public sealed class CompanyAlertService : ICompanyAlertService
+             AddError(errors, nameof(query.Status), AlertStatusValues.BuildValidationMessage(query.Status));
+         }
+ 
++        if (query.CreatedFrom.HasValue && query.CreatedTo.HasValue && query.CreatedFrom.Value > query.CreatedTo.Value)
++        {
++            AddError(errors, nameof(query.CreatedFrom), "CreatedFrom must be earlier than or equal to CreatedTo.");
++        }
++
++        if (query.Page is <= 0)
++        {
++            AddError(errors, nameof(query.Page), "Page must be 1 or greater.");
++        }
++
++        if (query.PageSize is <= 0 or > MaxPageSize)
++        {
++            AddError(errors, nameof(query.PageSize), $"PageSize must be between 1 and {MaxPageSize}.");
++        }
++
+         if (query.Skip is < 0)
+         {
+             AddError(errors, nameof(query.Skip), "Skip must be zero or greater.");
+         }
+ 
+-        if (query.Take is <= 0 or > MaxPageSize)
++        if (!query.PageSize.HasValue && query.Take is <= 0 or > MaxPageSize)
+         {
+             AddError(errors, nameof(query.Take), $"Take must be between 1 and {MaxPageSize}.");
+         }
+ 
+         ThrowIfInvalid(errors);
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+index 0b13d8c..b231f62 100644
+--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@ -107,15 +107,110 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var list = await response.Content.ReadFromJsonAsync<AlertListResponse>();
++
+         Assert.NotNull(list);
+         Assert.Equal(1, list!.Items.Count);
+         Assert.Equal(1, list.TotalCount);
++        Assert.Equal(1, list.Page);
++        Assert.Equal(1, list.PageSize);
++        Assert.Equal(1, list.TotalPages);
+         Assert.Equal(seed.CompanyId, list.Items[0].CompanyId);
+         Assert.Equal("risk", list.Items[0].Type);
+         Assert.Equal("critical", list.Items[0].Severity);
++        Assert.Equal("Margin at risk", list.Items[0].Title);
++        Assert.Equal("Detection summary.", list.Items[0].Summary);
++        Assert.NotEmpty(list.Items[0].Evidence);
++        Assert.Equal("corr-fp-risk", list.Items[0].CorrelationId);
++    }
++
++    [Theory]
++    [InlineData("type", "risk", 1)]
++    [InlineData("severity", "high", 1)]
++    [InlineData("status", "open", 2)]
++    public async Task Query_filters_alerts_by_classification_and_status(string filterName, string filterValue, int expectedCount)
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "high", "open", "fp-filter-risk", seed.AgentId);
++        await CreateAlertAsync(client, seed.CompanyId, "opportunity", "low", "open", "fp-filter-opportunity", seed.AgentId);
++
++        var list = await client.GetFromJsonAsync<AlertListResponse>(
++            $"/api/companies/{seed.CompanyId}/alerts?{filterName}={filterValue}&page=1&pageSize=10");
++
++        Assert.NotNull(list);
++        Assert.Equal(expectedCount, list!.TotalCount);
++        Assert.All(list.Items, alert =>
++        {
++            if (filterName == "type")
++            {
++                Assert.Equal(filterValue, alert.Type);
++            }
++            else if (filterName == "severity")
++            {
++                Assert.Equal(filterValue, alert.Severity);
++            }
++            else
++            {
++                Assert.Equal(filterValue, alert.Status);
++            }
++        });
++    }
++
++    [Fact]
++    public async Task Query_filters_alerts_by_created_at_range()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++        var createdFrom = DateTime.UtcNow.AddMinutes(-1);
++
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "high", "open", "fp-created-range", seed.AgentId);
++
++        var createdTo = DateTime.UtcNow.AddMinutes(1);
++        var list = await client.GetFromJsonAsync<AlertListResponse>(
++            $"/api/companies/{seed.CompanyId}/alerts?createdFrom={Uri.EscapeDataString(createdFrom.ToString("O"))}&createdTo={Uri.EscapeDataString(createdTo.ToString("O"))}&page=1&pageSize=10");
++
++        Assert.NotNull(list);
++        var alert = Assert.Single(list!.Items);
++        Assert.Equal("risk", alert.Type);
++        Assert.InRange(alert.CreatedAt, createdFrom, createdTo);
++    }
++
++    [Fact]
++    public async Task Query_uses_stable_page_pagination_and_created_at_ordering()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "low", "open", "fp-page-1", seed.AgentId);
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "medium", "open", "fp-page-2", seed.AgentId);
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "critical", "open", "fp-page-3", seed.AgentId);
++
++        var firstPage = await client.GetFromJsonAsync<AlertListResponse>($"/api/companies/{seed.CompanyId}/alerts?page=1&pageSize=2");
++        var secondPage = await client.GetFromJsonAsync<AlertListResponse>($"/api/companies/{seed.CompanyId}/alerts?page=2&pageSize=2");
++
++        Assert.NotNull(firstPage);
++        Assert.NotNull(secondPage);
++        Assert.Equal(3, firstPage!.TotalCount);
++        Assert.Equal(2, firstPage.TotalPages);
++        Assert.Equal(2, firstPage.Items.Count);
++        Assert.Single(secondPage!.Items);
++        Assert.Equal(1, firstPage.Page);
++        Assert.Equal(2, secondPage.Page);
++        Assert.True(firstPage.Items[0].CreatedAt >= firstPage.Items[1].CreatedAt);
++        Assert.True(firstPage.Items[1].CreatedAt >= secondPage.Items[0].CreatedAt);
++        Assert.Equal(3, firstPage.Items.Concat(secondPage.Items).Select(x => x.Id).Distinct().Count());
++    }
++
++    [Theory]
++    [InlineData("page=0&pageSize=20")]
++    [InlineData("page=1&pageSize=201")]
++    [InlineData("createdFrom=2100-01-01T00:00:00Z&createdTo=2000-01-01T00:00:00Z")]
++    public async Task Query_rejects_invalid_pagination_and_date_range(string query)
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/alerts?{query}");
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
+     [Fact]
+@@ -156,6 +251,15 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         return client;
+     }
+ 
++    private static async Task<AlertResponse> CreateAlertAsync(HttpClient client, Guid companyId, string type, string severity, string status, string fingerprint, Guid? sourceAgentId)
++    {
++        var response = await client.PostAsJsonAsync($"/api/companies/{companyId}/alerts", CreatePayload(companyId, type, severity, status, fingerprint, sourceAgentId));
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var created = await response.Content.ReadFromJsonAsync<AlertMutationResponse>();
++        Assert.NotNull(created);
++        return created!.Alert;
++    }
++
+     private static object CreatePayload(Guid companyId, string type, string severity, string status, string fingerprint, Guid? sourceAgentId) =>
+         new
+         {
+@@ -208,6 +312,10 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         public List<AlertResponse> Items { get; set; } = [];
+         public int TotalCount { get; set; }
++        public int Page { get; set; }
++        public int PageSize { get; set; }
++        public int TotalPages { get; set; }
++        public int Skip { get; set; }
+     }
+ 
+     private sealed class AlertResponse
+@@ -217,8 +325,12 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         public Guid CompanyId { get; set; }
+         public string Type { get; set; } = string.Empty;
+         public string Severity { get; set; } = string.Empty;
++        public string Title { get; set; } = string.Empty;
++        public string Summary { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
++        public string CorrelationId { get; set; } = string.Empty;
+         public int OccurrenceCount { get; set; }
+         public Dictionary<string, JsonElement> Evidence { get; set; } = [];
++        public DateTime CreatedAt { get; set; }
+     }
+ }
+END_OF_PATCH

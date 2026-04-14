@@ -1,4 +1,5 @@
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 
 namespace VirtualCompany.Application.Companies;
 
@@ -11,6 +12,11 @@ public static class CompanyOutboxTopics
     public const string InvitationAccepted = "company.invitation.accepted";
     public const string MembershipRoleChanged = "company.membership.role_changed";
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
+    public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
+    public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
+    public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
+    public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
+    public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
 }
 
 public sealed record CompanyInvitationDeliveryRequestedMessage(

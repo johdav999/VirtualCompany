@@ -287,6 +287,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             task.ParentTaskId,
             task.WorkflowInstanceId,
             task.CreatedByActorType,
+            task.SourceType,
+            task.OriginatingAgentId,
+            task.TriggerSource,
+            task.CreationReason,
+            task.TriggerEventId,
             task.CreatedByActorId,
             CloneNodes(task.InputPayload),
             CloneNodes(task.OutputPayload),
@@ -373,6 +378,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             null,
             null,
             request.InitiatingActorType ?? "user",
+            WorkTaskSourceTypes.Agent,
+            agent.Id,
+            null,
+            request.UserInput,
+            null,
             request.InitiatingActorId,
             BuildTransientInputPayload(request),
             [],
@@ -382,7 +392,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             now,
             null,
             new TaskAgentSummaryDto(agent.Id, agent.DisplayName, agent.Status),
-            null);
+            null,
+            request.CorrelationId,
+            []);
     }
 
     private async Task PersistTaskResultAsync(

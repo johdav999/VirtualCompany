@@ -1,0 +1,1038 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs b/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs
+new file mode 100644
+index 0000000..a67e1af
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AgentScheduledTriggerEntities.cs
+@@ -0,0 +1,233 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class AgentScheduledTrigger : ICompanyOwnedEntity
++{
++    private const int NameMaxLength = 200;
++    private const int CodeMaxLength = 100;
++    private const int CronExpressionMaxLength = 200;
++    private const int TimeZoneIdMaxLength = 100;
++
++    private AgentScheduledTrigger()
++    {
++        Metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    public AgentScheduledTrigger(
++        Guid id,
++        Guid companyId,
++        Guid agentId,
++        string name,
++        string code,
++        string cronExpression,
++        string timeZoneId,
++        DateTime? nextRunUtc,
++        bool isEnabled = true,
++        IDictionary<string, JsonNode?>? metadata = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId is required.", nameof(agentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AgentId = agentId;
++        Name = NormalizeRequired(name, nameof(name), NameMaxLength);
++        Code = NormalizeCode(code);
++        CronExpression = NormalizeRequired(cronExpression, nameof(cronExpression), CronExpressionMaxLength);
++        TimeZoneId = NormalizeRequired(timeZoneId, nameof(timeZoneId), TimeZoneIdMaxLength);
++        IsEnabled = isEnabled;
++        NextRunUtc = isEnabled ? NormalizeUtc(nextRunUtc, nameof(nextRunUtc)) : null;
++        DisabledUtc = isEnabled ? null : DateTime.UtcNow;
++        Metadata = CloneNodes(metadata);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public string Code { get; private set; } = null!;
++    public string CronExpression { get; private set; } = null!;
++    public string TimeZoneId { get; private set; } = null!;
++    public bool IsEnabled { get; private set; }
++    public DateTime? NextRunUtc { get; private set; }
++    public DateTime? LastEvaluatedUtc { get; private set; }
++    public DateTime? LastEnqueuedUtc { get; private set; }
++    public DateTime? LastRunUtc { get; private set; }
++    public DateTime? DisabledUtc { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Agent Agent { get; private set; } = null!;
++    public ICollection<AgentScheduledTriggerEnqueueWindow> EnqueueWindows { get; } = new List<AgentScheduledTriggerEnqueueWindow>();
++
++    public bool IsEligibleForEnqueue(DateTime dueAtUtc) =>
++        IsEnabled &&
++        NextRunUtc.HasValue &&
++        NextRunUtc.Value <= NormalizeUtc(dueAtUtc, nameof(dueAtUtc)) &&
++        (!DisabledUtc.HasValue || dueAtUtc <= DisabledUtc.Value);
++
++    public void UpdateSchedule(
++        string name,
++        string code,
++        string cronExpression,
++        string timeZoneId,
++        DateTime? nextRunUtc,
++        IDictionary<string, JsonNode?>? metadata = null)
++    {
++        Name = NormalizeRequired(name, nameof(name), NameMaxLength);
++        Code = NormalizeCode(code);
++        CronExpression = NormalizeRequired(cronExpression, nameof(cronExpression), CronExpressionMaxLength);
++        TimeZoneId = NormalizeRequired(timeZoneId, nameof(timeZoneId), TimeZoneIdMaxLength);
++        Metadata = CloneNodes(metadata);
++        NextRunUtc = IsEnabled ? NormalizeUtc(nextRunUtc, nameof(nextRunUtc)) : null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Enable(DateTime nextRunUtc)
++    {
++        IsEnabled = true;
++        DisabledUtc = null;
++        NextRunUtc = NormalizeUtc(nextRunUtc, nameof(nextRunUtc));
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Disable(DateTime disabledUtc)
++    {
++        DisabledUtc = NormalizeUtc(disabledUtc, nameof(disabledUtc));
++        IsEnabled = false;
++        NextRunUtc = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkEvaluated(DateTime evaluatedUtc, DateTime? nextRunUtc)
++    {
++        LastEvaluatedUtc = NormalizeUtc(evaluatedUtc, nameof(evaluatedUtc));
++        NextRunUtc = IsEnabled ? NormalizeUtc(nextRunUtc, nameof(nextRunUtc)) : null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkEnqueued(DateTime enqueuedUtc, DateTime? nextRunUtc)
++    {
++        LastEnqueuedUtc = NormalizeUtc(enqueuedUtc, nameof(enqueuedUtc));
++        NextRunUtc = IsEnabled ? NormalizeUtc(nextRunUtc, nameof(nextRunUtc)) : null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkRun(DateTime runUtc)
++    {
++        LastRunUtc = NormalizeUtc(runUtc, nameof(runUtc));
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeCode(string value) =>
++        NormalizeRequired(value, nameof(Code), CodeMaxLength).ToUpperInvariant();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static DateTime? NormalizeUtc(DateTime? value, string name) =>
++        value.HasValue ? NormalizeUtc(value.Value, name) : null;
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class AgentScheduledTriggerEnqueueWindow : ICompanyOwnedEntity
++{
++    private const int ExecutionRequestIdMaxLength = 128;
++
++    private AgentScheduledTriggerEnqueueWindow()
++    {
++    }
++
++    public AgentScheduledTriggerEnqueueWindow(
++        Guid id,
++        Guid companyId,
++        Guid scheduledTriggerId,
++        DateTime windowStartUtc,
++        DateTime windowEndUtc,
++        DateTime enqueuedUtc,
++        string? executionRequestId = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (scheduledTriggerId == Guid.Empty)
++        {
++            throw new ArgumentException("ScheduledTriggerId is required.", nameof(scheduledTriggerId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ScheduledTriggerId = scheduledTriggerId;
++        WindowStartUtc = NormalizeUtc(windowStartUtc, nameof(windowStartUtc));
++        WindowEndUtc = NormalizeUtc(windowEndUtc, nameof(windowEndUtc));
++        if (WindowEndUtc <= WindowStartUtc)
++        {
++            throw new ArgumentException("WindowEndUtc must be after WindowStartUtc.", nameof(windowEndUtc));
++        }
++
++        EnqueuedUtc = NormalizeUtc(enqueuedUtc, nameof(enqueuedUtc));
++        ExecutionRequestId = NormalizeOptional(executionRequestId, nameof(executionRequestId), ExecutionRequestIdMaxLength);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ScheduledTriggerId { get; private set; }
++    public DateTime WindowStartUtc { get; private set; }
++    public DateTime WindowEndUtc { get; private set; }
++    public DateTime EnqueuedUtc { get; private set; }
++    public string? ExecutionRequestId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public AgentScheduledTrigger ScheduledTrigger { get; private set; } = null!;
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++}
+diff --git a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+new file mode 100644
+index 0000000..a88b248
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+@@ -0,0 +1,88 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record ScheduleValidationResult(bool IsValid, string? Error)
++{
++    public static ScheduleValidationResult Valid { get; } = new(true, null);
++
++    public static ScheduleValidationResult Invalid(string error) =>
++        new(false, string.IsNullOrWhiteSpace(error) ? "Schedule value is invalid." : error);
++}
++
++public sealed record AgentScheduledTriggerDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid AgentId,
++    string Name,
++    string Code,
++    string CronExpression,
++    string TimeZoneId,
++    bool IsEnabled,
++    DateTime? NextRunAt,
++    DateTime? LastEvaluatedAt,
++    DateTime? LastEnqueuedAt,
++    DateTime? LastRunAt,
++    DateTime? DisabledAt,
++    Dictionary<string, JsonNode?> Metadata,
++    DateTime CreatedAt,
++    DateTime UpdatedAt);
++
++public sealed record ScheduledTriggerEnqueueWindowDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid ScheduledTriggerId,
++    DateTime WindowStartAt,
++    DateTime WindowEndAt,
++    DateTime EnqueuedAt,
++    string? ExecutionRequestId,
++    DateTime CreatedAt);
++
++public interface IScheduleExpressionValidator
++{
++    ScheduleValidationResult ValidateCronExpression(string? cronExpression);
++
++    ScheduleValidationResult ValidateTimeZoneId(string? timeZoneId);
++}
++
++public interface IScheduledTriggerNextRunCalculator
++{
++    DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc);
++}
++
++public interface IAgentScheduledTriggerRepository
++{
++    Task<AgentScheduledTrigger?> GetByIdAsync(
++        Guid companyId,
++        Guid triggerId,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<AgentScheduledTrigger>> ListByAgentAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken);
++
++    Task<IReadOnlyList<AgentScheduledTrigger>> ListDueAsync(
++        Guid companyId,
++        DateTime dueAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken);
++
++    Task AddAsync(
++        AgentScheduledTrigger trigger,
++        CancellationToken cancellationToken);
++
++    Task DeleteAsync(
++        AgentScheduledTrigger trigger,
++        CancellationToken cancellationToken);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++
++    Task<bool> TryRecordEnqueueWindowAsync(
++        AgentScheduledTriggerEnqueueWindow window,
++        CancellationToken cancellationToken);
++}
++
++public static class AgentScheduledTriggerDtoMapper
++{
++    public static AgentScheduledTriggerDto ToDto(this AgentScheduledTrigger trigger) =>
++        new(trigger.Id, trigger.CompanyId, trigger.AgentId, trigger.Name, trigger.Code, trigger.CronExpression, trigger.TimeZoneId, trigger.IsEnabled, trigger.NextRunUtc, trigger.LastEvaluatedUtc, trigger.LastEnqueuedUtc, trigger.LastRunUtc, trigger.DisabledUtc, trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase), trigger.CreatedUtc, trigger.UpdatedUtc);
++
++    public static ScheduledTriggerEnqueueWindowDto ToDto(this AgentScheduledTriggerEnqueueWindow window) =>
++        new(window.Id, window.CompanyId, window.ScheduledTriggerId, window.WindowStartUtc, window.WindowEndUtc, window.EnqueuedUtc, window.ExecutionRequestId, window.CreatedUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+index 0d3e7b3..d9f98f1 100644
+--- a/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
++++ b/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj
+@@ -14,6 +14,8 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
++    <PackageReference Include="Cronos" Version="0.9.0" />
++    <PackageReference Include="TimeZoneConverter" Version="7.0.0" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.14" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
+     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.14" />
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index bfd9d20..aa273e1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -30,6 +30,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
+     public DbSet<Agent> Agents => Set<Agent>();
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
++    public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
++    public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+     public DbSet<Conversation> Conversations => Set<Conversation>();
+@@ -89,6 +91,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ToolExecutionAttempt>()
+             .HasQueryFilter(attempt =>
+                 CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<AgentScheduledTrigger>()
++            .HasQueryFilter(trigger =>
++                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<AgentScheduledTriggerEnqueueWindow>()
++            .HasQueryFilter(window =>
++                CurrentCompanyId.HasValue && window.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WorkTask>()
+             .HasQueryFilter(task =>
+                 CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 6e4c129..794c2ab 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1558,3 +1558,92 @@ internal sealed class ApprovalStepConfiguration : IEntityTypeConfiguration<Appro
+         builder.HasIndex(x => x.Status);
+     }
+ }
++
++internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfiguration<AgentScheduledTrigger>
++{
++    public void Configure(EntityTypeBuilder<AgentScheduledTrigger> builder)
++    {
++        builder.ToTable("agent_scheduled_triggers");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Code).HasColumnName("code").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.CronExpression).HasColumnName("cron_expression").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.TimeZoneId).HasColumnName("timezone").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.NextRunUtc).HasColumnName("next_run_at");
++        builder.Property(x => x.LastEvaluatedUtc).HasColumnName("last_evaluated_at");
++        builder.Property(x => x.LastEnqueuedUtc).HasColumnName("last_enqueued_at");
++        builder.Property(x => x.LastRunUtc).HasColumnName("last_run_at");
++        builder.Property(x => x.DisabledUtc).HasColumnName("disabled_at");
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId });
++        builder.HasIndex(x => new { x.CompanyId, x.Code }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.IsEnabled, x.NextRunUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.IsEnabled });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Agent)
++            .WithMany()
++            .HasForeignKey(x => x.AgentId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasMany(x => x.EnqueueWindows)
++            .WithOne(x => x.ScheduledTrigger)
++            .HasForeignKey(x => x.ScheduledTriggerId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityTypeConfiguration<AgentScheduledTriggerEnqueueWindow>
++{
++    public void Configure(EntityTypeBuilder<AgentScheduledTriggerEnqueueWindow> builder)
++    {
++        builder.ToTable("agent_scheduled_trigger_enqueue_windows");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ScheduledTriggerId).HasColumnName("scheduled_trigger_id").IsRequired();
++        builder.Property(x => x.WindowStartUtc).HasColumnName("window_start_at").IsRequired();
++        builder.Property(x => x.WindowEndUtc).HasColumnName("window_end_at").IsRequired();
++        builder.Property(x => x.EnqueuedUtc).HasColumnName("enqueued_at").IsRequired();
++        builder.Property(x => x.ExecutionRequestId).HasColumnName("execution_request_id").HasMaxLength(128);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.ScheduledTriggerId, x.WindowStartUtc, x.WindowEndUtc }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.EnqueuedUtc });
++        builder.HasIndex(x => x.ExecutionRequestId)
++            .HasFilter("[execution_request_id] IS NOT NULL");
++
++        builder.HasCheckConstraint(
++            "CK_agent_scheduled_trigger_enqueue_windows_window_order",
++            ActiveProviderConstraint.WindowEndAfterStart);
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.ScheduledTrigger)
++            .WithMany(x => x.EnqueueWindows)
++            .HasForeignKey(x => x.ScheduledTriggerId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal static class ActiveProviderConstraint
++{
++    // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
++    // The migration supplies a PostgreSQL-specific expression at apply time.
++    public const string WindowEndAfterStart = "window_end_at > window_start_at";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+new file mode 100644
+index 0000000..c62f5d0
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+@@ -0,0 +1,178 @@
++using Cronos;
++using Microsoft.EntityFrameworkCore;
++using TimeZoneConverter;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CronosScheduleExpressionValidator : IScheduleExpressionValidator
++{
++    public ScheduleValidationResult ValidateCronExpression(string? cronExpression)
++    {
++        if (string.IsNullOrWhiteSpace(cronExpression))
++        {
++            return ScheduleValidationResult.Invalid("Cron expression is required.");
++        }
++
++        try
++        {
++            _ = CronExpression.Parse(cronExpression.Trim(), CronFormat.Standard);
++            return ScheduleValidationResult.Valid;
++        }
++        catch (CronFormatException ex)
++        {
++            return ScheduleValidationResult.Invalid($"Cron expression is invalid: {ex.Message}");
++        }
++    }
++
++    public ScheduleValidationResult ValidateTimeZoneId(string? timeZoneId)
++    {
++        if (string.IsNullOrWhiteSpace(timeZoneId))
++        {
++            return ScheduleValidationResult.Invalid("Timezone is required.");
++        }
++
++        try
++        {
++            _ = ResolveTimeZone(timeZoneId);
++            return ScheduleValidationResult.Valid;
++        }
++        catch (TimeZoneNotFoundException)
++        {
++            return ScheduleValidationResult.Invalid("Timezone must be a valid IANA or Windows timezone identifier.");
++        }
++        catch (InvalidTimeZoneException)
++        {
++            return ScheduleValidationResult.Invalid("Timezone must be a valid IANA or Windows timezone identifier.");
++        }
++    }
++
++    internal static TimeZoneInfo ResolveTimeZone(string timeZoneId)
++    {
++        var normalized = string.IsNullOrWhiteSpace(timeZoneId) ? "UTC" : timeZoneId.Trim();
++        if (string.Equals(normalized, "UTC", StringComparison.OrdinalIgnoreCase))
++        {
++            return TimeZoneInfo.Utc;
++        }
++
++        return TZConvert.GetTimeZoneInfo(normalized);
++    }
++}
++
++public sealed class CronosScheduledTriggerNextRunCalculator : IScheduledTriggerNextRunCalculator
++{
++    private readonly IScheduleExpressionValidator _validator;
++
++    public CronosScheduledTriggerNextRunCalculator(IScheduleExpressionValidator validator) =>
++        _validator = validator;
++
++    public DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc)
++    {
++        var cronValidation = _validator.ValidateCronExpression(cronExpression);
++        if (!cronValidation.IsValid)
++        {
++            throw new ArgumentException(cronValidation.Error, nameof(cronExpression));
++        }
++
++        var timezoneValidation = _validator.ValidateTimeZoneId(timeZoneId);
++        if (!timezoneValidation.IsValid)
++        {
++            throw new ArgumentException(timezoneValidation.Error, nameof(timeZoneId));
++        }
++
++        var utcReference = referenceUtc.Kind == DateTimeKind.Utc
++            ? referenceUtc
++            : referenceUtc.ToUniversalTime();
++        var expression = CronExpression.Parse(cronExpression.Trim(), CronFormat.Standard);
++        var timeZone = CronosScheduleExpressionValidator.ResolveTimeZone(timeZoneId);
++        return expression.GetNextOccurrence(utcReference, timeZone);
++    }
++}
++
++public sealed class EfAgentScheduledTriggerRepository : IAgentScheduledTriggerRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfAgentScheduledTriggerRepository(VirtualCompanyDbContext dbContext) =>
++        _dbContext = dbContext;
++
++    public Task<AgentScheduledTrigger?> GetByIdAsync(
++        Guid companyId,
++        Guid triggerId,
++        CancellationToken cancellationToken) =>
++        _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == triggerId, cancellationToken);
++
++    public async Task<IReadOnlyList<AgentScheduledTrigger>> ListByAgentAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken) =>
++        await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AgentId == agentId)
++            .OrderBy(x => x.Code)
++            .ToListAsync(cancellationToken);
++
++    public async Task<IReadOnlyList<AgentScheduledTrigger>> ListDueAsync(
++        Guid companyId,
++        DateTime dueAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken)
++    {
++        var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc ? dueAtUtc : dueAtUtc.ToUniversalTime();
++        var effectiveBatchSize = Math.Max(1, batchSize);
++        return await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.IsEnabled &&
++                x.NextRunUtc.HasValue &&
++                x.NextRunUtc.Value <= normalizedDueAtUtc &&
++                (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
++            .OrderBy(x => x.NextRunUtc)
++            .ThenBy(x => x.Id)
++            .Take(effectiveBatchSize)
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task AddAsync(
++        AgentScheduledTrigger trigger,
++        CancellationToken cancellationToken) =>
++        await _dbContext.AgentScheduledTriggers.AddAsync(trigger, cancellationToken);
++
++    public Task DeleteAsync(
++        AgentScheduledTrigger trigger,
++        CancellationToken cancellationToken)
++    {
++        cancellationToken.ThrowIfCancellationRequested();
++        _dbContext.AgentScheduledTriggers.Remove(trigger);
++        return Task.CompletedTask;
++    }
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++        _dbContext.SaveChangesAsync(cancellationToken);
++
++    public async Task<bool> TryRecordEnqueueWindowAsync(
++        AgentScheduledTriggerEnqueueWindow window,
++        CancellationToken cancellationToken)
++    {
++        await _dbContext.AgentScheduledTriggerEnqueueWindows.AddAsync(window, cancellationToken);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return true;
++        }
++        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
++        {
++            _dbContext.Entry(window).State = EntityState.Detached;
++            return false;
++        }
++    }
++
++    private static bool IsUniqueConstraintViolation(DbUpdateException exception)
++    {
++        var message = exception.InnerException?.Message ?? exception.Message;
++        return message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("IX_agent_scheduled_trigger_enqueue_windows_company_id_scheduled_trigger_id_window_start_at_window_end_at", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("AK_", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("constraint", StringComparison.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 1a0d0ac..17b3445 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -188,6 +188,9 @@ public static class DependencyInjection
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
++        services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
++        services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
++        services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();
+         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+new file mode 100644
+index 0000000..8459e71
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+@@ -0,0 +1,175 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260413220000_AddAgentScheduledTriggers")]
++public partial class AddAgentScheduledTriggers : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var boolType = isPostgres ? "boolean" : "bit";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++        var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++        var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var checkSql = isPostgres ? "window_end_at > window_start_at" : "[window_end_at] > [window_start_at]";
++
++        migrationBuilder.CreateTable(
++            name: "agent_scheduled_triggers",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                agent_id = table.Column<Guid>(type: guidType, nullable: false),
++                name = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                code = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                cron_expression = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                timezone = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                is_enabled = table.Column<bool>(type: boolType, nullable: false, defaultValue: true),
++                next_run_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                last_evaluated_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                last_enqueued_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                last_run_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                disabled_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                metadata_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_agent_scheduled_triggers", x => x.id);
++                table.ForeignKey(
++                    name: "FK_agent_scheduled_triggers_agents_agent_id",
++                    column: x => x.agent_id,
++                    principalTable: "agents",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_agent_scheduled_triggers_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "agent_scheduled_trigger_enqueue_windows",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                scheduled_trigger_id = table.Column<Guid>(type: guidType, nullable: false),
++                window_start_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                window_end_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                enqueued_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                execution_request_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_agent_scheduled_trigger_enqueue_windows", x => x.id);
++                table.CheckConstraint("CK_agent_scheduled_trigger_enqueue_windows_window_order", checkSql);
++                table.ForeignKey(
++                    name: "FK_agent_scheduled_trigger_enqueue_windows_agent_scheduled_triggers_scheduled_trigger_id",
++                    column: x => x.scheduled_trigger_id,
++                    principalTable: "agent_scheduled_triggers",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_agent_scheduled_trigger_enqueue_windows_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_triggers_company_id_agent_id",
++            table: "agent_scheduled_triggers",
++            columns: new[] { "company_id", "agent_id" });
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_triggers_company_id_agent_id_is_enabled",
++            table: "agent_scheduled_triggers",
++            columns: new[] { "company_id", "agent_id", "is_enabled" });
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_triggers_company_id_code",
++            table: "agent_scheduled_triggers",
++            columns: new[] { "company_id", "code" },
++            unique: true);
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_triggers_company_id_is_enabled_next_run_at",
++            table: "agent_scheduled_triggers",
++            columns: new[] { "company_id", "is_enabled", "next_run_at" });
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_triggers_agent_id",
++            table: "agent_scheduled_triggers",
++            column: "agent_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_trigger_enqueue_windows_company_id_enqueued_at",
++            table: "agent_scheduled_trigger_enqueue_windows",
++            columns: new[] { "company_id", "enqueued_at" });
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_trigger_enqueue_windows_company_id_scheduled_trigger_id_window_start_at_window_end_at",
++            table: "agent_scheduled_trigger_enqueue_windows",
++            columns: new[] { "company_id", "scheduled_trigger_id", "window_start_at", "window_end_at" },
++            unique: true);
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_trigger_enqueue_windows_execution_request_id",
++            table: "agent_scheduled_trigger_enqueue_windows",
++            column: "execution_request_id",
++            filter: isPostgres ? "execution_request_id IS NOT NULL" : "[execution_request_id] IS NOT NULL");
++        migrationBuilder.CreateIndex(
++            name: "IX_agent_scheduled_trigger_enqueue_windows_scheduled_trigger_id",
++            table: "agent_scheduled_trigger_enqueue_windows",
++            column: "scheduled_trigger_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "agent_scheduled_trigger_enqueue_windows");
++        migrationBuilder.DropTable(name: "agent_scheduled_triggers");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs
+new file mode 100644
+index 0000000..756a357
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs
+@@ -0,0 +1,178 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentScheduledTriggerPersistenceTests
++{
++    [Fact]
++    public void Cron_validator_accepts_valid_expression_and_rejects_invalid_expression()
++    {
++        var validator = new CronosScheduleExpressionValidator();
++
++        Assert.True(validator.ValidateCronExpression("0 9 * * *").IsValid);
++        Assert.False(validator.ValidateCronExpression("not a cron").IsValid);
++    }
++
++    [Fact]
++    public void Timezone_validator_accepts_supported_timezone_and_rejects_invalid_timezone()
++    {
++        var validator = new CronosScheduleExpressionValidator();
++
++        Assert.True(validator.ValidateTimeZoneId("UTC").IsValid);
++        Assert.False(validator.ValidateTimeZoneId("Mars/Olympus").IsValid);
++    }
++
++    [Fact]
++    public void Next_run_calculator_returns_utc_occurrence_for_timezone()
++    {
++        var validator = new CronosScheduleExpressionValidator();
++        var calculator = new CronosScheduledTriggerNextRunCalculator(validator);
++
++        var nextRun = calculator.GetNextRunUtc(
++            "0 9 * * *",
++            "Europe/Stockholm",
++            new DateTime(2026, 1, 1, 7, 30, 0, DateTimeKind.Utc));
++
++        Assert.Equal(new DateTime(2026, 1, 1, 8, 0, 0, DateTimeKind.Utc), nextRun);
++    }
++
++    [Fact]
++    public void Disable_sets_disabled_timestamp_and_clears_next_run()
++    {
++        var trigger = CreateTrigger(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc));
++        var disabledAt = new DateTime(2026, 4, 13, 7, 45, 0, DateTimeKind.Utc);
++
++        trigger.Disable(disabledAt);
++
++        Assert.False(trigger.IsEnabled);
++        Assert.Equal(disabledAt, trigger.DisabledUtc);
++        Assert.Null(trigger.NextRunUtc);
++        Assert.False(trigger.IsEligibleForEnqueue(new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)));
++    }
++
++    [Fact]
++    public async Task Repository_persists_trigger_and_queries_enabled_due_triggers()
++    {
++        await using var connection = CreateOpenConnection();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var dueAt = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++        await using var dbContext = await CreateDbContextAsync(connection);
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var repository = new EfAgentScheduledTriggerRepository(dbContext);
++        var trigger = CreateTrigger(companyId, agentId, dueAt);
++
++        await repository.AddAsync(trigger, CancellationToken.None);
++        await repository.SaveChangesAsync(CancellationToken.None);
++
++        var due = await repository.ListDueAsync(companyId, dueAt, 10, CancellationToken.None);
++
++        Assert.Single(due);
++        Assert.Equal(trigger.Id, due[0].Id);
++        Assert.Equal("DAILY-STANDUP", due[0].Code);
++        Assert.Equal("UTC", due[0].TimeZoneId);
++    }
++
++    [Fact]
++    public async Task Repository_does_not_return_disabled_triggers_for_due_scan()
++    {
++        await using var connection = CreateOpenConnection();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var dueAt = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++        await using var dbContext = await CreateDbContextAsync(connection);
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        var repository = new EfAgentScheduledTriggerRepository(dbContext);
++        var trigger = CreateTrigger(companyId, agentId, dueAt);
++        trigger.Disable(new DateTime(2026, 4, 13, 7, 55, 0, DateTimeKind.Utc));
++
++        await repository.AddAsync(trigger, CancellationToken.None);
++        await repository.SaveChangesAsync(CancellationToken.None);
++
++        var due = await repository.ListDueAsync(companyId, dueAt, 10, CancellationToken.None);
++
++        Assert.Empty(due);
++    }
++
++    [Fact]
++    public async Task Enqueue_window_uniqueness_makes_recording_idempotent()
++    {
++        await using var connection = CreateOpenConnection();
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var triggerId = Guid.NewGuid();
++        var windowStart = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++        var windowEnd = new DateTime(2026, 4, 13, 8, 1, 0, DateTimeKind.Utc);
++        await using var dbContext = await CreateDbContextAsync(connection);
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        dbContext.AgentScheduledTriggers.Add(CreateTrigger(companyId, agentId, windowStart, triggerId));
++        await dbContext.SaveChangesAsync();
++        var repository = new EfAgentScheduledTriggerRepository(dbContext);
++
++        var first = await repository.TryRecordEnqueueWindowAsync(
++            new AgentScheduledTriggerEnqueueWindow(Guid.NewGuid(), companyId, triggerId, windowStart, windowEnd, windowStart, "exec-1"),
++            CancellationToken.None);
++        var second = await repository.TryRecordEnqueueWindowAsync(
++            new AgentScheduledTriggerEnqueueWindow(Guid.NewGuid(), companyId, triggerId, windowStart, windowEnd, windowStart.AddSeconds(5), "exec-2"),
++            CancellationToken.None);
++
++        Assert.True(first);
++        Assert.False(second);
++        Assert.Equal(1, await dbContext.AgentScheduledTriggerEnqueueWindows.IgnoreQueryFilters().CountAsync());
++    }
++
++    private static SqliteConnection CreateOpenConnection()
++    {
++        var connection = new SqliteConnection("Data Source=:memory:");
++        connection.Open();
++        return connection;
++    }
++
++    private static async Task<VirtualCompanyDbContext> CreateDbContextAsync(SqliteConnection connection)
++    {
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseSqlite(connection)
++            .Options;
++        var dbContext = new VirtualCompanyDbContext(options);
++        await dbContext.Database.EnsureCreatedAsync();
++        return dbContext;
++    }
++
++    private static async Task SeedCompanyAndAgentAsync(
++        VirtualCompanyDbContext dbContext,
++        Guid companyId,
++        Guid agentId)
++    {
++        dbContext.Companies.Add(new Company(companyId, "Schedule Test Company"));
++        dbContext.Agents.Add(new Agent(
++            agentId,
++            companyId,
++            "scheduler",
++            "Scheduler",
++            "Operations Agent",
++            "Operations",
++            null,
++            AgentSeniority.Mid,
++            AgentStatus.Active,
++            AgentAutonomyLevel.Assisted));
++        await dbContext.SaveChangesAsync();
++    }
++
++    private static AgentScheduledTrigger CreateTrigger(
++        Guid companyId,
++        Guid agentId,
++        DateTime nextRunUtc,
++        Guid? triggerId = null) =>
++        new(
++            triggerId ?? Guid.NewGuid(),
++            companyId,
++            agentId,
++            "Daily standup",
++            "daily-standup",
++            "0 8 * * *",
++            "UTC",
++            nextRunUtc,
++            true);
++}
+END_OF_PATCH

@@ -7,7 +7,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.BackgroundExecution;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Domain.Entities;
@@ -166,6 +168,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
+    private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
+    private readonly ITriggerExecutionService _triggerExecutionService;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly ILogger<CompanyOutboxProcessor> _logger;
@@ -178,6 +182,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         VirtualCompanyDbContext dbContext,
         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
         ICompanyNotificationDispatcher notificationDispatcher,
+        ITriggerExecutionService triggerExecutionService,
+        IInternalWorkflowEventTriggerService workflowEventTriggerService,
         IOptions<CompanyOutboxDispatcherOptions> options,
         IBackgroundJobExecutor backgroundJobExecutor,
         IBackgroundExecutionRecorder backgroundExecutionRecorder,
@@ -189,6 +195,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
         _notificationDispatcher = notificationDispatcher;
+        _triggerExecutionService = triggerExecutionService;
+        _workflowEventTriggerService = workflowEventTriggerService;
         _options = options;
         _backgroundJobExecutor = backgroundJobExecutor;
         _backgroundExecutionRecorder = backgroundExecutionRecorder;
@@ -414,6 +422,41 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
                 await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.TaskCreated:
+            case CompanyOutboxTopics.TaskUpdated:
+            case CompanyOutboxTopics.DocumentUploaded:
+            case CompanyOutboxTopics.WorkflowStateChanged:
+            {
+                var payload = Deserialize<PlatformEventEnvelope>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Platform event outbox payload tenant does not match the outbox message tenant.");
+                }
+
+                if (!string.Equals(payload.EventType, message.Topic, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new CompanyOutboxPermanentException($"Platform event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
+                }
+
+                await _workflowEventTriggerService.HandleAsync(
+                    payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                    cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested:
+            {
+                var payload = Deserialize<AgentScheduledTriggerExecutionRequestMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Agent scheduled trigger outbox payload tenant does not match the outbox message tenant.");
+                }
+
+                await _triggerExecutionService.ProcessScheduledTriggerAsync(
+                    payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.IdempotencyKey : payload.CorrelationId },
+                    MaxAttempts,
+                    cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.InvitationCreated:

@@ -1,0 +1,164 @@
+diff --git a/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs b/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs
+index 8b6a1c4..5f8c9a7 100644
+--- a/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs
++++ b/src/VirtualCompany.Application/Agents/ConditionTriggerEvaluationContracts.cs
+@@ -64,6 +64,7 @@ public interface IConditionTriggerEvaluationRepository
+     Task<ConditionTriggerEvaluation?> GetLatestAsync(
+         Guid companyId,
+         string conditionDefinitionId,
++        Guid? workflowTriggerId,
+         CancellationToken cancellationToken);
+ 
+     Task AddAsync(ConditionTriggerEvaluation evaluation, CancellationToken cancellationToken);
+@@ -334,7 +335,7 @@ public sealed class ConditionTriggerEvaluationService : IConditionTriggerEvaluati
+         ArgumentNullException.ThrowIfNull(command.Condition);
+ 
+         var currentValue = await ResolveCurrentValueAsync(command, cancellationToken);
+-        var latest = await _repository.GetLatestAsync(command.CompanyId, command.ConditionDefinitionId, cancellationToken);
++        var latest = await _repository.GetLatestAsync(command.CompanyId, command.ConditionDefinitionId, command.WorkflowTriggerId, cancellationToken);
+         var hasPreviousValue = latest?.InputValues.TryGetValue("currentValue", out var previousValue) == true;
+ 
+         var result = currentValue.Found
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs
+index 8d5e3f2..a9f4f1c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ConditionTriggerEvaluationInfrastructure.cs
+@@ -15,6 +15,7 @@ public sealed class EfConditionTriggerEvaluationRepository : IConditionTriggerEv
+     public async Task<ConditionTriggerEvaluation?> GetLatestAsync(
+         Guid companyId,
+         string conditionDefinitionId,
++        Guid? workflowTriggerId,
+         CancellationToken cancellationToken)
+     {
+         if (companyId == Guid.Empty)
+@@ -27,10 +28,15 @@ public sealed class EfConditionTriggerEvaluationRepository : IConditionTriggerEv
+             throw new ArgumentException("ConditionDefinitionId is required.", nameof(conditionDefinitionId));
+         }
+ 
++        if (workflowTriggerId == Guid.Empty)
++        {
++            throw new ArgumentException("WorkflowTriggerId cannot be empty.", nameof(workflowTriggerId));
++        }
++
+         return await _dbContext.ConditionTriggerEvaluations
+             .IgnoreQueryFilters()
+-            .Where(x => x.CompanyId == companyId && x.ConditionDefinitionId == conditionDefinitionId)
++            .Where(x => x.CompanyId == companyId && x.ConditionDefinitionId == conditionDefinitionId && x.WorkflowTriggerId == workflowTriggerId)
+             .OrderByDescending(x => x.EvaluatedUtc)
+             .ThenByDescending(x => x.CreatedUtc)
+             .FirstOrDefaultAsync(cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index f1b3e4a..c8d7b21 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1493,7 +1493,7 @@ internal sealed class ConditionTriggerEvaluationConfiguration : IEntityTypeConfig
+         builder.Property(x => x.Diagnostic).HasColumnName("diagnostic").HasMaxLength(2000);
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+-        builder.HasIndex(x => new { x.CompanyId, x.ConditionDefinitionId, x.EvaluatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowTriggerId, x.ConditionDefinitionId, x.EvaluatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.WorkflowTriggerId, x.EvaluatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Fired, x.EvaluatedUtc });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+index 4a9e2c7..2b9f1d8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+@@ -58,10 +58,10 @@ public partial class AddConditionTriggerEvaluations : Migration
+             });
+ 
+         migrationBuilder.CreateIndex(
+-            name: "IX_condition_trigger_evaluations_company_id_condition_definition_id_evaluated_at",
++            name: "IX_condition_trigger_evaluations_company_id_workflow_trigger_id_condition_definition_id_evaluated_at",
+             table: "condition_trigger_evaluations",
+-            columns: new[] { "company_id", "condition_definition_id", "evaluated_at" });
++            columns: new[] { "company_id", "workflow_trigger_id", "condition_definition_id", "evaluated_at" });
+ 
+         migrationBuilder.CreateIndex(
+             name: "IX_condition_trigger_evaluations_company_id_fired_evaluated_at",
+diff --git a/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs
+index 3d87c5e..e6a9b23 100644
+--- a/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ConditionTriggerEvaluationPersistenceTests.cs
+@@ -24,7 +24,7 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
+         await repository.AddAsync(evaluation, CancellationToken.None);
+         await repository.SaveChangesAsync(CancellationToken.None);
+ 
+-        var persisted = await repository.GetLatestAsync(companyId, "task-backlog", CancellationToken.None);
++        var persisted = await repository.GetLatestAsync(companyId, "task-backlog", null, CancellationToken.None);
+ 
+         Assert.NotNull(persisted);
+         Assert.Equal(evaluatedUtc, persisted.EvaluatedUtc);
+@@ -49,7 +49,7 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
+         await repository.AddAsync(CreateEvaluation(otherCompanyId, "task-backlog", new DateTime(2026, 4, 13, 8, 10, 0, DateTimeKind.Utc), 99, false, true, true), CancellationToken.None);
+         await repository.SaveChangesAsync(CancellationToken.None);
+ 
+-        var latest = await repository.GetLatestAsync(companyId, "task-backlog", CancellationToken.None);
++        var latest = await repository.GetLatestAsync(companyId, "task-backlog", null, CancellationToken.None);
+ 
+         Assert.NotNull(latest);
+         Assert.Equal(companyId, latest.CompanyId);
+@@ -57,6 +57,43 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
+         Assert.Equal(11, latest.InputValues["currentValue"]!.GetValue<int>());
+     }
+ 
++    [Fact]
++    public async Task Repository_returns_latest_prior_evaluation_for_same_workflow_trigger()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var definitionId = Guid.NewGuid();
++        var firstTriggerId = Guid.NewGuid();
++        var secondTriggerId = Guid.NewGuid();
++        await SeedCompanyAsync(dbContext, companyId);
++        dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++            definitionId,
++            companyId,
++            "condition-scope-test",
++            "Condition scope test",
++            "Operations",
++            WorkflowTriggerType.Event,
++            1,
++            new Dictionary<string, JsonNode?> { ["steps"] = new JsonArray() }));
++        dbContext.WorkflowTriggers.AddRange(
++            new WorkflowTrigger(firstTriggerId, companyId, definitionId, "condition.updated"),
++            new WorkflowTrigger(secondTriggerId, companyId, definitionId, "condition.updated"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new EfConditionTriggerEvaluationRepository(dbContext);
++        await repository.AddAsync(CreateEvaluation(companyId, "task-backlog", new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc), 9, false, false, false, firstTriggerId), CancellationToken.None);
++        await repository.AddAsync(CreateEvaluation(companyId, "task-backlog", new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc), 11, false, true, true, firstTriggerId), CancellationToken.None);
++        await repository.AddAsync(CreateEvaluation(companyId, "task-backlog", new DateTime(2026, 4, 13, 8, 10, 0, DateTimeKind.Utc), 99, false, true, true, secondTriggerId), CancellationToken.None);
++        await repository.SaveChangesAsync(CancellationToken.None);
++
++        var latest = await repository.GetLatestAsync(companyId, "task-backlog", firstTriggerId, CancellationToken.None);
++
++        Assert.NotNull(latest);
++        Assert.Equal(companyId, latest.CompanyId);
++        Assert.Equal(firstTriggerId, latest.WorkflowTriggerId);
++        Assert.Equal(new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc), latest.EvaluatedUtc);
++        Assert.Equal(11, latest.InputValues["currentValue"]!.GetValue<int>());
++    }
++
+     private static SqliteConnection CreateOpenConnection()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+@@ -93,12 +130,13 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
+         DateTime evaluatedUtc,
+         int currentValue,
+         bool? previousOutcome,
+         bool currentOutcome,
+-        bool fired) =>
++        bool fired,
++        Guid? workflowTriggerId = null) =>
+         new(
+             Guid.NewGuid(),
+             companyId,
+             conditionDefinitionId,
+-            null,
++            workflowTriggerId,
+             evaluatedUtc,
+             new ConditionTargetReference(ConditionOperandSourceType.Metric, "task.backlog.count", null, null),
+             ConditionOperator.GreaterThan,
+END_OF_PATCH

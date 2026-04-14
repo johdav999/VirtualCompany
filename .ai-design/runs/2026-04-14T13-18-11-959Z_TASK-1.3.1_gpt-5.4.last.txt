@@ -1,0 +1,1358 @@
+diff --git a/src/VirtualCompany.Domain/Enums/EscalationEnums.cs b/src/VirtualCompany.Domain/Enums/EscalationEnums.cs
+new file mode 100644
+index 0000000..8f8e8e1
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/EscalationEnums.cs
+@@ -0,0 +1,48 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum EscalationStatus
++{
++    Triggered = 1
++}
++
++public static class EscalationStatusValues
++{
++    private static readonly IReadOnlyDictionary<EscalationStatus, string> Values = new Dictionary<EscalationStatus, string>
++    {
++        [EscalationStatus.Triggered] = "triggered"
++    };
++
++    private static readonly IReadOnlyDictionary<string, EscalationStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static EscalationStatus DefaultStatus => EscalationStatus.Triggered;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this EscalationStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++
++    public static EscalationStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static bool TryParse(string? value, out EscalationStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null)
++    {
++        var allowedValues = string.Join(", ", AllowedValues);
++        return string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Escalation status is required. Allowed values: {allowedValues}."
++            : $"Unsupported escalation status value '{attemptedValue}'. Allowed values: {allowedValues}.";
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/EscalationPolicyModels.cs b/src/VirtualCompany.Domain/Entities/EscalationPolicyModels.cs
+new file mode 100644
+index 0000000..a84712b
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/EscalationPolicyModels.cs
+@@ -0,0 +1,228 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class Escalation : ICompanyOwnedEntity
++{
++    private const int SourceEntityTypeMaxLength = 64;
++    private const int ReasonMaxLength = 1000;
++    private const int CorrelationIdMaxLength = 128;
++
++    private Escalation()
++    {
++    }
++
++    public Escalation(
++        Guid id,
++        Guid companyId,
++        Guid policyId,
++        Guid sourceEntityId,
++        string sourceEntityType,
++        int escalationLevel,
++        string reason,
++        DateTime triggeredUtc,
++        string? correlationId,
++        int lifecycleVersion)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (policyId == Guid.Empty)
++        {
++            throw new ArgumentException("PolicyId is required.", nameof(policyId));
++        }
++
++        if (sourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId is required.", nameof(sourceEntityId));
++        }
++
++        if (escalationLevel <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(escalationLevel), "EscalationLevel must be greater than zero.");
++        }
++
++        if (lifecycleVersion < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(lifecycleVersion), "LifecycleVersion cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        PolicyId = policyId;
++        SourceEntityId = sourceEntityId;
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), SourceEntityTypeMaxLength);
++        EscalationLevel = escalationLevel;
++        Reason = NormalizeRequired(reason, nameof(reason), ReasonMaxLength);
++        TriggeredUtc = NormalizeUtc(triggeredUtc, nameof(triggeredUtc));
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        LifecycleVersion = lifecycleVersion;
++        Status = EscalationStatusValues.DefaultStatus;
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid PolicyId { get; private set; }
++    public Guid SourceEntityId { get; private set; }
++    public string SourceEntityType { get; private set; } = null!;
++    public int EscalationLevel { get; private set; }
++    public string Reason { get; private set; } = null!;
++    public DateTime TriggeredUtc { get; private set; }
++    public string? CorrelationId { get; private set; }
++    public int LifecycleVersion { get; private set; }
++    public EscalationStatus Status { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return NormalizeOptional(value, name, maxLength)!;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++}
++
++public sealed record EscalationPolicyDefinition(
++    Guid PolicyId,
++    string Name,
++    bool Enabled,
++    IReadOnlyList<EscalationLevelDefinition> Levels);
++
++public sealed record EscalationLevelDefinition(
++    int EscalationLevel,
++    string Reason,
++    IReadOnlyList<EscalationConditionDefinition> Conditions,
++    EscalationConditionMode Mode = EscalationConditionMode.All);
++
++public sealed record EscalationConditionDefinition(
++    EscalationConditionType Type,
++    string Field,
++    string Operator,
++    object? Value = null,
++    int? DurationSeconds = null,
++    string? SinceField = null);
++
++public enum EscalationConditionMode
++{
++    All = 1,
++    Any = 2
++}
++
++public enum EscalationConditionType
++{
++    Threshold = 1,
++    Timer = 2,
++    Rule = 3
++}
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 4e6e7c5..6d76f73 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -103,6 +103,8 @@ public static class AuditTargetTypes
+     public const string CompanyNotification = "company_notification";
+     public const string TriggerExecutionAttempt = "trigger_execution_attempt";
+     public const string TriggerEvaluation = "trigger_evaluation";
++    public const string EscalationPolicy = "escalation_policy";
++    public const string Escalation = "escalation";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -157,4 +159,9 @@ public static class AuditEventActions
+     public const string TriggerOrchestrationStartRequested = "trigger.orchestration_start.requested";
+     public const string AgentInitiatedTaskCreated = "agent_initiated.task.created";
++    public const string EscalationPolicyEvaluationStarted = "escalation_policy.evaluation.started";
++    public const string EscalationPolicyEvaluationCompleted = "escalation_policy.evaluation.completed";
++    public const string EscalationPolicyEvaluationResult = "escalation_policy.evaluation.result";
++    public const string EscalationCreated = "escalation.created";
++    public const string EscalationDuplicateSkipped = "escalation.duplicate_skipped";
+ }
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs
+new file mode 100644
+index 0000000..5a72584
+--- /dev/null
++++ b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluationContracts.cs
+@@ -0,0 +1,79 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Escalations;
++
++public sealed record EscalationEvaluationInput(
++    Guid CompanyId,
++    Guid SourceEntityId,
++    string SourceEntityType,
++    string EventType,
++    DateTime EventUtc,
++    string? CurrentStatus,
++    int LifecycleVersion,
++    string? CorrelationId,
++    IReadOnlyDictionary<string, JsonNode?> Fields,
++    IReadOnlyDictionary<string, JsonNode?>? Payload = null)
++{
++    public static EscalationEvaluationInput ForTaskEvent(
++        Guid companyId,
++        Guid taskId,
++        string eventType,
++        DateTime eventUtc,
++        string? currentStatus,
++        int lifecycleVersion,
++        string? correlationId,
++        IReadOnlyDictionary<string, JsonNode?> fields,
++        IReadOnlyDictionary<string, JsonNode?>? payload = null) =>
++        new(companyId, taskId, EscalationSourceEntityTypes.WorkTask, eventType, eventUtc, currentStatus, lifecycleVersion, correlationId, fields, payload);
++
++    public static EscalationEvaluationInput ForAlertEvent(
++        Guid companyId,
++        Guid alertId,
++        string eventType,
++        DateTime eventUtc,
++        string? currentStatus,
++        int lifecycleVersion,
++        string? correlationId,
++        IReadOnlyDictionary<string, JsonNode?> fields,
++        IReadOnlyDictionary<string, JsonNode?>? payload = null) =>
++        new(companyId, alertId, EscalationSourceEntityTypes.Alert, eventType, eventUtc, currentStatus, lifecycleVersion, correlationId, fields, payload);
++}
++
++public sealed record EvaluateEscalationPoliciesCommand(
++    EscalationEvaluationInput Input,
++    IReadOnlyList<EscalationPolicyDefinition> Policies);
++
++public sealed record EscalationPolicyEvaluationResult(
++    Guid PolicyId,
++    int EscalationLevel,
++    bool ConditionsMet,
++    bool EscalationCreated,
++    bool SkippedDueToIdempotency,
++    string Reason,
++    string? Diagnostic,
++    Guid? EscalationId);
++
++public sealed record EscalationPolicyEvaluationSummary(
++    Guid CompanyId,
++    Guid SourceEntityId,
++    string SourceEntityType,
++    string? CorrelationId,
++    DateTime EvaluatedUtc,
++    IReadOnlyList<EscalationPolicyEvaluationResult> Results);
++
++public sealed record EscalationCreationResult(bool Created, Escalation Escalation, bool AlreadyExecuted);
++
++public interface IEscalationPolicyEvaluationService
++{
++    Task<EscalationPolicyEvaluationSummary> EvaluateAsync(
++        EvaluateEscalationPoliciesCommand command,
++        CancellationToken cancellationToken);
++}
++
++public interface IEscalationRepository
++{
++    Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken);
++
++    Task<EscalationCreationResult> TryCreateAsync(Escalation escalation, CancellationToken cancellationToken);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++}
++
++public static class EscalationSourceEntityTypes
++{
++    public const string WorkTask = "work_task";
++    public const string Alert = "alert";
++}
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+new file mode 100644
+index 0000000..d4d0492
+--- /dev/null
++++ b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+@@ -0,0 +1,342 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Escalations;
++
++public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluationService
++{
++    private readonly IEscalationRepository _repository;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly TimeProvider _timeProvider;
++
++    public EscalationPolicyEvaluationService(
++        IEscalationRepository repository,
++        IAuditEventWriter auditEventWriter,
++        TimeProvider timeProvider)
++    {
++        _repository = repository;
++        _auditEventWriter = auditEventWriter;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<EscalationPolicyEvaluationSummary> EvaluateAsync(
++        EvaluateEscalationPoliciesCommand command,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(command);
++        ArgumentNullException.ThrowIfNull(command.Input);
++
++        ValidateInput(command.Input);
++
++        var evaluatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        await WriteAuditAsync(
++            command.Input,
++            AuditEventActions.EscalationPolicyEvaluationStarted,
++            AuditEventOutcomes.Requested,
++            "Escalation policy evaluation started.",
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["policyCount"] = command.Policies.Count.ToString(CultureInfo.InvariantCulture),
++                ["eventType"] = command.Input.EventType,
++                ["sourceStatus"] = command.Input.CurrentStatus,
++                ["lifecycleVersion"] = command.Input.LifecycleVersion.ToString(CultureInfo.InvariantCulture)
++            },
++            cancellationToken);
++
++        var results = new List<EscalationPolicyEvaluationResult>();
++        foreach (var policy in command.Policies.Where(x => x.Enabled).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
++        {
++            foreach (var level in policy.Levels.OrderBy(x => x.EscalationLevel))
++            {
++                var result = await EvaluateLevelAsync(command.Input, policy, level, evaluatedUtc, cancellationToken);
++                results.Add(result);
++            }
++        }
++
++        await WriteAuditAsync(
++            command.Input,
++            AuditEventActions.EscalationPolicyEvaluationCompleted,
++            AuditEventOutcomes.Succeeded,
++            "Escalation policy evaluation completed.",
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["resultCount"] = results.Count.ToString(CultureInfo.InvariantCulture),
++                ["createdCount"] = results.Count(x => x.EscalationCreated).ToString(CultureInfo.InvariantCulture),
++                ["skippedDuplicateCount"] = results.Count(x => x.SkippedDueToIdempotency).ToString(CultureInfo.InvariantCulture),
++                ["correlationId"] = command.Input.CorrelationId
++            },
++            cancellationToken);
++
++        await _repository.SaveChangesAsync(cancellationToken);
++
++        return new EscalationPolicyEvaluationSummary(
++            command.Input.CompanyId,
++            command.Input.SourceEntityId,
++            command.Input.SourceEntityType,
++            command.Input.CorrelationId,
++            evaluatedUtc,
++            results);
++    }
++
++    private async Task<EscalationPolicyEvaluationResult> EvaluateLevelAsync(
++        EscalationEvaluationInput input,
++        EscalationPolicyDefinition policy,
++        EscalationLevelDefinition level,
++        DateTime evaluatedUtc,
++        CancellationToken cancellationToken)
++    {
++        var levelReason = string.IsNullOrWhiteSpace(level.Reason)
++            ? $"Policy {policy.PolicyId} level {level.EscalationLevel} conditions matched."
++            : level.Reason.Trim();
++
++        var (conditionsMet, diagnostic) = EvaluateConditions(input, level);
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["policyId"] = policy.PolicyId.ToString(),
++            ["policyName"] = policy.Name,
++            ["escalationLevel"] = level.EscalationLevel.ToString(CultureInfo.InvariantCulture),
++            ["conditionsMet"] = conditionsMet.ToString(CultureInfo.InvariantCulture),
++            ["diagnostic"] = diagnostic,
++            ["sourceEntityType"] = input.SourceEntityType,
++            ["sourceEntityId"] = input.SourceEntityId.ToString(),
++            ["lifecycleVersion"] = input.LifecycleVersion.ToString(CultureInfo.InvariantCulture)
++        };
++
++        await WriteAuditAsync(
++            input,
++            AuditEventActions.EscalationPolicyEvaluationResult,
++            diagnostic is null ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Failed,
++            conditionsMet ? levelReason : diagnostic ?? "Escalation policy conditions were not met.",
++            metadata,
++            cancellationToken);
++
++        if (!conditionsMet)
++        {
++            return new EscalationPolicyEvaluationResult(policy.PolicyId, level.EscalationLevel, false, false, false, levelReason, diagnostic, null);
++        }
++
++        if (await _repository.HasExecutedAsync(input.CompanyId, policy.PolicyId, input.SourceEntityId, level.EscalationLevel, input.LifecycleVersion, cancellationToken))
++        {
++            await WriteAuditAsync(
++                input,
++                AuditEventActions.EscalationDuplicateSkipped,
++                AuditEventOutcomes.Succeeded,
++                "Escalation skipped because this policy level already executed for the current source lifecycle.",
++                metadata,
++                cancellationToken);
++
++            return new EscalationPolicyEvaluationResult(policy.PolicyId, level.EscalationLevel, true, false, true, levelReason, null, null);
++        }
++
++        var escalation = new Escalation(
++            Guid.NewGuid(),
++            input.CompanyId,
++            policy.PolicyId,
++            input.SourceEntityId,
++            input.SourceEntityType,
++            level.EscalationLevel,
++            levelReason,
++            evaluatedUtc,
++            input.CorrelationId,
++            input.LifecycleVersion);
++
++        var creation = await _repository.TryCreateAsync(escalation, cancellationToken);
++        metadata["escalationId"] = creation.Escalation.Id.ToString();
++
++        if (!creation.Created)
++        {
++            await WriteAuditAsync(
++                input,
++                AuditEventActions.EscalationDuplicateSkipped,
++                AuditEventOutcomes.Succeeded,
++                "Escalation skipped because this policy level already executed for the current source lifecycle.",
++                metadata,
++                cancellationToken);
++
++            return new EscalationPolicyEvaluationResult(policy.PolicyId, level.EscalationLevel, true, false, true, levelReason, null, creation.Escalation.Id);
++        }
++
++        await WriteAuditAsync(
++            input,
++            AuditEventActions.EscalationCreated,
++            AuditEventOutcomes.Succeeded,
++            levelReason,
++            metadata,
++            cancellationToken);
++
++        return new EscalationPolicyEvaluationResult(policy.PolicyId, level.EscalationLevel, true, true, false, levelReason, null, creation.Escalation.Id);
++    }
++
++    private static (bool Met, string? Diagnostic) EvaluateConditions(EscalationEvaluationInput input, EscalationLevelDefinition level)
++    {
++        if (level.EscalationLevel <= 0)
++        {
++            return (false, "Escalation level must be greater than zero.");
++        }
++
++        if (level.Conditions.Count == 0)
++        {
++            return (false, "At least one escalation condition is required.");
++        }
++
++        var outcomes = new List<bool>();
++        foreach (var condition in level.Conditions)
++        {
++            var (met, diagnostic) = EvaluateCondition(input, condition);
++            if (diagnostic is not null)
++            {
++                return (false, diagnostic);
++            }
++
++            outcomes.Add(met);
++        }
++
++        var result = level.Mode is EscalationConditionMode.Any
++            ? outcomes.Any(x => x)
++            : outcomes.All(x => x);
++
++        return (result, null);
++    }
++
++    private static (bool Met, string? Diagnostic) EvaluateCondition(EscalationEvaluationInput input, EscalationConditionDefinition condition)
++    {
++        if (string.IsNullOrWhiteSpace(condition.Field) && condition.Type is not EscalationConditionType.Timer)
++        {
++            return (false, "Escalation condition field is required.");
++        }
++
++        return condition.Type switch
++        {
++            EscalationConditionType.Threshold or EscalationConditionType.Rule => EvaluateComparison(input, condition),
++            EscalationConditionType.Timer => EvaluateTimer(input, condition),
++            _ => (false, "Escalation condition type is not supported.")
++        };
++    }
++
++    private static (bool Met, string? Diagnostic) EvaluateTimer(EscalationEvaluationInput input, EscalationConditionDefinition condition)
++    {
++        if (condition.DurationSeconds is null or < 0)
++        {
++            return (false, "Timer condition durationSeconds must be zero or greater.");
++        }
++
++        var sinceField = string.IsNullOrWhiteSpace(condition.SinceField) ? condition.Field : condition.SinceField;
++        if (string.IsNullOrWhiteSpace(sinceField))
++        {
++            return (false, "Timer condition requires a field or sinceField.");
++        }
++
++        var current = ResolveField(input, sinceField);
++        if (!TryGetDateTimeOffset(current, out var sinceUtc))
++        {
++            return (false, $"Timer condition field '{sinceField}' could not be resolved as a datetime.");
++        }
++
++        var elapsed = input.EventUtc.Kind == DateTimeKind.Utc
++            ? input.EventUtc - sinceUtc.UtcDateTime
++            : input.EventUtc.ToUniversalTime() - sinceUtc.UtcDateTime;
++
++        return (elapsed.TotalSeconds >= condition.DurationSeconds.Value, null);
++    }
++
++    private static (bool Met, string? Diagnostic) EvaluateComparison(EscalationEvaluationInput input, EscalationConditionDefinition condition)
++    {
++        var current = ResolveField(input, condition.Field);
++        if (current is null)
++        {
++            return (false, $"Escalation condition field '{condition.Field}' could not be resolved.");
++        }
++
++        if (condition.Value is null)
++        {
++            return (false, $"Escalation condition '{condition.Field}' comparison value is required.");
++        }
++
++        var comparison = ToJsonNode(condition.Value);
++        return Compare(current, comparison, condition.Operator);
++    }
++
++    private static JsonNode? ResolveField(EscalationEvaluationInput input, string fieldPath)
++    {
++        if (input.Fields.TryGetValue(fieldPath, out var value))
++        {
++            return value;
++        }
++
++        var segments = fieldPath.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
++        if (segments.Length == 1)
++        {
++            return input.Payload is not null && input.Payload.TryGetValue(fieldPath, out var payloadValue)
++                ? payloadValue
++                : null;
++        }
++
++        var rootName = segments[0];
++        JsonNode? current = input.Fields.TryGetValue(rootName, out var root)
++            ? root
++            : input.Payload is not null && input.Payload.TryGetValue(rootName, out var payloadRoot)
++                ? payloadRoot
++                : null;
++
++        foreach (var segment in segments.Skip(1))
++        {
++            if (current is JsonObject obj && obj.TryGetPropertyValue(segment, out var child))
++            {
++                current = child;
++                continue;
++            }
++
++            return null;
++        }
++
++        return current;
++    }
++
++    private static (bool Met, string? Diagnostic) Compare(JsonNode current, JsonNode? comparison, string comparisonOperator)
++    {
++        if (comparison is null)
++        {
++            return (false, "Escalation comparison value is required.");
++        }
++
++        var op = comparisonOperator.Trim().ToLowerInvariant();
++        return op switch
++        {
++            "eq" => (JsonNode.DeepEquals(current, comparison), null),
++            "neq" => (!JsonNode.DeepEquals(current, comparison), null),
++            "gt" => CompareOrdered(current, comparison, (left, right) => left > right),
++            "gte" => CompareOrdered(current, comparison, (left, right) => left >= right),
++            "lt" => CompareOrdered(current, comparison, (left, right) => left < right),
++            "lte" => CompareOrdered(current, comparison, (left, right) => left <= right),
++            "in" => comparison is JsonArray values
++                ? (values.Any(value => JsonNode.DeepEquals(current, value)), null)
++                : (false, "The in operator requires an array comparison value."),
++            "contains" => EvaluateContains(current, comparison),
++            _ => (false, $"Escalation condition operator '{comparisonOperator}' is not supported.")
++        };
++    }
++
++    private static (bool Met, string? Diagnostic) CompareOrdered(JsonNode current, JsonNode comparison, Func<decimal, decimal, bool> numericComparison)
++    {
++        if (TryGetDecimal(current, out var currentNumber) && TryGetDecimal(comparison, out var comparisonNumber))
++        {
++            return (numericComparison(currentNumber, comparisonNumber), null);
++        }
++
++        if (TryGetDateTimeOffset(current, out var currentDate) && TryGetDateTimeOffset(comparison, out var comparisonDate))
++        {
++            return (numericComparison(currentDate.UtcDateTime.Ticks, comparisonDate.UtcDateTime.Ticks), null);
++        }
++
++        return (false, "Ordered escalation comparison requires numeric or datetime values.");
++    }
++
++    private static (bool Met, string? Diagnostic) EvaluateContains(JsonNode current, JsonNode comparison)
++    {
++        if (current is JsonArray array)
++        {
++            return (array.Any(value => JsonNode.DeepEquals(value, comparison)), null);
++        }
++
++        if (TryGetString(current, out var currentText) && TryGetString(comparison, out var comparisonText))
++        {
++            return (currentText.Contains(comparisonText, StringComparison.OrdinalIgnoreCase), null);
++        }
++
++        return (false, "The contains operator requires a string or array current value.");
++    }
++
++    private static JsonNode? ToJsonNode(object value) =>
++        value switch
++        {
++            JsonNode node => node.DeepClone(),
++            string text => JsonValue.Create(text),
++            int number => JsonValue.Create(number),
++            long number => JsonValue.Create(number),
++            decimal number => JsonValue.Create(number),
++            double number => JsonValue.Create(number),
++            bool flag => JsonValue.Create(flag),
++            DateTime dateTime => JsonValue.Create(dateTime),
++            DateTimeOffset dateTimeOffset => JsonValue.Create(dateTimeOffset),
++            IEnumerable<string> strings => new JsonArray(strings.Select(JsonValue.Create).ToArray<JsonNode?>()),
++            IEnumerable<int> numbers => new JsonArray(numbers.Select(JsonValue.Create).ToArray<JsonNode?>()),
++            _ => JsonValue.Create(value.ToString())
++        };
++
++    private static bool TryGetDecimal(JsonNode? node, out decimal value)
++    {
++        value = 0;
++        if (node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        return jsonValue.TryGetValue<decimal>(out value) ||
++               jsonValue.TryGetValue<int>(out var intValue) && Assign(intValue, out value) ||
++               jsonValue.TryGetValue<long>(out var longValue) && Assign(longValue, out value) ||
++               jsonValue.TryGetValue<double>(out var doubleValue) && Assign((decimal)doubleValue, out value) ||
++               jsonValue.TryGetValue<string>(out var text) && decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
++    }
++
++    private static bool TryGetString(JsonNode? node, out string value)
++    {
++        value = string.Empty;
++        return node is JsonValue jsonValue && jsonValue.TryGetValue<string>(out value!);
++    }
++
++    private static bool TryGetDateTimeOffset(JsonNode? node, out DateTimeOffset value)
++    {
++        value = default;
++        if (node is JsonValue jsonValue && jsonValue.TryGetValue<DateTimeOffset>(out value))
++        {
++            return true;
++        }
++
++        return TryGetString(node, out var text) &&
++            DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out value);
++    }
++
++    private static bool Assign(decimal input, out decimal output)
++    {
++        output = input;
++        return true;
++    }
++
++    private static void ValidateInput(EscalationEvaluationInput input)
++    {
++        if (input.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(input));
++        }
++
++        if (input.SourceEntityId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceEntityId is required.", nameof(input));
++        }
++
++        if (string.IsNullOrWhiteSpace(input.SourceEntityType))
++        {
++            throw new ArgumentException("SourceEntityType is required.", nameof(input));
++        }
++
++        if (input.LifecycleVersion < 0)
++        {
++            throw new ArgumentException("LifecycleVersion cannot be negative.", nameof(input));
++        }
++    }
++
++    private Task WriteAuditAsync(
++        EscalationEvaluationInput input,
++        string action,
++        string outcome,
++        string rationaleSummary,
++        IReadOnlyDictionary<string, string?> metadata,
++        CancellationToken cancellationToken) =>
++        _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                input.CompanyId,
++                AuditActorTypes.System,
++                null,
++                action,
++                AuditTargetTypes.EscalationPolicy,
++                input.SourceEntityId.ToString(),
++                outcome,
++                rationaleSummary,
++                DataSources: ["escalation_policy", input.SourceEntityType],
++                Metadata: metadata,
++                CorrelationId: input.CorrelationId,
++                OccurredUtc: _timeProvider.GetUtcNow().UtcDateTime),
++            cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 90d7fb1..ddc77bf 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -67,6 +67,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+     public DbSet<Alert> Alerts => Set<Alert>();
++    public DbSet<Escalation> Escalations => Set<Escalation>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -163,5 +164,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<Alert>()
+             .HasQueryFilter(alert =>
+                 CurrentCompanyId.HasValue && alert.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Escalation>()
++            .HasQueryFilter(escalation =>
++                CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0b3b8b0..bd1ed31 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1681,6 +1681,45 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
+     }
+ }
+ 
++internal sealed class EscalationConfiguration : IEntityTypeConfiguration<Escalation>
++{
++    public void Configure(EntityTypeBuilder<Escalation> builder)
++    {
++        builder.ToTable("escalations");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.PolicyId).HasColumnName("policy_id").IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EscalationLevel).HasColumnName("escalation_level").IsRequired();
++        builder.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.TriggeredUtc).HasColumnName("triggered_at").IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.LifecycleVersion).HasColumnName("lifecycle_version").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => EscalationStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(EscalationStatusValues.DefaultStatus)
++            .HasSentinel((EscalationStatus)0)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.PolicyId, x.SourceEntityId, x.EscalationLevel, x.LifecycleVersion })
++            .IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++        builder.HasIndex(x => new { x.CompanyId, x.TriggeredUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+new file mode 100644
+index 0000000..e4f2b78
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+@@ -0,0 +1,87 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Escalations;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class EfEscalationRepository : IEscalationRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfEscalationRepository(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<bool> HasExecutedAsync(
++        Guid companyId,
++        Guid policyId,
++        Guid sourceEntityId,
++        int escalationLevel,
++        int lifecycleVersion,
++        CancellationToken cancellationToken) =>
++        await _dbContext.Escalations
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                escalation =>
++                    escalation.CompanyId == companyId &&
++                    escalation.PolicyId == policyId &&
++                    escalation.SourceEntityId == sourceEntityId &&
++                    escalation.EscalationLevel == escalationLevel &&
++                    escalation.LifecycleVersion == lifecycleVersion,
++                cancellationToken);
++
++    public async Task<EscalationCreationResult> TryCreateAsync(Escalation escalation, CancellationToken cancellationToken)
++    {
++        _dbContext.Escalations.Add(escalation);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new EscalationCreationResult(true, escalation, false);
++        }
++        catch (DbUpdateException ex) when (IsIdempotencyViolation(ex))
++        {
++            _dbContext.ChangeTracker.Clear();
++            var existing = await _dbContext.Escalations
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(
++                    item =>
++                        item.CompanyId == escalation.CompanyId &&
++                        item.PolicyId == escalation.PolicyId &&
++                        item.SourceEntityId == escalation.SourceEntityId &&
++                        item.EscalationLevel == escalation.EscalationLevel &&
++                        item.LifecycleVersion == escalation.LifecycleVersion,
++                    cancellationToken);
++
++            if (existing is null)
++            {
++                throw;
++            }
++
++            return new EscalationCreationResult(false, existing, true);
++        }
++    }
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++        _dbContext.SaveChangesAsync(cancellationToken);
++
++    private static bool IsIdempotencyViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("escalations", StringComparison.OrdinalIgnoreCase) &&
++                (current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++                 current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
++                 current.Message.Contains("IX_escalations_company_id_policy_id_source_entity_id_escalation_level_lifecycle_version", StringComparison.OrdinalIgnoreCase)))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 8b3fe32..9a9c42e 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -13,6 +13,7 @@ using VirtualCompany.Application.Context;
+ using VirtualCompany.Application.Chat;
+ using StackExchange.Redis;
+ using VirtualCompany.Application.ExecutionExceptions;
++using VirtualCompany.Application.Escalations;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Agents;
+@@ -206,6 +207,8 @@ public static class DependencyInjection
+         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<CompanyAlertService>();
+         services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
++        services.AddScoped<IEscalationRepository, EfEscalationRepository>();
++        services.AddScoped<IEscalationPolicyEvaluationService, EscalationPolicyEvaluationService>();
+         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414130000_AddEscalations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414130000_AddEscalations.cs
+new file mode 100644
+index 0000000..be94b9f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414130000_AddEscalations.cs
+@@ -0,0 +1,92 @@
++using System;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    [Migration("20260414130000_AddEscalations")]
++    public partial class AddEscalations : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string1000Type = isPostgres ? "character varying(1000)" : "nvarchar(1000)";
++
++            migrationBuilder.CreateTable(
++                name: "escalations",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    policy_id = table.Column<Guid>(type: guidType, nullable: false),
++                    source_entity_id = table.Column<Guid>(type: guidType, nullable: false),
++                    source_entity_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                    escalation_level = table.Column<int>(type: "int", nullable: false),
++                    reason = table.Column<string>(type: string1000Type, maxLength: 1000, nullable: false),
++                    triggered_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                    lifecycle_version = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                    status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false, defaultValue: "triggered"),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_escalations", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_escalations_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_source_entity_type_source_entity_id",
++                table: "escalations",
++                columns: new[] { "company_id", "source_entity_type", "source_entity_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_policy_id_source_entity_id_escalation_level_lifecycle_version",
++                table: "escalations",
++                columns: new[] { "company_id", "policy_id", "source_entity_id", "escalation_level", "lifecycle_version" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_correlation_id",
++                table: "escalations",
++                columns: new[] { "company_id", "correlation_id" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_escalations_company_id_triggered_at",
++                table: "escalations",
++                columns: new[] { "company_id", "triggered_at" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "escalations");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+new file mode 100644
+index 0000000..f228e68
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+@@ -0,0 +1,304 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Escalations;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class EscalationPolicyEvaluatorTests
++{
++    private static readonly Guid CompanyId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
++    private static readonly Guid SourceEntityId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
++    private static readonly Guid PolicyId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
++    private static readonly DateTime EventUtc = new(2026, 4, 14, 9, 0, 0, DateTimeKind.Utc);
++
++    [Fact]
++    public async Task Evaluate_creates_escalation_when_threshold_condition_is_met()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var audit = new CapturingAuditEventWriter();
++        var service = CreateService(repository, audit);
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?>
++                {
++                    ["priority"] = JsonValue.Create(4)
++                }),
++                [
++                    Policy(Level(
++                        1,
++                        "Critical task priority.",
++                        new EscalationConditionDefinition(EscalationConditionType.Threshold, "priority", "gte", 4)))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.True(result.ConditionsMet);
++        Assert.True(result.EscalationCreated);
++        Assert.False(result.SkippedDueToIdempotency);
++
++        var escalation = Assert.Single(repository.Escalations);
++        Assert.Equal(PolicyId, escalation.PolicyId);
++        Assert.Equal(SourceEntityId, escalation.SourceEntityId);
++        Assert.Equal(1, escalation.EscalationLevel);
++        Assert.Equal("Critical task priority.", escalation.Reason);
++        Assert.Equal("correlation-1", escalation.CorrelationId);
++        Assert.Contains(audit.Events, x => x.Action == AuditEventActions.EscalationCreated && x.CorrelationId == "correlation-1");
++    }
++
++    [Fact]
++    public async Task Evaluate_does_not_create_escalation_when_threshold_condition_is_not_met()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?>
++                {
++                    ["retryCount"] = JsonValue.Create(1)
++                }),
++                [
++                    Policy(Level(
++                        1,
++                        "Task retried repeatedly.",
++                        new EscalationConditionDefinition(EscalationConditionType.Threshold, "retryCount", "gte", 3)))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.False(result.ConditionsMet);
++        Assert.False(result.EscalationCreated);
++        Assert.Empty(repository.Escalations);
++    }
++
++    [Fact]
++    public async Task Evaluate_supports_timer_conditions()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                AlertInput(new Dictionary<string, JsonNode?>
++                {
++                    ["openedAt"] = JsonValue.Create(EventUtc.AddMinutes(-35))
++                }),
++                [
++                    Policy(Level(
++                        2,
++                        "Alert has remained open for 30 minutes.",
++                        new EscalationConditionDefinition(EscalationConditionType.Timer, "openedAt", "gte", DurationSeconds: 1800)))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.True(result.ConditionsMet);
++        Assert.True(result.EscalationCreated);
++        Assert.Equal(EscalationSourceEntityTypes.Alert, repository.Escalations.Single().SourceEntityType);
++    }
++
++    [Fact]
++    public async Task Evaluate_supports_rule_any_combinations_over_payload()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(
++                    new Dictionary<string, JsonNode?>(),
++                    new Dictionary<string, JsonNode?>
++                    {
++                        ["details"] = new JsonObject
++                        {
++                            ["department"] = "finance",
++                            ["tags"] = new JsonArray("sla", "customer")
++                        }
++                    }),
++                [
++                    Policy(new EscalationLevelDefinition(
++                        1,
++                        "Finance or SLA task needs review.",
++                        [
++                            new EscalationConditionDefinition(EscalationConditionType.Rule, "details.department", "eq", "legal"),
++                            new EscalationConditionDefinition(EscalationConditionType.Rule, "details.tags", "contains", "sla")
++                        ],
++                        EscalationConditionMode.Any))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.True(result.ConditionsMet);
++        Assert.True(result.EscalationCreated);
++    }
++
++    [Fact]
++    public async Task Evaluate_skips_duplicate_escalation_for_same_policy_level_and_lifecycle()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var audit = new CapturingAuditEventWriter();
++        var service = CreateService(repository, audit);
++        var command = new EvaluateEscalationPoliciesCommand(
++            TaskInput(new Dictionary<string, JsonNode?>
++            {
++                ["severity"] = JsonValue.Create("critical")
++            }),
++            [
++                Policy(Level(
++                    1,
++                    "Critical severity.",
++                    new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical")))
++            ]);
++
++        await service.EvaluateAsync(command, CancellationToken.None);
++        var second = await service.EvaluateAsync(command, CancellationToken.None);
++
++        Assert.Single(repository.Escalations);
++        var result = Assert.Single(second.Results);
++        Assert.True(result.ConditionsMet);
++        Assert.False(result.EscalationCreated);
++        Assert.True(result.SkippedDueToIdempotency);
++        Assert.Contains(audit.Events, x => x.Action == AuditEventActions.EscalationDuplicateSkipped && x.CorrelationId == "correlation-1");
++    }
++
++    [Fact]
++    public async Task Evaluate_allows_escalation_after_resolved_entity_is_reopened_with_new_lifecycle()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++        var policy = Policy(Level(
++            1,
++            "Critical severity.",
++            new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical")));
++
++        await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?> { ["severity"] = JsonValue.Create("critical") }, lifecycleVersion: 0),
++                [policy]),
++            CancellationToken.None);
++        var reopened = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?> { ["severity"] = JsonValue.Create("critical") }, lifecycleVersion: 1),
++                [policy]),
++            CancellationToken.None);
++
++        Assert.Equal(2, repository.Escalations.Count);
++        Assert.True(reopened.Results.Single().EscalationCreated);
++        Assert.Contains(repository.Escalations, x => x.LifecycleVersion == 0);
++        Assert.Contains(repository.Escalations, x => x.LifecycleVersion == 1);
++    }
++
++    [Fact]
++    public async Task Evaluate_fails_closed_and_audits_invalid_condition_config()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var audit = new CapturingAuditEventWriter();
++        var service = CreateService(repository, audit);
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(new Dictionary<string, JsonNode?>
++                {
++                    ["retryCount"] = JsonValue.Create(3)
++                }),
++                [
++                    Policy(Level(
++                        1,
++                        "Invalid rule should not execute.",
++                        new EscalationConditionDefinition(EscalationConditionType.Threshold, "retryCount", "approximately", 3)))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.False(result.ConditionsMet);
++        Assert.False(result.EscalationCreated);
++        Assert.NotNull(result.Diagnostic);
++        Assert.Empty(repository.Escalations);
++        Assert.Contains(audit.Events, x => x.Action == AuditEventActions.EscalationPolicyEvaluationResult && x.Outcome == AuditEventOutcomes.Failed && x.CorrelationId == "correlation-1");
++    }
++
++    private static EscalationPolicyEvaluationService CreateService(InMemoryEscalationRepository repository, CapturingAuditEventWriter audit) =>
++        new(repository, audit, TimeProvider.System);
++
++    private static EscalationPolicyDefinition Policy(params EscalationLevelDefinition[] levels) =>
++        new(PolicyId, "Default escalation policy", true, levels);
++
++    private static EscalationLevelDefinition Level(int level, string reason, params EscalationConditionDefinition[] conditions) =>
++        new(level, reason, conditions);
++
++    private static EscalationEvaluationInput TaskInput(
++        IReadOnlyDictionary<string, JsonNode?> fields,
++        IReadOnlyDictionary<string, JsonNode?>? payload = null,
++        int lifecycleVersion = 0) =>
++        EscalationEvaluationInput.ForTaskEvent(
++            CompanyId,
++            SourceEntityId,
++            "task.updated",
++            EventUtc,
++            "blocked",
++            lifecycleVersion,
++            "correlation-1",
++            fields,
++            payload);
++
++    private static EscalationEvaluationInput AlertInput(IReadOnlyDictionary<string, JsonNode?> fields) =>
++        EscalationEvaluationInput.ForAlertEvent(
++            CompanyId,
++            SourceEntityId,
++            "alert.detected",
++            EventUtc,
++            "open",
++            0,
++            "correlation-1",
++            fields);
++
++    private sealed class InMemoryEscalationRepository : IEscalationRepository
++    {
++        public List<Escalation> Escalations { get; } = [];
++
++        public Task<bool> HasExecutedAsync(Guid companyId, Guid policyId, Guid sourceEntityId, int escalationLevel, int lifecycleVersion, CancellationToken cancellationToken) =>
++            Task.FromResult(Escalations.Any(x =>
++                x.CompanyId == companyId &&
++                x.PolicyId == policyId &&
++                x.SourceEntityId == sourceEntityId &&
++                x.EscalationLevel == escalationLevel &&
++                x.LifecycleVersion == lifecycleVersion));
++
++        public Task<EscalationCreationResult> TryCreateAsync(Escalation escalation, CancellationToken cancellationToken)
++        {
++            var existing = Escalations.SingleOrDefault(x =>
++                x.CompanyId == escalation.CompanyId &&
++                x.PolicyId == escalation.PolicyId &&
++                x.SourceEntityId == escalation.SourceEntityId &&
++                x.EscalationLevel == escalation.EscalationLevel &&
++                x.LifecycleVersion == escalation.LifecycleVersion);
++            if (existing is not null)
++            {
++                return Task.FromResult(new EscalationCreationResult(false, existing, true));
++            }
++
++            Escalations.Add(escalation);
++            return Task.FromResult(new EscalationCreationResult(true, escalation, false));
++        }
++
++        public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++            Task.CompletedTask;
++    }
++
++    private sealed class CapturingAuditEventWriter : IAuditEventWriter
++    {
++        public List<AuditEventWriteRequest> Events { get; } = [];
++
++        public Task WriteAsync(AuditEventWriteRequest auditEvent, CancellationToken cancellationToken)
++        {
++            Events.Add(auditEvent);
++            return Task.CompletedTask;
++        }
++    }
++}
+END_OF_PATCH

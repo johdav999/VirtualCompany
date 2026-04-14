@@ -39,6 +39,13 @@ public static class UpdateAgentOperatingProfileCommandValidator
         "write"
     };
 
+    private static readonly HashSet<string> SupportedConditionSourceTypes = new(StringComparer.OrdinalIgnoreCase) { "metric", "entityField" };
+    private static readonly HashSet<string> SupportedConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan", "equals", "changedSinceLastEvaluation" };
+    private static readonly HashSet<string> ThresholdConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan", "equals" };
+    private static readonly HashSet<string> NumericConditionOperators = new(StringComparer.OrdinalIgnoreCase) { "greaterThan", "lessThan" };
+    private static readonly HashSet<string> SupportedConditionValueTypes = new(StringComparer.OrdinalIgnoreCase) { "number", "string", "boolean", "datetime" };
+    private static readonly HashSet<string> SupportedRepeatFiringModes = new(StringComparer.OrdinalIgnoreCase) { "falseToTrueTransition", "everyEvaluationWhileTrue" };
+
     public static void ValidateAndThrow(UpdateAgentOperatingProfileCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -426,6 +433,7 @@ public static class UpdateAgentOperatingProfileCommandValidator
 
             var hasEvent = TryGetNonEmptyString(condition["event"], out var eventName);
             var hasType = TryGetNonEmptyString(condition["type"], out var typeName);
+            var isConditionTrigger = hasType && string.Equals(typeName, "condition", StringComparison.OrdinalIgnoreCase);
 
             if (!hasEvent && !hasType)
             {
@@ -441,6 +449,217 @@ public static class UpdateAgentOperatingProfileCommandValidator
             {
                 AddError(errors, $"{conditionPath}.type", $"Trigger types must be {MaxTextValueLength} characters or fewer.");
             }
+
+            if (isConditionTrigger || condition.ContainsKey("condition"))
+            {
+                ValidateConditionExpression(errors, $"{conditionPath}.condition", condition["condition"]);
+            }
+        }
+    }
+
+    private static void ValidateConditionExpression(
+        IDictionary<string, List<string>> errors,
+        string path,
+        JsonNode? node)
+    {
+        if (node is not JsonObject condition)
+        {
+            AddError(errors, path, "Condition expression is required.");
+            return;
+        }
+
+        ValidateConditionTarget(errors, $"{path}.target", condition["target"]);
+
+        var hasOperator = TryGetNonEmptyString(condition["operator"], out var operatorName);
+        if (!hasOperator)
+        {
+            AddError(errors, $"{path}.operator", "Condition operator is required.");
+        }
+        else if (!SupportedConditionOperators.Contains(operatorName))
+        {
+            AddError(errors, $"{path}.operator", $"Condition operator '{operatorName}' is not supported.");
+        }
+
+        var hasValueType = TryGetNonEmptyString(condition["valueType"], out var valueType);
+        if (hasValueType && !SupportedConditionValueTypes.Contains(valueType))
+        {
+            AddError(errors, $"{path}.valueType", $"Condition value type '{valueType}' is not supported.");
+        }
+
+        var hasComparisonValue = condition.TryGetPropertyValue("comparisonValue", out var comparisonValue) &&
+            comparisonValue is not null;
+
+        if (!hasOperator)
+        {
+            return;
+        }
+
+        if (ThresholdConditionOperators.Contains(operatorName))
+        {
+            if (!hasComparisonValue)
+            {
+                AddError(errors, $"{path}.comparisonValue", "Comparison value is required for threshold condition operators.");
+            }
+
+            if (!hasValueType)
+            {
+                AddError(errors, $"{path}.valueType", "Condition value type is required for threshold condition operators.");
+            }
+        }
+
+        if (NumericConditionOperators.Contains(operatorName))
+        {
+            if (hasValueType && !string.Equals(valueType, "number", StringComparison.OrdinalIgnoreCase))
+            {
+                AddError(errors, $"{path}.valueType", "Greater-than and less-than conditions require number value type.");
+            }
+        }
+
+        if (string.Equals(operatorName, "changedSinceLastEvaluation", StringComparison.OrdinalIgnoreCase) &&
+            hasComparisonValue)
+        {
+            AddError(errors, $"{path}.comparisonValue", "Comparison value must be omitted for changed-since-last-evaluation conditions.");
+        }
+
+        if (hasComparisonValue && hasValueType)
+        {
+            ValidateConditionComparisonValue(errors, $"{path}.comparisonValue", comparisonValue, valueType);
+        }
+
+        if (condition.TryGetPropertyValue("repeatFiringMode", out var repeatModeNode) &&
+            repeatModeNode is not null)
+        {
+            if (!TryGetNonEmptyString(repeatModeNode, out var repeatMode))
+            {
+                AddError(errors, $"{path}.repeatFiringMode", "Repeat firing mode must be a non-empty string.");
+            }
+            else if (!SupportedRepeatFiringModes.Contains(repeatMode))
+            {
+                AddError(errors, $"{path}.repeatFiringMode", $"Repeat firing mode '{repeatMode}' is not supported.");
+            }
+        }
+    }
+
+    private static void ValidateConditionTarget(
+        IDictionary<string, List<string>> errors,
+        string path,
+        JsonNode? node)
+    {
+        if (node is not JsonObject target)
+        {
+            AddError(errors, path, "Condition target is required.");
+            return;
+        }
+
+        if (!TryGetNonEmptyString(target["sourceType"], out var sourceType))
+        {
+            AddError(errors, $"{path}.sourceType", "Condition target source type is required.");
+            return;
+        }
+
+        if (!SupportedConditionSourceTypes.Contains(sourceType))
+        {
+            AddError(errors, $"{path}.sourceType", $"Condition target source type '{sourceType}' is not supported.");
+            return;
+        }
+
+        var hasMetricName = TryGetNonEmptyString(target["metricName"], out var metricName);
+        var hasEntityType = TryGetNonEmptyString(target["entityType"], out var entityType);
+        var hasFieldPath = TryGetNonEmptyString(target["fieldPath"], out var fieldPath);
+
+        if (string.Equals(sourceType, "metric", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!hasMetricName)
+            {
+                AddError(errors, $"{path}.metricName", "Metric name is required for metric condition targets.");
+            }
+            else if (metricName.Length > MaxIdentifierLength || !IsValidIdentifier(metricName))
+            {
+                AddError(errors, $"{path}.metricName", "Metric name must be a valid identifier.");
+            }
+
+            if (hasEntityType)
+            {
+                AddError(errors, $"{path}.entityType", "Entity type must be omitted for metric condition targets.");
+            }
+
+            if (hasFieldPath)
+            {
+                AddError(errors, $"{path}.fieldPath", "Field path must be omitted for metric condition targets.");
+            }
+
+            return;
+        }
+
+        if (!hasEntityType)
+        {
+            AddError(errors, $"{path}.entityType", "Entity type is required for entity field condition targets.");
+        }
+        else if (entityType.Length > MaxIdentifierLength || !IsValidIdentifier(entityType))
+        {
+            AddError(errors, $"{path}.entityType", "Entity type must be a valid identifier.");
+        }
+
+        if (!hasFieldPath)
+        {
+            AddError(errors, $"{path}.fieldPath", "Field path is required for entity field condition targets.");
+        }
+        else if (fieldPath.Length > MaxIdentifierLength || !IsValidIdentifier(fieldPath))
+        {
+            AddError(errors, $"{path}.fieldPath", "Field path must be a valid identifier.");
+        }
+
+        if (hasMetricName)
+        {
+            AddError(errors, $"{path}.metricName", "Metric name must be omitted for entity field condition targets.");
+        }
+    }
+
+    private static void ValidateConditionComparisonValue(
+        IDictionary<string, List<string>> errors,
+        string path,
+        JsonNode? comparisonValue,
+        string valueType)
+    {
+        if (string.Equals(valueType, "number", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryGetNumber(comparisonValue, out _) &&
+                (!TryGetNonEmptyString(comparisonValue, out var numberText) ||
+                 !decimal.TryParse(numberText, NumberStyles.Number, CultureInfo.InvariantCulture, out _)))
+            {
+                AddError(errors, path, "Comparison value must be numeric.");
+            }
+
+            return;
+        }
+
+        if (string.Equals(valueType, "string", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryGetNonEmptyString(comparisonValue, out _))
+            {
+                AddError(errors, path, "Comparison value must be a non-empty string.");
+            }
+
+            return;
+        }
+
+        if (string.Equals(valueType, "boolean", StringComparison.OrdinalIgnoreCase))
+        {
+            if (comparisonValue is not JsonValue booleanValue ||
+                (!booleanValue.TryGetValue<bool>(out _) &&
+                 (!booleanValue.TryGetValue<string>(out var booleanText) || !bool.TryParse(booleanText, out _))))
+            {
+                AddError(errors, path, "Comparison value must be boolean.");
+            }
+
+            return;
+        }
+
+        if (string.Equals(valueType, "datetime", StringComparison.OrdinalIgnoreCase) &&
+            (!TryGetNonEmptyString(comparisonValue, out var dateTimeText) ||
+             !DateTimeOffset.TryParse(dateTimeText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _)))
+        {
+            AddError(errors, path, "Comparison value must be a valid datetime.");
         }
     }
 

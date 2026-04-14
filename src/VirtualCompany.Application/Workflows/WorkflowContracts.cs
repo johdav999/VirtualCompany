@@ -53,6 +53,20 @@ public sealed record TriggerScheduledWorkflowsCommand(
     string? ScheduleKey = null,
     Dictionary<string, JsonNode?>? ContextJson = null);
 
+public sealed record PlatformEventEnvelope(
+    string EventId,
+    string EventType,
+    DateTime OccurredAtUtc,
+    Guid CompanyId,
+    string CorrelationId,
+    string SourceEntityType,
+    string SourceEntityId,
+    Dictionary<string, JsonNode?> Metadata);
+
+public sealed record PlatformEventTriggerResult(
+    PlatformEventEnvelope Event,
+    IReadOnlyList<WorkflowInstanceDto> StartedInstances);
+
 public sealed record InternalWorkflowEvent(
     Guid CompanyId,
     string EventName,
@@ -267,6 +281,8 @@ public interface IDistributedLockHandle : IAsyncDisposable
 public interface IInternalWorkflowEventTriggerService
 {
     Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken);
+
+    Task<PlatformEventTriggerResult> HandleAsync(PlatformEventEnvelope workflowEvent, CancellationToken cancellationToken);
 }
 
 public sealed class WorkflowValidationException : Exception

@@ -1,0 +1,1317 @@
+diff --git a/src/VirtualCompany.Domain/Enums/AlertEnums.cs b/src/VirtualCompany.Domain/Enums/AlertEnums.cs
+new file mode 100644
+index 0000000..8f0d9d1
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/AlertEnums.cs
+@@
++namespace VirtualCompany.Domain.Enums;
++
++public enum AlertType
++{
++    Risk = 1,
++    Anomaly = 2,
++    Opportunity = 3
++}
++
++public enum AlertSeverity
++{
++    Low = 1,
++    Medium = 2,
++    High = 3,
++    Critical = 4
++}
++
++public enum AlertStatus
++{
++    Open = 1,
++    Acknowledged = 2,
++    Resolved = 3,
++    Closed = 4
++}
++
++public static class AlertTypeValues
++{
++    private static readonly IReadOnlyDictionary<AlertType, string> Values = new Dictionary<AlertType, string>
++    {
++        [AlertType.Risk] = "risk",
++        [AlertType.Anomaly] = "anomaly",
++        [AlertType.Opportunity] = "opportunity"
++    };
++
++    private static readonly IReadOnlyDictionary<string, AlertType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this AlertType type) =>
++        Values.TryGetValue(type, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(type), type, BuildValidationMessage());
++
++    public static AlertType Parse(string value) =>
++        TryParse(value, out var type)
++            ? type
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static bool TryParse(string? value, out AlertType type)
++    {
++        type = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out type) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out type) && Values.ContainsKey(type);
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Alert type is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported alert type value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
++
++public static class AlertSeverityValues
++{
++    private static readonly IReadOnlyDictionary<AlertSeverity, string> Values = new Dictionary<AlertSeverity, string>
++    {
++        [AlertSeverity.Low] = "low",
++        [AlertSeverity.Medium] = "medium",
++        [AlertSeverity.High] = "high",
++        [AlertSeverity.Critical] = "critical"
++    };
++
++    private static readonly IReadOnlyDictionary<string, AlertSeverity> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this AlertSeverity severity) =>
++        Values.TryGetValue(severity, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(severity), severity, BuildValidationMessage());
++
++    public static AlertSeverity Parse(string value) =>
++        TryParse(value, out var severity)
++            ? severity
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static bool TryParse(string? value, out AlertSeverity severity)
++    {
++        severity = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out severity) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out severity) && Values.ContainsKey(severity);
++    }
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Alert severity is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported alert severity value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
++
++public static class AlertStatusValues
++{
++    private static readonly IReadOnlyDictionary<AlertStatus, string> Values = new Dictionary<AlertStatus, string>
++    {
++        [AlertStatus.Open] = "open",
++        [AlertStatus.Acknowledged] = "acknowledged",
++        [AlertStatus.Resolved] = "resolved",
++        [AlertStatus.Closed] = "closed"
++    };
++
++    private static readonly IReadOnlyDictionary<string, AlertStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static AlertStatus DefaultStatus => AlertStatus.Open;
++    public static IReadOnlyList<string> AllowedValues { get; } = ReverseValues.Keys.OrderBy(x => x).ToArray();
++
++    public static string ToStorageValue(this AlertStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, BuildValidationMessage());
++
++    public static AlertStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BuildValidationMessage(value));
++
++    public static bool TryParse(string? value, out AlertStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++
++    public static bool IsOpenForDeduplication(this AlertStatus status) =>
++        status is AlertStatus.Open or AlertStatus.Acknowledged;
++
++    public static string BuildValidationMessage(string? attemptedValue = null) =>
++        string.IsNullOrWhiteSpace(attemptedValue)
++            ? $"Alert status is required. Allowed values: {string.Join(", ", AllowedValues)}."
++            : $"Unsupported alert status value '{attemptedValue}'. Allowed values: {string.Join(", ", AllowedValues)}.";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/Alert.cs b/src/VirtualCompany.Domain/Entities/Alert.cs
+new file mode 100644
+index 0000000..7cbf79b
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/Alert.cs
+@@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class Alert : ICompanyOwnedEntity
++{
++    private const int TitleMaxLength = 200;
++    private const int SummaryMaxLength = 2000;
++    private const int CorrelationIdMaxLength = 128;
++    private const int FingerprintMaxLength = 256;
++
++    private Alert()
++    {
++        Evidence = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        Metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    }
++
++    public Alert(
++        Guid id,
++        Guid companyId,
++        AlertType type,
++        AlertSeverity severity,
++        string title,
++        string summary,
++        IReadOnlyDictionary<string, JsonNode?> evidence,
++        string correlationId,
++        string fingerprint,
++        Guid? sourceAgentId = null,
++        IReadOnlyDictionary<string, JsonNode?>? metadata = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (sourceAgentId == Guid.Empty)
++        {
++            throw new ArgumentException("SourceAgentId cannot be empty.", nameof(sourceAgentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Type = type;
++        Severity = severity;
++        Status = AlertStatus.Open;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        Evidence = CloneRequiredEvidence(evidence);
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        Fingerprint = NormalizeRequired(fingerprint, nameof(fingerprint), FingerprintMaxLength);
++        SourceAgentId = sourceAgentId;
++        OccurrenceCount = 1;
++        Metadata = CloneNodes(metadata);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++        LastDetectedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public AlertType Type { get; private set; }
++    public AlertSeverity Severity { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Summary { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> Evidence { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public AlertStatus Status { get; private set; }
++    public string CorrelationId { get; private set; } = null!;
++    public string Fingerprint { get; private set; } = null!;
++    public Guid? SourceAgentId { get; private set; }
++    public int OccurrenceCount { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? LastDetectedUtc { get; private set; }
++    public DateTime? ResolvedUtc { get; private set; }
++    public DateTime? ClosedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Agent? SourceAgent { get; private set; }
++
++    public void UpdateDetails(AlertSeverity severity, string title, string summary, IReadOnlyDictionary<string, JsonNode?> evidence, IReadOnlyDictionary<string, JsonNode?>? metadata)
++    {
++        Severity = severity;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        Evidence = CloneRequiredEvidence(evidence);
++        Metadata = CloneNodes(metadata);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void UpdateStatus(AlertStatus status)
++    {
++        Status = status;
++        UpdatedUtc = DateTime.UtcNow;
++        ResolvedUtc = status == AlertStatus.Resolved ? UpdatedUtc : ResolvedUtc;
++        ClosedUtc = status == AlertStatus.Closed ? UpdatedUtc : ClosedUtc;
++    }
++
++    public void RefreshFromDuplicateDetection(AlertSeverity severity, string title, string summary, IReadOnlyDictionary<string, JsonNode?> evidence, string correlationId, Guid? sourceAgentId, IReadOnlyDictionary<string, JsonNode?>? metadata)
++    {
++        if (!Status.IsOpenForDeduplication())
++        {
++            return;
++        }
++
++        Severity = severity;
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
++        Evidence = CloneRequiredEvidence(evidence);
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        SourceAgentId = sourceAgentId;
++        Metadata = CloneNodes(metadata);
++        OccurrenceCount++;
++        UpdatedUtc = DateTime.UtcNow;
++        LastDetectedUtc = UpdatedUtc;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneRequiredEvidence(IReadOnlyDictionary<string, JsonNode?>? evidence)
++    {
++        if (evidence is null || evidence.Count == 0)
++        {
++            throw new ArgumentException("Evidence is required.", nameof(evidence));
++        }
++
++        return CloneNodes(evidence);
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Application/Alerts/AlertContracts.cs b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+new file mode 100644
+index 0000000..66eb59d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+@@
++using System.Collections.ObjectModel;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Alerts;
++
++public sealed record CreateAlertCommand(
++    Guid CompanyId,
++    string Type,
++    string Severity,
++    string Title,
++    string Summary,
++    Dictionary<string, JsonNode?>? Evidence,
++    string CorrelationId,
++    string Fingerprint,
++    Guid? SourceAgentId,
++    Dictionary<string, JsonNode?>? Metadata);
++
++public sealed record CreateDetectionAlertCommand(
++    Guid CompanyId,
++    string Type,
++    string Severity,
++    string Title,
++    string Summary,
++    Dictionary<string, JsonNode?>? Evidence,
++    string CorrelationId,
++    string Fingerprint,
++    Guid? SourceAgentId,
++    Dictionary<string, JsonNode?>? Metadata);
++
++public sealed record UpdateAlertCommand(
++    string Severity,
++    string Title,
++    string Summary,
++    Dictionary<string, JsonNode?>? Evidence,
++    string Status,
++    Dictionary<string, JsonNode?>? Metadata);
++
++public sealed record ListAlertsQuery(
++    string? Type,
++    string? Severity,
++    string? Status,
++    DateTime? CreatedFrom,
++    DateTime? CreatedTo,
++    int? Skip,
++    int? Take);
++
++public sealed record AlertDto(
++    Guid Id,
++    Guid CompanyId,
++    string Type,
++    string Severity,
++    string Title,
++    string Summary,
++    Dictionary<string, JsonNode?> Evidence,
++    string Status,
++    string CorrelationId,
++    string Fingerprint,
++    Guid? SourceAgentId,
++    int OccurrenceCount,
++    Dictionary<string, JsonNode?> Metadata,
++    DateTime CreatedAt,
++    DateTime UpdatedAt,
++    DateTime? LastDetectedAt,
++    DateTime? ResolvedAt,
++    DateTime? ClosedAt);
++
++public sealed record AlertMutationResultDto(AlertDto Alert, bool Created, bool Deduplicated);
++
++public sealed record AlertListResultDto(IReadOnlyList<AlertDto> Items, int TotalCount, int Skip, int Take);
++
++public interface ICompanyAlertService
++{
++    Task<AlertMutationResultDto> CreateAsync(Guid companyId, CreateAlertCommand command, CancellationToken cancellationToken);
++    Task<AlertMutationResultDto> CreateOrDeduplicateFromDetectionAsync(Guid companyId, CreateDetectionAlertCommand command, CancellationToken cancellationToken);
++    Task<AlertDto> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken);
++    Task<AlertListResultDto> ListAsync(Guid companyId, ListAlertsQuery query, CancellationToken cancellationToken);
++    Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken);
++    Task DeleteAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken);
++}
++
++public sealed class AlertValidationException : Exception
++{
++    public AlertValidationException(IDictionary<string, string[]> errors)
++        : base("Alert validation failed.")
++    {
++        Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+new file mode 100644
+index 0000000..2041a31
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Alerts;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyAlertService : ICompanyAlertService
++{
++    private const int DefaultPageSize = 50;
++    private const int MaxPageSize = 200;
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++
++    public CompanyAlertService(VirtualCompanyDbContext dbContext, ICompanyMembershipContextResolver membershipContextResolver)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++    }
++
++    public async Task<AlertMutationResultDto> CreateAsync(Guid companyId, CreateAlertCommand command, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        ValidateTenant(companyId, command.CompanyId);
++        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++
++        var type = AlertTypeValues.Parse(command.Type);
++        var severity = AlertSeverityValues.Parse(command.Severity);
++        var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
++        if (existing is not null)
++        {
++            existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
++        }
++
++        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
++        _dbContext.Alerts.Add(alert);
++        await SaveCreateAsync(alert, cancellationToken);
++        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
++    }
++
++    public async Task<AlertMutationResultDto> CreateOrDeduplicateFromDetectionAsync(Guid companyId, CreateDetectionAlertCommand command, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        ValidateTenant(companyId, command.CompanyId);
++        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++
++        var type = AlertTypeValues.Parse(command.Type);
++        var severity = AlertSeverityValues.Parse(command.Severity);
++        var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
++        if (existing is not null)
++        {
++            existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
++        }
++
++        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
++        _dbContext.Alerts.Add(alert);
++        await SaveCreateAsync(alert, cancellationToken);
++        return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
++    }
++
++    public async Task<AlertDto> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var alert = await _dbContext.Alerts.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == alertId, cancellationToken);
++        return alert is null ? throw new KeyNotFoundException("Alert not found.") : ToDto(alert);
++    }
++
++    public async Task<AlertListResultDto> ListAsync(Guid companyId, ListAlertsQuery query, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(query);
++
++        var alerts = _dbContext.Alerts.AsNoTracking().Where(x => x.CompanyId == companyId);
++        if (!string.IsNullOrWhiteSpace(query.Type))
++        {
++            var type = AlertTypeValues.Parse(query.Type);
++            alerts = alerts.Where(x => x.Type == type);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Severity))
++        {
++            var severity = AlertSeverityValues.Parse(query.Severity);
++            alerts = alerts.Where(x => x.Severity == severity);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Status))
++        {
++            var status = AlertStatusValues.Parse(query.Status);
++            alerts = alerts.Where(x => x.Status == status);
++        }
++
++        if (query.CreatedFrom.HasValue)
++        {
++            alerts = alerts.Where(x => x.CreatedUtc >= query.CreatedFrom.Value);
++        }
++
++        if (query.CreatedTo.HasValue)
++        {
++            alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);
++        }
++
++        var totalCount = await alerts.CountAsync(cancellationToken);
++        var skip = Math.Max(0, query.Skip ?? 0);
++        var take = Math.Clamp(query.Take ?? DefaultPageSize, 1, MaxPageSize);
++        var items = await alerts
++            .OrderByDescending(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .Skip(skip)
++            .Take(take)
++            .ToListAsync(cancellationToken);
++
++        return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, take);
++    }
++
++    public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        Validate(null, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, null, null, null, requireFingerprint: false);
++
++        var alert = await _dbContext.Alerts.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == alertId, cancellationToken);
++        if (alert is null)
++        {
++            throw new KeyNotFoundException("Alert not found.");
++        }
++
++        alert.UpdateDetails(AlertSeverityValues.Parse(command.Severity), command.Title, command.Summary, command.Evidence!, command.Metadata);
++        alert.UpdateStatus(AlertStatusValues.Parse(command.Status));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(alert);
++    }
++
++    public async Task DeleteAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var alert = await _dbContext.Alerts.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == alertId, cancellationToken);
++        if (alert is null)
++        {
++            throw new KeyNotFoundException("Alert not found.");
++        }
++
++        _dbContext.Alerts.Remove(alert);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private async Task<Alert?> FindOpenByFingerprintAsync(Guid companyId, string fingerprint, CancellationToken cancellationToken)
++    {
++        var normalizedFingerprint = fingerprint.Trim();
++        return await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.Fingerprint == normalizedFingerprint)
++            .Where(x => x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged)
++            .OrderByDescending(x => x.CreatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++    }
++
++    private async Task SaveCreateAsync(Alert alert, CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException ex) when (IsDedupUniqueViolation(ex))
++        {
++            _dbContext.ChangeTracker.Clear();
++            var existing = await FindOpenByFingerprintAsync(alert.CompanyId, alert.Fingerprint, cancellationToken);
++            if (existing is null)
++            {
++                throw;
++            }
++
++            existing.RefreshFromDuplicateDetection(alert.Severity, alert.Title, alert.Summary, alert.Evidence, alert.CorrelationId, alert.SourceAgentId, alert.Metadata);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (await _membershipContextResolver.ResolveAsync(companyId, cancellationToken) is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private static AlertDto ToDto(Alert alert) =>
++        new(
++            alert.Id,
++            alert.CompanyId,
++            alert.Type.ToStorageValue(),
++            alert.Severity.ToStorageValue(),
++            alert.Title,
++            alert.Summary,
++            CloneNodes(alert.Evidence),
++            alert.Status.ToStorageValue(),
++            alert.CorrelationId,
++            alert.Fingerprint,
++            alert.SourceAgentId,
++            alert.OccurrenceCount,
++            CloneNodes(alert.Metadata),
++            alert.CreatedUtc,
++            alert.UpdatedUtc,
++            alert.LastDetectedUtc,
++            alert.ResolvedUtc,
++            alert.ClosedUtc);
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> nodes) =>
++        nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static void ValidateTenant(Guid routeCompanyId, Guid requestCompanyId)
++    {
++        if (requestCompanyId == Guid.Empty || requestCompanyId != routeCompanyId)
++        {
++            throw new AlertValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++            {
++                [nameof(CreateAlertCommand.CompanyId)] = ["CompanyId is required and must match the route companyId."]
++            });
++        }
++    }
++
++    private static void Validate(ListAlertsQuery query)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        if (!string.IsNullOrWhiteSpace(query.Type) && !AlertTypeValues.TryParse(query.Type, out _))
++        {
++            AddError(errors, nameof(query.Type), AlertTypeValues.BuildValidationMessage(query.Type));
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Severity) && !AlertSeverityValues.TryParse(query.Severity, out _))
++        {
++            AddError(errors, nameof(query.Severity), AlertSeverityValues.BuildValidationMessage(query.Severity));
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Status) && !AlertStatusValues.TryParse(query.Status, out _))
++        {
++            AddError(errors, nameof(query.Status), AlertStatusValues.BuildValidationMessage(query.Status));
++        }
++
++        if (query.Skip is < 0)
++        {
++            AddError(errors, nameof(query.Skip), "Skip must be zero or greater.");
++        }
++
++        if (query.Take is <= 0 or > MaxPageSize)
++        {
++            AddError(errors, nameof(query.Take), $"Take must be between 1 and {MaxPageSize}.");
++        }
++
++        ThrowIfInvalid(errors);
++    }
++
++    private static void Validate(string? type, string severity, string status, string title, string summary, IReadOnlyDictionary<string, JsonNode?>? evidence, string? correlationId, string? fingerprint, Guid? sourceAgentId, bool requireFingerprint)
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        if (type is not null && !AlertTypeValues.TryParse(type, out _))
++        {
++            AddError(errors, nameof(CreateAlertCommand.Type), AlertTypeValues.BuildValidationMessage(type));
++        }
++
++        if (!AlertSeverityValues.TryParse(severity, out _))
++        {
++            AddError(errors, nameof(CreateAlertCommand.Severity), AlertSeverityValues.BuildValidationMessage(severity));
++        }
++
++        if (!AlertStatusValues.TryParse(status, out _))
++        {
++            AddError(errors, nameof(UpdateAlertCommand.Status), AlertStatusValues.BuildValidationMessage(status));
++        }
++
++        AddRequired(errors, nameof(CreateAlertCommand.Title), title, 200);
++        AddRequired(errors, nameof(CreateAlertCommand.Summary), summary, 2000);
++        if (evidence is null || evidence.Count == 0)
++        {
++            AddError(errors, nameof(CreateAlertCommand.Evidence), "Evidence is required.");
++        }
++
++        if (correlationId is not null)
++        {
++            AddRequired(errors, nameof(CreateAlertCommand.CorrelationId), correlationId, 128);
++        }
++
++        if (requireFingerprint)
++        {
++            AddRequired(errors, nameof(CreateAlertCommand.Fingerprint), fingerprint, 256);
++        }
++
++        if (sourceAgentId == Guid.Empty)
++        {
++            AddError(errors, nameof(CreateAlertCommand.SourceAgentId), "SourceAgentId cannot be empty.");
++        }
++
++        ThrowIfInvalid(errors);
++    }
++
++    private static void AddRequired(IDictionary<string, List<string>> errors, string key, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            AddError(errors, key, $"{key} is required.");
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
++        }
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private static void ThrowIfInvalid(IDictionary<string, List<string>> errors)
++    {
++        if (errors.Count > 0)
++        {
++            throw new AlertValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
++    }
++
++    private static bool IsDedupUniqueViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("alerts", StringComparison.OrdinalIgnoreCase) &&
++                (current.Message.Contains("fingerprint", StringComparison.OrdinalIgnoreCase) ||
++                 current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++                 current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase)))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/AlertsController.cs b/src/VirtualCompany.Api/Controllers/AlertsController.cs
+new file mode 100644
+index 0000000..0a7a890
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/AlertsController.cs
+@@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Alerts;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/alerts")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class AlertsController : ControllerBase
++{
++    private readonly ICompanyAlertService _alerts;
++
++    public AlertsController(ICompanyAlertService alerts)
++    {
++        _alerts = alerts;
++    }
++
++    [HttpPost]
++    public async Task<ActionResult<AlertMutationResultDto>> CreateAsync(Guid companyId, [FromBody] CreateAlertCommand command, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _alerts.CreateAsync(companyId, command, cancellationToken);
++            return result.Created
++                ? CreatedAtAction(nameof(GetByIdAsync), new { companyId, alertId = result.Alert.Id }, result)
++                : Ok(result);
++        }
++        catch (AlertValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("detections")]
++    public async Task<ActionResult<AlertMutationResultDto>> CreateFromDetectionAsync(Guid companyId, [FromBody] CreateDetectionAlertCommand command, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _alerts.CreateOrDeduplicateFromDetectionAsync(companyId, command, cancellationToken);
++            return result.Created
++                ? CreatedAtAction(nameof(GetByIdAsync), new { companyId, alertId = result.Alert.Id }, result)
++                : Ok(result);
++        }
++        catch (AlertValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{alertId:guid}")]
++    public async Task<ActionResult<AlertDto>> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _alerts.GetByIdAsync(companyId, alertId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet]
++    public async Task<ActionResult<AlertListResultDto>> ListAsync(
++        Guid companyId,
++        [FromQuery] string? type,
++        [FromQuery] string? severity,
++        [FromQuery] string? status,
++        [FromQuery] DateTime? createdFrom,
++        [FromQuery] DateTime? createdTo,
++        [FromQuery] int? skip,
++        [FromQuery] int? take,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _alerts.ListAsync(companyId, new ListAlertsQuery(type, severity, status, createdFrom, createdTo, skip, take), cancellationToken));
++        }
++        catch (AlertValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("{alertId:guid}")]
++    public async Task<ActionResult<AlertDto>> UpdateAsync(Guid companyId, Guid alertId, [FromBody] UpdateAlertCommand command, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _alerts.UpdateAsync(companyId, alertId, command, cancellationToken));
++        }
++        catch (AlertValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpDelete("{alertId:guid}")]
++    public async Task<IActionResult> DeleteAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            await _alerts.DeleteAsync(companyId, alertId, cancellationToken);
++            return NoContent();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
++        ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
++        {
++            Title = "Validation failed",
++            Status = StatusCodes.Status400BadRequest
++        });
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 6c9e1e4..c7b9252 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -54,6 +54,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
++    public DbSet<Alert> Alerts => Set<Alert>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -150,5 +151,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<ContextRetrievalSource>()
+             .HasQueryFilter(source =>
+                 CurrentCompanyId.HasValue && source.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<Alert>()
++            .HasQueryFilter(alert =>
++                CurrentCompanyId.HasValue && alert.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 38e5a91..c5cf701 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1827,6 +1827,63 @@ internal sealed class WorkflowExceptionConfiguration : IEntityTypeConfiguration<W
+     }
+ }
+ 
++internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
++{
++    public void Configure(EntityTypeBuilder<Alert> builder)
++    {
++        builder.ToTable("alerts");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Type)
++            .HasColumnName("type")
++            .HasConversion(value => value.ToStorageValue(), value => AlertTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Severity)
++            .HasColumnName("severity")
++            .HasConversion(value => value.ToStorageValue(), value => AlertSeverityValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000).IsRequired();
++        builder.Property(x => x.Evidence)
++            .HasColumnName("evidence_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => AlertStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(AlertStatusValues.DefaultStatus)
++            .HasSentinel((AlertStatus)0)
++            .IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.Fingerprint).HasColumnName("fingerprint").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.SourceAgentId).HasColumnName("source_agent_id");
++        builder.Property(x => x.OccurrenceCount).HasColumnName("occurrence_count").HasDefaultValue(1).IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.LastDetectedUtc).HasColumnName("last_detected_at");
++        builder.Property(x => x.ResolvedUtc).HasColumnName("resolved_at");
++        builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
++
++        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Type });
++        builder.HasIndex(x => new { x.CompanyId, x.Severity });
++        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Fingerprint });
++        builder.HasIndex(x => new { x.CompanyId, x.Fingerprint, x.Status })
++            .HasFilter("\"status\" IN ('open', 'acknowledged')")
++            .IsUnique();
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.SourceAgent).WithMany().HasForeignKey(x => x.SourceAgentId).OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0af6bcb..0d7e115 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Alerts;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Approvals;
+@@ -264,6 +265,8 @@ public static class DependencyInjection
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+         services.AddScoped<IExecutionExceptionQueryService>(provider => provider.GetRequiredService<ExecutionExceptionService>());
++        services.AddScoped<CompanyAlertService>();
++        services.AddScoped<ICompanyAlertService>(provider => provider.GetRequiredService<CompanyAlertService>());
+         services.AddScoped<IInternalWorkflowEventTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IWorkflowSchedulePollingService, WorkflowSchedulePollingService>();
+         services.AddScoped<ICompanyTaskQueryService>(provider => provider.GetRequiredService<CompanyTaskService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+new file mode 100644
+index 0000000..f2db008
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+@@
++using System;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    [DbContext(typeof(VirtualCompanyDbContext))]
++    [Migration("20260414120000_AddAlerts")]
++    public partial class AddAlerts : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++            var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++            var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++            var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++            var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++            var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++            var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++            var string256Type = isPostgres ? "character varying(256)" : "nvarchar(256)";
++            var string2000Type = isPostgres ? "character varying(2000)" : "nvarchar(2000)";
++            var evidenceDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++            var openFilter = isPostgres ? "\"status\" IN ('open', 'acknowledged')" : "[status] IN (N'open', N'acknowledged')";
++
++            migrationBuilder.CreateTable(
++                name: "alerts",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: guidType, nullable: false),
++                    company_id = table.Column<Guid>(type: guidType, nullable: false),
++                    type = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    severity = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                    title = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                    summary = table.Column<string>(type: string2000Type, maxLength: 2000, nullable: false),
++                    evidence_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: evidenceDefault),
++                    status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false, defaultValue: "open"),
++                    correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: false),
++                    fingerprint = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                    source_agent_id = table.Column<Guid>(type: guidType, nullable: true),
++                    occurrence_count = table.Column<int>(type: "int", nullable: false, defaultValue: 1),
++                    metadata_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: evidenceDefault),
++                    created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                    last_detected_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    resolved_at = table.Column<DateTime>(type: dateTimeType, nullable: true),
++                    closed_at = table.Column<DateTime>(type: dateTimeType, nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_alerts", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_alerts_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_alerts_agents_source_agent_id",
++                        column: x => x.source_agent_id,
++                        principalTable: "agents",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.SetNull);
++                });
++
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_created_at", table: "alerts", columns: new[] { "company_id", "created_at" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_type", table: "alerts", columns: new[] { "company_id", "type" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_severity", table: "alerts", columns: new[] { "company_id", "severity" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_status", table: "alerts", columns: new[] { "company_id", "status" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_fingerprint", table: "alerts", columns: new[] { "company_id", "fingerprint" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_source_agent_id", table: "alerts", column: "source_agent_id");
++            migrationBuilder.CreateIndex(
++                name: "IX_alerts_company_id_fingerprint_status_open",
++                table: "alerts",
++                columns: new[] { "company_id", "fingerprint", "status" },
++                unique: true,
++                filter: openFilter);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "alerts");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+new file mode 100644
+index 0000000..8da1c74
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AlertIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Detection_create_deduplicates_open_alert_by_fingerprint()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++        var payload = new
++        {
++            companyId = seed.CompanyId,
++            type = "risk",
++            severity = "high",
++            title = "Margin at risk",
++            summary = "Gross margin dropped below threshold.",
++            evidence = new Dictionary<string, object?> { ["metric"] = "gross_margin", ["value"] = 0.12 },
++            status = "open",
++            correlationId = "corr-alert-1",
++            fingerprint = "risk:gross-margin:below-threshold",
++            sourceAgentId = seed.AgentId
++        };
++
++        var first = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/detections", payload);
++        var second = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/detections", payload);
++
++        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
++        var secondAlert = await second.Content.ReadFromJsonAsync<AlertMutationResponse>();
++        Assert.NotNull(secondAlert);
++        Assert.False(secondAlert!.Created);
++        Assert.True(secondAlert.Deduplicated);
++        Assert.Equal(2, secondAlert.Alert.OccurrenceCount);
++
++        var list = await client.GetFromJsonAsync<AlertListResponse>($"/api/companies/{seed.CompanyId}/alerts?status=open");
++        Assert.NotNull(list);
++        Assert.Single(list!.Items);
++    }
++
++    [Fact]
++    public async Task Query_supports_filters_pagination_and_tenant_scoping()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts", CreatePayload(seed.CompanyId, "risk", "critical", "open", "fp-risk", seed.AgentId));
++        await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts", CreatePayload(seed.CompanyId, "opportunity", "low", "open", "fp-opp", seed.AgentId));
++        await client.PostAsJsonAsync($"/api/companies/{seed.OtherCompanyId}/alerts", CreatePayload(seed.OtherCompanyId, "risk", "critical", "open", "fp-other", null));
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/alerts?type=risk&severity=critical&status=open&createdFrom=2000-01-01T00:00:00Z&createdTo=2100-01-01T00:00:00Z&skip=0&take=1");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var list = await response.Content.ReadFromJsonAsync<AlertListResponse>();
++        Assert.NotNull(list);
++        Assert.Equal(1, list!.Items.Count);
++        Assert.Equal(1, list.TotalCount);
++        Assert.Equal(seed.CompanyId, list.Items[0].CompanyId);
++        Assert.Equal("risk", list.Items[0].Type);
++        Assert.Equal("critical", list.Items[0].Severity);
++    }
++
++    [Fact]
++    public async Task Same_fingerprint_can_create_new_alert_after_resolution()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++        var payload = CreatePayload(seed.CompanyId, "anomaly", "medium", "open", "fp-reopen", seed.AgentId);
++
++        var first = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/detections", payload);
++        var created = await first.Content.ReadFromJsonAsync<AlertMutationResponse>();
++        Assert.NotNull(created);
++
++        var update = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/{created!.Alert.Id}", new
++        {
++            severity = "medium",
++            title = "Volume anomaly",
++            summary = "Volume exceeded expected range.",
++            evidence = new Dictionary<string, object?> { ["metric"] = "volume" },
++            status = "resolved",
++            metadata = new Dictionary<string, object?>()
++        });
++        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
++
++        var second = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/alerts/detections", payload);
++        var reopened = await second.Content.ReadFromJsonAsync<AlertMutationResponse>();
++
++        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
++        Assert.NotNull(reopened);
++        Assert.True(reopened!.Created);
++        Assert.NotEqual(created.Alert.Id, reopened.Alert.Id);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
++        return client;
++    }
++
++    private static object CreatePayload(Guid companyId, string type, string severity, string status, string fingerprint, Guid? sourceAgentId) =>
++        new
++        {
++            companyId,
++            type,
++            severity,
++            title = type == "opportunity" ? "Upsell opportunity" : type == "anomaly" ? "Volume anomaly" : "Margin at risk",
++            summary = "Detection summary.",
++            evidence = new Dictionary<string, object?> { ["source"] = "test" },
++            status,
++            correlationId = $"corr-{fingerprint}",
++            fingerprint,
++            sourceAgentId,
++            metadata = new Dictionary<string, object?>()
++        };
++
++    private async Task<AlertSeed> SeedCompanyAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "Alert Company"), new Company(otherCompanyId, "Other Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "risk", "Risk Analyst", "Risk Analyst", "Risk", null, AgentSeniority.Lead, AgentStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new AlertSeed(companyId, otherCompanyId, agentId);
++    }
++
++    private sealed record AlertSeed(Guid CompanyId, Guid OtherCompanyId, Guid AgentId);
++
++    private sealed class AlertMutationResponse
++    {
++        public AlertResponse Alert { get; set; } = new();
++        public bool Created { get; set; }
++        public bool Deduplicated { get; set; }
++    }
++
++    private sealed class AlertListResponse
++    {
++        public List<AlertResponse> Items { get; set; } = [];
++        public int TotalCount { get; set; }
++    }
++
++    private sealed class AlertResponse
++    {
++        public Guid Id { get; set; }
++        public Guid CompanyId { get; set; }
++        public string Type { get; set; } = string.Empty;
++        public string Severity { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++        public int OccurrenceCount { get; set; }
++        public Dictionary<string, JsonElement> Evidence { get; set; } = [];
++    }
++}
+END_OF_PATCH

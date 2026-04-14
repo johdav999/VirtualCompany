@@ -1,0 +1,390 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+index 8b7a1f2..b06c2d1 100644
+--- a/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentScheduledTriggerContracts.cs
+@@ -43,6 +43,22 @@ public sealed record AgentScheduledTriggerStateCommand(Dictionary<string, JsonNod
+ 
+ public interface IScheduleExpressionValidator
+ {
++    ScheduleValidationResult ValidateCronExpression(string? cronExpression);
++
++    ScheduleValidationResult ValidateTimeZoneId(string? timeZoneId);
++}
++
++public sealed record AgentScheduledTriggerExecutionRequestMessage(
++    Guid CompanyId,
++    Guid AgentId,
++    Guid TriggerId,
++    string TriggerCode,
++    DateTime ScheduledAtUtc,
++    string CronExpression,
++    string TimeZoneId,
++    Dictionary<string, JsonNode?> Metadata,
++    string CorrelationId,
++    string IdempotencyKey);
++
+     ScheduleValidationResult ValidateCronExpression(string? cronExpression);
+ 
+     ScheduleValidationResult ValidateTimeZoneId(string? timeZoneId);
+@@ -53,6 +69,24 @@ public interface IScheduledTriggerNextRunCalculator
+     DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc);
+ }
+ 
++public sealed record AgentScheduledTriggerPollingRunResult(
++    bool LockAcquired,
++    int CompaniesScanned,
++    int TriggersScanned,
++    int ExecutionRequestsEnqueued,
++    int Failures);
++
++public interface IAgentScheduledTriggerPollingService
++{
++    Task<AgentScheduledTriggerPollingRunResult> RunDueTriggersAsync(
++        DateTime dueAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken);
++}
++
++public interface IAgentScheduledTriggerSchedulerCoordinator
++{
++    Task<AgentScheduledTriggerPollingRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken);
++}
++
+ public interface IAgentScheduledTriggerService
+ {
+     Task<IReadOnlyList<AgentScheduledTriggerDto>> ListAsync(
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index 7c2e8d4..a1df409 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -10,6 +10,7 @@ public static class CompanyOutboxTopics
+     public const string InvitationAccepted = "company.invitation.accepted";
+     public const string MembershipRoleChanged = "company.membership.role_changed";
+     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
++    public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+index 9c0b513..4e03e45 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentScheduledTriggerServices.cs
+@@ -1,12 +1,18 @@
+ using System.Text;
++using System.Text.Json.Nodes;
+ using Cronos;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
+ using TimeZoneConverter;
+ using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class CronosScheduleExpressionValidator : IScheduleExpressionValidator
+@@ -442,3 +448,233 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
+     private sealed record NormalizedScheduleCommand(string Name, string Code, string CronExpression, string TimeZoneId);
+     private sealed record NormalizedCreateCommand(string Name, string Code, string CronExpression, string TimeZoneId, bool Enabled);
+ }
++
++public sealed class AgentScheduledTriggerSchedulerOptions
++{
++    public const string SectionName = "AgentScheduledTriggerScheduler";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalSeconds { get; set; } = 60;
++    public int LockTtlSeconds { get; set; } = 120;
++    public int BatchSize { get; set; } = 50;
++    public string LockKey { get; set; } = "agent-scheduled-trigger-scheduler";
++}
++
++public sealed class AgentScheduledTriggerSchedulerCoordinator : IAgentScheduledTriggerSchedulerCoordinator
++{
++    private readonly IDistributedLockProvider _lockProvider;
++    private readonly IAgentScheduledTriggerPollingService _pollingService;
++    private readonly IOptions<AgentScheduledTriggerSchedulerOptions> _options;
++    private readonly ILogger<AgentScheduledTriggerSchedulerCoordinator> _logger;
++
++    public AgentScheduledTriggerSchedulerCoordinator(
++        IDistributedLockProvider lockProvider,
++        IAgentScheduledTriggerPollingService pollingService,
++        IOptions<AgentScheduledTriggerSchedulerOptions> options,
++        ILogger<AgentScheduledTriggerSchedulerCoordinator> logger)
++    {
++        _lockProvider = lockProvider;
++        _pollingService = pollingService;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<AgentScheduledTriggerPollingRunResult> RunOnceAsync(DateTimeOffset now, CancellationToken cancellationToken)
++    {
++        var options = _options.Value;
++        var lockKey = string.IsNullOrWhiteSpace(options.LockKey)
++            ? "agent-scheduled-trigger-scheduler"
++            : options.LockKey.Trim();
++        var lockTtl = TimeSpan.FromSeconds(Math.Max(5, options.LockTtlSeconds));
++        var batchSize = Math.Max(1, options.BatchSize);
++
++        await using var handle = await _lockProvider.TryAcquireAsync(lockKey, lockTtl, cancellationToken);
++        if (handle is null)
++        {
++            _logger.LogInformation(
++                "Agent scheduled trigger scheduler skipped polling because distributed lock {LockKey} was not acquired.",
++                lockKey);
++            return new AgentScheduledTriggerPollingRunResult(false, 0, 0, 0, 0);
++        }
++
++        return await _pollingService.RunDueTriggersAsync(now.UtcDateTime, batchSize, cancellationToken);
++    }
++}
++
++public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTriggerPollingService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAgentScheduledTriggerRepository _repository;
++    private readonly IScheduledTriggerNextRunCalculator _nextRunCalculator;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
++    private readonly ILogger<AgentScheduledTriggerPollingService> _logger;
++
++    public AgentScheduledTriggerPollingService(
++        VirtualCompanyDbContext dbContext,
++        IAgentScheduledTriggerRepository repository,
++        IScheduledTriggerNextRunCalculator nextRunCalculator,
++        ICompanyOutboxEnqueuer outboxEnqueuer,
++        ILogger<AgentScheduledTriggerPollingService> logger)
++    {
++        _dbContext = dbContext;
++        _repository = repository;
++        _nextRunCalculator = nextRunCalculator;
++        _outboxEnqueuer = outboxEnqueuer;
++        _logger = logger;
++    }
++
++    public async Task<AgentScheduledTriggerPollingRunResult> RunDueTriggersAsync(
++        DateTime dueAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken)
++    {
++        var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc
++            ? dueAtUtc
++            : dueAtUtc.ToUniversalTime();
++        var effectiveBatchSize = Math.Max(1, batchSize);
++        var companyIds = await ResolveDueCompanyIdsAsync(normalizedDueAtUtc, effectiveBatchSize, cancellationToken);
++        var triggersScanned = 0;
++        var enqueued = 0;
++        var failures = 0;
++
++        foreach (var companyId in companyIds)
++        {
++            var dueTriggers = await _repository.ListDueAsync(
++                companyId,
++                normalizedDueAtUtc,
++                Math.Max(1, effectiveBatchSize - triggersScanned),
++                cancellationToken);
++
++            foreach (var trigger in dueTriggers)
++            {
++                triggersScanned++;
++                try
++                {
++                    if (await TryEnqueueExecutionRequestAsync(trigger, normalizedDueAtUtc, cancellationToken))
++                    {
++                        enqueued++;
++                    }
++                }
++                catch (Exception ex) when (ex is not OperationCanceledException)
++                {
++                    failures++;
++                    _logger.LogError(
++                        ex,
++                        "Agent scheduled trigger {TriggerId} for company {CompanyId} failed while enqueueing its due execution request.",
++                        trigger.Id,
++                        trigger.CompanyId);
++                }
++
++                if (triggersScanned >= effectiveBatchSize)
++                {
++                    return new AgentScheduledTriggerPollingRunResult(true, companyIds.Count, triggersScanned, enqueued, failures);
++                }
++            }
++        }
++
++        return new AgentScheduledTriggerPollingRunResult(true, companyIds.Count, triggersScanned, enqueued, failures);
++    }
++
++    private async Task<bool> TryEnqueueExecutionRequestAsync(
++        AgentScheduledTrigger trigger,
++        DateTime dueAtUtc,
++        CancellationToken cancellationToken)
++    {
++        if (!trigger.NextRunUtc.HasValue)
++        {
++            return false;
++        }
++
++        var scheduledAtUtc = trigger.NextRunUtc.Value.Kind == DateTimeKind.Utc
++            ? trigger.NextRunUtc.Value
++            : trigger.NextRunUtc.Value.ToUniversalTime();
++
++        if (!trigger.IsEligibleForEnqueue(scheduledAtUtc))
++        {
++            trigger.MarkEvaluated(dueAtUtc, trigger.IsEnabled ? scheduledAtUtc : null);
++            await _repository.SaveChangesAsync(cancellationToken);
++            return false;
++        }
++
++        var nextRunUtc = _nextRunCalculator.GetNextRunUtc(trigger.CronExpression, trigger.TimeZoneId, scheduledAtUtc);
++        var windowEndUtc = nextRunUtc.HasValue && nextRunUtc.Value > scheduledAtUtc
++            ? nextRunUtc.Value
++            : scheduledAtUtc.AddMinutes(1);
++        var idempotencyKey = $"agent-scheduled-trigger:{trigger.CompanyId:N}:{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
++        var correlationId = idempotencyKey;
++        var executionRequestId = $"{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
++
++        var window = new AgentScheduledTriggerEnqueueWindow(
++            Guid.NewGuid(),
++            trigger.CompanyId,
++            trigger.Id,
++            scheduledAtUtc,
++            windowEndUtc,
++            dueAtUtc,
++            executionRequestId);
++
++        if (!await _repository.TryRecordEnqueueWindowAsync(window, cancellationToken))
++        {
++            trigger.MarkEvaluated(dueAtUtc, nextRunUtc);
++            await _repository.SaveChangesAsync(cancellationToken);
++            return false;
++        }
++
++        _outboxEnqueuer.Enqueue(
++            trigger.CompanyId,
++            CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested,
++            new AgentScheduledTriggerExecutionRequestMessage(
++                trigger.CompanyId,
++                trigger.AgentId,
++                trigger.Id,
++                trigger.Code,
++                scheduledAtUtc,
++                trigger.CronExpression,
++                trigger.TimeZoneId,
++                trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                correlationId,
++                idempotencyKey),
++            correlationId,
++            availableAtUtc: dueAtUtc,
++            idempotencyKey: idempotencyKey,
++            causationId: trigger.Id.ToString("N"));
++
++        trigger.MarkEnqueued(dueAtUtc, nextRunUtc);
++        await _repository.SaveChangesAsync(cancellationToken);
++        return true;
++    }
++
++    private async Task<IReadOnlyList<Guid>> ResolveDueCompanyIdsAsync(
++        DateTime dueAtUtc,
++        int batchSize,
++        CancellationToken cancellationToken) =>
++        await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.IsEnabled &&
++                x.NextRunUtc.HasValue &&
++                x.NextRunUtc.Value <= dueAtUtc &&
++                (!x.DisabledUtc.HasValue || dueAtUtc <= x.DisabledUtc.Value))
++            .Select(x => x.CompanyId)
++            .Distinct()
++            .OrderBy(x => x)
++            .Take(Math.Max(1, batchSize))
++            .ToListAsync(cancellationToken);
++}
++
++public sealed class AgentScheduledTriggerSchedulerBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly TimeProvider _timeProvider;
++    private readonly IOptions<AgentScheduledTriggerSchedulerOptions> _options;
++    private readonly ILogger<AgentScheduledTriggerSchedulerBackgroundService> _logger;
++
++    public AgentScheduledTriggerSchedulerBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        TimeProvider timeProvider,
++        IOptions<AgentScheduledTriggerSchedulerOptions> options,
++        ILogger<AgentScheduledTriggerSchedulerBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _timeProvider = timeProvider;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Agent scheduled trigger scheduler background service is disabled.");
++            return;
++        }
++
++        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollIntervalSeconds)));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var coordinator = scope.ServiceProvider.GetRequiredService<IAgentScheduledTriggerSchedulerCoordinator>();
++                await coordinator.RunOnceAsync(_timeProvider.GetUtcNow(), stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Agent scheduled trigger scheduler polling loop failed unexpectedly.");
++            }
++
++            try
++            {
++                await timer.WaitForNextTickAsync(stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 36f8a7c..d93e8cf 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -132,6 +132,8 @@ public static class DependencyInjection
+             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
+         services.AddOptions<WorkflowProgressionOptions>()
+             .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));
++        services.AddOptions<AgentScheduledTriggerSchedulerOptions>()
++            .Bind(configuration.GetSection(AgentScheduledTriggerSchedulerOptions.SectionName));
+         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
+         services.AddHostedService<WorkflowSchedulerBackgroundService>();
+         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
+@@ -205,6 +207,9 @@ public static class DependencyInjection
+         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
+         services.AddScoped<IAgentScheduledTriggerRepository, EfAgentScheduledTriggerRepository>();
+         services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();
++        services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();
++        services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();
++        services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
+         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
+         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
+         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+END_OF_PATCH

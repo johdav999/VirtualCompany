@@ -1,0 +1,1376 @@
+diff --git a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+new file mode 100644
+index 0000000..7c73513
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+@@ -0,0 +1,126 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record TriggerExecutionWorkItem(
++    Guid CompanyId,
++    Guid TriggerId,
++    string TriggerType,
++    Guid? AgentId,
++    DateTime OccurrenceUtc,
++    string CorrelationId,
++    string IdempotencyKey,
++    Dictionary<string, JsonNode?> Payload);
++
++public sealed record TriggerExecutionPolicyDecision(
++    bool Allowed,
++    string? DenialReason = null,
++    IReadOnlyDictionary<string, string?>? Metadata = null)
++{
++    public static TriggerExecutionPolicyDecision Allow(IReadOnlyDictionary<string, string?>? metadata = null) =>
++        new(true, null, metadata);
++
++    public static TriggerExecutionPolicyDecision Deny(string denialReason, IReadOnlyDictionary<string, string?>? metadata = null) =>
++        new(false, string.IsNullOrWhiteSpace(denialReason) ? "Trigger execution was blocked by policy." : denialReason.Trim(), metadata);
++}
++
++public sealed record TriggerExecutionDispatchResult(
++    string DispatchReferenceType,
++    string DispatchReferenceId,
++    IReadOnlyDictionary<string, string?>? Metadata = null);
++
++public sealed record TriggerExecutionRunResult(
++    int ScheduledTriggersEvaluated,
++    int ConditionChecksEvaluated,
++    int Dispatched,
++    int Blocked,
++    int DuplicateSkipped,
++    int Failed,
++    int Retried);
++
++public sealed record TriggerExecutionAttemptReservation(
++    TriggerExecutionAttempt Attempt,
++    bool Created,
++    bool DuplicateFinalOutcome);
++
++public interface ITriggerExecutionAttemptRepository
++{
++    Task<TriggerExecutionAttemptReservation> ReserveAsync(
++        TriggerExecutionWorkItem workItem,
++        int retryAttempt,
++        CancellationToken cancellationToken);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++}
++
++public interface ITriggerExecutionPolicyChecker
++{
++    Task<TriggerExecutionPolicyDecision> CheckAsync(
++        TriggerExecutionWorkItem workItem,
++        CancellationToken cancellationToken);
++}
++
++public interface ITriggerOrchestrationDispatcher
++{
++    Task<TriggerExecutionDispatchResult> DispatchAsync(
++        TriggerExecutionWorkItem workItem,
++        CancellationToken cancellationToken);
++}
++
++public interface ITriggerEvaluationWorker
++{
++    Task<TriggerExecutionRunResult> RunOnceAsync(
++        DateTime dueAtUtc,
++        int batchSize,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken);
++}
++
++public interface ITriggerExecutionService
++{
++    Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
++        TriggerExecutionWorkItem workItem,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken);
++
++    Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
++        AgentScheduledTriggerExecutionRequestMessage message,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken);
++}
++
++public sealed class TriggerExecutionPermanentException : Exception
++{
++    public TriggerExecutionPermanentException(string message)
++        : base(string.IsNullOrWhiteSpace(message) ? "Trigger execution cannot be retried." : message)
++    {
++    }
++}
++
++public static class TriggerExecutionTypes
++{
++    public const string AgentScheduled = "agent_scheduled";
++    public const string WorkflowCondition = "workflow_condition";
++}
++
++public static class TriggerExecutionIdempotency
++{
++    public static string ForScheduledAgentTrigger(Guid companyId, Guid triggerId, DateTime scheduledAtUtc) =>
++        $"trigger-execution:{TriggerExecutionTypes.AgentScheduled}:{companyId:N}:{triggerId:N}:{NormalizeUtc(scheduledAtUtc):yyyyMMddHHmmss}";
++
++    public static string ForWorkflowCondition(Guid companyId, Guid workflowTriggerId, DateTime evaluatedAtUtc) =>
++        $"trigger-execution:{TriggerExecutionTypes.WorkflowCondition}:{companyId:N}:{workflowTriggerId:N}:{NormalizeUtc(evaluatedAtUtc):yyyyMMddHHmmss}";
++
++    public static string CorrelationFromIdempotencyKey(string idempotencyKey) =>
++        string.IsNullOrWhiteSpace(idempotencyKey) ? Guid.NewGuid().ToString("N") : idempotencyKey.Trim();
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
+diff --git a/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+new file mode 100644
+index 0000000..af0ddaa
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+@@ -0,0 +1,170 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
++{
++    private const int TriggerTypeMaxLength = 64;
++    private const int CorrelationIdMaxLength = 128;
++    private const int IdempotencyKeyMaxLength = 200;
++    private const int DenialReasonMaxLength = 2000;
++    private const int FailureDetailsMaxLength = 4000;
++    private const int DispatchReferenceTypeMaxLength = 100;
++    private const int DispatchReferenceIdMaxLength = 128;
++
++    private TriggerExecutionAttempt()
++    {
++    }
++
++    public TriggerExecutionAttempt(
++        Guid id,
++        Guid companyId,
++        Guid triggerId,
++        string triggerType,
++        Guid? agentId,
++        DateTime occurrenceUtc,
++        string correlationId,
++        string idempotencyKey,
++        int retryAttempt)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (triggerId == Guid.Empty)
++        {
++            throw new ArgumentException("TriggerId is required.", nameof(triggerId));
++        }
++
++        if (agentId == Guid.Empty)
++        {
++            throw new ArgumentException("AgentId cannot be empty.", nameof(agentId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TriggerId = triggerId;
++        TriggerType = NormalizeRequired(triggerType, nameof(triggerType), TriggerTypeMaxLength);
++        AgentId = agentId;
++        OccurrenceUtc = NormalizeUtc(occurrenceUtc, nameof(occurrenceUtc));
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        IdempotencyKey = NormalizeRequired(idempotencyKey, nameof(idempotencyKey), IdempotencyKeyMaxLength);
++        RetryAttemptCount = Math.Max(1, retryAttempt);
++        Status = TriggerExecutionAttemptStatus.Pending;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid TriggerId { get; private set; }
++    public string TriggerType { get; private set; } = null!;
++    public Guid? AgentId { get; private set; }
++    public DateTime OccurrenceUtc { get; private set; }
++    public string CorrelationId { get; private set; } = null!;
++    public string IdempotencyKey { get; private set; } = null!;
++    public TriggerExecutionAttemptStatus Status { get; private set; }
++    public string? DenialReason { get; private set; }
++    public int RetryAttemptCount { get; private set; }
++    public string? FailureDetails { get; private set; }
++    public string? DispatchReferenceType { get; private set; }
++    public string? DispatchReferenceId { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Agent? Agent { get; private set; }
++
++    public bool HasFinalOutcome =>
++        Status is TriggerExecutionAttemptStatus.Dispatched
++            or TriggerExecutionAttemptStatus.Blocked
++            or TriggerExecutionAttemptStatus.DuplicateSkipped;
++
++    public void MarkRetried(int retryAttempt)
++    {
++        RetryAttemptCount = Math.Max(RetryAttemptCount + 1, retryAttempt);
++        Status = TriggerExecutionAttemptStatus.Retried;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkDispatched(string? dispatchReferenceType, string? dispatchReferenceId)
++    {
++        Status = TriggerExecutionAttemptStatus.Dispatched;
++        DispatchReferenceType = NormalizeOptional(dispatchReferenceType, nameof(dispatchReferenceType), DispatchReferenceTypeMaxLength);
++        DispatchReferenceId = NormalizeOptional(dispatchReferenceId, nameof(dispatchReferenceId), DispatchReferenceIdMaxLength);
++        FailureDetails = null;
++        DenialReason = null;
++        CompletedUtc = DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
++    public void MarkBlocked(string denialReason)
++    {
++        Status = TriggerExecutionAttemptStatus.Blocked;
++        DenialReason = NormalizeRequired(denialReason, nameof(denialReason), DenialReasonMaxLength);
++        FailureDetails = null;
++        CompletedUtc = DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
++    public void MarkDuplicateSkipped(string? reason = null)
++    {
++        Status = TriggerExecutionAttemptStatus.DuplicateSkipped;
++        DenialReason = NormalizeOptional(reason, nameof(reason), DenialReasonMaxLength);
++        CompletedUtc = DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
++    public void MarkFailed(string failureDetails)
++    {
++        Status = TriggerExecutionAttemptStatus.Failed;
++        FailureDetails = NormalizeRequired(failureDetails, nameof(failureDetails), FailureDetailsMaxLength);
++        CompletedUtc = DateTime.UtcNow;
++        UpdatedUtc = CompletedUtc.Value;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value, string name)
++    {
++        if (value == default)
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        return NormalizeOptional(value, name, maxLength)!;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs b/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs
+new file mode 100644
+index 0000000..901c33b
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/TriggerExecutionEnums.cs
+@@ -0,0 +1,59 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum TriggerExecutionAttemptStatus
++{
++    Pending = 1,
++    Dispatched = 2,
++    Blocked = 3,
++    DuplicateSkipped = 4,
++    Failed = 5,
++    Retried = 6
++}
++
++public static class TriggerExecutionAttemptStatusValues
++{
++    private static readonly IReadOnlyDictionary<TriggerExecutionAttemptStatus, string> Values = new Dictionary<TriggerExecutionAttemptStatus, string>
++    {
++        [TriggerExecutionAttemptStatus.Pending] = "pending",
++        [TriggerExecutionAttemptStatus.Dispatched] = "dispatched",
++        [TriggerExecutionAttemptStatus.Blocked] = "blocked",
++        [TriggerExecutionAttemptStatus.DuplicateSkipped] = "duplicate_skipped",
++        [TriggerExecutionAttemptStatus.Failed] = "failed",
++        [TriggerExecutionAttemptStatus.Retried] = "retried"
++    };
++
++    private static readonly IReadOnlyDictionary<string, TriggerExecutionAttemptStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static TriggerExecutionAttemptStatus DefaultStatus => TriggerExecutionAttemptStatus.Pending;
++
++    public static string ToStorageValue(this TriggerExecutionAttemptStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported trigger execution attempt status.");
++
++    public static TriggerExecutionAttemptStatus Parse(string value) =>
++        TryParse(value, out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported trigger execution attempt status value.");
++
++    public static bool TryParse(string? value, out TriggerExecutionAttemptStatus status)
++    {
++        status = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out status) ||
++            Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
++    }
++}
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 9fdc1f2..ea2fe40 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -127,6 +127,7 @@ public static class AuditTargetTypes
+     public const string WorkflowException = "workflow_exception";
+     public const string ExecutionException = "execution_exception";
+     public const string CompanyNotification = "company_notification";
++    public const string TriggerExecutionAttempt = "trigger_execution_attempt";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -177,4 +178,10 @@ public static class AuditEventActions
+     public const string MultiAgentCollaborationConsolidated = "multi_agent.collaboration.consolidated";
+     public const string CompanyNotificationActioned = "company.notification.actioned";
++    public const string TriggerExecutionAttemptStarted = "trigger.execution_attempt.started";
++    public const string TriggerExecutionAttemptDispatched = "trigger.execution_attempt.dispatched";
++    public const string TriggerExecutionAttemptBlocked = "trigger.execution_attempt.blocked";
++    public const string TriggerExecutionAttemptDuplicateSkipped = "trigger.execution_attempt.duplicate_skipped";
++    public const string TriggerExecutionAttemptFailed = "trigger.execution_attempt.failed";
++    public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+new file mode 100644
+index 0000000..a16bc8a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+@@ -0,0 +1,488 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class TriggerWorkerOptions
++{
++    public const string SectionName = "TriggerWorker";
++
++    public bool Enabled { get; set; } = true;
++    public int PollingIntervalSeconds { get; set; } = 30;
++    public int BatchSize { get; set; } = 50;
++    public int MaxRetryAttempts { get; set; } = 3;
++    public int RetryBackoffSeconds { get; set; } = 10;
++    public string LockKey { get; set; } = "trigger-evaluation-worker";
++    public int LockTtlSeconds { get; set; } = 120;
++}
++
++public sealed class EfTriggerExecutionAttemptRepository : ITriggerExecutionAttemptRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfTriggerExecutionAttemptRepository(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<TriggerExecutionAttemptReservation> ReserveAsync(
++        TriggerExecutionWorkItem workItem,
++        int retryAttempt,
++        CancellationToken cancellationToken)
++    {
++        ArgumentNullException.ThrowIfNull(workItem);
++
++        var attempt = new TriggerExecutionAttempt(
++            Guid.NewGuid(),
++            workItem.CompanyId,
++            workItem.TriggerId,
++            workItem.TriggerType,
++            workItem.AgentId,
++            workItem.OccurrenceUtc,
++            workItem.CorrelationId,
++            workItem.IdempotencyKey,
++            retryAttempt);
++
++        await _dbContext.TriggerExecutionAttempts.AddAsync(attempt, cancellationToken);
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new TriggerExecutionAttemptReservation(attempt, true, false);
++        }
++        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
++        {
++            _dbContext.ChangeTracker.Clear();
++            var existing = await _dbContext.TriggerExecutionAttempts
++                .IgnoreQueryFilters()
++                .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey, cancellationToken);
++
++            if (existing.HasFinalOutcome)
++            {
++                return new TriggerExecutionAttemptReservation(existing, false, true);
++            }
++
++            existing.MarkRetried(retryAttempt);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new TriggerExecutionAttemptReservation(existing, false, false);
++        }
++    }
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++        _dbContext.SaveChangesAsync(cancellationToken);
++
++    private static bool IsUniqueConstraintViolation(DbUpdateException exception)
++    {
++        for (Exception? current = exception; current is not null; current = current.InnerException)
++        {
++            if (current.Message.Contains("trigger_execution_attempts", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("idempotency_key", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
++                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase))
++            {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
++
++public sealed class AgentTriggerExecutionPolicyChecker : ITriggerExecutionPolicyChecker
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public AgentTriggerExecutionPolicyChecker(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<TriggerExecutionPolicyDecision> CheckAsync(
++        TriggerExecutionWorkItem workItem,
++        CancellationToken cancellationToken)
++    {
++        if (workItem.CompanyId == Guid.Empty)
++        {
++            return TriggerExecutionPolicyDecision.Deny("Trigger execution is missing tenant context.");
++        }
++
++        if (workItem.AgentId is not Guid agentId)
++        {
++            return TriggerExecutionPolicyDecision.Allow(new Dictionary<string, string?>
++            {
++                ["policy"] = "tenant_context_only"
++            });
++        }
++
++        var agent = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == workItem.CompanyId && x.Id == agentId, cancellationToken);
++
++        if (agent is null)
++        {
++            return TriggerExecutionPolicyDecision.Deny("Trigger execution was blocked because the target agent was not found in the tenant.");
++        }
++
++        if (!agent.CanReceiveAssignments)
++        {
++            return TriggerExecutionPolicyDecision.Deny(
++                Agent.GetAssignmentErrorMessage(agent.Status),
++                new Dictionary<string, string?>
++                {
++                    ["agentStatus"] = agent.Status.ToStorageValue()
++                });
++        }
++
++        return TriggerExecutionPolicyDecision.Allow(new Dictionary<string, string?>
++        {
++            ["agentStatus"] = agent.Status.ToStorageValue(),
++            ["autonomyLevel"] = agent.AutonomyLevel.ToStorageValue()
++        });
++    }
++}
++
++public sealed class SingleAgentTriggerOrchestrationDispatcher : ITriggerOrchestrationDispatcher
++{
++    private readonly ISingleAgentOrchestrationService _orchestrationService;
++    private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
++
++    public SingleAgentTriggerOrchestrationDispatcher(
++        ISingleAgentOrchestrationService orchestrationService,
++        IInternalWorkflowEventTriggerService workflowEventTriggerService)
++    {
++        _orchestrationService = orchestrationService;
++        _workflowEventTriggerService = workflowEventTriggerService;
++    }
++
++    public async Task<TriggerExecutionDispatchResult> DispatchAsync(
++        TriggerExecutionWorkItem workItem,
++        CancellationToken cancellationToken)
++    {
++        if (string.Equals(workItem.TriggerType, TriggerExecutionTypes.WorkflowCondition, StringComparison.OrdinalIgnoreCase))
++        {
++            var workflowResult = await _workflowEventTriggerService.HandleAsync(
++                new InternalWorkflowEvent(
++                    workItem.CompanyId,
++                    "condition",
++                    workItem.IdempotencyKey,
++                    workItem.Payload),
++                cancellationToken);
++
++            var referenceId = workflowResult.StartedInstances.FirstOrDefault()?.Id.ToString("N") ?? workItem.IdempotencyKey;
++            return new TriggerExecutionDispatchResult(
++                AuditTargetTypes.WorkflowInstance,
++                referenceId,
++                new Dictionary<string, string?>
++                {
++                    ["workflowInstancesStarted"] = workflowResult.StartedInstances.Count.ToString(),
++                    ["eventName"] = workflowResult.EventName
++                });
++        }
++
++        if (workItem.AgentId is not Guid agentId)
++        {
++            throw new TriggerExecutionPermanentException("Agent scheduled trigger dispatch requires an agent id.");
++        }
++
++        var result = await _orchestrationService.ExecuteAsync(
++            new OrchestrationRequest(
++                workItem.CompanyId,
++                AgentId: agentId,
++                UserInput: $"Execute scheduled trigger {workItem.TriggerId:N}.",
++                InitiatingActorType: AuditActorTypes.System,
++                CorrelationId: workItem.CorrelationId,
++                IntentHint: OrchestrationIntentValues.ExecuteTask,
++                ActorMetadata: workItem.Payload),
++            cancellationToken);
++
++        return new TriggerExecutionDispatchResult(
++            AuditTargetTypes.WorkTask,
++            result.TaskId.ToString("N"),
++            new Dictionary<string, string?>
++            {
++                ["orchestrationId"] = result.OrchestrationId.ToString("N"),
++                ["orchestrationStatus"] = result.Status,
++                ["agentId"] = result.AgentId.ToString("N")
++            });
++    }
++}
++
++public sealed class TriggerExecutionService : ITriggerExecutionService
++{
++    private readonly ITriggerExecutionAttemptRepository _attemptRepository;
++    private readonly ITriggerExecutionPolicyChecker _policyChecker;
++    private readonly ITriggerOrchestrationDispatcher _dispatcher;
++    private readonly IAuditEventWriter _auditEventWriter;
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public TriggerExecutionService(
++        ITriggerExecutionAttemptRepository attemptRepository,
++        ITriggerExecutionPolicyChecker policyChecker,
++        ITriggerOrchestrationDispatcher dispatcher,
++        IAuditEventWriter auditEventWriter,
++        VirtualCompanyDbContext dbContext)
++    {
++        _attemptRepository = attemptRepository;
++        _policyChecker = policyChecker;
++        _dispatcher = dispatcher;
++        _auditEventWriter = auditEventWriter;
++        _dbContext = dbContext;
++    }
++
++    public async Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
++        AgentScheduledTriggerExecutionRequestMessage message,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken)
++    {
++        var idempotencyKey = string.IsNullOrWhiteSpace(message.IdempotencyKey)
++            ? TriggerExecutionIdempotency.ForScheduledAgentTrigger(message.CompanyId, message.TriggerId, message.ScheduledAtUtc)
++            : message.IdempotencyKey.Trim();
++
++        var workItem = new TriggerExecutionWorkItem(
++            message.CompanyId,
++            message.TriggerId,
++            TriggerExecutionTypes.AgentScheduled,
++            message.AgentId,
++            NormalizeUtc(message.ScheduledAtUtc),
++            string.IsNullOrWhiteSpace(message.CorrelationId) ? TriggerExecutionIdempotency.CorrelationFromIdempotencyKey(idempotencyKey) : message.CorrelationId.Trim(),
++            idempotencyKey,
++            new Dictionary<string, JsonNode?>(message.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase))
++            {
++                ["triggerId"] = JsonValue.Create(message.TriggerId.ToString("N")),
++                ["triggerCode"] = JsonValue.Create(message.TriggerCode),
++                ["triggerType"] = JsonValue.Create(TriggerExecutionTypes.AgentScheduled),
++                ["scheduledAtUtc"] = JsonValue.Create(NormalizeUtc(message.ScheduledAtUtc)),
++                ["cronExpression"] = JsonValue.Create(message.CronExpression),
++                ["timeZoneId"] = JsonValue.Create(message.TimeZoneId),
++                ["correlationId"] = JsonValue.Create(string.IsNullOrWhiteSpace(message.CorrelationId) ? idempotencyKey : message.CorrelationId.Trim()),
++                ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
++            });
++
++        return await EvaluateAndDispatchAsync(workItem, maxRetryAttempts, cancellationToken);
++    }
++
++    public async Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
++        TriggerExecutionWorkItem workItem,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken)
++    {
++        var retryAttempt = 1;
++        TriggerExecutionAttemptReservation reservation;
++        while (true)
++        {
++            reservation = await _attemptRepository.ReserveAsync(workItem, retryAttempt, cancellationToken);
++            if (reservation.Created || reservation.DuplicateFinalOutcome || retryAttempt >= Math.Max(1, maxRetryAttempts))
++            {
++                break;
++            }
++
++            retryAttempt = reservation.Attempt.RetryAttemptCount + 1;
++        }
++
++        var attempt = reservation.Attempt;
++        if (reservation.DuplicateFinalOutcome)
++        {
++            await WriteAuditAsync(
++                attempt,
++                AuditEventActions.TriggerExecutionAttemptDuplicateSkipped,
++                AuditEventOutcomes.Succeeded,
++                "Duplicate trigger execution attempt skipped by persisted idempotency key.",
++                null,
++                cancellationToken);
++            return TriggerExecutionAttemptStatus.DuplicateSkipped;
++        }
++
++        await WriteAuditAsync(
++            attempt,
++            attempt.Status == TriggerExecutionAttemptStatus.Retried ? AuditEventActions.TriggerExecutionAttemptRetried : AuditEventActions.TriggerExecutionAttemptStarted,
++            AuditEventOutcomes.Pending,
++            attempt.Status == TriggerExecutionAttemptStatus.Retried ? "Retrying trigger execution attempt." : "Trigger execution attempt started.",
++            null,
++            cancellationToken);
++
++        try
++        {
++            var policy = await _policyChecker.CheckAsync(workItem, cancellationToken);
++            if (!policy.Allowed)
++            {
++                attempt.MarkBlocked(policy.DenialReason ?? "Trigger execution was blocked by policy.");
++                await _attemptRepository.SaveChangesAsync(cancellationToken);
++                await WriteAuditAsync(
++                    attempt,
++                    AuditEventActions.TriggerExecutionAttemptBlocked,
++                    AuditEventOutcomes.Denied,
++                    attempt.DenialReason,
++                    policy.Metadata,
++                    cancellationToken);
++                return TriggerExecutionAttemptStatus.Blocked;
++            }
++
++            var dispatch = await _dispatcher.DispatchAsync(workItem, cancellationToken);
++            attempt.MarkDispatched(dispatch.DispatchReferenceType, dispatch.DispatchReferenceId);
++            await MarkSourceTriggerRunAsync(workItem, cancellationToken);
++            await _attemptRepository.SaveChangesAsync(cancellationToken);
++
++            await WriteAuditAsync(
++                attempt,
++                AuditEventActions.TriggerExecutionAttemptDispatched,
++                AuditEventOutcomes.Succeeded,
++                "Trigger execution dispatched to orchestration.",
++                dispatch.Metadata,
++                cancellationToken);
++            return TriggerExecutionAttemptStatus.Dispatched;
++        }
++        catch (TriggerExecutionPermanentException ex)
++        {
++            attempt.MarkFailed(ex.Message);
++            await _attemptRepository.SaveChangesAsync(cancellationToken);
++            await WriteAuditAsync(attempt, AuditEventActions.TriggerExecutionAttemptFailed, AuditEventOutcomes.Failed, ex.Message, null, cancellationToken);
++            return TriggerExecutionAttemptStatus.Failed;
++        }
++        catch (Exception ex) when (ex is not OperationCanceledException)
++        {
++            attempt.MarkFailed(ex.Message);
++            await _attemptRepository.SaveChangesAsync(cancellationToken);
++            await WriteAuditAsync(attempt, AuditEventActions.TriggerExecutionAttemptFailed, AuditEventOutcomes.Failed, ex.Message, null, cancellationToken);
++            throw;
++        }
++    }
++
++    private async Task MarkSourceTriggerRunAsync(TriggerExecutionWorkItem workItem, CancellationToken cancellationToken)
++    {
++        if (!string.Equals(workItem.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        var trigger = await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == workItem.CompanyId && x.Id == workItem.TriggerId, cancellationToken);
++
++        trigger?.MarkRun(DateTime.UtcNow);
++    }
++
++    private async Task WriteAuditAsync(
++        TriggerExecutionAttempt attempt,
++        string action,
++        string outcome,
++        string? rationale,
++        IReadOnlyDictionary<string, string?>? extraMetadata,
++        CancellationToken cancellationToken)
++    {
++        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["triggerId"] = attempt.TriggerId.ToString("N"),
++            ["triggerType"] = attempt.TriggerType,
++            ["agentId"] = attempt.AgentId?.ToString("N"),
++            ["executionStatus"] = attempt.Status.ToStorageValue(),
++            ["correlationId"] = attempt.CorrelationId,
++            ["idempotencyKey"] = attempt.IdempotencyKey,
++            ["retryAttemptCount"] = attempt.RetryAttemptCount.ToString(),
++            ["denialReason"] = attempt.DenialReason,
++            ["failureDetails"] = attempt.FailureDetails,
++            ["dispatchReferenceType"] = attempt.DispatchReferenceType,
++            ["dispatchReferenceId"] = attempt.DispatchReferenceId
++        };
++
++        if (extraMetadata is not null)
++        {
++            foreach (var (key, value) in extraMetadata)
++            {
++                metadata[key] = value;
++            }
++        }
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                attempt.CompanyId,
++                AuditActorTypes.System,
++                attempt.AgentId,
++                action,
++                AuditTargetTypes.TriggerExecutionAttempt,
++                attempt.Id.ToString("N"),
++                outcome,
++                rationale,
++                ["trigger_execution_worker", "trigger_execution_attempts"],
++                metadata,
++                attempt.CorrelationId,
++                DateTime.UtcNow),
++            cancellationToken);
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
++
++public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ITriggerExecutionService _executionService;
++    private readonly IConditionTriggerEvaluationService _conditionEvaluationService;
++    private readonly IScheduledTriggerNextRunCalculator _nextRunCalculator;
++    private readonly ILogger<TriggerEvaluationWorker> _logger;
++
++    public TriggerEvaluationWorker(
++        VirtualCompanyDbContext dbContext,
++        ITriggerExecutionService executionService,
++        IConditionTriggerEvaluationService conditionEvaluationService,
++        IScheduledTriggerNextRunCalculator nextRunCalculator,
++        ILogger<TriggerEvaluationWorker> logger)
++    {
++        _dbContext = dbContext;
++        _executionService = executionService;
++        _conditionEvaluationService = conditionEvaluationService;
++        _nextRunCalculator = nextRunCalculator;
++        _logger = logger;
++    }
++
++    public async Task<TriggerExecutionRunResult> RunOnceAsync(
++        DateTime dueAtUtc,
++        int batchSize,
++        int maxRetryAttempts,
++        CancellationToken cancellationToken)
++    {
++        var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc ? dueAtUtc : dueAtUtc.ToUniversalTime();
++        var effectiveBatchSize = Math.Max(1, batchSize);
++        var scheduled = await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.IsEnabled && x.NextRunUtc.HasValue && x.NextRunUtc <= normalizedDueAtUtc && (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
++            .OrderBy(x => x.NextRunUtc)
++            .ThenBy(x => x.Id)
++            .Take(effectiveBatchSize)
++            .ToListAsync(cancellationToken);
++
++        var scheduledEvaluated = 0;
++        var conditionEvaluated = 0;
++        var dispatched = 0;
++        var blocked = 0;
++        var duplicateSkipped = 0;
++        var failed = 0;
++        var retried = 0;
++
++        foreach (var trigger in scheduled)
++        {
++            scheduledEvaluated++;
++            if (!trigger.NextRunUtc.HasValue)
++            {
++                continue;
++            }
++
++            var scheduledAtUtc = trigger.NextRunUtc.Value.Kind == DateTimeKind.Utc ? trigger.NextRunUtc.Value : trigger.NextRunUtc.Value.ToUniversalTime();
++            var nextRunUtc = _nextRunCalculator.GetNextRunUtc(trigger.CronExpression, trigger.TimeZoneId, scheduledAtUtc);
++            var idempotencyKey = TriggerExecutionIdempotency.ForScheduledAgentTrigger(trigger.CompanyId, trigger.Id, scheduledAtUtc);
++            var outcome = await _executionService.ProcessScheduledTriggerAsync(
++                new AgentScheduledTriggerExecutionRequestMessage(
++                    trigger.CompanyId,
++                    trigger.AgentId,
++                    trigger.Id,
++                    trigger.Code,
++                    scheduledAtUtc,
++                    trigger.CronExpression,
++                    trigger.TimeZoneId,
++                    trigger.Metadata,
++                    TriggerExecutionIdempotency.CorrelationFromIdempotencyKey(idempotencyKey),
++                    idempotencyKey),
++                maxRetryAttempts,
++                cancellationToken);
++
++            await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, normalizedDueAtUtc, nextRunUtc, cancellationToken);
++            Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried);
++        }
++
++        var remaining = Math.Max(0, effectiveBatchSize - scheduledEvaluated);
++        if (remaining > 0)
++        {
++            var conditionTriggers = await _dbContext.WorkflowTriggers
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Include(x => x.Definition)
++                .Where(x => x.IsEnabled && x.EventName == "condition" && x.Definition.Active && x.Definition.TriggerType == WorkflowTriggerType.Event)
++                .OrderBy(x => x.CompanyId)
++                .ThenBy(x => x.Id)
++                .Take(remaining)
++                .ToListAsync(cancellationToken);
++
++            foreach (var trigger in conditionTriggers)
++            {
++                if (!TryBuildCondition(trigger, out var condition, out var diagnostic))
++                {
++                    _logger.LogWarning("Skipped condition trigger {TriggerId} because its condition criteria could not be parsed: {Diagnostic}", trigger.Id, diagnostic);
++                    continue;
++                }
++
++                conditionEvaluated++;
++                var evaluation = await _conditionEvaluationService.EvaluateAndPersistAsync(
++                    new EvaluateConditionTriggerCommand(trigger.CompanyId, trigger.Id.ToString("N"), trigger.Id, condition, normalizedDueAtUtc),
++                    cancellationToken);
++
++                if (!evaluation.ShouldFire)
++                {
++                    continue;
++                }
++
++                var idempotencyKey = TriggerExecutionIdempotency.ForWorkflowCondition(trigger.CompanyId, trigger.Id, evaluation.EvaluatedUtc);
++                var outcome = await _executionService.EvaluateAndDispatchAsync(
++                    new TriggerExecutionWorkItem(
++                        trigger.CompanyId,
++                        trigger.Id,
++                        TriggerExecutionTypes.WorkflowCondition,
++                        null,
++                        evaluation.EvaluatedUtc,
++                        TriggerExecutionIdempotency.CorrelationFromIdempotencyKey(idempotencyKey),
++                        idempotencyKey,
++                        new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                        {
++                            ["workflowTriggerId"] = JsonValue.Create(trigger.Id.ToString("N")),
++                            ["workflowDefinitionId"] = JsonValue.Create(trigger.DefinitionId.ToString("N")),
++                            ["conditionDefinitionId"] = JsonValue.Create(trigger.Id.ToString("N")),
++                            ["evaluatedAtUtc"] = JsonValue.Create(evaluation.EvaluatedUtc),
++                            ["conditionOutcome"] = JsonValue.Create(evaluation.Outcome),
++                            ["correlationId"] = JsonValue.Create(idempotencyKey),
++                            ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
++                        }),
++                    maxRetryAttempts,
++                    cancellationToken);
++
++                Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried);
++            }
++        }
++
++        return new TriggerExecutionRunResult(scheduledEvaluated, conditionEvaluated, dispatched, blocked, duplicateSkipped, failed, retried);
++    }
++
++    private async Task AdvanceScheduledTriggerAsync(Guid companyId, Guid triggerId, DateTime evaluatedUtc, DateTime? nextRunUtc, CancellationToken cancellationToken)
++    {
++        var trigger = await _dbContext.AgentScheduledTriggers
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == triggerId, cancellationToken);
++
++        if (trigger is not null)
++        {
++            trigger.MarkEvaluated(evaluatedUtc, nextRunUtc);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++    }
++
++    private static bool TryBuildCondition(WorkflowTrigger trigger, out ConditionExpression condition, out string? diagnostic)
++    {
++        condition = null!;
++        diagnostic = null;
++
++        var sourceType = ReadString(trigger.CriteriaJson, "sourceType");
++        var operatorValue = ReadString(trigger.CriteriaJson, "operator");
++        if (!ConditionTriggerStorageValues.TryParseSourceType(sourceType, out var parsedSourceType) ||
++            !ConditionTriggerStorageValues.TryParseOperator(operatorValue, out var parsedOperator))
++        {
++            diagnostic = "Condition criteria must include sourceType and operator.";
++            return false;
++        }
++
++        ConditionValueType? valueType = null;
++        var valueTypeValue = ReadString(trigger.CriteriaJson, "valueType");
++        if (!string.IsNullOrWhiteSpace(valueTypeValue))
++        {
++            if (!ConditionTriggerStorageValues.TryParseValueType(valueTypeValue, out var parsedValueType))
++            {
++                diagnostic = "Condition criteria valueType is invalid.";
++                return false;
++            }
++
++            valueType = parsedValueType;
++        }
++
++        var repeatMode = RepeatFiringMode.FalseToTrueTransition;
++        var repeatValue = ReadString(trigger.CriteriaJson, "repeatFiringMode");
++        if (!string.IsNullOrWhiteSpace(repeatValue) &&
++            !ConditionTriggerStorageValues.TryParseRepeatFiringMode(repeatValue, out repeatMode))
++        {
++            diagnostic = "Condition criteria repeatFiringMode is invalid.";
++            return false;
++        }
++
++        condition = new ConditionExpression(
++            new ConditionTargetReference(
++                parsedSourceType,
++                ReadString(trigger.CriteriaJson, "metricName"),
++                ReadString(trigger.CriteriaJson, "entityType"),
++                ReadString(trigger.CriteriaJson, "fieldPath")),
++            parsedOperator,
++            valueType,
++            trigger.CriteriaJson.TryGetValue("comparisonValue", out var comparisonValue) ? comparisonValue?.DeepClone() : null,
++            repeatMode);
++        return true;
++    }
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> json, string key) =>
++        json.TryGetValue(key, out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var text) &&
++        !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++
++    private static void Increment(
++        TriggerExecutionAttemptStatus outcome,
++        ref int dispatched,
++        ref int blocked,
++        ref int duplicateSkipped,
++        ref int failed,
++        ref int retried)
++    {
++        switch (outcome)
++        {
++            case TriggerExecutionAttemptStatus.Dispatched:
++                dispatched++;
++                break;
++            case TriggerExecutionAttemptStatus.Blocked:
++                blocked++;
++                break;
++            case TriggerExecutionAttemptStatus.DuplicateSkipped:
++                duplicateSkipped++;
++                break;
++            case TriggerExecutionAttemptStatus.Failed:
++                failed++;
++                break;
++            case TriggerExecutionAttemptStatus.Retried:
++                retried++;
++                break;
++        }
++    }
++}
++
++public sealed class TriggerEvaluationBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly TimeProvider _timeProvider;
++    private readonly IOptions<TriggerWorkerOptions> _options;
++    private readonly ILogger<TriggerEvaluationBackgroundService> _logger;
++
++    public TriggerEvaluationBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        TimeProvider timeProvider,
++        IOptions<TriggerWorkerOptions> options,
++        ILogger<TriggerEvaluationBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _timeProvider = timeProvider;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Trigger evaluation background service is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromSeconds(Math.Max(1, _options.Value.PollingIntervalSeconds));
++        using var timer = new PeriodicTimer(pollInterval);
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var lockProvider = scope.ServiceProvider.GetRequiredService<IDistributedLockProvider>();
++                var options = scope.ServiceProvider.GetRequiredService<IOptions<TriggerWorkerOptions>>().Value;
++                await using var handle = await lockProvider.TryAcquireAsync(
++                    string.IsNullOrWhiteSpace(options.LockKey) ? "trigger-evaluation-worker" : options.LockKey.Trim(),
++                    TimeSpan.FromSeconds(Math.Max(5, options.LockTtlSeconds)),
++                    stoppingToken);
++
++                if (handle is not null)
++                {
++                    var worker = scope.ServiceProvider.GetRequiredService<ITriggerEvaluationWorker>();
++                    var result = await worker.RunOnceAsync(
++                        _timeProvider.GetUtcNow().UtcDateTime,
++                        Math.Max(1, options.BatchSize),
++                        Math.Max(1, options.MaxRetryAttempts),
++                        stoppingToken);
++
++                    if (result.ScheduledTriggersEvaluated > 0 || result.ConditionChecksEvaluated > 0)
++                    {
++                        _logger.LogInformation(
++                            "Trigger evaluation completed. Scheduled: {Scheduled}. Conditions: {Conditions}. Dispatched: {Dispatched}. Blocked: {Blocked}. Duplicates: {Duplicates}. Failed: {Failed}.",
++                            result.ScheduledTriggersEvaluated,
++                            result.ConditionChecksEvaluated,
++                            result.Dispatched,
++                            result.Blocked,
++                            result.DuplicateSkipped,
++                            result.Failed);
++                    }
++                }
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Trigger evaluation polling loop failed unexpectedly.");
++                await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _options.Value.RetryBackoffSeconds)), stoppingToken);
++            }
++
++            try
++            {
++                await timer.WaitForNextTickAsync(stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index c40dc2d..44c9b55 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -140,6 +141,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
+     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
++    private readonly ITriggerExecutionService _triggerExecutionService;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+@@ -154,6 +156,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         VirtualCompanyDbContext dbContext,
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+         ICompanyNotificationDispatcher notificationDispatcher,
++        ITriggerExecutionService triggerExecutionService,
+         IInternalWorkflowEventTriggerService workflowEventTriggerService,
+         IOptions<CompanyOutboxDispatcherOptions> options,
+         IBackgroundJobExecutor backgroundJobExecutor,
+@@ -169,6 +172,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _dbContext = dbContext;
+         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
+         _notificationDispatcher = notificationDispatcher;
++        _triggerExecutionService = triggerExecutionService;
+         _workflowEventTriggerService = workflowEventTriggerService;
+         _options = options;
+         _backgroundJobExecutor = backgroundJobExecutor;
+@@ -394,6 +398,18 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 await _workflowEventTriggerService.HandleAsync(
+                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                     cancellationToken);
++                break;
++            }
++            case CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested:
++            {
++                var payload = Deserialize<AgentScheduledTriggerExecutionRequestMessage>(message);
++                if (payload.CompanyId != message.CompanyId)
++                {
++                    throw new CompanyOutboxPermanentException("Agent scheduled trigger outbox payload tenant does not match the outbox message tenant.");
++                }
++
++                await _triggerExecutionService.ProcessScheduledTriggerAsync(
++                    payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.IdempotencyKey : payload.CorrelationId },
++                    MaxAttempts,
++                    cancellationToken);
+                 break;
+             }
+             case CompanyOutboxTopics.InvitationCreated:
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 8d28d53..626eb86 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -29,6 +29,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<Agent> Agents => Set<Agent>();
+     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+     public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
++    public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
+     public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();
+     public DbSet<WorkTask> WorkTasks => Set<WorkTask>();
+     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
+@@ -82,6 +83,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<AgentScheduledTrigger>()
+             .HasQueryFilter(trigger =>
+                 CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<TriggerExecutionAttempt>()
++            .HasQueryFilter(attempt =>
++                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<AgentScheduledTriggerEnqueueWindow>()
+             .HasQueryFilter(window =>
+                 CurrentCompanyId.HasValue && window.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 7e524df..6c9cff4 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1707,6 +1707,59 @@ internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityTy
+     }
+ }
+ 
++internal sealed class TriggerExecutionAttemptConfiguration : IEntityTypeConfiguration<TriggerExecutionAttempt>
++{
++    public void Configure(EntityTypeBuilder<TriggerExecutionAttempt> builder)
++    {
++        builder.ToTable("trigger_execution_attempts");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.TriggerId).HasColumnName("trigger_id").IsRequired();
++        builder.Property(x => x.TriggerType).HasColumnName("trigger_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id");
++        builder.Property(x => x.OccurrenceUtc).HasColumnName("occurrence_at").IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => TriggerExecutionAttemptStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(TriggerExecutionAttemptStatusValues.DefaultStatus)
++            .HasSentinel((TriggerExecutionAttemptStatus)0)
++            .IsRequired();
++        builder.Property(x => x.DenialReason).HasColumnName("denial_reason").HasMaxLength(2000);
++        builder.Property(x => x.RetryAttemptCount).HasColumnName("retry_attempt_count").HasDefaultValue(1).IsRequired();
++        builder.Property(x => x.FailureDetails).HasColumnName("failure_details").HasMaxLength(4000);
++        builder.Property(x => x.DispatchReferenceType).HasColumnName("dispatch_reference_type").HasMaxLength(100);
++        builder.Property(x => x.DispatchReferenceId).HasColumnName("dispatch_reference_id").HasMaxLength(128);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++
++        builder.HasIndex(x => x.IdempotencyKey).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.TriggerType, x.Status, x.OccurrenceUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.OccurrenceUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Agent)
++            .WithMany()
++            .HasForeignKey(x => x.AgentId)
++            .OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 1b82ef4..33c5de0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -140,6 +140,8 @@ public static class DependencyInjection
+             .Bind(configuration.GetSection(WorkflowProgressionOptions.SectionName));
+         services.AddOptions<AgentScheduledTriggerSchedulerOptions>()
+             .Bind(configuration.GetSection(AgentScheduledTriggerSchedulerOptions.SectionName));
++        services.AddOptions<TriggerWorkerOptions>()
++            .Bind(configuration.GetSection(TriggerWorkerOptions.SectionName));
+         services.AddScoped<IWorkflowSchedulerCoordinator, WorkflowSchedulerCoordinator>();
+         services.AddHostedService<WorkflowSchedulerBackgroundService>();
+         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
+@@ -151,6 +153,7 @@ public static class DependencyInjection
+         services.AddHostedService<BriefingSchedulerBackgroundService>();
+         services.AddHostedService<WorkflowProgressionBackgroundService>();
++        services.AddHostedService<TriggerEvaluationBackgroundService>();
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
+@@ -218,6 +221,11 @@ public static class DependencyInjection
+         services.AddScoped<IAgentScheduledTriggerService, AgentScheduledTriggerService>();
+         services.AddScoped<IAgentScheduledTriggerPollingService, AgentScheduledTriggerPollingService>();
+         services.AddScoped<IAgentScheduledTriggerSchedulerCoordinator, AgentScheduledTriggerSchedulerCoordinator>();
++        services.AddScoped<ITriggerExecutionAttemptRepository, EfTriggerExecutionAttemptRepository>();
++        services.AddScoped<ITriggerExecutionPolicyChecker, AgentTriggerExecutionPolicyChecker>();
++        services.AddScoped<ITriggerOrchestrationDispatcher, SingleAgentTriggerOrchestrationDispatcher>();
++        services.AddScoped<ITriggerExecutionService, TriggerExecutionService>();
++        services.AddScoped<ITriggerEvaluationWorker, TriggerEvaluationWorker>();
+         services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
+         services.AddSingleton<IConditionTriggerEvaluator, ConditionTriggerEvaluator>();
+         services.AddScoped<IConditionTriggerEvaluationRepository, EfConditionTriggerEvaluationRepository>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414090000_AddTriggerExecutionAttempts.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414090000_AddTriggerExecutionAttempts.cs
+new file mode 100644
+index 0000000..e4afc1a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414090000_AddTriggerExecutionAttempts.cs
+@@ -0,0 +1,68 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddTriggerExecutionAttempts : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "trigger_execution_attempts",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    trigger_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    trigger_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    agent_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    occurrence_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    correlation_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
++                    idempotency_key = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
++                    denial_reason = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                    retry_attempt_count = table.Column<int>(type: "int", nullable: false, defaultValue: 1),
++                    failure_details = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
++                    dispatch_reference_type = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
++                    dispatch_reference_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    completed_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_trigger_execution_attempts", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_trigger_execution_attempts_agents_agent_id",
++                        column: x => x.agent_id,
++                        principalTable: "agents",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.SetNull);
++                    table.ForeignKey(
++                        name: "FK_trigger_execution_attempts_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_trigger_execution_attempts_idempotency_key",
++                table: "trigger_execution_attempts",
++                column: "idempotency_key",
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_trigger_execution_attempts_company_id_trigger_type_status_occurrence_at",
++                table: "trigger_execution_attempts",
++                columns: new[] { "company_id", "trigger_type", "status", "occurrence_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_trigger_execution_attempts_company_id_agent_id_occurrence_at",
++                table: "trigger_execution_attempts",
++                columns: new[] { "company_id", "agent_id", "occurrence_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_trigger_execution_attempts_company_id_correlation_id",
++                table: "trigger_execution_attempts",
++                columns: new[] { "company_id", "correlation_id" });
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder) =>
++            migrationBuilder.DropTable(name: "trigger_execution_attempts");
++    }
++}
+END_OF_PATCH

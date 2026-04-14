@@ -115,6 +115,183 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
     }
 
+    [Fact]
+    public void ValidateAndThrow_allows_valid_metric_threshold_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "task.backlog.count"),
+                "greaterThan",
+                "number",
+                "10")));
+
+        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_allows_valid_entity_field_equals_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("entityField", entityType: "workTask", fieldPath: "status"),
+                "equals",
+                "string",
+                "\"blocked\"")));
+
+        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_allows_valid_changed_since_last_evaluation_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "agent.health.status"),
+                "changedSinceLastEvaluation")));
+
+        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_missing_condition_target()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                null,
+                "greaterThan",
+                "number",
+                "10")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.target", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_missing_comparison_value_for_threshold_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "task.backlog.count"),
+                "greaterThan",
+                "number")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_comparison_value_for_changed_since_last_evaluation_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "agent.health.status"),
+                "changedSinceLastEvaluation",
+                comparisonValueJson: "\"green\"")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_non_numeric_value_type_for_greater_than_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "task.backlog.count"),
+                "greaterThan",
+                "string",
+                "\"10\"")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.valueType", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_blank_metric_name_for_metric_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: " "),
+                "equals",
+                "number",
+                "1")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.target.metricName", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_blank_field_path_for_entity_field_condition()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("entityField", entityType: "workTask", fieldPath: " "),
+                "equals",
+                "string",
+                "\"blocked\"")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.target.fieldPath", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_malformed_literal_value_for_declared_type()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "task.backlog.count"),
+                "greaterThan",
+                "number",
+                "\"many\"")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.comparisonValue", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_rejects_invalid_repeat_firing_mode()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(
+                Target("metric", metricName: "task.backlog.count"),
+                "greaterThan",
+                "number",
+                "10",
+                "always")));
+
+        var exception = Assert.Throws<AgentValidationException>(() => UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command));
+
+        Assert.Contains("TriggerLogic.conditions[0].condition.repeatFiringMode", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public void ValidateAndThrow_defaults_condition_to_false_to_true_transition_when_repeat_mode_is_omitted()
+    {
+        var command = ValidCommandWithTriggerLogic(TriggerLogic(
+            true,
+            ConditionTrigger(Target("metric", metricName: "task.backlog.count"), "lessThan", "number", "5")));
+
+        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+    }
+
     private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
     {
         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
@@ -189,6 +366,45 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
             }).ToList()
         };
 
+    private static AgentTriggerLogicInput TriggerLogic(bool? enabled, params AgentTriggerConditionInput[] conditions) =>
+        new()
+        {
+            Enabled = enabled,
+            Conditions = conditions.ToList()
+        };
+
+    private static AgentTriggerConditionInput ConditionTrigger(
+        ConditionTargetReferenceInput? target,
+        string operatorName,
+        string? valueType = null,
+        string? comparisonValueJson = null,
+        string? repeatFiringMode = null) =>
+        new()
+        {
+            Type = "condition",
+            Condition = new ConditionExpressionInput
+            {
+                Target = target,
+                Operator = operatorName,
+                ValueType = valueType,
+                ComparisonValue = comparisonValueJson is null ? null : JsonValueElement(comparisonValueJson),
+                RepeatFiringMode = repeatFiringMode
+            }
+        };
+
+    private static ConditionTargetReferenceInput Target(
+        string sourceType,
+        string? metricName = null,
+        string? entityType = null,
+        string? fieldPath = null) =>
+        new()
+        {
+            SourceType = sourceType,
+            MetricName = metricName,
+            EntityType = entityType,
+            FieldPath = fieldPath
+        };
+
     private static Dictionary<string, JsonNode?> WorkingHours(string? timezone, params JsonObject[] windows) =>
         Payload(
             ("timezone", timezone is null ? null : JsonValue.Create(timezone)),
@@ -201,4 +417,31 @@ public sealed class UpdateAgentOperatingProfileCommandValidatorTests
         payload.TryGetValue(key, out var node) && node is JsonArray array
             ? array.Select(item => item?.GetValue<string>() ?? string.Empty).ToList()
             : [];
+
+    private static JsonElement JsonValueElement(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static UpdateAgentOperatingProfileCommand ValidCommandWithTriggerLogic(AgentTriggerLogicInput triggerLogic) =>
+        new(
+            "restricted",
+            "Finance gatekeeper for exception approvals.",
+            Objectives(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
+            Kpis(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
+            ToolPermissions(("allowed", new JsonArray(JsonValue.Create("erp")))),
+            DataScopes(("read", new JsonArray(JsonValue.Create("finance")))),
+            Thresholds(("approval", new JsonObject { ["expenseUsd"] = 2500 })),
+            Escalation(("critical", new JsonArray(JsonValue.Create("failed_payment"))), ("escalateTo", JsonValue.Create("owner"))),
+            triggerLogic,
+            WorkingHours(
+                "UTC",
+                new JsonObject
+                {
+                    ["day"] = "monday",
+                    ["start"] = "08:00",
+                    ["end"] = "16:00"
+                }),
+            "level_2");
 }

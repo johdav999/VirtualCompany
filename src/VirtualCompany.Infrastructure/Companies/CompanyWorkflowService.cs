@@ -7,6 +7,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -28,18 +29,21 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ILogger<CompanyWorkflowService> _logger;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+    private readonly ISupportedPlatformEventTypeRegistry _supportedEventTypes;
 
     public CompanyWorkflowService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAuditEventWriter auditEventWriter,
         ICompanyOutboxEnqueuer outboxEnqueuer,
+        ISupportedPlatformEventTypeRegistry supportedEventTypes,
         ILogger<CompanyWorkflowService> logger)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
         _outboxEnqueuer = outboxEnqueuer;
+        _supportedEventTypes = supportedEventTypes;
         _logger = logger;
     }
 
@@ -236,7 +240,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             Guid.NewGuid(),
             companyId,
             definitionId,
-            command.EventName,
+            _supportedEventTypes.Normalize(command.EventName),
             command.CriteriaJson,
             command.IsEnabled);
 
@@ -369,6 +373,27 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
 
     public async Task<InternalWorkflowEventTriggerResult> HandleAsync(InternalWorkflowEvent workflowEvent, CancellationToken cancellationToken)
     {
+        var eventType = string.IsNullOrWhiteSpace(workflowEvent.EventName) ? string.Empty : workflowEvent.EventName.Trim();
+        var eventId = string.IsNullOrWhiteSpace(workflowEvent.EventRef)
+            ? $"{eventType}:{Guid.NewGuid():N}"
+            : workflowEvent.EventRef.Trim();
+        var result = await HandleAsync(
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                DateTime.UtcNow,
+                workflowEvent.CompanyId,
+                eventId,
+                "unknown",
+                eventId,
+                CloneNodes(workflowEvent.Payload)),
+            cancellationToken);
+
+        return new InternalWorkflowEventTriggerResult(result.Event.EventType, result.StartedInstances);
+    }
+
+    public async Task<PlatformEventTriggerResult> HandleAsync(PlatformEventEnvelope workflowEvent, CancellationToken cancellationToken)
+    {
         if (workflowEvent.CompanyId == Guid.Empty)
         {
             throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
@@ -377,27 +402,47 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             });
         }
 
-        if (string.IsNullOrWhiteSpace(workflowEvent.EventName))
+        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        AddRequired(errors, nameof(workflowEvent.EventId), workflowEvent.EventId, TriggerRefMaxLength);
+        AddRequired(errors, nameof(workflowEvent.EventType), workflowEvent.EventType, EventNameMaxLength);
+        AddRequired(errors, nameof(workflowEvent.CorrelationId), workflowEvent.CorrelationId, TriggerRefMaxLength);
+        AddRequired(errors, nameof(workflowEvent.SourceEntityType), workflowEvent.SourceEntityType, 100);
+        AddRequired(errors, nameof(workflowEvent.SourceEntityId), workflowEvent.SourceEntityId, 200);
+        if (workflowEvent.OccurredAtUtc == default)
         {
-            throw new WorkflowValidationException(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-            {
-                [nameof(workflowEvent.EventName)] = ["EventName is required."]
-            });
+            AddError(errors, nameof(workflowEvent.OccurredAtUtc), "OccurredAtUtc is required.");
         }
 
-        var eventName = workflowEvent.EventName.Trim();
-        var eventRef = string.IsNullOrWhiteSpace(workflowEvent.EventRef)
-            ? $"{eventName}:{DateTime.UtcNow:O}"
-            : workflowEvent.EventRef.Trim();
+        if (!_supportedEventTypes.IsSupported(workflowEvent.EventType))
+        {
+            AddError(errors, nameof(workflowEvent.EventType), SupportedPlatformEventTypeRegistry.BuildValidationMessage(workflowEvent.EventType));
+        }
+
+        ThrowIfInvalid(errors);
+
+        var eventId = workflowEvent.EventId.Trim();
+        var eventType = _supportedEventTypes.Normalize(workflowEvent.EventType);
+        var occurredAtUtc = workflowEvent.OccurredAtUtc.Kind == DateTimeKind.Utc
+            ? workflowEvent.OccurredAtUtc
+            : workflowEvent.OccurredAtUtc.ToUniversalTime();
+        var normalizedEvent = workflowEvent with
+        {
+            EventId = eventId,
+            EventType = eventType,
+            OccurredAtUtc = occurredAtUtc,
+            CorrelationId = workflowEvent.CorrelationId.Trim(),
+            SourceEntityType = workflowEvent.SourceEntityType.Trim(),
+            SourceEntityId = workflowEvent.SourceEntityId.Trim(),
+            Metadata = CloneNodes(workflowEvent.Metadata)
+        };
 
         var triggeredDefinitions = await _dbContext.WorkflowTriggers
             .IgnoreQueryFilters()
-            .AsNoTracking()
             .Include(x => x.Definition)
             .Where(x =>
                 x.CompanyId == workflowEvent.CompanyId &&
                 x.IsEnabled &&
-                x.EventName == eventName &&
+                x.EventName == eventType &&
                 x.Definition.CompanyId == workflowEvent.CompanyId &&
                 x.Definition.Active &&
                 x.Definition.TriggerType == WorkflowTriggerType.Event)
@@ -410,58 +455,60 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             .GroupBy(x => x.Definition.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(x => x.Definition.Version).First()))
         {
-            if (await HasExistingInstanceAsync(workflowEvent.CompanyId, trigger.DefinitionId, WorkflowTriggerType.Event, eventRef, cancellationToken))
+            var processedEvent = await TryReserveProcessedTriggerEventAsync(
+                normalizedEvent.CompanyId,
+                trigger.Id,
+                eventId,
+                cancellationToken);
+            if (processedEvent is null)
             {
                 _logger.LogInformation(
-                    "Skipped duplicate event workflow start for definition {DefinitionId}, event {EventName}, and ref {EventRef}.",
-                    trigger.DefinitionId,
-                    eventName,
-                    eventRef);
+                    "Skipped duplicate event workflow start for company {CompanyId}, trigger {TriggerId}, event {EventType}, id {EventId}, and correlation {CorrelationId}.",
+                    normalizedEvent.CompanyId,
+                    trigger.Id,
+                    eventType,
+                    eventId,
+                    normalizedEvent.CorrelationId);
                 continue;
             }
 
-            var input = CloneNodes(workflowEvent.Payload);
-            input["eventName"] = JsonValue.Create(eventName);
-            input["eventRef"] = JsonValue.Create(eventRef);
+            var input = BuildEventInput(normalizedEvent);
 
-            started.Add(await StartInstanceCoreAsync(
-                workflowEvent.CompanyId,
-                new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
-                requireMembership: false,
-                cancellationToken));
-        }
-
-        var jsonMatchedDefinitions = await _dbContext.WorkflowDefinitions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                (x.CompanyId == workflowEvent.CompanyId || x.CompanyId == null) &&
-                x.Active &&
-                x.TriggerType == WorkflowTriggerType.Event)
-            .ToListAsync(cancellationToken);
-
-        foreach (var definition in ResolveLatestDefinitionsByCode(
-            jsonMatchedDefinitions.Where(x => MatchesEvent(x, eventName)),
-            workflowEvent.CompanyId))
-        {
-            if (started.Any(x => x.DefinitionId == definition.Id) ||
-                await HasExistingInstanceAsync(workflowEvent.CompanyId, definition.Id, WorkflowTriggerType.Event, eventRef, cancellationToken))
+            try
             {
-                continue;
+                var instance = await StartInstanceCoreAsync(
+                    normalizedEvent.CompanyId,
+                    new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventId),
+                    requireMembership: false,
+                    cancellationToken);
+                processedEvent.MarkExecutionCreated(instance.Id);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                started.Add(instance);
+
+                _logger.LogInformation(
+                    "Created event workflow start for company {CompanyId}, trigger {TriggerId}, event {EventType}, id {EventId}, correlation {CorrelationId}, and workflow instance {WorkflowInstanceId}.",
+                    normalizedEvent.CompanyId,
+                    trigger.Id,
+                    eventType,
+                    eventId,
+                    normalizedEvent.CorrelationId,
+                    instance.Id);
             }
-
-            var input = CloneNodes(workflowEvent.Payload);
-            input["eventName"] = JsonValue.Create(eventName);
-            input["eventRef"] = JsonValue.Create(eventRef);
-
-            started.Add(await StartInstanceCoreAsync(
-                workflowEvent.CompanyId,
-                new StartWorkflowInstanceCommand(definition.Id, null, input, WorkflowTriggerType.Event.ToStorageValue(), eventRef),
-                requireMembership: false,
-                cancellationToken));
+            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex))
+            {
+                _dbContext.ChangeTracker.Clear();
+                _logger.LogInformation(
+                    ex,
+                    "Skipped duplicate event workflow start for company {CompanyId}, trigger {TriggerId}, event {EventType}, id {EventId}, and correlation {CorrelationId}.",
+                    normalizedEvent.CompanyId,
+                    trigger.Id,
+                    eventType,
+                    eventId,
+                    normalizedEvent.CorrelationId);
+            }
         }
 
-        return new InternalWorkflowEventTriggerResult(eventName, started);
+        return new PlatformEventTriggerResult(normalizedEvent, started);
     }
 
     private async Task<WorkflowInstanceDto> StartInstanceCoreAsync(
@@ -692,6 +739,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         {
             await EnsureOpenWorkflowExceptionAsync(instance, state, command.OutputPayload, cancellationToken);
         }
+        EnqueueWorkflowStateChangedEvent(instance, state, command.OutputPayload);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -866,6 +914,50 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             causationId: workflowException.Id.ToString("N"));
     }
 
+    private void EnqueueWorkflowStateChangedEvent(
+        WorkflowInstance instance,
+        WorkflowInstanceStatus state,
+        Dictionary<string, JsonNode?>? outputPayload)
+    {
+        var eventType = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
+        var occurredAtUtc = instance.UpdatedUtc.Kind == DateTimeKind.Utc
+            ? instance.UpdatedUtc
+            : instance.UpdatedUtc.ToUniversalTime();
+        var eventId = $"{eventType}:{instance.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
+        var correlationId = ResolveCorrelationId(new StartWorkflowInstanceCommand(
+            instance.DefinitionId,
+            instance.TriggerId,
+            instance.InputPayload,
+            instance.TriggerSource.ToStorageValue(),
+            instance.TriggerRef)) ?? eventId;
+
+        _outboxEnqueuer.Enqueue(
+            instance.CompanyId,
+            eventType,
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                occurredAtUtc,
+                instance.CompanyId,
+                correlationId,
+                "workflow_instance",
+                instance.Id.ToString("N"),
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["workflowInstanceId"] = JsonValue.Create(instance.Id.ToString("N")),
+                    ["workflowDefinitionId"] = JsonValue.Create(instance.DefinitionId.ToString("N")),
+                    ["workflowTriggerId"] = instance.TriggerId.HasValue ? JsonValue.Create(instance.TriggerId.Value.ToString("N")) : null,
+                    ["state"] = JsonValue.Create(state.ToStorageValue()),
+                    ["currentStep"] = JsonValue.Create(instance.CurrentStep),
+                    ["triggerSource"] = JsonValue.Create(instance.TriggerSource.ToStorageValue()),
+                    ["triggerRef"] = JsonValue.Create(instance.TriggerRef),
+                    ["output"] = new JsonObject(CloneNodes(outputPayload).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase))
+                }),
+            correlationId,
+            idempotencyKey: $"platform-event:{instance.CompanyId:N}:{eventId}",
+            causationId: instance.Id.ToString("N"));
+    }
+
     private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
     {
         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
@@ -974,10 +1066,15 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         ThrowIfInvalid(errors);
     }
 
-    private static void Validate(CreateWorkflowTriggerCommand command)
+    private void Validate(CreateWorkflowTriggerCommand command)
     {
         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         AddRequired(errors, nameof(command.EventName), command.EventName, EventNameMaxLength);
+        if (!string.IsNullOrWhiteSpace(command.EventName) &&
+            !_supportedEventTypes.IsSupported(command.EventName))
+        {
+            AddError(errors, nameof(command.EventName), SupportedPlatformEventTypeRegistry.BuildValidationMessage(command.EventName));
+        }
         ThrowIfInvalid(errors);
     }
 
@@ -1199,6 +1296,60 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         return false;
     }
 
+    private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(
+        Guid companyId,
+        Guid triggerId,
+        string eventId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var processedEvent = new ProcessedWorkflowTriggerEvent(
+                Guid.NewGuid(),
+                companyId,
+                triggerId,
+                eventId,
+                DateTime.UtcNow);
+            await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return processedEvent;
+        }
+        catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))
+        {
+            _dbContext.ChangeTracker.Clear();
+            return null;
+        }
+    }
+
+    private static bool IsDuplicateProcessedTriggerEvent(DbUpdateException exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current.Message.Contains("processed_workflow_trigger_events", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("IX_processed_workflow_trigger_events_company_id_workflow_trigger_id_event_id", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static Dictionary<string, JsonNode?> BuildEventInput(PlatformEventEnvelope workflowEvent) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["eventId"] = JsonValue.Create(workflowEvent.EventId),
+            ["eventType"] = JsonValue.Create(workflowEvent.EventType),
+            ["occurredAtUtc"] = JsonValue.Create(workflowEvent.OccurredAtUtc),
+            ["companyId"] = JsonValue.Create(workflowEvent.CompanyId),
+            ["correlationId"] = JsonValue.Create(workflowEvent.CorrelationId),
+            ["sourceEntityType"] = JsonValue.Create(workflowEvent.SourceEntityType),
+            ["sourceEntityId"] = JsonValue.Create(workflowEvent.SourceEntityId),
+            ["metadata"] = new JsonObject(CloneNodes(workflowEvent.Metadata).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase))
+        };
 
     private static string? ResolveCorrelationId(StartWorkflowInstanceCommand command) =>
         TryGetString(command.InputPayload, "correlationId") ?? command.TriggerRef;

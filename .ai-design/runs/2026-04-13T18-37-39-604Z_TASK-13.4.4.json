@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.4.4",
+  "promptPath": ".ai-design/prompts/TASK-13.4.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-13T18:37:39.604Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-13T18-37-39-604Z_TASK-13.4.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-13T18-37-39-604Z_TASK-13.4.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-13T18:41:43.456Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Status.DeadLettered, outcome);\n+        Assert.Equal(1, dispatcher.DispatchCount);\n+\n+        var attempt = await dbContext.TriggerExecutionAttempts\n+            .IgnoreQueryFilters()\n+            .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey);\n+        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered, attempt.Status);\n+        Assert.Equal(\"Transient orchestration outage.\", attempt.FailureDetails);\n+        Assert.Null(attempt.NextRetryUtc);\n+\n+        var audit = await dbContext.AuditEvents\n+            .IgnoreQueryFilters()\n+            .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptDeadLettered);\n+        Assert.Equal(AuditEventOutcomes.Failed, audit.Outcome);\n+        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered.ToStorageValue(), audit.Metadata[\"executionStatus\"]);\n+        Assert.Equal(\"true\", audit.Metadata[\"deadLettered\"]);\n+    }\n+\n     private static TriggerExecutionService CreateService(\n         VirtualCompanyDbContext dbContext,\n         ITriggerExecutionPolicyChecker policyChecker,\n@@ -237,11 +275,12 @@ public sealed class TriggerExecutionServiceTests\n     {\n         private readonly bool _failFirstDispatch;\n+        private readonly bool _alwaysFail;\n \n-        public CountingDispatcher(bool failFirstDispatch = false)\n+        public CountingDispatcher(bool failFirstDispatch = false, bool alwaysFail = false)\n         {\n             _failFirstDispatch = failFirstDispatch;\n+            _alwaysFail = alwaysFail;\n         }\n \n         public int DispatchCount { get; private set; }\n@@ -251,7 +290,7 @@ public sealed class TriggerExecutionServiceTests\n             CancellationToken cancellationToken)\n         {\n             DispatchCount++;\n-            if (_failFirstDispatch && DispatchCount == 1)\n+            if (_alwaysFail || _failFirstDispatch && DispatchCount == 1)\n             {\n                 throw new InvalidOperationException(\"Transient orchestration outage.\");\n             }\nEND_OF_PATCH\n",
+  "stderrTail": ", outcome);\n+        Assert.Equal(1, dispatcher.DispatchCount);\n+\n+        var attempt = await dbContext.TriggerExecutionAttempts\n+            .IgnoreQueryFilters()\n+            .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey);\n+        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered, attempt.Status);\n+        Assert.Equal(\"Transient orchestration outage.\", attempt.FailureDetails);\n+        Assert.Null(attempt.NextRetryUtc);\n+\n+        var audit = await dbContext.AuditEvents\n+            .IgnoreQueryFilters()\n+            .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptDeadLettered);\n+        Assert.Equal(AuditEventOutcomes.Failed, audit.Outcome);\n+        Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered.ToStorageValue(), audit.Metadata[\"executionStatus\"]);\n+        Assert.Equal(\"true\", audit.Metadata[\"deadLettered\"]);\n+    }\n+\n     private static TriggerExecutionService CreateService(\n         VirtualCompanyDbContext dbContext,\n         ITriggerExecutionPolicyChecker policyChecker,\n@@ -237,11 +275,12 @@ public sealed class TriggerExecutionServiceTests\n     {\n         private readonly bool _failFirstDispatch;\n+        private readonly bool _alwaysFail;\n \n-        public CountingDispatcher(bool failFirstDispatch = false)\n+        public CountingDispatcher(bool failFirstDispatch = false, bool alwaysFail = false)\n         {\n             _failFirstDispatch = failFirstDispatch;\n+            _alwaysFail = alwaysFail;\n         }\n \n         public int DispatchCount { get; private set; }\n@@ -251,7 +290,7 @@ public sealed class TriggerExecutionServiceTests\n             CancellationToken cancellationToken)\n         {\n             DispatchCount++;\n-            if (_failFirstDispatch && DispatchCount == 1)\n+            if (_alwaysFail || _failFirstDispatch && DispatchCount == 1)\n             {\n                 throw new InvalidOperationException(\"Transient orchestration outage.\");\n             }\nEND_OF_PATCH\ntokens used\n79,625\n",
+  "verbosityMode": "summary"
+}

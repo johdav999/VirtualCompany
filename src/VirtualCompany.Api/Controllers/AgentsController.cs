@@ -14,11 +14,16 @@ public sealed class AgentsController : ControllerBase
 {
     private readonly ICompanyAgentService _agentService;
     private readonly IAgentToolExecutionService _agentToolExecutionService;
+    private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
 
-    public AgentsController(ICompanyAgentService agentService, IAgentToolExecutionService agentToolExecutionService)
+    public AgentsController(
+        ICompanyAgentService agentService,
+        IAgentToolExecutionService agentToolExecutionService,
+        IAgentScheduledTriggerService agentScheduledTriggerService)
     {
         _agentService = agentService;
         _agentToolExecutionService = agentToolExecutionService;
+        _agentScheduledTriggerService = agentScheduledTriggerService;
     }
 
     [HttpGet("templates")]
@@ -166,6 +171,186 @@ public sealed class AgentsController : ControllerBase
                 Title = "Validation failed",
                 Status = StatusCodes.Status400BadRequest
             });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("{agentId:guid}/schedule-triggers")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<IReadOnlyList<AgentScheduledTriggerDto>>> ListScheduleTriggersAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var triggers = await _agentScheduledTriggerService.ListAsync(companyId, agentId, cancellationToken);
+            return Ok(triggers);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("{agentId:guid}/schedule-triggers/{triggerId:guid}", Name = nameof(GetScheduleTriggerAsync))]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentScheduledTriggerDto>> GetScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid triggerId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trigger = await _agentScheduledTriggerService.GetAsync(companyId, agentId, triggerId, cancellationToken);
+            return Ok(trigger);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("{agentId:guid}/schedule-triggers")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentScheduledTriggerDto>> CreateScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        [FromBody] CreateAgentScheduledTriggerCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trigger = await _agentScheduledTriggerService.CreateAsync(companyId, agentId, command, cancellationToken);
+            return CreatedAtAction(
+                nameof(GetScheduleTriggerAsync),
+                new { companyId, agentId, triggerId = trigger.Id },
+                trigger);
+        }
+        catch (AgentScheduledTriggerValidationException ex)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+            {
+                Title = "Validation failed",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPut("{agentId:guid}/schedule-triggers/{triggerId:guid}")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentScheduledTriggerDto>> UpdateScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid triggerId,
+        [FromBody] UpdateAgentScheduledTriggerCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trigger = await _agentScheduledTriggerService.UpdateAsync(companyId, agentId, triggerId, command, cancellationToken);
+            return Ok(trigger);
+        }
+        catch (AgentScheduledTriggerValidationException ex)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
+            {
+                Title = "Validation failed",
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("{agentId:guid}/schedule-triggers/{triggerId:guid}/enable")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentScheduledTriggerDto>> EnableScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid triggerId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trigger = await _agentScheduledTriggerService.EnableAsync(companyId, agentId, triggerId, cancellationToken);
+            return Ok(trigger);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("{agentId:guid}/schedule-triggers/{triggerId:guid}/disable")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentScheduledTriggerDto>> DisableScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid triggerId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trigger = await _agentScheduledTriggerService.DisableAsync(companyId, agentId, triggerId, cancellationToken);
+            return Ok(trigger);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpDelete("{agentId:guid}/schedule-triggers/{triggerId:guid}")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<IActionResult> DeleteScheduleTriggerAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid triggerId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _agentScheduledTriggerService.DeleteAsync(companyId, agentId, triggerId, cancellationToken);
+            return NoContent();
         }
         catch (KeyNotFoundException)
         {
