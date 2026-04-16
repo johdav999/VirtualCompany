@@ -1,0 +1,200 @@
+diff --git a/src/VirtualCompany.Application/Insights/InsightContracts.cs b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+index 9b5d6a1..b8c4f72 100644
+--- a/src/VirtualCompany.Application/Insights/InsightContracts.cs
++++ b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+@@ -20,7 +20,8 @@ public sealed record ActionQueueItemDto(
+     string Priority,
+     string DeepLink,
+     bool IsAcknowledged,
+-    DateTime? AcknowledgedAt);
++    DateTime? AcknowledgedAt,
++    string StableSortKey);
+ 
+ public sealed record AcknowledgeInsightCommand(string InsightKey);
+ 
+@@ -70,9 +71,9 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+             .OrderByDescending(scored => scored.PriorityScore)
+             .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
+             // Equal priority uses immutable action identity fields so refreshes keep the same ordering.
+             .ThenBy(scored => scored.Candidate.CreatedUtc)
+-            .ThenBy(scored => scored.Candidate.TargetId)
+             .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
++            .ThenBy(scored => scored.Candidate.TargetId)
+             .ToList();
+ 
+     private static int SourceWeight(ActionInsightType type) =>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+index 73e28e1..acb65cd 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+@@ -34,13 +34,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         var userId = ResolveUserId();
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var candidates = new List<InsightCandidate>();
+-
+-        candidates.AddRange(await GetPendingApprovalsAsync(companyId, nowUtc, cancellationToken));
+-        candidates.AddRange(await GetTaskInsightsAsync(companyId, nowUtc, cancellationToken));
+-        candidates.AddRange(await GetBlockedWorkflowsAsync(companyId, nowUtc, cancellationToken));
+-        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Risk, nowUtc, cancellationToken));
+-        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Opportunity, nowUtc, cancellationToken));
++        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
+ 
+         var keys = candidates.Select(candidate => candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
+         var acknowledgments = await _dbContext.InsightAcknowledgments
+@@ -62,6 +56,12 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         var normalizedKey = NormalizeInsightKey(insightKey);
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+ 
++        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
++        if (!candidates.Any(candidate => string.Equals(candidate.InsightKey, normalizedKey, StringComparison.Ordinal)))
++        {
++            return null;
++        }
++
+         var existing = await _dbContext.InsightAcknowledgments.SingleOrDefaultAsync(
+             ack => ack.CompanyId == companyId && ack.UserId == userId && ack.InsightKey == normalizedKey,
+             cancellationToken);
+@@ -82,6 +82,18 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         return queue.FirstOrDefault(item => string.Equals(item.InsightKey, normalizedKey, StringComparison.Ordinal));
+     }
+ 
++    private async Task<IReadOnlyList<InsightCandidate>> GetCandidatesAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var candidates = new List<InsightCandidate>();
++        candidates.AddRange(await GetPendingApprovalsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetTaskInsightsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetBlockedWorkflowsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Risk, nowUtc, cancellationToken));
++        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Opportunity, nowUtc, cancellationToken));
++
++        return candidates;
++    }
++
+     private Guid ResolveUserId()
+     {
+         var userId = _companyContextAccessor.UserId ?? _currentUserAccessor.UserId;
+@@ -303,7 +315,8 @@ public sealed class CompanyActionInsightService : IActionInsightService
+             deepLink.Href,
+             acknowledged,
+-            acknowledged ? acknowledgedAt : null);
++            acknowledged ? acknowledgedAt : null,
++            candidate.InsightKey);
+     }
+ 
+     private static string ResolveApprovalOwner(string? requiredRole, Guid? requiredUserId)
+diff --git a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+index 51e94d3..0b71f2a 100644
+--- a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+@@ -121,7 +121,8 @@ public sealed class ActionInsightApiClient
+             PriorityScore = 90,
+             Priority = "critical",
+-            DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116"
++            DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116",
++            StableSortKey = $"{companyId:N}:approval:d0131d5718954b7596249b8b04d8a116:v0"
+         },
+         new()
+         {
+@@ -141,7 +142,8 @@ public sealed class ActionInsightApiClient
+             PriorityScore = 75,
+             Priority = "high",
+-            DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"
++            DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b",
++            StableSortKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0"
+         },
+         new()
+         {
+@@ -161,7 +163,8 @@ public sealed class ActionInsightApiClient
+             PriorityScore = 85,
+             Priority = "high",
+-            DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738"
++            DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738",
++            StableSortKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0"
+         }
+     ];
+ 
+@@ -193,4 +196,5 @@ public sealed class ActionQueueItemViewModel
+     public string DeepLink { get; set; } = string.Empty;
+     public bool IsAcknowledged { get; set; }
+     public DateTime? AcknowledgedAt { get; set; }
++    public string StableSortKey { get; set; } = string.Empty;
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 9042e56..b26aa37 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -382,6 +382,12 @@
+ }
+ 
+ .agent-status-detail-grid {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
++}
++
+ .action-queue {
+     display: grid;
+     gap: 1rem;
+@@ -454,12 +460,6 @@
+     margin-top: 0.75rem;
+ }
+ 
+-    display: grid;
+-    gap: 1.25rem;
+-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+-}
+-
+ .summary-pill-grid {
+     display: grid;
+     gap: 1rem;
+diff --git a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+index 7bdc4a0..0295a78 100644
+--- a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+@@ -35,6 +35,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+             Assert.False(string.IsNullOrWhiteSpace(item.SlaState));
+             Assert.False(string.IsNullOrWhiteSpace(item.DeepLink));
+             Assert.Contains($"companyId={item.CompanyId:D}", item.DeepLink);
++            Assert.False(string.IsNullOrWhiteSpace(item.StableSortKey));
+         });
+     }
+ 
+@@ -51,8 +52,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         Assert.Contains(items!, item => item.TargetType == "task" && item.DeepLink == $"/tasks?companyId={seed.CompanyId:D}&taskId={item.TargetId:D}");
+         Assert.Contains(items!, item => item.TargetType == "workflow" && item.DeepLink == $"/workflows?companyId={seed.CompanyId:D}&workflowInstanceId={item.TargetId:D}");
+     }
+-        });
+-    }
+ 
+     [Fact]
+     public async Task Acknowledgment_persists_for_same_user_and_does_not_leak()
+@@ -211,5 +210,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+         public string DeepLink { get; set; } = string.Empty;
+         public bool IsAcknowledged { get; set; }
+         public DateTime? AcknowledgedAt { get; set; }
++        public string StableSortKey { get; set; } = string.Empty;
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+index e7fef70..14d7c21 100644
+--- a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+@@ -68,6 +68,17 @@ public sealed class InsightScoringTests
+         Assert.Contains(targetId.ToString("D"), link.Href);
+     }
+ 
++    [Fact]
++    public void Unsupported_deep_link_target_returns_dashboard_fallback()
++    {
++        var companyId = Guid.NewGuid();
++        var targetId = Guid.NewGuid();
++
++        var link = _links.Resolve(companyId, new ActionDeepLinkTarget((ActionInsightTargetType)999, targetId));
++
++        Assert.Equal($"/dashboard?companyId={companyId:D}", link.Href);
++    }
++
+     [Fact]
+     public void Insight_keys_are_stable_for_same_action_identity()
+     {
+END_OF_PATCH

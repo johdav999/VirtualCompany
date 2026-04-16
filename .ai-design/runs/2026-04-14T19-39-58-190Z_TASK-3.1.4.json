@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.1.4",
+  "promptPath": ".ai-design/prompts/TASK-3.1.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T19:39:58.190Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T19-39-58-190Z_TASK-3.1.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T19-39-58-190Z_TASK-3.1.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T19:42:41.293Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "/ExecutiveCockpitDashboardIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs\n@@ -52,6 +52,8 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te\n         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);\n         Assert.True(dashboard.EmptyStateFlags.NoAlerts);\n         Assert.Equal([\"finance\", \"sales\", \"support\", \"operations\"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());\n+        Assert.Equal([10, 20, 30, 40], dashboard.DepartmentSections.Select(x => x.DisplayOrder).ToArray());\n+        Assert.All(dashboard.DepartmentSections, section => Assert.All(section.Widgets, widget => Assert.True(widget.IsVisible)));\n         Assert.All(dashboard.DepartmentSections, section =>\n         {\n             Assert.False(section.HasData);\n@@ -281,7 +283,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te\n         public string DepartmentKey { get; set; } = string.Empty;\n+        public int DisplayOrder { get; set; }\n         public bool HasData { get; set; }\n         public Dictionary<string, int> SummaryCounts { get; set; } = [];\n         public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];\n     }\n-    private sealed class DepartmentDashboardWidgetResponse { public string WidgetType { get; set; } = string.Empty; public DepartmentDashboardNavigationResponse Navigation { get; set; } = new(); }\n+    private sealed class DepartmentDashboardWidgetResponse\n+    {\n+        public string WidgetType { get; set; } = string.Empty;\n+        public bool IsVisible { get; set; }\n+        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();\n+    }\n     private sealed class DepartmentDashboardNavigationResponse { public string Route { get; set; } = string.Empty; }\n     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }\nEND_OF_PATCH\n",
+  "stderrTail": "shboardIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs\n@@ -52,6 +52,8 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te\n         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);\n         Assert.True(dashboard.EmptyStateFlags.NoAlerts);\n         Assert.Equal([\"finance\", \"sales\", \"support\", \"operations\"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());\n+        Assert.Equal([10, 20, 30, 40], dashboard.DepartmentSections.Select(x => x.DisplayOrder).ToArray());\n+        Assert.All(dashboard.DepartmentSections, section => Assert.All(section.Widgets, widget => Assert.True(widget.IsVisible)));\n         Assert.All(dashboard.DepartmentSections, section =>\n         {\n             Assert.False(section.HasData);\n@@ -281,7 +283,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te\n         public string DepartmentKey { get; set; } = string.Empty;\n+        public int DisplayOrder { get; set; }\n         public bool HasData { get; set; }\n         public Dictionary<string, int> SummaryCounts { get; set; } = [];\n         public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];\n     }\n-    private sealed class DepartmentDashboardWidgetResponse { public string WidgetType { get; set; } = string.Empty; public DepartmentDashboardNavigationResponse Navigation { get; set; } = new(); }\n+    private sealed class DepartmentDashboardWidgetResponse\n+    {\n+        public string WidgetType { get; set; } = string.Empty;\n+        public bool IsVisible { get; set; }\n+        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();\n+    }\n     private sealed class DepartmentDashboardNavigationResponse { public string Route { get; set; } = string.Empty; }\n     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }\nEND_OF_PATCH\ntokens used\n66,598\n",
+  "verbosityMode": "summary"
+}

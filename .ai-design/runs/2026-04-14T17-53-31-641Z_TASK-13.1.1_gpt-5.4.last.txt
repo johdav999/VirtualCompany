@@ -1,0 +1,128 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1111111..2222222 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -596,6 +596,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+         builder.ToTable("agents");
+ 
+         builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id }).HasName("AK_agents_company_id_id");
+         builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
+         builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
+         builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
+@@ -1811,6 +1812,7 @@ internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfigurat
+ 
+         builder.HasKey(x => x.Id);
+         builder.Property(x => x.Id).HasColumnName("id");
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id }).HasName("AK_agent_scheduled_triggers_company_id_id");
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
+         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+@@ -1843,7 +1845,8 @@ internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfigurat
+             .OnDelete(DeleteBehavior.NoAction);
+         builder.HasOne(x => x.Agent)
+             .WithMany()
+-            .HasForeignKey(x => x.AgentId)
++            .HasForeignKey(x => new { x.CompanyId, x.AgentId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+             .OnDelete(DeleteBehavior.Cascade);
+         builder.HasMany(x => x.EnqueueWindows)
+             .WithOne(x => x.ScheduledTrigger)
+@@ -1883,7 +1886,8 @@ internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityT
+             .OnDelete(DeleteBehavior.NoAction);
+         builder.HasOne(x => x.ScheduledTrigger)
+             .WithMany(x => x.EnqueueWindows)
+-            .HasForeignKey(x => x.ScheduledTriggerId)
++            .HasForeignKey(x => new { x.CompanyId, x.ScheduledTriggerId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+             .OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+index 3333333..4444444 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413220000_AddAgentScheduledTriggers.cs
+@@ -21,6 +21,11 @@ public partial class AddAgentScheduledTriggers : Migration
+         var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
+         var checkSql = isPostgres ? "window_end_at > window_start_at" : "[window_end_at] > [window_start_at]";
+ 
++        migrationBuilder.AddUniqueConstraint(
++            name: "AK_agents_company_id_id",
++            table: "agents",
++            columns: new[] { "CompanyId", "Id" });
++
+         migrationBuilder.CreateTable(
+             name: "agent_scheduled_triggers",
+             columns: table => new
+@@ -49,11 +54,13 @@ public partial class AddAgentScheduledTriggers : Migration
+             constraints: table =>
+             {
+                 table.PrimaryKey("PK_agent_scheduled_triggers", x => x.id);
++                table.UniqueConstraint("AK_agent_scheduled_triggers_company_id_id", x => new { x.company_id, x.id });
+                 table.ForeignKey(
+-                    name: "FK_agent_scheduled_triggers_agents_agent_id",
+-                    column: x => x.agent_id,
++                    name: "FK_agent_scheduled_triggers_agents_company_id_agent_id",
++                    columns: x => new { x.company_id, x.agent_id },
+                     principalTable: "agents",
+-                    principalColumn: "id",
++                    principalColumns: new[] { "CompanyId", "Id" },
+                     onDelete: ReferentialAction.Cascade);
+                 table.ForeignKey(
+                     name: "FK_agent_scheduled_triggers_companies_company_id",
+@@ -87,11 +94,12 @@ public partial class AddAgentScheduledTriggers : Migration
+             {
+                 table.PrimaryKey("PK_agent_scheduled_trigger_enqueue_windows", x => x.id);
+                 table.CheckConstraint("CK_agent_scheduled_trigger_enqueue_windows_window_order", checkSql);
+                 table.ForeignKey(
+-                    name: "FK_agent_scheduled_trigger_enqueue_windows_agent_scheduled_triggers_scheduled_trigger_id",
+-                    column: x => x.scheduled_trigger_id,
++                    name: "FK_agent_scheduled_trigger_enqueue_windows_agent_scheduled_triggers_company_id_scheduled_trigger_id",
++                    columns: x => new { x.company_id, x.scheduled_trigger_id },
+                     principalTable: "agent_scheduled_triggers",
+-                    principalColumn: "id",
++                    principalColumns: new[] { "company_id", "id" },
+                     onDelete: ReferentialAction.Cascade);
+                 table.ForeignKey(
+                     name: "FK_agent_scheduled_trigger_enqueue_windows_companies_company_id",
+@@ -140,5 +148,9 @@ public partial class AddAgentScheduledTriggers : Migration
+     {
+         migrationBuilder.DropTable(name: "agent_scheduled_trigger_enqueue_windows");
+         migrationBuilder.DropTable(name: "agent_scheduled_triggers");
++
++        migrationBuilder.DropUniqueConstraint(
++            name: "AK_agents_company_id_id",
++            table: "agents");
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs
+index 5555555..6666666 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentScheduledTriggerPersistenceTests.cs
+@@ -117,6 +117,24 @@ public sealed class AgentScheduledTriggerPersistenceTests
+         Assert.Equal(1, await dbContext.AgentScheduledTriggerEnqueueWindows.IgnoreQueryFilters().CountAsync());
+     }
+ 
++    [Fact]
++    public async Task Trigger_persistence_rejects_agent_from_different_company()
++    {
++        await using var connection = CreateOpenConnection();
++        var triggerCompanyId = Guid.NewGuid();
++        var agentCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        dbContext.Companies.Add(new Company(triggerCompanyId, "Trigger Company"));
++        await SeedCompanyAndAgentAsync(dbContext, agentCompanyId, agentId);
++
++        dbContext.AgentScheduledTriggers.Add(CreateTrigger(
++            triggerCompanyId,
++            agentId,
++            new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)));
++
++        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
++    }
++
+     private static SqliteConnection CreateOpenConnection()
+     {
+         var connection = new SqliteConnection("Data Source=:memory:");
+END_OF_PATCH

@@ -13,15 +13,18 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class AgentsController : ControllerBase
 {
     private readonly ICompanyAgentService _agentService;
+    private readonly IAgentStatusAggregationService _agentStatusAggregationService;
     private readonly IAgentToolExecutionService _agentToolExecutionService;
     private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
 
     public AgentsController(
         ICompanyAgentService agentService,
+        IAgentStatusAggregationService agentStatusAggregationService,
         IAgentToolExecutionService agentToolExecutionService,
         IAgentScheduledTriggerService agentScheduledTriggerService)
     {
         _agentService = agentService;
+        _agentStatusAggregationService = agentStatusAggregationService;
         _agentToolExecutionService = agentToolExecutionService;
         _agentScheduledTriggerService = agentScheduledTriggerService;
     }
@@ -55,6 +58,25 @@ public sealed class AgentsController : ControllerBase
             var filter = new AgentRosterFilterDto(department, status);
             var roster = await _agentService.GetRosterViewAsync(companyId, filter, cancellationToken);
             return Ok(roster);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("status")]
+    [HttpGet("status-cards")]
+    [Authorize(Policy = CompanyPolicies.CompanyMember)]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<ActionResult<AgentStatusCardsResponseDto>> GetStatusCardsAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var statusCards = await _agentStatusAggregationService.GetStatusCardsAsync(companyId, cancellationToken);
+            return Ok(statusCards);
         }
         catch (UnauthorizedAccessException)
         {
@@ -98,6 +120,29 @@ public sealed class AgentsController : ControllerBase
             });
         }
         catch (AgentTemplateNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("{agentId:guid}/status-detail")]
+    [Authorize(Policy = CompanyPolicies.CompanyMember)]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<ActionResult<AgentStatusDetailDto>> GetStatusDetailAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var detail = await _agentStatusAggregationService.GetStatusDetailAsync(companyId, agentId, cancellationToken);
+            return Ok(detail);
+        }
+        catch (KeyNotFoundException)
         {
             return NotFound();
         }

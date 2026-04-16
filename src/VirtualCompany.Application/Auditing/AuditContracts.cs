@@ -15,7 +15,15 @@ public sealed record AuditEventWriteRequest(
     IReadOnlyDictionary<string, string?>? Metadata = null,
     string? CorrelationId = null,
     DateTime? OccurredUtc = null,
-    IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null);
+    IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null,
+    string? PayloadDiffJson = null,
+    string? AgentName = null,
+    string? AgentRole = null,
+    string? ResponsibilityDomain = null,
+    string? PromptProfileVersion = null,
+    string? BoundaryDecisionOutcome = null,
+    string? IdentityReasonCode = null,
+    string? BoundaryReasonCode = null);
 
 // Business audit history is an explicit application concern.
 // Technical diagnostics belong on ILogger and must not be inferred from audit records.
@@ -48,7 +56,14 @@ public sealed record AuditHistoryListItem(
     DateTime OccurredAt,
     AuditSafeExplanationDto Explanation,
     string? CorrelationId,
-    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
+    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities,
+    string? AgentName,
+    string? AgentRole,
+    string? ResponsibilityDomain,
+    string? PromptProfileVersion,
+    string? BoundaryDecisionOutcome,
+    string? IdentityReasonCode,
+    string? BoundaryReasonCode);
 
 public sealed record AuditHistoryResult(
     IReadOnlyList<AuditHistoryListItem> Items,
@@ -76,7 +91,14 @@ public sealed record AuditDetailDto(
     IReadOnlyDictionary<string, string?> Metadata,
     IReadOnlyList<AuditApprovalReferenceDto> LinkedApprovals,
     IReadOnlyList<AuditToolExecutionReferenceDto> LinkedToolExecutions,
-    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
+    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities,
+    string? AgentName,
+    string? AgentRole,
+    string? ResponsibilityDomain,
+    string? PromptProfileVersion,
+    string? BoundaryDecisionOutcome,
+    string? IdentityReasonCode,
+    string? BoundaryReasonCode);
 
 public sealed record AuditSafeExplanationDto(
     string Summary,
@@ -144,6 +166,7 @@ public static class AuditTargetTypes
     public const string Agent = "agent";
     public const string AgentToolExecution = "agent_tool_execution";
     public const string EscalationPolicy = "escalation_policy";
+    public const string AgentGeneration = "agent_generation";
     public const string TriggerEvaluation = "trigger_evaluation";
     public const string TriggerExecutionAttempt = "trigger_execution_attempt";
     public const string CompanyDocument = "company_document";
@@ -157,6 +180,7 @@ public static class AuditTargetTypes
     public const string ExecutionException = "execution_exception";
     public const string CompanyNotification = "company_notification";
     public const string ProactiveMessage = "proactive_message";
+    public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
 }
 
 public static class AuditEventOutcomes
@@ -206,6 +230,7 @@ public static class AuditEventActions
     public const string TriggerEvaluationSkipped = "trigger.evaluation.skipped";
     public const string TriggerExecutionAttemptStarted = "trigger.execution_attempt.started";
     public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
+    public const string TriggerExecutionAttemptRetryDeferred = "trigger.execution_attempt.retry_deferred";
     public const string TriggerExecutionAttemptDuplicateSkipped = "trigger.execution_attempt.duplicate_skipped";
     public const string TriggerExecutionAttemptBlocked = "trigger.execution_attempt.blocked";
     public const string TriggerOrchestrationStartRequested = "trigger.orchestration.start_requested";
@@ -220,6 +245,8 @@ public static class AuditEventActions
     public const string DirectChatTaskCreated = "direct_chat.task.created";
     public const string DirectChatTaskLinked = "direct_chat.task.linked";
     public const string SingleAgentTaskOrchestrationExecuted = "single_agent_task.orchestration.executed";
+    public const string AgentGeneration = "agent_generation";
+    public const string BoundaryEnforcement = "boundary_enforcement";
     public const string MultiAgentCollaborationStarted = "multi_agent.collaboration.started";
     public const string MultiAgentCollaborationPlanCreated = "multi_agent.collaboration.plan_created";
     public const string MultiAgentWorkerSubtaskCreated = "multi_agent.worker_subtask.created";
@@ -230,4 +257,23 @@ public static class AuditEventActions
     public const string CompanyNotificationActioned = "company.notification.actioned";
     public const string ProactiveMessageDelivered = "proactive_message.delivered";
     public const string ProactiveMessageBlocked = "proactive_message.blocked";
+    public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
+}
+
+public static class AuditBoundaryDecisionOutcomes
+{
+    public const string InScope = "in_scope";
+    public const string DelegatedOutOfScope = "delegated_out_of_scope";
+    public const string EscalatedOutOfScope = "escalated_out_of_scope";
+    public const string DeniedByPolicy = "denied_by_policy";
+}
+
+public static class AuditReasonCodes
+{
+    public const string IdentityFallbackMissingConfig = "identity_fallback_missing_config";
+    public const string IdentityFallbackIncompleteProfile = "identity_fallback_incomplete_profile";
+    public const string BoundaryDelegateOutOfScope = "boundary_delegate_out_of_scope";
+    public const string BoundaryDelegatePolicyRestriction = "boundary_delegate_policy_restriction";
+    public const string BoundaryEscalateOutOfScope = "boundary_escalate_out_of_scope";
+    public const string BoundaryDeniedByPolicy = "boundary_denied_by_policy";
 }

@@ -273,6 +273,23 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
             null,
             cancellationToken);
 
+    public Task WriteRetryDeferredAsync(
+        TriggerExecutionAttempt attempt,
+        string reason,
+        CancellationToken cancellationToken) =>
+        WriteAttemptAsync(
+            attempt,
+            AuditEventActions.TriggerExecutionAttemptRetryDeferred,
+            AuditEventOutcomes.Pending,
+            string.IsNullOrWhiteSpace(reason)
+                ? "Trigger execution retry was deferred until the recorded retry window."
+                : reason.Trim(),
+            new Dictionary<string, string?>
+            {
+                ["retryDeferred"] = "true"
+            },
+            cancellationToken);
+
     public Task WriteDuplicatePreventedAsync(
         TriggerExecutionAttempt attempt,
         CancellationToken cancellationToken) =>
@@ -281,7 +298,11 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
             AuditEventActions.TriggerExecutionAttemptDuplicateSkipped,
             AuditEventOutcomes.Succeeded,
             "Duplicate trigger execution attempt skipped by persisted idempotency key.",
-            null,
+            new Dictionary<string, string?>
+            {
+                ["executionStatus"] = TriggerExecutionAttemptStatus.DuplicateSkipped.ToStorageValue(),
+                ["previousExecutionStatus"] = attempt.Status.ToStorageValue()
+            },
             cancellationToken);
 
     public Task WritePolicyDeniedAsync(
@@ -518,6 +539,12 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
 
         if (reservation.RetryDeferred)
         {
+            if (!await HasRetryDeferredAuditAsync(attempt, cancellationToken))
+            {
+                await _triggerAuditEventWriter.WriteRetryDeferredAsync(attempt, "Trigger execution retry is not due yet.", cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
+
             return TriggerExecutionAttemptStatus.RetryScheduled;
         }
 
@@ -586,6 +613,16 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
         return TimeSpan.FromSeconds(Math.Min(3600, baseDelaySeconds * multiplier));
     }
 
+    private Task<bool> HasRetryDeferredAuditAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken) =>
+        _dbContext.AuditEvents
+            .IgnoreQueryFilters()
+            .AnyAsync(
+                x => x.CompanyId == attempt.CompanyId &&
+                    x.Action == AuditEventActions.TriggerExecutionAttemptRetryDeferred &&
+                    x.TargetType == AuditTargetTypes.TriggerExecutionAttempt &&
+                    x.TargetId == attempt.Id.ToString("N"),
+                cancellationToken);
+
     private async Task MarkSourceTriggerRunAsync(TriggerExecutionWorkItem workItem, CancellationToken cancellationToken)
     {
         if (!string.Equals(workItem.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
@@ -638,14 +675,6 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
     {
         var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc ? dueAtUtc : dueAtUtc.ToUniversalTime();
         var effectiveBatchSize = Math.Max(1, batchSize);
-        var scheduled = await _dbContext.AgentScheduledTriggers
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.IsEnabled && x.NextRunUtc.HasValue && x.NextRunUtc <= normalizedDueAtUtc && (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
-            .OrderBy(x => x.NextRunUtc)
-            .ThenBy(x => x.Id)
-            .Take(effectiveBatchSize)
-            .ToListAsync(cancellationToken);
 
         var scheduledEvaluated = 0;
         var conditionEvaluated = 0;
@@ -655,6 +684,51 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
         var failed = 0;
         var retried = 0;
         var deadLettered = 0;
+
+        var retryAttempts = await _dbContext.TriggerExecutionAttempts
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.Status == TriggerExecutionAttemptStatus.RetryScheduled &&
+                x.NextRetryUtc.HasValue &&
+                x.NextRetryUtc <= normalizedDueAtUtc)
+            .OrderBy(x => x.NextRetryUtc)
+            .ThenBy(x => x.UpdatedUtc)
+            .ThenBy(x => x.Id)
+            .Take(effectiveBatchSize)
+            .ToListAsync(cancellationToken);
+
+        foreach (var retryAttempt in retryAttempts)
+        {
+            if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
+            {
+                scheduledEvaluated++;
+            }
+            else if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.WorkflowCondition, StringComparison.OrdinalIgnoreCase))
+            {
+                conditionEvaluated++;
+            }
+
+            var outcome = await ProcessRetryAttemptAsync(
+                retryAttempt,
+                normalizedDueAtUtc,
+                maxRetryAttempts,
+                retryBackoffSeconds,
+                cancellationToken);
+            Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
+        }
+
+        var remainingForScheduled = Math.Max(0, effectiveBatchSize - scheduledEvaluated - conditionEvaluated);
+        var scheduled = remainingForScheduled == 0
+            ? []
+            : await _dbContext.AgentScheduledTriggers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.IsEnabled && x.NextRunUtc.HasValue && x.NextRunUtc <= normalizedDueAtUtc && (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
+                .OrderBy(x => x.NextRunUtc)
+                .ThenBy(x => x.Id)
+                .Take(remainingForScheduled)
+                .ToListAsync(cancellationToken);
 
         foreach (var trigger in scheduled)
         {
@@ -670,21 +744,30 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
             var correlationId = TriggerExecutionIdempotency.CorrelationFromIdempotencyKey(idempotencyKey);
             await WriteEvaluationStartedAsync(trigger.CompanyId, trigger.Id, TriggerExecutionTypes.AgentScheduled, trigger.AgentId, scheduledAtUtc, correlationId, idempotencyKey, cancellationToken);
 
-            var outcome = await _executionService.ProcessScheduledTriggerAsync(
-                new AgentScheduledTriggerExecutionRequestMessage(
-                    trigger.CompanyId,
-                    trigger.AgentId,
-                    trigger.Id,
-                    trigger.Code,
-                    scheduledAtUtc,
-                    trigger.CronExpression,
-                    trigger.TimeZoneId,
-                    trigger.Metadata,
-                    correlationId,
-                    idempotencyKey),
-                maxRetryAttempts,
-                cancellationToken,
-                retryBackoffSeconds);
+            TriggerExecutionAttemptStatus outcome;
+            try
+            {
+                outcome = await _executionService.ProcessScheduledTriggerAsync(
+                    new AgentScheduledTriggerExecutionRequestMessage(
+                        trigger.CompanyId,
+                        trigger.AgentId,
+                        trigger.Id,
+                        trigger.Code,
+                        scheduledAtUtc,
+                        trigger.CronExpression,
+                        trigger.TimeZoneId,
+                        trigger.Metadata,
+                        correlationId,
+                        idempotencyKey),
+                    maxRetryAttempts,
+                    cancellationToken,
+                    retryBackoffSeconds);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Scheduled trigger {TriggerId} failed during evaluation and remains eligible for retry.", trigger.Id);
+                outcome = TriggerExecutionAttemptStatus.RetryScheduled;
+            }
 
             if (outcome != TriggerExecutionAttemptStatus.RetryScheduled)
             {
@@ -694,7 +777,7 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
             Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
         }
 
-        var remaining = Math.Max(0, effectiveBatchSize - scheduledEvaluated);
+        var remaining = Math.Max(0, effectiveBatchSize - scheduledEvaluated - conditionEvaluated);
         if (remaining > 0)
         {
             var conditionTriggers = await _dbContext.WorkflowTriggers
@@ -755,34 +838,149 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
                     continue;
                 }
 
-                var outcome = await _executionService.EvaluateAndDispatchAsync(
-                    new TriggerExecutionWorkItem(
-                        trigger.CompanyId,
-                        trigger.Id,
-                        TriggerExecutionTypes.WorkflowCondition,
-                        null,
-                        evaluation.EvaluatedUtc,
-                        correlationId,
-                        idempotencyKey,
-                        new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            ["workflowTriggerId"] = JsonValue.Create(trigger.Id.ToString("N")),
-                            ["workflowDefinitionId"] = JsonValue.Create(trigger.DefinitionId.ToString("N")),
-                            ["conditionDefinitionId"] = JsonValue.Create(trigger.Id.ToString("N")),
-                            ["evaluatedAtUtc"] = JsonValue.Create(evaluation.EvaluatedUtc),
-                            ["conditionOutcome"] = JsonValue.Create(evaluation.Outcome),
-                            ["correlationId"] = JsonValue.Create(correlationId),
-                            ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
-                        }),
-                    maxRetryAttempts,
-                    cancellationToken,
-                    retryBackoffSeconds);
+                TriggerExecutionAttemptStatus outcome;
+                try
+                {
+                    outcome = await _executionService.EvaluateAndDispatchAsync(
+                        new TriggerExecutionWorkItem(
+                            trigger.CompanyId,
+                            trigger.Id,
+                            TriggerExecutionTypes.WorkflowCondition,
+                            null,
+                            evaluation.EvaluatedUtc,
+                            correlationId,
+                            idempotencyKey,
+                            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["workflowTriggerId"] = JsonValue.Create(trigger.Id.ToString("N")),
+                                ["workflowDefinitionId"] = JsonValue.Create(trigger.DefinitionId.ToString("N")),
+                                ["conditionDefinitionId"] = JsonValue.Create(trigger.Id.ToString("N")),
+                                ["evaluatedAtUtc"] = JsonValue.Create(evaluation.EvaluatedUtc),
+                                ["conditionOutcome"] = JsonValue.Create(evaluation.Outcome),
+                                ["correlationId"] = JsonValue.Create(correlationId),
+                                ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
+                            }),
+                        maxRetryAttempts,
+                        cancellationToken,
+                        retryBackoffSeconds);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Condition trigger {TriggerId} failed during dispatch and remains eligible for retry.", trigger.Id);
+                    outcome = TriggerExecutionAttemptStatus.RetryScheduled;
+                }
 
                 Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
             }
         }
 
         return new TriggerExecutionRunResult(scheduledEvaluated, conditionEvaluated, dispatched, blocked, duplicateSkipped, failed, retried, deadLettered);
+    }
+
+    private async Task<TriggerExecutionAttemptStatus> ProcessRetryAttemptAsync(
+        TriggerExecutionAttempt retryAttempt,
+        DateTime dueAtUtc,
+        int maxRetryAttempts,
+        int retryBackoffSeconds,
+        CancellationToken cancellationToken)
+    {
+        var workItem = await BuildRetryWorkItemAsync(retryAttempt, cancellationToken);
+        TriggerExecutionAttemptStatus outcome;
+        try
+        {
+            outcome = await _executionService.EvaluateAndDispatchAsync(
+                workItem,
+                maxRetryAttempts,
+                cancellationToken,
+                retryBackoffSeconds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Retry for trigger execution attempt {AttemptId} failed and remains eligible for retry or dead-letter handling.",
+                retryAttempt.Id);
+            outcome = TriggerExecutionAttemptStatus.RetryScheduled;
+        }
+
+        if (outcome != TriggerExecutionAttemptStatus.RetryScheduled &&
+            string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
+        {
+            var trigger = await _dbContext.AgentScheduledTriggers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == retryAttempt.CompanyId && x.Id == retryAttempt.TriggerId, cancellationToken);
+
+            if (trigger is not null)
+            {
+                var nextRunUtc = _nextRunCalculator.GetNextRunUtc(
+                    trigger.CronExpression,
+                    trigger.TimeZoneId,
+                    retryAttempt.OccurrenceUtc);
+                await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, dueAtUtc, nextRunUtc, cancellationToken);
+            }
+        }
+
+        return outcome;
+    }
+
+    private async Task<TriggerExecutionWorkItem> BuildRetryWorkItemAsync(
+        TriggerExecutionAttempt retryAttempt,
+        CancellationToken cancellationToken)
+    {
+        Dictionary<string, JsonNode?> payload;
+        Guid? agentId = retryAttempt.AgentId;
+
+        if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
+        {
+            var trigger = await _dbContext.AgentScheduledTriggers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == retryAttempt.CompanyId && x.Id == retryAttempt.TriggerId, cancellationToken);
+
+            agentId = trigger?.AgentId ?? agentId;
+            payload = trigger is null
+                ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, JsonNode?>(
+                    trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase)
+                {
+                    ["triggerCode"] = JsonValue.Create(trigger.Code),
+                    ["cronExpression"] = JsonValue.Create(trigger.CronExpression),
+                    ["timeZoneId"] = JsonValue.Create(trigger.TimeZoneId)
+                };
+        }
+        else
+        {
+            payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        payload["triggerId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
+        payload["triggerType"] = JsonValue.Create(retryAttempt.TriggerType);
+        payload["companyId"] = JsonValue.Create(retryAttempt.CompanyId.ToString("N"));
+        payload["agentId"] = agentId.HasValue ? JsonValue.Create(agentId.Value.ToString("N")) : null;
+        payload["scheduledAtUtc"] = JsonValue.Create(retryAttempt.OccurrenceUtc);
+        payload["evaluatedAtUtc"] = JsonValue.Create(retryAttempt.OccurrenceUtc);
+        payload["correlationId"] = JsonValue.Create(retryAttempt.CorrelationId);
+        payload["idempotencyKey"] = JsonValue.Create(retryAttempt.IdempotencyKey);
+        payload["retryAttemptId"] = JsonValue.Create(retryAttempt.Id.ToString("N"));
+        payload["retryAttemptCount"] = JsonValue.Create(retryAttempt.RetryAttemptCount);
+
+        if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.WorkflowCondition, StringComparison.OrdinalIgnoreCase))
+        {
+            payload["workflowTriggerId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
+            payload["conditionDefinitionId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
+        }
+
+        return new TriggerExecutionWorkItem(
+            retryAttempt.CompanyId,
+            retryAttempt.TriggerId,
+            retryAttempt.TriggerType,
+            agentId,
+            retryAttempt.OccurrenceUtc,
+            retryAttempt.CorrelationId,
+            retryAttempt.IdempotencyKey,
+            payload);
     }
 
     private async Task WriteEvaluationStartedAsync(
@@ -819,8 +1017,43 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
         condition = null!;
         diagnostic = null;
 
-        var sourceType = ReadString(trigger.CriteriaJson, "sourceType");
-        var operatorValue = ReadString(trigger.CriteriaJson, "operator");
+        if (TryGetNode(trigger.CriteriaJson, ConditionExpressionCriteriaMapper.CriteriaConditionKey, out var nestedConditionNode))
+        {
+            if (nestedConditionNode is not JsonObject nestedConditionObject)
+            {
+                diagnostic = "Condition criteria must be an object.";
+                return false;
+            }
+
+            return TryBuildCondition(nestedConditionObject, nestedConditionObject["target"] as JsonObject, out condition, out diagnostic);
+        }
+
+        var flatConditionObject = new JsonObject();
+        foreach (var pair in trigger.CriteriaJson)
+        {
+            flatConditionObject[pair.Key] = pair.Value?.DeepClone();
+        }
+
+        return TryBuildCondition(flatConditionObject, flatConditionObject, out condition, out diagnostic);
+    }
+
+    private static bool TryBuildCondition(
+        JsonObject conditionObject,
+        JsonObject? targetObject,
+        out ConditionExpression condition,
+        out string? diagnostic)
+    {
+        condition = null!;
+        diagnostic = null;
+
+        if (targetObject is null)
+        {
+            diagnostic = "Condition criteria target is required.";
+            return false;
+        }
+
+        var sourceType = ReadString(targetObject, "sourceType");
+        var operatorValue = ReadString(conditionObject, "operator");
         if (!ConditionTriggerStorageValues.TryParseSourceType(sourceType, out var parsedSourceType) ||
             !ConditionTriggerStorageValues.TryParseOperator(operatorValue, out var parsedOperator))
         {
@@ -829,12 +1062,12 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
         }
 
         ConditionValueType? valueType = null;
-        var valueTypeValue = ReadString(trigger.CriteriaJson, "valueType");
+        var valueTypeValue = ReadString(conditionObject, "valueType");
         if (!string.IsNullOrWhiteSpace(valueTypeValue))
         {
             if (!ConditionTriggerStorageValues.TryParseValueType(valueTypeValue, out var parsedValueType))
             {
-                diagnostic = "Condition criteria valueType is invalid.";
+                diagnostic = "Condition criteria value type is invalid.";
                 return false;
             }
 
@@ -842,29 +1075,55 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
         }
 
         var repeatMode = RepeatFiringMode.FalseToTrueTransition;
-        var repeatValue = ReadString(trigger.CriteriaJson, "repeatFiringMode");
+        var repeatValue = ReadString(conditionObject, "repeatFiringMode");
         if (!string.IsNullOrWhiteSpace(repeatValue) &&
             !ConditionTriggerStorageValues.TryParseRepeatFiringMode(repeatValue, out repeatMode))
         {
-            diagnostic = "Condition criteria repeatFiringMode is invalid.";
+            diagnostic = "Condition criteria repeat firing mode is invalid.";
             return false;
         }
 
         condition = new ConditionExpression(
             new ConditionTargetReference(
                 parsedSourceType,
-                ReadString(trigger.CriteriaJson, "metricName"),
-                ReadString(trigger.CriteriaJson, "entityType"),
-                ReadString(trigger.CriteriaJson, "fieldPath")),
+                ReadString(targetObject, "metricName"),
+                ReadString(targetObject, "entityType"),
+                ReadString(targetObject, "fieldPath")),
             parsedOperator,
             valueType,
-            trigger.CriteriaJson.TryGetValue("comparisonValue", out var comparisonValue) ? comparisonValue?.DeepClone() : null,
+            conditionObject.TryGetPropertyValue("comparisonValue", out var comparisonValue) ? comparisonValue?.DeepClone() : null,
             repeatMode);
-        return true;
+
+        var validationErrors = ConditionExpressionValidator.Validate(condition, "criteriaJson.condition");
+        if (validationErrors.Count == 0)
+        {
+            return true;
+        }
+
+        diagnostic = string.Join(
+            "; ",
+            validationErrors.SelectMany(pair => pair.Value.Select(message => $"{pair.Key}: {message}")));
+        condition = null!;
+        return false;
     }
 
-    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> json, string key) =>
-        json.TryGetValue(key, out var node) &&
+    private static bool TryGetNode(IReadOnlyDictionary<string, JsonNode?> json, string key, out JsonNode? node)
+    {
+        foreach (var pair in json)
+        {
+            if (string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                node = pair.Value;
+                return true;
+            }
+        }
+
+        node = null;
+        return false;
+    }
+
+    private static string? ReadString(JsonObject json, string key) =>
+        json.TryGetPropertyValue(key, out var node) &&
         node is JsonValue value &&
         value.TryGetValue<string>(out var text) &&
         !string.IsNullOrWhiteSpace(text)

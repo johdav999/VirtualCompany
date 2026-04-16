@@ -26,6 +26,7 @@ public sealed class Alert : ICompanyOwnedEntity
         IReadOnlyDictionary<string, JsonNode?> evidence,
         string correlationId,
         string fingerprint,
+        AlertStatus status = AlertStatus.Open,
         Guid? sourceAgentId = null,
         IReadOnlyDictionary<string, JsonNode?>? metadata = null)
     {
@@ -43,18 +44,20 @@ public sealed class Alert : ICompanyOwnedEntity
         CompanyId = companyId;
         Type = type;
         Severity = severity;
-        Status = AlertStatus.Open;
+        Status = status;
         Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
         Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
         Evidence = CloneRequiredEvidence(evidence);
         CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
-        Fingerprint = NormalizeRequired(fingerprint, nameof(fingerprint), FingerprintMaxLength);
+        Fingerprint = NormalizeFingerprint(fingerprint);
         SourceAgentId = sourceAgentId;
         OccurrenceCount = 1;
         Metadata = CloneNodes(metadata);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
         LastDetectedUtc = CreatedUtc;
+        ResolvedUtc = status == AlertStatus.Resolved ? CreatedUtc : null;
+        ClosedUtc = status == AlertStatus.Closed ? CreatedUtc : null;
     }
 
     public Guid Id { get; private set; }
@@ -126,6 +129,9 @@ public sealed class Alert : ICompanyOwnedEntity
         UpdatedUtc = DateTime.UtcNow;
         LastDetectedUtc = UpdatedUtc;
     }
+
+    public static string NormalizeFingerprint(string value) =>
+        NormalizeRequired(value, nameof(Fingerprint), FingerprintMaxLength).ToLowerInvariant();
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

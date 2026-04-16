@@ -304,14 +304,14 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
         var op = comparisonOperator.Trim().ToLowerInvariant();
         return op switch
         {
-            "eq" => (JsonNode.DeepEquals(current, comparison), null),
-            "neq" => (!JsonNode.DeepEquals(current, comparison), null),
+            "eq" => (ValuesEqual(current, comparison), null),
+            "neq" => (!ValuesEqual(current, comparison), null),
             "gt" => CompareOrdered(current, comparison, (left, right) => left > right),
             "gte" => CompareOrdered(current, comparison, (left, right) => left >= right),
             "lt" => CompareOrdered(current, comparison, (left, right) => left < right),
             "lte" => CompareOrdered(current, comparison, (left, right) => left <= right),
             "in" => comparison is JsonArray values
-                ? (values.Any(value => JsonNode.DeepEquals(current, value)), null)
+                ? (values.Any(value => value is not null && ValuesEqual(current, value)), null)
                 : (false, "The in operator requires an array comparison value."),
             "contains" => EvaluateContains(current, comparison),
             _ => (false, $"Escalation condition operator '{comparisonOperator}' is not supported.")
@@ -323,6 +323,11 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
         if (TryGetDecimal(current, out var currentNumber) && TryGetDecimal(comparison, out var comparisonNumber))
         {
             return (numericComparison(currentNumber, comparisonNumber), null);
+        }
+
+        if (TryGetBusinessOrdinal(current, out var currentOrdinal) && TryGetBusinessOrdinal(comparison, out var comparisonOrdinal))
+        {
+            return (numericComparison(currentOrdinal, comparisonOrdinal), null);
         }
 
         if (TryGetDateTimeOffset(current, out var currentDate) && TryGetDateTimeOffset(comparison, out var comparisonDate))
@@ -337,7 +342,7 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
     {
         if (current is JsonArray array)
         {
-            return (array.Any(value => JsonNode.DeepEquals(value, comparison)), null);
+            return (array.Any(value => value is not null && ValuesEqual(value, comparison)), null);
         }
 
         if (TryGetString(current, out var currentText) && TryGetString(comparison, out var comparisonText))
@@ -346,6 +351,27 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
         }
 
         return (false, "The contains operator requires a string or array current value.");
+    }
+
+    private static bool ValuesEqual(JsonNode current, JsonNode comparison)
+    {
+        if (TryGetString(current, out var currentText) && TryGetString(comparison, out var comparisonText))
+        {
+            return string.Equals(currentText, comparisonText, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return JsonNode.DeepEquals(current, comparison);
+    }
+
+    private static bool TryGetBusinessOrdinal(JsonNode? node, out decimal value)
+    {
+        value = 0;
+        if (!TryGetString(node, out var text))
+        {
+            return false;
+        }
+
+        return KnownBusinessOrdinals.TryGetValue(text.Trim(), out value);
     }
 
     private static JsonNode? ToJsonNode(object value) =>
@@ -403,6 +429,16 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
         output = input;
         return true;
     }
+
+    private static readonly IReadOnlyDictionary<string, decimal> KnownBusinessOrdinals =
+        new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["low"] = 1,
+            ["normal"] = 2,
+            ["medium"] = 2,
+            ["high"] = 3,
+            ["critical"] = 4
+        };
 
     private static void ValidateInput(EscalationEvaluationInput input)
     {

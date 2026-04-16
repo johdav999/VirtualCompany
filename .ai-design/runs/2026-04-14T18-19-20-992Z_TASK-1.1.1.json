@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.1.1",
+  "promptPath": ".ai-design/prompts/TASK-1.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:19:20.992Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-19-20-992Z_TASK-1.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-19-20-992Z_TASK-1.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:21:10.418Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "reignKey(\n                         name: \"FK_agent_task_creation_dedupe_agents_agent_id\",\n-                        column: x => x.agent_id,\n+                        columns: x => new { x.company_id, x.agent_id },\n                         principalTable: \"agents\",\n-                        principalColumn: \"id\",\n+                        principalColumns: new[] { \"company_id\", \"id\" },\n                         onDelete: ReferentialAction.NoAction);\n                     table.ForeignKey(\n                         name: \"FK_agent_task_creation_dedupe_companies_company_id\",\n@@ -174,10 +174,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                 table: \"agent_task_creation_dedupe\",\n                 columns: new[] { \"company_id\", \"trigger_source\", \"trigger_event_id\", \"correlation_id\" });\n \n-            migrationBuilder.CreateIndex(\n-                name: \"IX_agent_task_creation_dedupe_agent_id\",\n-                table: \"agent_task_creation_dedupe\",\n-                column: \"agent_id\");\n-\n             migrationBuilder.CreateIndex(\n                 name: \"IX_agent_task_creation_dedupe_task_id\",\n                 table: \"agent_task_creation_dedupe\",\ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 88c9422..d5a3ac0 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -38,7 +38,7 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(\"correlation-1\", mapped.CorrelationId);\n         Assert.Equal(\"Review inventory drift\", mapped.Title);\n         Assert.Equal(\"high\", mapped.Priority);\n-        Assert.Equal(\"agent\", mapped.InputPayload[\"originatingAgentId\"] is null ? null : \"agent\");\n+        Assert.Equal(agentId.ToString(\"N\"), mapped.InputPayload[\"originatingAgentId\"]!.GetValue<string>());\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "                name: \"FK_agent_task_creation_dedupe_agents_agent_id\",\n-                        column: x => x.agent_id,\n+                        columns: x => new { x.company_id, x.agent_id },\n                         principalTable: \"agents\",\n-                        principalColumn: \"id\",\n+                        principalColumns: new[] { \"company_id\", \"id\" },\n                         onDelete: ReferentialAction.NoAction);\n                     table.ForeignKey(\n                         name: \"FK_agent_task_creation_dedupe_companies_company_id\",\n@@ -174,10 +174,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations\n                 table: \"agent_task_creation_dedupe\",\n                 columns: new[] { \"company_id\", \"trigger_source\", \"trigger_event_id\", \"correlation_id\" });\n \n-            migrationBuilder.CreateIndex(\n-                name: \"IX_agent_task_creation_dedupe_agent_id\",\n-                table: \"agent_task_creation_dedupe\",\n-                column: \"agent_id\");\n-\n             migrationBuilder.CreateIndex(\n                 name: \"IX_agent_task_creation_dedupe_task_id\",\n                 table: \"agent_task_creation_dedupe\",\ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 88c9422..d5a3ac0 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -38,7 +38,7 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(\"correlation-1\", mapped.CorrelationId);\n         Assert.Equal(\"Review inventory drift\", mapped.Title);\n         Assert.Equal(\"high\", mapped.Priority);\n-        Assert.Equal(\"agent\", mapped.InputPayload[\"originatingAgentId\"] is null ? null : \"agent\");\n+        Assert.Equal(agentId.ToString(\"N\"), mapped.InputPayload[\"originatingAgentId\"]!.GetValue<string>());\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n78,222\n",
+  "verbosityMode": "summary"
+}

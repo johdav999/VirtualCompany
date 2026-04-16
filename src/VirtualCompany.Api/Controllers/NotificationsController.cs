@@ -239,8 +239,8 @@ public sealed class NotificationsController : ControllerBase
             TargetEntityType = approval.TargetEntityType,
             TargetEntityId = approval.TargetEntityId,
             Status = approval.Status,
-            RationaleSummary = TrimForMobile(approval.RationaleSummary, 220),
-            AffectedDataSummary = TrimForMobile(approval.AffectedDataSummary, 180),
+            RationaleSummary = TrimForMobile(approval.RationaleSummary, 220) ?? string.Empty,
+            AffectedDataSummary = TrimForMobile(approval.AffectedDataSummary, 180) ?? string.Empty,
             ThresholdSummary = string.IsNullOrWhiteSpace(approval.ThresholdSummary) ? null : TrimForMobile(approval.ThresholdSummary, 160),
             CurrentStep = ToMobileApprovalStep(approval.CurrentStep),
             CreatedAt = approval.CreatedAt

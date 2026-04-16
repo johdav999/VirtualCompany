@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-2.1.1",
+  "promptPath": ".ai-design/prompts/TASK-2.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:41:10.276Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-41-10-276Z_TASK-2.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-41-10-276Z_TASK-2.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:46:17.255Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "                 false),\n                 true,\n                 timestamp,\n                 \"level_2\"),\ndiff --git a/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs\nnew file mode 100644\nindex 0000000..e938bb3\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs\n@@ -0,0 +1,43 @@\n+using VirtualCompany.Application.Agents;\n+using VirtualCompany.Application.Orchestration;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class CommunicationStyleRuleCheckerTests\n+{\n+    [Fact]\n+    public void Check_passes_when_output_avoids_forbidden_rules()\n+    {\n+        var checker = new CommunicationStyleRuleChecker();\n+        var profile = CreateProfile();\n+\n+        var result = checker.Check(\"The next step is to verify the invoice and request approval.\", profile);\n+\n+        Assert.True(result.Passed);\n+        Assert.Empty(result.Violations);\n+        Assert.Empty(result.RuleIds);\n+    }\n+\n+    [Fact]\n+    public void Check_detects_forbidden_tone_marker()\n+    {\n+        var checker = new CommunicationStyleRuleChecker();\n+        var profile = CreateProfile();\n+\n+        var result = checker.Check(\"This is flippant and should not be sent.\", profile);\n+\n+        Assert.False(result.Passed);\n+        var violation = Assert.Single(result.Violations);\n+        Assert.Equal(\"forbidden_tone_rule\", violation.RuleType);\n+        Assert.Contains(\"flippant\", violation.Message, StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(violation.RuleId, result.RuleIds);\n+    }\n+\n+    private static AgentCommunicationProfileDto CreateProfile() =>\n+        new(\n+            \"professional\",\n+            \"reliable business assistant\",\n+            [\"Be concise\"],\n+            [\"Use business-appropriate language\"],\n+            [\"Do not use flippant\"],\n+            AgentCommunicationProfileSources.Explicit,\n+            false);\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "se),\n                 true,\n                 timestamp,\n                 \"level_2\"),\ndiff --git a/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs\nnew file mode 100644\nindex 0000000..e938bb3\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs\n@@ -0,0 +1,43 @@\n+using VirtualCompany.Application.Agents;\n+using VirtualCompany.Application.Orchestration;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class CommunicationStyleRuleCheckerTests\n+{\n+    [Fact]\n+    public void Check_passes_when_output_avoids_forbidden_rules()\n+    {\n+        var checker = new CommunicationStyleRuleChecker();\n+        var profile = CreateProfile();\n+\n+        var result = checker.Check(\"The next step is to verify the invoice and request approval.\", profile);\n+\n+        Assert.True(result.Passed);\n+        Assert.Empty(result.Violations);\n+        Assert.Empty(result.RuleIds);\n+    }\n+\n+    [Fact]\n+    public void Check_detects_forbidden_tone_marker()\n+    {\n+        var checker = new CommunicationStyleRuleChecker();\n+        var profile = CreateProfile();\n+\n+        var result = checker.Check(\"This is flippant and should not be sent.\", profile);\n+\n+        Assert.False(result.Passed);\n+        var violation = Assert.Single(result.Violations);\n+        Assert.Equal(\"forbidden_tone_rule\", violation.RuleType);\n+        Assert.Contains(\"flippant\", violation.Message, StringComparison.OrdinalIgnoreCase);\n+        Assert.Contains(violation.RuleId, result.RuleIds);\n+    }\n+\n+    private static AgentCommunicationProfileDto CreateProfile() =>\n+        new(\n+            \"professional\",\n+            \"reliable business assistant\",\n+            [\"Be concise\"],\n+            [\"Use business-appropriate language\"],\n+            [\"Do not use flippant\"],\n+            AgentCommunicationProfileSources.Explicit,\n+            false);\n+}\nEND_OF_PATCH\ntokens used\n111,241\n",
+  "verbosityMode": "summary"
+}

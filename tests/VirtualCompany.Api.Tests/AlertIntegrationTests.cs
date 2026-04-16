@@ -53,6 +53,34 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task Detection_deduplicates_normalized_fingerprint()
+    {
+        var seed = await SeedCompanyAsync();
+        using var client = CreateAuthenticatedClient();
+
+        var first = await client.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId}/alerts/detections",
+            CreatePayload(seed.CompanyId, "risk", "high", "open", "  FP-Normalized  ", seed.AgentId));
+        var second = await client.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId}/alerts/detections",
+            CreatePayload(seed.CompanyId, "risk", "high", "open", "fp-normalized", seed.AgentId));
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        var deduplicated = await second.Content.ReadFromJsonAsync<AlertMutationResponse>();
+        Assert.NotNull(deduplicated);
+        Assert.True(deduplicated!.Deduplicated);
+        Assert.Equal("fp-normalized", deduplicated.Alert.Fingerprint);
+
+        var list = await client.GetFromJsonAsync<AlertListResponse>(
+            $"/api/companies/{seed.CompanyId}/alerts?status=open&page=1&pageSize=10");
+
+        Assert.NotNull(list);
+        Assert.Single(list!.Items.Where(alert => alert.Fingerprint == "fp-normalized"));
+    }
+
+    [Fact]
     public async Task Alert_creation_accepts_required_classifications()
     {
         var seed = await SeedCompanyAsync();
@@ -93,6 +121,28 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task Query_without_filters_returns_only_current_tenant_page()
+    {
+        var seed = await SeedCompanyAsync();
+        using var client = CreateAuthenticatedClient();
+
+        await CreateAlertAsync(client, seed.CompanyId, "risk", "high", "open", "fp-tenant-page-1", seed.AgentId);
+        await CreateAlertAsync(client, seed.CompanyId, "anomaly", "medium", "open", "fp-tenant-page-2", seed.AgentId);
+        await CreateAlertAsync(client, seed.OtherCompanyId, "opportunity", "low", "open", "fp-other-tenant-page", null);
+
+        var list = await client.GetFromJsonAsync<AlertListResponse>(
+            $"/api/companies/{seed.CompanyId}/alerts?page=1&pageSize=10");
+
+        Assert.NotNull(list);
+        Assert.Equal(2, list!.TotalCount);
+        Assert.Equal(1, list.Page);
+        Assert.Equal(10, list.PageSize);
+        Assert.Equal(1, list.TotalPages);
+        Assert.Equal(2, list.Items.Count);
+        Assert.All(list.Items, alert => Assert.Equal(seed.CompanyId, alert.CompanyId));
+    }
+
+    [Fact]
     public async Task Query_supports_filters_pagination_and_tenant_scoping()
     {
         var seed = await SeedCompanyAsync();
@@ -120,6 +170,38 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
         Assert.Equal("Detection summary.", list.Items[0].Summary);
         Assert.NotEmpty(list.Items[0].Evidence);
         Assert.Equal("corr-fp-risk", list.Items[0].CorrelationId);
+    }
+
+    [Fact]
+    public async Task Create_alert_persists_requested_non_open_status_without_deduplicating()
+    {
+        var seed = await SeedCompanyAsync();
+        using var client = CreateAuthenticatedClient();
+
+        var open = await client.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId}/alerts",
+            CreatePayload(seed.CompanyId, "risk", "high", "open", "fp-status-create", seed.AgentId));
+        var resolved = await client.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId}/alerts",
+            CreatePayload(seed.CompanyId, "risk", "high", "resolved", "fp-status-create", seed.AgentId));
+
+        Assert.Equal(HttpStatusCode.Created, open.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, resolved.StatusCode);
+
+        var openAlert = await open.Content.ReadFromJsonAsync<AlertMutationResponse>();
+        var resolvedAlert = await resolved.Content.ReadFromJsonAsync<AlertMutationResponse>();
+
+        Assert.NotNull(openAlert);
+        Assert.NotNull(resolvedAlert);
+        Assert.NotEqual(openAlert!.Alert.Id, resolvedAlert!.Alert.Id);
+        Assert.Equal("resolved", resolvedAlert.Alert.Status);
+
+        var list = await client.GetFromJsonAsync<AlertListResponse>(
+            $"/api/companies/{seed.CompanyId}/alerts?status=resolved&page=1&pageSize=10");
+
+        Assert.NotNull(list);
+        var item = Assert.Single(list!.Items);
+        Assert.Equal(resolvedAlert.Alert.Id, item.Id);
     }
 
     [Theory]
@@ -246,6 +328,22 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
         Assert.NotEqual(created.Alert.Id, reopened.Alert.Id);
     }
 
+    [Fact]
+    public async Task Create_rejects_source_agent_from_another_company()
+    {
+        var seed = await SeedCompanyAsync();
+        using var client = CreateAuthenticatedClient();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/companies/{seed.OtherCompanyId}/alerts/detections",
+            CreatePayload(seed.OtherCompanyId, "risk", "high", "open", "fp-wrong-agent-company", seed.AgentId));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Contains("SourceAgentId", problem!.Errors.Keys);
+    }
+
     private HttpClient CreateAuthenticatedClient()
     {
         var client = _factory.CreateClient();
@@ -330,6 +428,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
         public string Summary { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string CorrelationId { get; set; } = string.Empty;
+        public string Fingerprint { get; set; } = string.Empty;
         public int OccurrenceCount { get; set; }
         public Dictionary<string, JsonElement> Evidence { get; set; } = [];
         public DateTime CreatedAt { get; set; }

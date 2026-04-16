@@ -1,0 +1,410 @@
+diff --git a/src/VirtualCompany.Application/Insights/InsightContracts.cs b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+index 5f7cf1a..4515ab2 100644
+--- a/src/VirtualCompany.Application/Insights/InsightContracts.cs
++++ b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+@@ -36,6 +36,15 @@ public sealed record ScoredInsightCandidate(
+     int PriorityScore,
+     ActionInsightPriority Priority);
+ 
++public sealed record ActionDeepLinkTarget(ActionInsightTargetType TargetType, Guid TargetId);
++
++public sealed record ActionDeepLink(
++    string Href,
++    ActionInsightTargetType TargetType,
++    Guid TargetId);
++
++public static class ActionDeepLinkRoutes
++{
++    public const string ApprovalDetail = "/approvals";
++    public const string TaskDetail = "/tasks";
++    public const string WorkflowInstanceDetail = "/workflows";
++    public const string Dashboard = "/dashboard";
++}
++
+ public interface IActionInsightService
+ {
+     Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken);
+@@ -51,9 +60,9 @@ public interface IInsightScoringService
+     IReadOnlyList<ScoredInsightCandidate> Prioritize(IEnumerable<InsightCandidate> candidates, DateTime nowUtc);
+ }
+ 
+-public interface IInsightDeepLinkBuilder
++public interface IActionDeepLinkResolver
+ {
+-    string Build(Guid companyId, ActionInsightTargetType targetType, Guid targetId);
++    ActionDeepLink Resolve(Guid companyId, ActionDeepLinkTarget target);
+ }
+ 
+ public sealed class DefaultInsightScoringService : IInsightScoringService
+@@ -75,10 +84,12 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+             .Select(candidate => Score(candidate, nowUtc))
+             .OrderByDescending(scored => scored.PriorityScore)
+             .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
++            // Equal priority uses immutable action identity fields so refreshes keep the same ordering.
+             .ThenBy(scored => scored.Candidate.CreatedUtc)
++            .ThenBy(scored => scored.Candidate.TargetId)
+             .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
+             .ToList();
+ 
+     private static int SourceWeight(ActionInsightType type) =>
+         type switch
+         {
+@@ -86,6 +97,7 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+             ActionInsightType.BlockedWorkflow => 50,
+             ActionInsightType.Risk => 45,
++            ActionInsightType.Task => 40,
+             ActionInsightType.Opportunity => 25,
+             _ => 0
+         };
+@@ -132,18 +144,26 @@ public sealed class DefaultInsightScoringService : IInsightScoringService
+     private static int OccurrenceWeight(int occurrenceCount) => Math.Clamp(Math.Max(occurrenceCount, 1) - 1, 0, 5);
+ }
+ 
+-public sealed class DefaultInsightDeepLinkBuilder : IInsightDeepLinkBuilder
++public sealed class DefaultActionDeepLinkResolver : IActionDeepLinkResolver
+ {
+-    public string Build(Guid companyId, ActionInsightTargetType targetType, Guid targetId)
++    public ActionDeepLink Resolve(Guid companyId, ActionDeepLinkTarget target)
+     {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (target.TargetId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetId is required.", nameof(target));
++        }
++
+         var companyQuery = $"companyId={companyId:D}";
+-        return targetType switch
++        var href = target.TargetType switch
+         {
+-            ActionInsightTargetType.Approval => $"/approvals?{companyQuery}&approvalId={targetId:D}",
+-            ActionInsightTargetType.Task => $"/tasks?{companyQuery}&taskId={targetId:D}",
+-            ActionInsightTargetType.Workflow => $"/workflows?{companyQuery}&workflowInstanceId={targetId:D}",
+-            ActionInsightTargetType.Alert => $"/dashboard?{companyQuery}&alertId={targetId:D}",
+-            _ => $"/dashboard?{companyQuery}"
++            ActionInsightTargetType.Approval => $"{ActionDeepLinkRoutes.ApprovalDetail}?{companyQuery}&approvalId={target.TargetId:D}",
++            ActionInsightTargetType.Task => $"{ActionDeepLinkRoutes.TaskDetail}?{companyQuery}&taskId={target.TargetId:D}",
++            ActionInsightTargetType.Workflow => $"{ActionDeepLinkRoutes.WorkflowInstanceDetail}?{companyQuery}&workflowInstanceId={target.TargetId:D}",
++            ActionInsightTargetType.Alert => $"{ActionDeepLinkRoutes.Dashboard}?{companyQuery}&alertId={target.TargetId:D}",
++            _ => $"{ActionDeepLinkRoutes.Dashboard}?{companyQuery}"
+         };
++
++        return new ActionDeepLink(href, target.TargetType, target.TargetId);
+     }
+ }
+ 
+diff --git a/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs b/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs
+index f99ee19..34dc7d7 100644
+--- a/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs
+@@ -6,7 +6,8 @@ public enum ActionInsightType
+     Approval = 1,
+     Risk = 2,
+     BlockedWorkflow = 3,
+-    Opportunity = 4
++    Opportunity = 4,
++    Task = 5
+ }
+ 
+ public enum ActionInsightPriority
+@@ -38,6 +39,7 @@ public static class ActionInsightTypeValues
+             ActionInsightType.Risk => "risk",
+             ActionInsightType.BlockedWorkflow => "blocked_workflow",
+             ActionInsightType.Opportunity => "opportunity",
++            ActionInsightType.Task => "task",
+             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported action insight type.")
+         };
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+index 8d17f61..8dc57fb 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+@@ -14,7 +14,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ICurrentUserAccessor _currentUserAccessor;
+     private readonly IInsightScoringService _scoringService;
+-    private readonly IInsightDeepLinkBuilder _deepLinkBuilder;
++    private readonly IActionDeepLinkResolver _deepLinkResolver;
+     private readonly TimeProvider _timeProvider;
+ 
+     public CompanyActionInsightService(
+@@ -23,14 +23,14 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         ICompanyContextAccessor companyContextAccessor,
+         ICurrentUserAccessor currentUserAccessor,
+         IInsightScoringService scoringService,
+-        IInsightDeepLinkBuilder deepLinkBuilder,
++        IActionDeepLinkResolver deepLinkResolver,
+         TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _companyContextAccessor = companyContextAccessor;
+         _currentUserAccessor = currentUserAccessor;
+         _scoringService = scoringService;
+-        _deepLinkBuilder = deepLinkBuilder;
++        _deepLinkResolver = deepLinkResolver;
+         _timeProvider = timeProvider;
+     }
+ 
+@@ -41,6 +41,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         var candidates = new List<InsightCandidate>();
+ 
+         candidates.AddRange(await GetPendingApprovalsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetTaskInsightsAsync(companyId, nowUtc, cancellationToken));
+         candidates.AddRange(await GetBlockedWorkflowsAsync(companyId, nowUtc, cancellationToken));
+         candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Risk, nowUtc, cancellationToken));
+         candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Opportunity, nowUtc, cancellationToken));
+@@ -130,6 +131,58 @@ public sealed class CompanyActionInsightService : IActionInsightService
+             .ToList();
+     }
+ 
++    private async Task<IReadOnlyList<InsightCandidate>> GetTaskInsightsAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var dueSoonUtc = nowUtc.AddHours(24);
++        var tasks = await _dbContext.WorkTasks
++            .Where(task =>
++                task.CompanyId == companyId &&
++                task.Status != WorkTaskStatus.Completed &&
++                task.Status != WorkTaskStatus.Failed &&
++                (task.Status == WorkTaskStatus.Blocked ||
++                 task.Status == WorkTaskStatus.AwaitingApproval ||
++                 (task.DueUtc.HasValue && task.DueUtc <= dueSoonUtc)))
++            .OrderBy(task => task.DueUtc ?? DateTime.MaxValue)
++            .ThenBy(task => task.CreatedUtc)
++            .Take(MaxCandidatesPerSource)
++            .Select(task => new
++            {
++                task.Id,
++                task.CompanyId,
++                task.Title,
++                task.Status,
++                task.Priority,
++                task.DueUtc,
++                task.CreatedUtc,
++                task.SourceLifecycleVersion,
++                Owner = task.AssignedAgent == null ? null : task.AssignedAgent.DisplayName
++            })
++            .ToListAsync(cancellationToken);
++
++        return tasks
++            .Select(task =>
++            {
++                var dueUtc = task.DueUtc ?? task.CreatedUtc.AddHours(24);
++                return new InsightCandidate(
++                    InsightKey.For(companyId, ActionInsightType.Task, task.Id, task.SourceLifecycleVersion),
++                    task.CompanyId,
++                    ActionInsightType.Task,
++                    "task",
++                    task.Id,
++                    ActionInsightTargetType.Task,
++                    task.Id,
++                    task.Title,
++                    ResolveTaskReason(task.Status, task.DueUtc, nowUtc),
++                    string.IsNullOrWhiteSpace(task.Owner) ? "Operations" : task.Owner,
++                    task.DueUtc,
++                    ResolveSlaState(dueUtc, nowUtc, TimeSpan.FromHours(4)),
++                    task.CreatedUtc,
++                    TaskPriorityScore(task.Priority));
++            })
++            .ToList();
++    }
++
+     private async Task<IReadOnlyList<InsightCandidate>> GetBlockedWorkflowsAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
+     {
+         var workflows = await _dbContext.WorkflowInstances
+@@ -235,6 +288,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+     {
+         var candidate = scored.Candidate;
+         var acknowledged = acknowledgments.TryGetValue(candidate.InsightKey, out var acknowledgedAt);
++        var deepLink = _deepLinkResolver.Resolve(candidate.CompanyId, new ActionDeepLinkTarget(candidate.TargetType, candidate.TargetId));
+ 
+         return new ActionQueueItemDto(
+             candidate.InsightKey,
+@@ -253,7 +307,7 @@ public sealed class CompanyActionInsightService : IActionInsightService
+             candidate.SlaState.ToStorageValue(),
+             scored.PriorityScore,
+             scored.Priority.ToStorageValue(),
+-            _deepLinkBuilder.Build(candidate.CompanyId, candidate.TargetType, candidate.TargetId),
++            deepLink.Href,
+             acknowledged,
+             acknowledged ? acknowledgedAt : null);
+     }
+@@ -266,6 +320,23 @@ public sealed class CompanyActionInsightService : IActionInsightService
+         return string.IsNullOrWhiteSpace(requiredRole) ? "Approver" : requiredRole.Trim();
+     }
+ 
++    private static string ResolveTaskReason(WorkTaskStatus status, DateTime? dueUtc, DateTime nowUtc) =>
++        status switch
++        {
++            WorkTaskStatus.Blocked => "Task is blocked and needs intervention.",
++            WorkTaskStatus.AwaitingApproval => "Task is waiting for an approval decision.",
++            _ when dueUtc.HasValue && dueUtc.Value <= nowUtc => "Task is past due.",
++            _ when dueUtc.HasValue => "Task is due soon.",
++            _ => "Task needs follow-up."
++        };
++
++    private static int TaskPriorityScore(WorkTaskPriority priority) =>
++        priority switch
++        {
++            WorkTaskPriority.Critical => 20,
++            WorkTaskPriority.High => 15,
++            WorkTaskPriority.Normal => 8,
++            _ => 2
++        };
++
+     private static DateTime CalculateAlertDueUtc(DateTime createdUtc, AlertSeverity severity, ActionInsightType insightType)
+     {
+         if (insightType == ActionInsightType.Opportunity)
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index f812f7c..05a8986 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -295,7 +295,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();
+         services.AddSingleton<IInsightScoringService, DefaultInsightScoringService>();
+-        services.AddSingleton<IInsightDeepLinkBuilder, DefaultInsightDeepLinkBuilder>();
++        services.AddSingleton<IActionDeepLinkResolver, DefaultActionDeepLinkResolver>();
+         services.AddScoped<IActionInsightService, CompanyActionInsightService>();
+         services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+diff --git a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+index 031ccf5..ff03950 100644
+--- a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+@@ -129,6 +129,31 @@ public sealed class ActionInsightApiClient
+             PriorityScore = 90,
+             Priority = "critical",
+             DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116"
++        },
++        new()
++        {
++            InsightKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0",
++            CompanyId = companyId,
++            Type = "task",
++            SourceEntityType = "task",
++            SourceEntityId = Guid.Parse("21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"),
++            TargetType = "task",
++            TargetId = Guid.Parse("21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"),
++            Title = "Resolve blocked fulfillment task",
++            Reason = "Task is blocked and needs intervention.",
++            Owner = "Operations",
++            DueUtc = DateTime.UtcNow.AddHours(4),
++            SlaState = "due_soon",
++            PriorityScore = 75,
++            Priority = "high",
++            DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"
++        },
++        new()
++        {
++            InsightKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0",
++            CompanyId = companyId,
++            Type = "blocked_workflow",
++            SourceEntityType = "workflow",
++            SourceEntityId = Guid.Parse("2cf1da39-93ad-4543-bdd2-3862eedec738"),
++            TargetType = "workflow",
++            TargetId = Guid.Parse("2cf1da39-93ad-4543-bdd2-3862eedec738"),
++            Title = "Fulfillment workflow",
++            Reason = "Workflow is blocked at step review.",
++            Owner = "Operations",
++            DueUtc = DateTime.UtcNow.AddHours(1),
++            SlaState = "due_soon",
++            PriorityScore = 85,
++            Priority = "high",
++            DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738"
+         }
+     ];
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+index c7400e1..b5f861f 100644
+--- a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+@@ -30,6 +30,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+ 
+         Assert.NotNull(items);
+         Assert.Contains(items!, item => item.Type == "approval");
++        Assert.Contains(items!, item => item.Type == "task");
+         Assert.Contains(items!, item => item.Type == "risk");
+         Assert.Contains(items!, item => item.Type == "blocked_workflow");
+         Assert.Contains(items!, item => item.Type == "opportunity");
+@@ -40,6 +41,21 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+             Assert.NotEmpty(item.Owner);
+             Assert.False(string.IsNullOrWhiteSpace(item.SlaState));
+             Assert.False(string.IsNullOrWhiteSpace(item.DeepLink));
++            Assert.Contains($"companyId={item.CompanyId:D}", item.DeepLink);
++        });
++    }
++
++    [Fact]
++    public async Task Queue_deep_links_are_resolved_for_tasks_workflows_and_approvals()
++    {
++        var seed = await SeedActionQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var items = await client.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++
++        Assert.Contains(items!, item => item.TargetType == "approval" && item.DeepLink == $"/approvals?companyId={seed.CompanyId:D}&approvalId={item.TargetId:D}");
++        Assert.Contains(items!, item => item.TargetType == "task" && item.DeepLink == $"/tasks?companyId={seed.CompanyId:D}&taskId={item.TargetId:D}");
++        Assert.Contains(items!, item => item.TargetType == "workflow" && item.DeepLink == $"/workflows?companyId={seed.CompanyId:D}&workflowInstanceId={item.TargetId:D}");
++    }
+         });
+     }
+ 
+@@ -111,6 +127,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
+                 "user",
+                 userId);
++            task.SetDueDate(DateTime.UtcNow.AddHours(2));
+             dbContext.WorkTasks.Add(task);
+ 
+             dbContext.ApprovalRequests.Add(ApprovalRequest.CreateForTarget(
+diff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+index 34d538b..48baef9 100644
+--- a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
++++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+@@ -7,7 +7,7 @@ namespace VirtualCompany.Api.Tests;
+ public sealed class InsightScoringTests
+ {
+     private readonly DefaultInsightScoringService _scoring = new();
+-    private readonly DefaultInsightDeepLinkBuilder _links = new();
++    private readonly DefaultActionDeepLinkResolver _links = new();
+ 
+     [Fact]
+     public void Breached_approval_scores_above_non_urgent_opportunity()
+@@ -49,16 +49,24 @@ public sealed class InsightScoringTests
+ 
+     [Theory]
+     [InlineData(ActionInsightTargetType.Approval, "/approvals?companyId=")]
+     [InlineData(ActionInsightTargetType.Task, "/tasks?companyId=")]
+     [InlineData(ActionInsightTargetType.Workflow, "/workflows?companyId=")]
+-    public void Deep_links_use_dashboard_routes(ActionInsightTargetType targetType, string routePrefix)
++    public void Deep_links_use_canonical_action_routes(ActionInsightTargetType targetType, string routePrefix)
+     {
+         var companyId = Guid.NewGuid();
+         var targetId = Guid.NewGuid();
+ 
+-        var link = _links.Build(companyId, targetType, targetId);
++        var link = _links.Resolve(companyId, new ActionDeepLinkTarget(targetType, targetId));
+ 
+-        Assert.StartsWith(routePrefix, link);
+-        Assert.Contains(companyId.ToString("D"), link);
+-        Assert.Contains(targetId.ToString("D"), link);
++        Assert.StartsWith(routePrefix, link.Href);
++        Assert.Equal(targetType, link.TargetType);
++        Assert.Equal(targetId, link.TargetId);
++        Assert.Contains(companyId.ToString("D"), link.Href);
++        Assert.Contains(targetId.ToString("D"), link.Href);
++    }
++
++    [Fact]
++    public void Insight_keys_are_stable_for_same_action_identity()
++    {
++        var companyId = Guid.NewGuid();
++        var sourceId = Guid.NewGuid();
++
++        Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));
+     }
+ 
+     private static InsightCandidate Candidate(
+END_OF_PATCH

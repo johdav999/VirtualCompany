@@ -333,6 +333,7 @@ public sealed class ConditionTriggerEvaluationService : IConditionTriggerEvaluat
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(command.Condition);
+        ConditionExpressionValidator.ValidateAndThrow(command.Condition);
 
         var currentValue = await ResolveCurrentValueAsync(command, cancellationToken);
         var latest = await _repository.GetLatestAsync(command.CompanyId, command.ConditionDefinitionId, command.WorkflowTriggerId, cancellationToken);

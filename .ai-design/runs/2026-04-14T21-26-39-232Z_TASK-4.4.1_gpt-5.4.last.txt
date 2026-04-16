@@ -1,0 +1,1257 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 2b49a77..8bb1f77 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -31,6 +31,20 @@ public enum BriefingSectionPriorityCategory
+     Critical = 4
+ }
+ 
++public enum BriefingDeliveryFrequency
++{
++    Daily = 1,
++    Weekly = 2,
++    DailyAndWeekly = 3
++}
++
++public enum BriefingPreferenceSource
++{
++    User = 1,
++    TenantDefault = 2,
++    SystemDefault = 3
++}
++
+ public enum BriefingLinkedEntityType
+ {
+     Task = 1,
+@@ -94,6 +108,96 @@ public static class CompanyBriefingTypeValues
+     }
+ }
+ 
++public static class BriefingPreferenceErrorCodes
++{
++    public const string InvalidDeliveryFrequency = "briefing_preferences.invalid_delivery_frequency";
++    public const string UnsupportedFocusArea = "briefing_preferences.unsupported_focus_area";
++    public const string InvalidPriorityThreshold = "briefing_preferences.invalid_priority_threshold";
++}
++
++public static class BriefingFocusAreaValues
++{
++    public const string Alerts = "alerts";
++    public const string PendingApprovals = "pending_approvals";
++    public const string KpiHighlights = "kpi_highlights";
++    public const string Anomalies = "anomalies";
++    public const string NotableAgentUpdates = "notable_agent_updates";
++
++    private static readonly IReadOnlySet<string> Supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++    {
++        Alerts,
++        PendingApprovals,
++        KpiHighlights,
++        Anomalies,
++        NotableAgentUpdates
++    };
++
++    public static IReadOnlyList<string> AllowedValues { get; } =
++        [Alerts, PendingApprovals, KpiHighlights, Anomalies, NotableAgentUpdates];
++
++    public static IReadOnlyList<string> NormalizeOrThrow(IEnumerable<string>? focusAreas)
++    {
++        var normalized = (focusAreas ?? AllowedValues)
++            .Where(value => !string.IsNullOrWhiteSpace(value))
++            .Select(value => value.Trim().ToLowerInvariant())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        if (normalized.Count == 0)
++        {
++            return AllowedValues;
++        }
++
++        var unsupported = normalized.Where(value => !Supported.Contains(value)).ToList();
++        if (unsupported.Count > 0)
++        {
++            throw new ArgumentOutOfRangeException(
++                nameof(focusAreas),
++                string.Join(", ", unsupported),
++                BriefingPreferenceErrorCodes.UnsupportedFocusArea);
++        }
++
++        return normalized;
++    }
++}
++
++public static class BriefingDeliveryFrequencyValues
++{
++    private static readonly IReadOnlyDictionary<BriefingDeliveryFrequency, string> Values = new Dictionary<BriefingDeliveryFrequency, string>
++    {
++        [BriefingDeliveryFrequency.Daily] = "daily",
++        [BriefingDeliveryFrequency.Weekly] = "weekly",
++        [BriefingDeliveryFrequency.DailyAndWeekly] = "daily_and_weekly"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BriefingDeliveryFrequency> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static IReadOnlyList<string> AllowedValues { get; } = ["daily", "weekly", "daily_and_weekly"];
++
++    public static string ToStorageValue(this BriefingDeliveryFrequency frequency) =>
++        Values.TryGetValue(frequency, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(frequency), frequency, BriefingPreferenceErrorCodes.InvalidDeliveryFrequency);
++
++    public static BriefingDeliveryFrequency Parse(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), value, BriefingPreferenceErrorCodes.InvalidDeliveryFrequency);
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out var frequency) ||
++               Enum.TryParse(trimmed, ignoreCase: true, out frequency) && Values.ContainsKey(frequency)
++            ? frequency
++            : throw new ArgumentOutOfRangeException(nameof(value), value, BriefingPreferenceErrorCodes.InvalidDeliveryFrequency);
++    }
++}
++
++public static class BriefingPreferenceSourceValues
++{
++    public static string ToStorageValue(this BriefingPreferenceSource source) =>
++        source == BriefingPreferenceSource.User ? "user" :
++        source == BriefingPreferenceSource.TenantDefault ? "tenant_default" :
++        source == BriefingPreferenceSource.SystemDefault ? "system_default" :
++        throw new ArgumentOutOfRangeException(nameof(source), source, "Unsupported briefing preference source.");
++}
++
+ public static class CompanyBriefingStatusValues
+ {
+     public static string ToStorageValue(this CompanyBriefingStatus status) =>
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 6d6f2fb..6a49ab7 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -27,6 +27,7 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+         string summaryBody,
+         IDictionary<string, JsonNode?>? structuredPayload,
+         IDictionary<string, JsonNode?>? sourceReferences,
++        IDictionary<string, JsonNode?>? preferenceSnapshot = null,
+         Guid? messageId = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -50,6 +51,7 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+         SummaryBody = NormalizeRequired(summaryBody, nameof(summaryBody), BodyMaxLength);
+         StructuredPayload = CloneNodes(structuredPayload);
+         SourceReferences = CloneNodes(sourceReferences);
++        PreferenceSnapshot = CloneNodes(preferenceSnapshot);
+         MessageId = messageId;
+         Status = CompanyBriefingStatus.Generated;
+         GeneratedUtc = DateTime.UtcNow;
+@@ -66,6 +68,7 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+     public string SummaryBody { get; private set; } = null!;
+     public Dictionary<string, JsonNode?> StructuredPayload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> SourceReferences { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> PreferenceSnapshot { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public CompanyBriefingStatus Status { get; private set; }
+     public Guid? MessageId { get; private set; }
+     public DateTime GeneratedUtc { get; private set; }
+@@ -519,6 +522,164 @@ public sealed class CompanyBriefingDeliveryPreference : ICompanyOwnedEntity
+     private static string? NormalizeOptional(string? value, string name, int maxLength) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= maxLength ? value.Trim() : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+ }
+ 
++public sealed class UserBriefingPreference : ICompanyOwnedEntity
++{
++    private UserBriefingPreference()
++    {
++    }
++
++    public UserBriefingPreference(
++        Guid id,
++        Guid companyId,
++        Guid userId,
++        BriefingDeliveryFrequency deliveryFrequency,
++        IEnumerable<string>? includedFocusAreas,
++        BriefingSectionPriorityCategory priorityThreshold)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        CreatedUtc = DateTime.UtcNow;
++        Update(deliveryFrequency, includedFocusAreas, priorityThreshold);
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public BriefingDeliveryFrequency DeliveryFrequency { get; private set; }
++    public List<string> IncludedFocusAreas { get; private set; } = [];
++    public BriefingSectionPriorityCategory PriorityThreshold { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++
++    public void Update(
++        BriefingDeliveryFrequency deliveryFrequency,
++        IEnumerable<string>? includedFocusAreas,
++        BriefingSectionPriorityCategory priorityThreshold)
++    {
++        EnsureValidThreshold(priorityThreshold);
++        DeliveryFrequency = deliveryFrequency;
++        IncludedFocusAreas = BriefingFocusAreaValues.NormalizeOrThrow(includedFocusAreas).ToList();
++        PriorityThreshold = priorityThreshold;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public BriefingPreferenceSnapshot ToSnapshot(BriefingPreferenceSource source) =>
++        new(CompanyId, UserId, source, DeliveryFrequency, IncludedFocusAreas, PriorityThreshold, Id, UpdatedUtc);
++
++    private static void EnsureValidThreshold(BriefingSectionPriorityCategory threshold)
++    {
++        if (!Enum.IsDefined(threshold) || threshold == 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(threshold), threshold, BriefingPreferenceErrorCodes.InvalidPriorityThreshold);
++        }
++    }
++}
++
++public sealed class TenantBriefingDefault : ICompanyOwnedEntity
++{
++    private TenantBriefingDefault()
++    {
++    }
++
++    public TenantBriefingDefault(
++        Guid id,
++        Guid companyId,
++        BriefingDeliveryFrequency deliveryFrequency,
++        IEnumerable<string>? includedFocusAreas,
++        BriefingSectionPriorityCategory priorityThreshold)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CreatedUtc = DateTime.UtcNow;
++        Update(deliveryFrequency, includedFocusAreas, priorityThreshold);
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public BriefingDeliveryFrequency DeliveryFrequency { get; private set; }
++    public List<string> IncludedFocusAreas { get; private set; } = [];
++    public BriefingSectionPriorityCategory PriorityThreshold { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    public void Update(
++        BriefingDeliveryFrequency deliveryFrequency,
++        IEnumerable<string>? includedFocusAreas,
++        BriefingSectionPriorityCategory priorityThreshold)
++    {
++        EnsureValidThreshold(priorityThreshold);
++        DeliveryFrequency = deliveryFrequency;
++        IncludedFocusAreas = BriefingFocusAreaValues.NormalizeOrThrow(includedFocusAreas).ToList();
++        PriorityThreshold = priorityThreshold;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public BriefingPreferenceSnapshot ToSnapshot(Guid userId, BriefingPreferenceSource source = BriefingPreferenceSource.TenantDefault) =>
++        new(CompanyId, userId, source, DeliveryFrequency, IncludedFocusAreas, PriorityThreshold, Id, UpdatedUtc);
++
++    public static BriefingPreferenceSnapshot CreateSystemDefault(Guid companyId, Guid userId) =>
++        new(
++            companyId,
++            userId,
++            BriefingPreferenceSource.SystemDefault,
++            BriefingDeliveryFrequency.DailyAndWeekly,
++            BriefingFocusAreaValues.AllowedValues,
++            BriefingSectionPriorityCategory.Informational,
++            null,
++            null);
++
++    private static void EnsureValidThreshold(BriefingSectionPriorityCategory threshold)
++    {
++        if (!Enum.IsDefined(threshold) || threshold == 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(threshold), threshold, BriefingPreferenceErrorCodes.InvalidPriorityThreshold);
++        }
++    }
++}
++
++public sealed record BriefingPreferenceSnapshot(
++    Guid CompanyId,
++    Guid UserId,
++    BriefingPreferenceSource Source,
++    BriefingDeliveryFrequency DeliveryFrequency,
++    IReadOnlyList<string> IncludedFocusAreas,
++    BriefingSectionPriorityCategory PriorityThreshold,
++    Guid? PreferenceId,
++    DateTime? PreferenceUpdatedUtc)
++{
++    public Dictionary<string, JsonNode?> ToMetadata() =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["source"] = JsonValue.Create(Source.ToStorageValue()),
++            ["deliveryFrequency"] = JsonValue.Create(DeliveryFrequency.ToStorageValue()),
++            ["includedFocusAreas"] = JsonSerializer.SerializeToNode(IncludedFocusAreas),
++            ["priorityThreshold"] = JsonValue.Create(PriorityThreshold.ToStorageValue()),
++            ["preferenceId"] = JsonValue.Create(PreferenceId),
++            ["preferenceUpdatedUtc"] = JsonValue.Create(PreferenceUpdatedUtc)
++        };
++}
++
+ public sealed class CompanyNotification : ICompanyOwnedEntity
+ {
+     private const int TitleMaxLength = 200;
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index e3e05ac..c9fc3ab 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -151,7 +151,8 @@ public sealed record CompanyBriefingDto(
+     Dictionary<string, JsonNode?> StructuredPayload,
+     IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
+     Guid? MessageId,
+-    DateTime GeneratedUtc)
++    DateTime GeneratedUtc,
++    Dictionary<string, JsonNode?> PreferenceSnapshot)
+ {
+     public string NarrativeText { get; init; } = SummaryBody;
+     public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
+@@ -176,6 +177,34 @@ public sealed record UpdateCompanyBriefingDeliveryPreferenceCommand(
+     TimeOnly? PreferredDeliveryTime = null,
+     string? PreferredTimezone = null);
+ 
++public sealed record BriefingPreferenceDto(
++    Guid CompanyId,
++    Guid UserId,
++    string DeliveryFrequency,
++    IReadOnlyList<string> IncludedFocusAreas,
++    string PriorityThreshold,
++    string Source,
++    DateTime? UpdatedUtc);
++
++public sealed record TenantBriefingDefaultDto(
++    Guid CompanyId,
++    string DeliveryFrequency,
++    IReadOnlyList<string> IncludedFocusAreas,
++    string PriorityThreshold,
++    DateTime? UpdatedUtc);
++
++public sealed record UpsertBriefingPreferenceCommand(
++    string DeliveryFrequency,
++    IReadOnlyList<string> IncludedFocusAreas,
++    string PriorityThreshold);
++
++public sealed record EffectiveBriefingPreferenceDto(
++    Guid CompanyId,
++    Guid UserId,
++    string Source,
++    string DeliveryFrequency,
++    IReadOnlyList<string> IncludedFocusAreas,
++    string PriorityThreshold,
++    DateTime? UpdatedUtc);
++
+ public sealed record BriefingSchedulerRunResult(
+     bool LockAcquired,
+     int CompaniesScanned,
+@@ -241,4 +270,24 @@ public interface ICompanyBriefingService
+     Task<CompanyBriefingDeliveryPreferenceDto> UpdateDeliveryPreferenceAsync(
+         Guid companyId,
+         UpdateCompanyBriefingDeliveryPreferenceCommand command,
++        CancellationToken cancellationToken);
++
++    Task<BriefingPreferenceDto?> GetUserBriefingPreferenceAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<BriefingPreferenceDto> UpsertUserBriefingPreferenceAsync(
++        Guid companyId,
++        UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken);
++
++    Task<TenantBriefingDefaultDto?> GetTenantBriefingDefaultAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<TenantBriefingDefaultDto> UpsertTenantBriefingDefaultAsync(
++        Guid companyId,
++        UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken);
++
++    Task<EffectiveBriefingPreferenceDto> ResolveEffectiveBriefingPreferenceAsync(
++        Guid companyId,
++        Guid userId,
+         CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index c109a31..8bfb7c8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -45,6 +45,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+     public DbSet<CompanyBriefingSeverityRule> CompanyBriefingSeverityRules => Set<CompanyBriefingSeverityRule>();
++    public DbSet<UserBriefingPreference> UserBriefingPreferences => Set<UserBriefingPreference>();
++    public DbSet<TenantBriefingDefault> TenantBriefingDefaults => Set<TenantBriefingDefault>();
+     public DbSet<CompanyBriefingUpdateJob> CompanyBriefingUpdateJobs => Set<CompanyBriefingUpdateJob>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+     public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
+@@ -108,6 +110,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is CompanyBriefingContribution ||
+                 entry.Entity is CompanyBriefingSeverityRule ||
+                 entry.Entity is CompanyBriefingUpdateJob ||
++                entry.Entity is UserBriefingPreference ||
++                entry.Entity is TenantBriefingDefault ||
+                 entry.Entity is Alert)
+             .Select(entry =>
+             {
+@@ -180,6 +184,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyBriefingSeverityRule>()
+             .HasQueryFilter(rule =>
+                 CurrentCompanyId.HasValue && rule.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<UserBriefingPreference>()
++            .HasQueryFilter(preference =>
++                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<TenantBriefingDefault>()
++            .HasQueryFilter(defaults =>
++                CurrentCompanyId.HasValue && defaults.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyNotification>()
+             .HasQueryFilter(notification =>
+                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index e2e2711..ab43c49 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1290,6 +1290,11 @@ internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<Com
+             .HasColumnName("source_refs_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.PreferenceSnapshot)
++            .HasColumnName("preference_snapshot_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.Property(x => x.Status)
+             .HasColumnName("status")
+@@ -1510,6 +1515,72 @@ internal sealed class CompanyBriefingDeliveryPreferenceConfiguration : IEntityTyp
+     }
+ }
+ 
++internal sealed class UserBriefingPreferenceConfiguration : IEntityTypeConfiguration<UserBriefingPreference>
++{
++    public void Configure(EntityTypeBuilder<UserBriefingPreference> builder)
++    {
++        builder.ToTable("user_briefing_preferences");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.DeliveryFrequency)
++            .HasColumnName("delivery_frequency")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingDeliveryFrequencyValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.IncludedFocusAreas)
++            .HasColumnName("included_focus_areas_json")
++            .HasJsonConversion<List<string>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
++        builder.Property(x => x.PriorityThreshold)
++            .HasColumnName("priority_threshold")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.UserId }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class TenantBriefingDefaultConfiguration : IEntityTypeConfiguration<TenantBriefingDefault>
++{
++    public void Configure(EntityTypeBuilder<TenantBriefingDefault> builder)
++    {
++        builder.ToTable("tenant_briefing_defaults");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DeliveryFrequency)
++            .HasColumnName("delivery_frequency")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingDeliveryFrequencyValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.IncludedFocusAreas)
++            .HasColumnName("included_focus_areas_json")
++            .HasJsonConversion<List<string>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
++            .IsRequired();
++        builder.Property(x => x.PriorityThreshold)
++            .HasColumnName("priority_threshold")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class CompanyNotificationConfiguration : IEntityTypeConfiguration<CompanyNotification>
+ {
+     private static CompanyNotificationType ParseCompanyNotificationType(string value) =>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 51d64f6..39bbdb4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -110,8 +110,12 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             return new CompanyBriefingGenerationResult(await ToDtoAsync(existing, cancellationToken), true, 0);
+         }
+ 
++        var ownerUserId = await ResolveOwnerUserIdAsync(companyId, cancellationToken);
++        var effectivePreferences = ownerUserId.HasValue
++            ? await ResolveEffectivePreferenceSnapshotAsync(companyId, ownerUserId.Value, cancellationToken)
++            : TenantBriefingDefault.CreateSystemDefault(companyId, Guid.Empty);
+         var aggregate = await ResolveAggregateForGenerationAsync(companyId, briefingType, window, cancellationToken);
++        aggregate = ApplyPreferences(aggregate, effectivePreferences);
+         var title = briefingType == CompanyBriefingType.Daily
+             ? $"Daily briefing for {company.Name}"
+             : $"Weekly executive summary for {company.Name}";
+@@ -119,7 +123,6 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var structuredPayload = BuildPayload(company.Name, briefingType, window, aggregate);
+         var sourceRefs = BuildSourceReferences(aggregate.SourceReferences);
+ 
+-        var ownerUserId = await ResolveOwnerUserIdAsync(companyId, cancellationToken);
+         var conversation = ownerUserId.HasValue
+             ? await ResolveBriefingConversationAsync(companyId, ownerUserId.Value, cancellationToken)
+             : null;
+@@ -151,6 +154,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             body,
+             structuredPayload,
+             sourceRefs,
++            BuildPreferenceSnapshot(effectivePreferences),
+             message?.Id);
+         _dbContext.CompanyBriefings.Add(briefing);
+         AddStructuredSections(companyId, briefing.Id, aggregate.StructuredSections);
+@@ -276,6 +280,99 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return ToDto(preference);
+     }
+ 
++    public async Task<BriefingPreferenceDto?> GetUserBriefingPreferenceAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var preference = await _dbContext.UserBriefingPreferences
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId, cancellationToken);
++
++        return preference is null ? null : ToDto(preference);
++    }
++
++    public async Task<BriefingPreferenceDto> UpsertUserBriefingPreferenceAsync(
++        Guid companyId,
++        UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        var membership = await RequireMembershipAsync(companyId, cancellationToken);
++        var parsed = ParsePreferenceCommand(command);
++        var preference = await _dbContext.UserBriefingPreferences
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == membership.UserId, cancellationToken);
++
++        if (preference is null)
++        {
++            preference = new UserBriefingPreference(Guid.NewGuid(), companyId, membership.UserId, parsed.Frequency, parsed.FocusAreas, parsed.PriorityThreshold);
++            _dbContext.UserBriefingPreferences.Add(preference);
++        }
++        else
++        {
++            preference.Update(parsed.Frequency, parsed.FocusAreas, parsed.PriorityThreshold);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(preference);
++    }
++
++    public async Task<TenantBriefingDefaultDto?> GetTenantBriefingDefaultAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var defaults = await _dbContext.TenantBriefingDefaults
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        return defaults is null ? null : ToDto(defaults);
++    }
++
++    public async Task<TenantBriefingDefaultDto> UpsertTenantBriefingDefaultAsync(
++        Guid companyId,
++        UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var parsed = ParsePreferenceCommand(command);
++        var defaults = await _dbContext.TenantBriefingDefaults
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        if (defaults is null)
++        {
++            defaults = new TenantBriefingDefault(Guid.NewGuid(), companyId, parsed.Frequency, parsed.FocusAreas, parsed.PriorityThreshold);
++            _dbContext.TenantBriefingDefaults.Add(defaults);
++        }
++        else
++        {
++            defaults.Update(parsed.Frequency, parsed.FocusAreas, parsed.PriorityThreshold);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return ToDto(defaults);
++    }
++
++    public async Task<EffectiveBriefingPreferenceDto> ResolveEffectiveBriefingPreferenceAsync(
++        Guid companyId,
++        Guid userId,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++        var snapshot = await ResolveEffectivePreferenceSnapshotAsync(companyId, userId, cancellationToken);
++        return new EffectiveBriefingPreferenceDto(
++            snapshot.CompanyId,
++            snapshot.UserId,
++            snapshot.Source.ToStorageValue(),
++            snapshot.DeliveryFrequency.ToStorageValue(),
++            snapshot.IncludedFocusAreas,
++            snapshot.PriorityThreshold.ToStorageValue(),
++            snapshot.PreferenceUpdatedUtc);
++    }
++
+     private async Task<bool> IsDueForScheduledGenerationAsync(DueCompany company, CompanyBriefingType briefingType, DateTime nowUtc, CancellationToken cancellationToken)
+     {
+         var activeUserIds = await _dbContext.CompanyMemberships
+@@ -736,6 +833,49 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             cancellationToken);
+ 
+     private static bool IsFresh(DateTime generatedUtc) =>
+         NormalizeUtc(generatedUtc) >= DateTime.UtcNow.Subtract(AggregateFreshnessWindow);
++
++    private static BriefingAggregate ApplyPreferences(BriefingAggregate aggregate, BriefingPreferenceSnapshot preferences)
++    {
++        var focusAreas = preferences.IncludedFocusAreas.ToHashSet(StringComparer.OrdinalIgnoreCase);
++        var threshold = preferences.PriorityThreshold;
++        var sections = aggregate.StructuredSections
++            .Where(section => focusAreas.Contains(NormalizeFocusArea(section.SectionType)) || focusAreas.Contains(NormalizeFocusArea(section.GroupingType)))
++            .Where(section => BriefingSectionPriorityCategoryValues.Parse(section.PriorityCategory) >= threshold)
++            .ToList();
++
++        var allowedKeys = sections.Select(x => x.SectionKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
++        var allowedContributionIds = sections
++            .SelectMany(section => section.Contributions.Select(contribution => contribution.SourceReference.EntityId))
++            .ToHashSet();
++
++        IReadOnlyList<BriefingItem> FilterItems(string area, IReadOnlyList<BriefingItem> items) =>
++            focusAreas.Contains(area)
++                ? items.Where(item => item.EntityId == Guid.Empty || allowedContributionIds.Count == 0 || allowedContributionIds.Contains(item.EntityId)).ToList()
++                : [];
++
++        var filtered = aggregate with
++        {
++            Approvals = FilterItems(BriefingFocusAreaValues.PendingApprovals, aggregate.Approvals),
++            KpiHighlights = FilterItems(BriefingFocusAreaValues.KpiHighlights, aggregate.KpiHighlights),
++            Alerts = FilterItems(BriefingFocusAreaValues.Alerts, aggregate.Alerts),
++            Anomalies = FilterItems(BriefingFocusAreaValues.Anomalies, aggregate.Anomalies),
++            AgentHighlights = FilterItems(BriefingFocusAreaValues.NotableAgentUpdates, aggregate.AgentHighlights),
++            StructuredSections = sections
++        };
++
++        var references = DeduplicateReferences(
++            filtered.Approvals.SelectMany(x => x.References)
++                .Concat(filtered.KpiHighlights.SelectMany(x => x.References))
++                .Concat(filtered.Alerts.SelectMany(x => x.References))
++                .Concat(filtered.Anomalies.SelectMany(x => x.References))
++                .Concat(filtered.AgentHighlights.SelectMany(x => x.References)));
++
++        return filtered with { SourceReferences = references };
++    }
++
++    private static string NormalizeFocusArea(string value) =>
++        value.Equals("approval", StringComparison.OrdinalIgnoreCase) ? BriefingFocusAreaValues.PendingApprovals :
++        value.Equals("agent_updates", StringComparison.OrdinalIgnoreCase) ? BriefingFocusAreaValues.NotableAgentUpdates :
++        value.Trim().ToLowerInvariant();
+ 
+     private static BriefingAggregate ToBriefingAggregate(BriefingAggregateResultDto aggregate)
+     {
+@@ -930,7 +1070,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions),
+             ["narrativeText"] = JsonValue.Create(aggregate.NarrativeText),
+             ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions),
+-            ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions)
++            ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions),
++            ["appliedFocusAreas"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections.Select(x => NormalizeFocusArea(x.SectionType)).Distinct(StringComparer.OrdinalIgnoreCase), SerializerOptions),
++            ["minimumPriorityThresholdApplied"] = JsonValue.Create(aggregate.StructuredSections.Select(x => x.PriorityCategory).DefaultIfEmpty(BriefingSectionPriorityCategory.Informational.ToStorageValue()).Min())
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
+@@ -938,6 +1080,16 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         {
+             ["items"] = JsonSerializer.SerializeToNode(references, SerializerOptions)
+         };
++
++    private static Dictionary<string, JsonNode?> BuildPreferenceSnapshot(BriefingPreferenceSnapshot snapshot)
++    {
++        var metadata = snapshot.ToMetadata();
++        metadata["fallbackApplied"] = JsonValue.Create(snapshot.Source is BriefingPreferenceSource.TenantDefault or BriefingPreferenceSource.SystemDefault);
++        metadata["appliedDefaultId"] = JsonValue.Create(snapshot.Source == BriefingPreferenceSource.TenantDefault ? snapshot.PreferenceId : null);
++        metadata["appliedDefaultUpdatedUtc"] = JsonValue.Create(snapshot.Source == BriefingPreferenceSource.TenantDefault ? snapshot.PreferenceUpdatedUtc : null);
++        return metadata;
++    }
+ 
+     private static Dictionary<string, JsonNode?> BuildSectionSourceReferences(AggregatedBriefingSectionDto section) =>
+         new(StringComparer.OrdinalIgnoreCase)
+@@ -1086,7 +1238,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             briefing.StructuredPayload.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
+             references,
+             briefing.MessageId,
+-            briefing.GeneratedUtc)
++            briefing.GeneratedUtc,
++            briefing.PreferenceSnapshot.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase))
+         {
+             NarrativeText = narrativeText,
+             StructuredSections = structuredSections,
+@@ -1176,6 +1329,62 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+     private static CompanyBriefingDeliveryPreferenceDto ToDto(CompanyBriefingDeliveryPreference preference) =>
+         new(preference.CompanyId, preference.UserId, preference.InAppEnabled, preference.MobileEnabled, preference.DailyEnabled, preference.WeeklyEnabled, preference.PreferredDeliveryTime, preference.PreferredTimezone, preference.UpdatedUtc);
++
++    private async Task<BriefingPreferenceSnapshot> ResolveEffectivePreferenceSnapshotAsync(Guid companyId, Guid userId, CancellationToken cancellationToken)
++    {
++        var userPreference = await _dbContext.UserBriefingPreferences
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == userId, cancellationToken);
++        if (userPreference is not null)
++        {
++            return userPreference.ToSnapshot(BriefingPreferenceSource.User);
++        }
++
++        var tenantDefault = await _dbContext.TenantBriefingDefaults
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++        return tenantDefault is null
++            ? TenantBriefingDefault.CreateSystemDefault(companyId, userId)
++            : tenantDefault.ToSnapshot(userId);
++    }
++
++    private static ParsedBriefingPreferenceCommand ParsePreferenceCommand(UpsertBriefingPreferenceCommand command)
++    {
++        try
++        {
++            var frequency = BriefingDeliveryFrequencyValues.Parse(command.DeliveryFrequency);
++            var focusAreas = BriefingFocusAreaValues.NormalizeOrThrow(command.IncludedFocusAreas);
++            var threshold = BriefingSectionPriorityCategoryValues.Parse(command.PriorityThreshold);
++            return new ParsedBriefingPreferenceCommand(frequency, focusAreas, threshold);
++        }
++        catch (ArgumentOutOfRangeException ex) when (ex.Message.Contains(BriefingPreferenceErrorCodes.UnsupportedFocusArea, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.IncludedFocusAreas)] = [BriefingPreferenceErrorCodes.UnsupportedFocusArea]
++            });
++        }
++        catch (ArgumentOutOfRangeException ex) when (ex.Message.Contains(BriefingPreferenceErrorCodes.InvalidDeliveryFrequency, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.DeliveryFrequency)] = [BriefingPreferenceErrorCodes.InvalidDeliveryFrequency]
++            });
++        }
++        catch (ArgumentOutOfRangeException)
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.PriorityThreshold)] = [BriefingPreferenceErrorCodes.InvalidPriorityThreshold]
++            });
++        }
++    }
++
++    private static BriefingPreferenceDto ToDto(UserBriefingPreference preference) =>
++        new(preference.CompanyId, preference.UserId, preference.DeliveryFrequency.ToStorageValue(), preference.IncludedFocusAreas, preference.PriorityThreshold.ToStorageValue(), BriefingPreferenceSource.User.ToStorageValue(), preference.UpdatedUtc);
++
++    private static TenantBriefingDefaultDto ToDto(TenantBriefingDefault defaults) =>
++        new(defaults.CompanyId, defaults.DeliveryFrequency.ToStorageValue(), defaults.IncludedFocusAreas, defaults.PriorityThreshold.ToStorageValue(), defaults.UpdatedUtc);
+ 
+     private static DateTime NormalizeUtc(DateTime value) =>
+         value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+@@ -1540,6 +1749,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         string? RuleCode);
+     private sealed record BriefingPriorityResolution(BriefingSectionPriorityCategory Category, int Score, string? RuleCode);
++    private sealed record ParsedBriefingPreferenceCommand(BriefingDeliveryFrequency Frequency, IReadOnlyList<string> FocusAreas, BriefingSectionPriorityCategory PriorityThreshold);
+ 
+     private static readonly IReadOnlyList<BriefingSeverityRuleProjection> DefaultSeverityRules =
+     [
+diff --git a/src/VirtualCompany.Api/Controllers/BriefingsController.cs b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+index 006b8ce..e91d438 100644
+--- a/src/VirtualCompany.Api/Controllers/BriefingsController.cs
++++ b/src/VirtualCompany.Api/Controllers/BriefingsController.cs
+@@ -122,6 +122,64 @@ public sealed class BriefingsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("preferences/me")]
++    public async Task<ActionResult<BriefingPreferenceDto?>> GetUserPreferencesAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.GetUserBriefingPreferenceAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("preferences/me")]
++    public async Task<ActionResult<BriefingPreferenceDto>> UpsertUserPreferencesAsync(
++        Guid companyId,
++        [FromBody] UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.UpsertUserBriefingPreferenceAsync(companyId, command, cancellationToken));
++        }
++        catch (BriefingValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("tenant-defaults")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<TenantBriefingDefaultDto?>> GetTenantDefaultsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.GetTenantBriefingDefaultAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPut("tenant-defaults")]
++    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++    public async Task<ActionResult<TenantBriefingDefaultDto>> UpsertTenantDefaultsAsync(
++        Guid companyId,
++        [FromBody] UpsertBriefingPreferenceCommand command,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _briefingService.UpsertTenantBriefingDefaultAsync(companyId, command, cancellationToken));
++        }
++        catch (BriefingValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     private static string TrimForMobile(string value, int maxLength) =>
+         value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415100000_AddBriefingPreferences.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415100000_AddBriefingPreferences.cs
+new file mode 100644
+index 0000000..3ce4dd7
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415100000_AddBriefingPreferences.cs
+@@ -0,0 +1,142 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260415100000_AddBriefingPreferences")]
++public partial class AddBriefingPreferences : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonObjectDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var jsonArrayDefault = isPostgres ? "'[]'::jsonb" : "N'[]'";
++
++        migrationBuilder.AddColumn<string>(
++            name: "preference_snapshot_json",
++            table: "company_briefings",
++            type: jsonType,
++            nullable: false,
++            defaultValueSql: jsonObjectDefault);
++
++        migrationBuilder.CreateTable(
++            name: "tenant_briefing_defaults",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                delivery_frequency = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                included_focus_areas_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonArrayDefault),
++                priority_threshold = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_tenant_briefing_defaults", x => x.id);
++                table.ForeignKey(
++                    "FK_tenant_briefing_defaults_companies_company_id",
++                    x => x.company_id,
++                    "companies",
++                    "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "user_briefing_preferences",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                user_id = table.Column<Guid>(type: guidType, nullable: false),
++                delivery_frequency = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                included_focus_areas_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonArrayDefault),
++                priority_threshold = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_user_briefing_preferences", x => x.id);
++                table.ForeignKey(
++                    "FK_user_briefing_preferences_companies_company_id",
++                    x => x.company_id,
++                    "companies",
++                    "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    "FK_user_briefing_preferences_users_user_id",
++                    x => x.user_id,
++                    "users",
++                    "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_tenant_briefing_defaults_company_id",
++            table: "tenant_briefing_defaults",
++            column: "company_id",
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_user_briefing_preferences_company_id_user_id",
++            table: "user_briefing_preferences",
++            columns: new[] { "company_id", "user_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_user_briefing_preferences_user_id",
++            table: "user_briefing_preferences",
++            column: "user_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "tenant_briefing_defaults");
++        migrationBuilder.DropTable(name: "user_briefing_preferences");
++        migrationBuilder.DropColumn(name: "preference_snapshot_json", table: "company_briefings");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs
+new file mode 100644
+index 0000000..90cf14d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs
+@@ -0,0 +1,213 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public BriefingPreferenceIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Authenticated_user_can_save_and_fetch_preferences()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        using var client = CreateAuthenticatedClient();
++
++        var put = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "daily",
++            includedFocusAreas = new[] { "alerts", "anomalies" },
++            priorityThreshold = "high"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
++        var get = await client.GetAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me");
++        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
++        var preference = await get.Content.ReadFromJsonAsync<BriefingPreferenceResponse>();
++
++        Assert.NotNull(preference);
++        Assert.Equal(seed.CompanyId, preference!.CompanyId);
++        Assert.Equal(seed.UserId, preference.UserId);
++        Assert.Equal("daily", preference.DeliveryFrequency);
++        Assert.Equal(["alerts", "anomalies"], preference.IncludedFocusAreas);
++        Assert.Equal("high", preference.PriorityThreshold);
++    }
++
++    [Fact]
++    public async Task Invalid_focus_area_returns_descriptive_4xx_error()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "daily",
++            includedFocusAreas = new[] { "sales_gossip" },
++            priorityThreshold = "medium"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.Contains("briefing_preferences.unsupported_focus_area", problem!.Errors.SelectMany(x => x.Value));
++    }
++
++    [Fact]
++    public async Task Invalid_delivery_frequency_returns_descriptive_4xx_error()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "hourly",
++            includedFocusAreas = new[] { "alerts" },
++            priorityThreshold = "medium"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.Contains("briefing_preferences.invalid_delivery_frequency", problem!.Errors.SelectMany(x => x.Value));
++    }
++
++    [Fact]
++    public async Task Tenant_defaults_require_admin_authorization()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Employee);
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/tenant-defaults", new
++        {
++            deliveryFrequency = "weekly",
++            includedFocusAreas = new[] { "alerts" },
++            priorityThreshold = "critical"
++        });
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Tenant_default_fallback_is_recorded_and_filters_next_generation()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var defaults = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/tenant-defaults", new
++        {
++            deliveryFrequency = "daily_and_weekly",
++            includedFocusAreas = new[] { "alerts" },
++            priorityThreshold = "critical"
++        });
++        Assert.Equal(HttpStatusCode.OK, defaults.StatusCode);
++
++        var generated = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12),
++            force = true
++        });
++
++        Assert.Equal(HttpStatusCode.OK, generated.StatusCode);
++        var result = await generated.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.All(result!.Briefing.StructuredSections, section =>
++        {
++            Assert.Equal("alerts", section.SectionType);
++            Assert.Equal("critical", section.PriorityCategory);
++        });
++        Assert.Equal("tenant_default", result.Briefing.PreferenceSnapshot["source"].GetString());
++        Assert.True(result.Briefing.PreferenceSnapshot["fallbackApplied"].GetBoolean());
++    }
++
++    [Fact]
++    public async Task User_preference_update_affects_next_generated_briefing()
++    {
++        var seed = await SeedBriefingCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var firstPreference = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "daily_and_weekly",
++            includedFocusAreas = new[] { "alerts" },
++            priorityThreshold = "critical"
++        });
++        Assert.Equal(HttpStatusCode.OK, firstPreference.StatusCode);
++
++        var first = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "daily_briefing",
++            nowUtc = DateTime.UtcNow.Date.AddDays(1).AddHours(12),
++            force = true
++        });
++        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
++
++        var secondPreference = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "daily_and_weekly",
++            includedFocusAreas = new[] { "anomalies" },
++            priorityThreshold = "high"
++        });
++        Assert.Equal(HttpStatusCode.OK, secondPreference.StatusCode);
++
++        var second = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/generate", new
++        {
++            briefingType = "weekly_summary",
++            nowUtc = DateTime.UtcNow.Date.AddDays(8).AddHours(12),
++            force = true
++        });
++        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
++        var result = await second.Content.ReadFromJsonAsync<BriefingGenerationResponse>();
++
++        Assert.NotNull(result);
++        Assert.All(result!.Briefing.StructuredSections, section => Assert.Equal("anomalies", section.SectionType));
++        Assert.Equal("user", result.Briefing.PreferenceSnapshot["source"].GetString());
++    }
++
++    private HttpClient CreateAuthenticatedClient() =>
++        _factory.CreateClient().WithDevUser("founder");
++
++    private async Task<CompanySeed> SeedCompanyAsync(CompanyMembershipRole role)
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Preference Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, role, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return new CompanySeed(companyId, userId);
++    }
++
++    private async Task<CompanySeed> SeedBriefingCompanyAsync()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        var agentId = Guid.NewGuid();
++        var now = DateTime.UtcNow;
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Agents.Add(new Agent(agentId, seed.CompanyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++            var criticalAlert = new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical, "Critical margin risk", "Margin risk needs attention.", [], "pref-critical-alert", $"pref-critical-alert:{seed.CompanyId:N}", AlertStatus.Open);
++            dbContext.Alerts.Add(criticalAlert);
++            var blockedTask = new WorkTask(Guid.NewGuid(), seed.CompanyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", seed.UserId);
++            blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
++            blockedTask.SetDueDate(now.AddDays(-2));
++            dbContext.WorkTasks.Add(blockedTask);
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private sealed record CompanySeed(Guid CompanyId, Guid UserId);
++
++    private sealed class BriefingPreferenceResponse
++    {
++        public Guid CompanyId { get; set; }
++        public Guid UserId { get; set; }
++        public string DeliveryFrequency { get; set; } = string.Empty;
++        public List<string> IncludedFocusAreas { get; set; } = [];
++        public string PriorityThreshold { get; set; } = string.Empty;
++    }
++
++    private sealed class BriefingGenerationResponse
++    {
++        public CompanyBriefingResponse Briefing { get; set; } = new();
++    }
++
++    private sealed class CompanyBriefingResponse
++    {
++        public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
++        public Dictionary<string, JsonElement> PreferenceSnapshot { get; set; } = [];
++    }
++
++    private sealed class AggregatedBriefingSectionResponse
++    {
++        public string SectionType { get; set; } = string.Empty;
++        public string PriorityCategory { get; set; } = string.Empty;
++    }
++
++    private sealed class ValidationProblemResponse
++    {
++        public Dictionary<string, string[]> Errors { get; set; } = [];
++    }
++}
+END_OF_PATCH

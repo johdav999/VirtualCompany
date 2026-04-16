@@ -1,0 +1,330 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -438,7 +438,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             Metadata = CloneNodes(workflowEvent.Metadata)
+         };
+ 
+-        var triggeredDefinitions = await _dbContext.WorkflowTriggers
++        var candidateTriggers = await _dbContext.WorkflowTriggers
+             .IgnoreQueryFilters()
+             .Include(x => x.Definition)
+             .Where(x =>
+@@ -452,8 +452,27 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             .ThenByDescending(x => x.Definition.Version)
+             .ToListAsync(cancellationToken);
+ 
++        var triggeredDefinitions = candidateTriggers
++            .Where(x => MatchesPlatformEventCriteria(x.CriteriaJson, normalizedEvent))
++            .ToList();
++
++        _logger.LogInformation(
++            "Received platform event {EventType} with id {EventId}, correlation {CorrelationId}, and source {SourceEntityType}/{SourceEntityId} for company {CompanyId}.",
++            normalizedEvent.EventType,
++            normalizedEvent.EventId,
++            normalizedEvent.CorrelationId,
++            normalizedEvent.SourceEntityType,
++            normalizedEvent.SourceEntityId,
++            normalizedEvent.CompanyId);
++        _logger.LogInformation(
++            "Matched {MatchedTriggerCount} enabled workflow trigger(s) out of {CandidateTriggerCount} candidate(s) for platform event {EventType} with id {EventId} in company {CompanyId}.",
++            triggeredDefinitions.Count,
++            candidateTriggers.Count,
++            normalizedEvent.EventType,
++            normalizedEvent.EventId,
++            normalizedEvent.CompanyId);
++
+         var started = new List<WorkflowInstanceDto>();
+-        foreach (var trigger in triggeredDefinitions
++        foreach (var trigger in triggeredDefinitions
+             .GroupBy(x => x.Definition.Code, StringComparer.OrdinalIgnoreCase)
+             .Select(group => group.OrderByDescending(x => x.Definition.Version).First()))
+         {
+@@ -1265,6 +1284,113 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         MatchesConfiguredValue(definition.DefinitionJson, "event", eventName) ||
+         MatchesConfiguredValue(definition.DefinitionJson, "trigger", eventName);
+ 
++    private static bool MatchesPlatformEventCriteria(
++        IReadOnlyDictionary<string, JsonNode?> criteriaJson,
++        PlatformEventEnvelope workflowEvent)
++    {
++        if (criteriaJson.Count == 0)
++        {
++            return true;
++        }
++
++        foreach (var criterion in criteriaJson)
++        {
++            if (criterion.Value is null)
++            {
++                continue;
++            }
++
++            if (!MatchesPlatformEventCriterion(criterion.Key, criterion.Value, workflowEvent))
++            {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    private static bool MatchesPlatformEventCriterion(
++        string key,
++        JsonNode expected,
++        PlatformEventEnvelope workflowEvent)
++    {
++        if (string.IsNullOrWhiteSpace(key))
++        {
++            return true;
++        }
++
++        var normalizedKey = key.Trim();
++        if (string.Equals(normalizedKey, "eventId", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.EventId);
++        }
++
++        if (string.Equals(normalizedKey, "eventType", StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(normalizedKey, "eventName", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.EventType);
++        }
++
++        if (string.Equals(normalizedKey, "companyId", StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(normalizedKey, "tenantId", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.CompanyId.ToString("N")) ||
++                MatchesScalar(expected, workflowEvent.CompanyId.ToString("D"));
++        }
++
++        if (string.Equals(normalizedKey, "correlationId", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.CorrelationId);
++        }
++
++        if (string.Equals(normalizedKey, "sourceEntityType", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.SourceEntityType);
++        }
++
++        if (string.Equals(normalizedKey, "sourceEntityId", StringComparison.OrdinalIgnoreCase))
++        {
++            return MatchesScalar(expected, workflowEvent.SourceEntityId);
++        }
++
++        if (string.Equals(normalizedKey, "metadata", StringComparison.OrdinalIgnoreCase))
++        {
++            return expected is JsonObject metadataCriteria &&
++                metadataCriteria.All(pair =>
++                    workflowEvent.Metadata.TryGetValue(pair.Key, out var actual) &&
++                    MatchesNode(pair.Value, actual));
++        }
++
++        const string metadataDotPrefix = "metadata.";
++        const string metadataColonPrefix = "metadata:";
++        if (normalizedKey.StartsWith(metadataDotPrefix, StringComparison.OrdinalIgnoreCase) ||
++            normalizedKey.StartsWith(metadataColonPrefix, StringComparison.OrdinalIgnoreCase))
++        {
++            var metadataKey = normalizedKey[(normalizedKey.IndexOfAny(['.', ':']) + 1)..];
++            return workflowEvent.Metadata.TryGetValue(metadataKey, out var actual) &&
++                MatchesNode(expected, actual);
++        }
++
++        // Unqualified criteria keys are treated as metadata filters for compact trigger definitions.
++        return workflowEvent.Metadata.TryGetValue(normalizedKey, out var metadataValue) &&
++            MatchesNode(expected, metadataValue);
++    }
++
++    private static bool MatchesScalar(JsonNode expected, string actual) =>
++        MatchesNode(expected, JsonValue.Create(actual));
++
++    private static bool MatchesNode(JsonNode? expected, JsonNode? actual)
++    {
++        if (expected is null)
++        {
++            return true;
++        }
++
++        if (actual is null)
++        {
++            return false;
++        }
++
++        if (expected is JsonArray anyOf)
++        {
++            return anyOf.Any(item => MatchesNode(item, actual));
++        }
++
++        return string.Equals(JsonScalarComparisonValue(expected), JsonScalarComparisonValue(actual), StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(expected.ToJsonString(), actual.ToJsonString(), StringComparison.Ordinal);
++    }
++
++    private static string JsonScalarComparisonValue(JsonNode node) =>
++        node is JsonValue value && value.TryGetValue<string>(out var text)
++            ? text.Trim()
++            : node.ToJsonString();
++
+     private static bool MatchesConfiguredValue(Dictionary<string, JsonNode?> definitionJson, string sectionName, string value)
+     {
+         if (!definitionJson.TryGetValue(sectionName, out var node) || node is null)
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -61,6 +61,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         var seed = await SeedTwoMembershipsAsync();
+         var enabledDefinitionId = Guid.NewGuid();
+         var disabledDefinitionId = Guid.NewGuid();
++        var filteredDefinitionId = Guid.NewGuid();
+         var otherDefinitionId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+@@ -83,6 +84,15 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+                 WorkflowTriggerType.Event,
+                 1,
+                 ValidDefinition("disabled-step")));
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                filteredDefinitionId,
++                seed.CompanyId,
++                "task-created-filtered",
++                "Task created filtered",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("filtered-step")));
+             dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                 otherDefinitionId,
+                 seed.OtherCompanyId,
+@@ -99,6 +109,17 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+                 disabledDefinitionId,
+                 SupportedPlatformEventTypeRegistry.TaskCreated,
+                 isEnabled: false));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                filteredDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskCreated,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["sourceEntityType"] = JsonValue.Create("work_task"),
++                    ["metadata"] = new JsonObject
++                    {
++                        ["source"] = JsonValue.Create("does-not-match")
++                    }
++                }));
+             dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
+                 Guid.NewGuid(),
+                 seed.OtherCompanyId,
+@@ -116,7 +137,8 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+ 
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+         var allStarted = await dbContext.WorkflowInstances.IgnoreQueryFilters().Where(x => x.TriggerRef == "evt-task-created-1").ToListAsync();
+-        Assert.Single(allStarted);
++        var startedInstance = Assert.Single(allStarted);
++        Assert.Equal(enabledDefinitionId, startedInstance.DefinitionId);
+     }
+ 
+     [Fact]
+@@ -227,6 +249,63 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         Assert.Equal(1, await dbContext.WorkflowInstances.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.OtherCompanyId && x.TriggerRef == eventId));
+     }
+ 
++    [Fact]
++    public async Task Event_trigger_criteria_filters_source_and_metadata_before_starting_workflow()
++    {
++        var seed = await SeedMembershipAsync("event-trigger-criteria", "event-trigger-criteria@example.com", "Event Trigger Criteria");
++        var matchingDefinitionId = Guid.NewGuid();
++        var nonMatchingDefinitionId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                matchingDefinitionId,
++                seed.CompanyId,
++                "task-updated-matching-criteria",
++                "Task updated matching criteria",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("matching-criteria-step")));
++            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++                nonMatchingDefinitionId,
++                seed.CompanyId,
++                "task-updated-nonmatching-criteria",
++                "Task updated nonmatching criteria",
++                "Operations",
++                WorkflowTriggerType.Event,
++                1,
++                ValidDefinition("nonmatching-criteria-step")));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                matchingDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskUpdated,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["sourceEntityType"] = JsonValue.Create("work_task"),
++                    ["metadata.status"] = JsonValue.Create("done")
++                }));
++            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
++                Guid.NewGuid(),
++                seed.CompanyId,
++                nonMatchingDefinitionId,
++                SupportedPlatformEventTypeRegistry.TaskUpdated,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["sourceEntityType"] = JsonValue.Create("work_task"),
++                    ["metadata.status"] = JsonValue.Create("blocked")
++                }));
++            return Task.CompletedTask;
++        });
++
++        await using var scope = _factory.Services.CreateAsyncScope();
++        var eventTriggers = scope.ServiceProvider.GetRequiredService<IInternalWorkflowEventTriggerService>();
++        var envelope = BuildEnvelope(seed.CompanyId, "evt-task-updated-criteria-1", SupportedPlatformEventTypeRegistry.TaskUpdated, metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["source"] = JsonValue.Create("test"),
++            ["status"] = JsonValue.Create("done")
++        });
++
++        var result = await eventTriggers.HandleAsync(envelope, CancellationToken.None);
++
++        var instance = Assert.Single(result.StartedInstances);
++        Assert.Equal(matchingDefinitionId, instance.DefinitionId);
++    }
++
+     [Fact]
+     public async Task Outbox_platform_event_consumer_matches_workflow_triggers()
+     {
+@@ -296,17 +375,19 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         Assert.True(envelope.Metadata.ContainsKey("source"));
+     }
+ 
+-    private static PlatformEventEnvelope BuildEnvelope(Guid companyId, string eventId, string eventType) =>
++    private static PlatformEventEnvelope BuildEnvelope(
++        Guid companyId,
++        string eventId,
++        string eventType,
++        Dictionary<string, JsonNode?>? metadata = null) =>
+         new(
+             eventId,
+             eventType,
+             DateTime.Parse("2026-04-13T08:00:00Z").ToUniversalTime(),
+             companyId,
+             $"corr-{eventId}",
+             "work_task",
+             $"source-{eventId}",
+-            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["source"] = JsonValue.Create("test")
+-            });
++            metadata ?? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["source"] = JsonValue.Create("test")
++            });
+ 
+     private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>
+         new(StringComparer.OrdinalIgnoreCase)
+END_OF_PATCH

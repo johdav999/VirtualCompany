@@ -1,0 +1,299 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+index 7f37f20..5cbdc1b 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+@@ -34,13 +34,15 @@ public static class BriefingUpdateEventTypes
+     public const string WorkflowStateChanged = "workflow_state_changed";
+     public const string ApprovalRequested = "approval_requested";
+     public const string ApprovalDecision = "approval_decision";
++    public const string ApprovalDecided = ApprovalDecision;
+     public const string Escalation = "escalation";
++    public const string EscalationRaised = Escalation;
+     public const string AgentGeneratedAlert = "agent_generated_alert";
+ }
+ 
+ public static class BriefingUpdateJobSources
+ {
+-    public const string Scheduled = "scheduled";
+-    public const string EventDriven = "event-driven";
++    public const string Schedule = "schedule";
++    public const string EventDriven = "event_driven";
+ }
+ 
+ public interface IBriefingGenerationPipeline
+@@ -61,6 +63,15 @@ public interface IBriefingUpdateJobProducer
+         Dictionary<string, JsonNode?>? sourceMetadata,
+         CancellationToken cancellationToken);
+ 
++    Task<BriefingUpdateJobEnqueueResult> EnqueueScheduledAsync(
++        Guid companyId,
++        string triggerType,
++        string briefingType,
++        string correlationId,
++        string idempotencyKey,
++        Dictionary<string, JsonNode?>? sourceMetadata,
++        CancellationToken cancellationToken);
++
+     Task ScheduleRetryAsync(
+         Guid companyId,
+         Guid jobId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+index 9ff67e7..99c9f6c 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+@@ -37,6 +37,25 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+                 sourceMetadata),
+             cancellationToken);
+ 
++    public Task<BriefingUpdateJobEnqueueResult> EnqueueScheduledAsync(
++        Guid companyId,
++        string triggerType,
++        string briefingType,
++        string correlationId,
++        string idempotencyKey,
++        Dictionary<string, JsonNode?>? sourceMetadata,
++        CancellationToken cancellationToken) =>
++        EnqueueAsync(
++            new EnqueueBriefingUpdateJobCommand(
++                companyId,
++                triggerType,
++                briefingType,
++                null,
++                correlationId,
++                idempotencyKey,
++                sourceMetadata),
++            cancellationToken);
++
+     public async Task<BriefingUpdateJobEnqueueResult> EnqueueAsync(
+         EnqueueBriefingUpdateJobCommand command,
+         CancellationToken cancellationToken)
+@@ -199,6 +218,21 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+             ];
+         }
+ 
++        if (IsScheduledTriggerType(command.TriggerType))
++        {
++            if (string.IsNullOrWhiteSpace(command.BriefingType))
++            {
++                errors[nameof(command.BriefingType)] =
++                [
++                    "Scheduled briefing update jobs require a briefing type."
++                ];
++            }
++
++            if (!string.IsNullOrWhiteSpace(command.EventType))
++            {
++                errors[nameof(command.EventType)] = ["Scheduled briefing update jobs cannot include an event type."];
++            }
++        }
++
+         if (errors.Count > 0)
+         {
+             throw new BriefingValidationException(errors);
+@@ -218,6 +252,10 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+     private static string? NormalizeEventType(string? eventType) =>
+         string.IsNullOrWhiteSpace(eventType) ? null : eventType.Trim();
+ 
++    private static bool IsScheduledTriggerType(string? triggerType) =>
++        string.Equals(triggerType, CompanyBriefingUpdateJobTriggerTypeValues.Daily, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(triggerType, CompanyBriefingUpdateJobTriggerTypeValues.Weekly, StringComparison.OrdinalIgnoreCase);
++
+     private static bool IsSupportedEventType(string? eventType) =>
+         string.Equals(eventType, BriefingUpdateEventTypes.TaskStatusChanged, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(eventType, BriefingUpdateEventTypes.WorkflowStateChanged, StringComparison.OrdinalIgnoreCase) ||
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs
+index 4c582f1..233fd13 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs
+@@ -1,3 +1,5 @@
++using System.Globalization;
++using System.Text.Json.Nodes;
+ using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Domain.Enums;
+ 
+@@ -22,13 +24,56 @@ public sealed class CompanyBriefingGenerationPipeline : IBriefingGenerationPipeli
+             job.CompanyId,
+             new GenerateCompanyBriefingCommand(
+                 briefingType,
+-                NowUtc: DateTime.UtcNow,
++                NowUtc: ResolveGenerationNowUtc(job),
+                 Force: string.Equals(job.TriggerType, CompanyBriefingUpdateJobTriggerTypeValues.EventDriven, StringComparison.OrdinalIgnoreCase),
+                 CorrelationId: job.CorrelationId),
+             cancellationToken);
+     }
+ 
++    private static DateTime ResolveGenerationNowUtc(BriefingGenerationJobContext job)
++    {
++        if (IsScheduledTrigger(job.TriggerType) &&
++            TryGetUtcMetadata(job.SourceMetadata, "periodEndUtc", out var scheduledPeriodEndUtc))
++        {
++            return scheduledPeriodEndUtc;
++        }
++
++        return DateTime.UtcNow;
++    }
++
+     private static CompanyBriefingType ResolveBriefingType(BriefingGenerationJobContext job) =>
+         CompanyBriefingTypeValues.TryParse(job.BriefingType, out var briefingType)
+             ? briefingType
+             : CompanyBriefingType.Daily;
++
++    private static bool IsScheduledTrigger(string triggerType) =>
++        string.Equals(triggerType, CompanyBriefingUpdateJobTriggerTypeValues.Daily, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(triggerType, CompanyBriefingUpdateJobTriggerTypeValues.Weekly, StringComparison.OrdinalIgnoreCase);
++
++    private static bool TryGetUtcMetadata(
++        Dictionary<string, JsonNode?> metadata,
++        string key,
++        out DateTime value)
++    {
++        value = default;
++        if (!metadata.TryGetValue(key, out var node) || node is not JsonValue jsonValue)
++        {
++            return false;
++        }
++
++        try
++        {
++            if (jsonValue.TryGetValue<DateTime>(out var dateTime))
++            {
++                value = NormalizeUtc(dateTime);
++                return true;
++            }
++
++            if (jsonValue.TryGetValue<string>(out var text) &&
++                DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out dateTime))
++            {
++                value = NormalizeUtc(dateTime);
++                return true;
++            }
++        }
++        catch (InvalidOperationException)
++        {
++        }
++
++        return false;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 4e5ff21..b939a24 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -327,24 +327,25 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             : CompanyBriefingUpdateJobTriggerTypeValues.Weekly;
+         var briefingTypeValue = briefingType.ToStorageValue();
+         var idempotencyKey = $"briefing:{company.Id:N}:{triggerType}:{window.StartUtc:yyyyMMddHHmmss}:{window.EndUtc:yyyyMMddHHmmss}";
++        var correlationId = $"briefing-schedule:{idempotencyKey}";
+ 
+-        return _briefingUpdateJobProducer.EnqueueAsync(
+-            new EnqueueBriefingUpdateJobCommand(
+-                company.Id,
+-                triggerType,
+-                briefingTypeValue,
+-                null,
+-                $"briefing-schedule:{idempotencyKey}",
+-                idempotencyKey,
+-                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-                {
+-                    ["briefingType"] = JsonValue.Create(briefingTypeValue),
+-                    ["periodStartUtc"] = JsonValue.Create(window.StartUtc),
+-                    ["periodEndUtc"] = JsonValue.Create(window.EndUtc),
+-                    ["scheduledAtUtc"] = JsonValue.Create(nowUtc),
+-                    ["pipeline"] = JsonValue.Create("company_briefing_generation")
+-                }),
+-            cancellationToken);
++        return _briefingUpdateJobProducer.EnqueueScheduledAsync(
++            company.Id,
++            triggerType,
++            briefingTypeValue,
++            correlationId,
++            idempotencyKey,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["triggerSource"] = JsonValue.Create(BriefingUpdateJobSources.Schedule),
++                ["briefingType"] = JsonValue.Create(briefingTypeValue),
++                ["scheduleCadence"] = JsonValue.Create(triggerType),
++                ["scheduledAtUtc"] = JsonValue.Create(nowUtc),
++                ["periodStartUtc"] = JsonValue.Create(window.StartUtc),
++                ["periodEndUtc"] = JsonValue.Create(window.EndUtc),
++                ["scheduleWindowKey"] = JsonValue.Create($"{triggerType}:{window.StartUtc:O}:{window.EndUtc:O}"),
++                ["pipeline"] = JsonValue.Create("company_briefing_generation")
++            },
++            cancellationToken);
+     }
+ 
+     private async Task<int> AddNotificationsAsync(CompanyBriefing briefing, CancellationToken cancellationToken)
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+index a6687d9..c34954a 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+@@ -78,7 +78,7 @@ public sealed class BriefingSchedulerCoordinatorTests
+ 
+         public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)
+         {
+-            Calls++;
++            CallCount++;
+             return Task.FromResult(_result);
+         }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs
+index 0363554..6a81b87 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs
+@@ -1,3 +1,4 @@
++using System.Text.Json.Nodes;
+ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging.Abstractions;
+@@ -43,6 +44,45 @@ public sealed class BriefingUpdateJobRunnerTests
+         Assert.Equal(1, await fixture.DbContext.CompanyBriefingUpdateJobs.CountAsync());
+     }
+ 
++    [Fact]
++    public async Task Scheduled_enqueue_persists_schedule_context_and_metadata()
++    {
++        await using var fixture = await BriefingJobFixture.CreateAsync();
++        var companyId = await fixture.SeedCompanyAsync();
++        var producer = new BriefingUpdateJobProducer(
++            fixture.DbContext,
++            NullLogger<BriefingUpdateJobProducer>.Instance);
++        var periodStartUtc = DateTime.SpecifyKind(DateTime.Parse("2026-04-13T00:00:00Z"), DateTimeKind.Utc);
++        var periodEndUtc = DateTime.SpecifyKind(DateTime.Parse("2026-04-14T00:00:00Z"), DateTimeKind.Utc);
++
++        var result = await producer.EnqueueScheduledAsync(
++            companyId,
++            CompanyBriefingUpdateJobTriggerTypeValues.Daily,
++            CompanyBriefingTypeValues.Daily,
++            "briefing-schedule:test",
++            "briefing:test:daily:20260413",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["triggerSource"] = JsonValue.Create(BriefingUpdateJobSources.Schedule),
++                ["scheduleCadence"] = JsonValue.Create(CompanyBriefingUpdateJobTriggerTypeValues.Daily),
++                ["periodStartUtc"] = JsonValue.Create(periodStartUtc),
++                ["periodEndUtc"] = JsonValue.Create(periodEndUtc)
++            },
++            CancellationToken.None);
++
++        var job = await fixture.DbContext.CompanyBriefingUpdateJobs
++            .AsNoTracking()
++            .SingleAsync(x => x.Id == result.JobId);
++
++        Assert.True(result.Created);
++        Assert.Equal(companyId, job.CompanyId);
++        Assert.Equal(CompanyBriefingUpdateJobTriggerType.Daily, job.TriggerType);
++        Assert.Equal(CompanyBriefingType.Daily, job.BriefingType);
++        Assert.Null(job.EventType);
++        Assert.Equal("briefing-schedule:test", job.CorrelationId);
++        Assert.Equal("briefing:test:daily:20260413", job.IdempotencyKey);
++        Assert.Equal(BriefingUpdateJobSources.Schedule, job.SourceMetadata["triggerSource"]!.GetValue<string>());
++        Assert.Equal(CompanyBriefingUpdateJobTriggerTypeValues.Daily, job.SourceMetadata["scheduleCadence"]!.GetValue<string>());
++    }
++
+     [Fact]
+     public async Task Retryable_failure_schedules_retry_and_records_error_details()
+     {
+END_OF_PATCH

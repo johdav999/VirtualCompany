@@ -113,6 +113,39 @@ else
                     </div>
                 </form>
 
+                <div class="agent-template-header mt-4">
+                    <div>
+                        <span class="dashboard-kicker">Live status</span>
+                        <h3 class="h5 mb-0 mt-2">Status cards</h3>
+                    </div>
+                    @if (statusCards is not null)
+                    {
+                        <span class="text-body-secondary small">Refreshed @statusCards.GeneratedUtc.ToLocalTime().ToString("g")</span>
+                    }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(statusErrorMessage))
+                {
+                    <div class="alert alert-warning mt-3 mb-0">@statusErrorMessage</div>
+                }
+                else if (statusCards is null)
+                {
+                    <p class="text-body-secondary mb-0 mt-3">Loading live status cards...</p>
+                }
+                else if (statusCards.Items.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0 mt-3">No live agent status is available yet.</p>
+                }
+                else
+                {
+                    <div class="agent-status-grid mt-3">
+                        @foreach (var card in statusCards.Items.Where(MatchesRosterFilters))
+                        {
+                            <AgentStatusCard Card="card" />
+                        }
+                    </div>
+                }
+
                 @if (rosterResponse.Items.Count == 0)
                 {
                     <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
@@ -189,7 +222,10 @@ else
     private string? errorMessage;
     private CurrentUserContextViewModel? currentUser;
     private CompanyAccessViewModel? companyAccess;
+    private AgentStatusCardsResponseViewModel? statusCards;
+    private string? statusErrorMessage;
     private AgentRosterResponseViewModel rosterResponse = new();
+    private CancellationTokenSource? refreshCancellationTokenSource;
 
     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
         currentUser?.Memberships
@@ -204,10 +240,21 @@ else
 
     private bool CanManageProfiles => CanViewDirectory;
 
+    public void Dispose()
+    {
+        refreshCancellationTokenSource?.Cancel();
+        refreshCancellationTokenSource?.Dispose();
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         isLoading = true;
         errorMessage = null;
+        statusErrorMessage = null;
+        statusCards = null;
+        refreshCancellationTokenSource?.Cancel();
+        refreshCancellationTokenSource?.Dispose();
+        refreshCancellationTokenSource = null;
         rosterResponse = new AgentRosterResponseViewModel();
 
         try
@@ -232,6 +279,8 @@ else
                 if (CanViewDirectory)
                 {
                     rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
+                    await LoadStatusCardsAsync(companyId, CancellationToken.None);
+                    StartStatusRefresh(companyId);
                 }
             }
         }
@@ -244,6 +293,47 @@ else
             isLoading = false;
         }
     }
+
+    private void StartStatusRefresh(Guid companyId)
+    {
+        refreshCancellationTokenSource = new CancellationTokenSource();
+        var token = refreshCancellationTokenSource.Token;
+
+        _ = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
+            try
+            {
+                while (await timer.WaitForNextTickAsync(token))
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadStatusCardsAsync(companyId, token);
+                        StateHasChanged();
+                    });
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, token);
+    }
+
+    private async Task LoadStatusCardsAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            statusCards = await AgentApiClient.GetStatusCardsAsync(companyId, cancellationToken);
+            statusErrorMessage = null;
+        }
+        catch (OnboardingApiException ex)
+        {
+            statusErrorMessage = ex.Message;
+        }
+    }
+
+    private bool MatchesRosterFilters(AgentStatusCardViewModel card) =>
+        MatchesFilter(card.Department, Department) && MatchesFilter(card.HealthStatus, null) && MatchesFilter(card.DisplayName, null) && MatchesFilter(card.Department, Department);
 
     private static bool IsSelected(string? currentValue, string expectedValue) =>
         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
@@ -299,4 +389,8 @@ else
         if (agentId is Guid selectedAgentId) query.Add($"agentId={selectedAgentId}");
         return $"/agents/manage?{string.Join("&", query)}";
     }
+
+    private static bool MatchesFilter(string value, string? filter) =>
+        string.IsNullOrWhiteSpace(filter) ||
+        string.Equals(value, filter.Trim(), StringComparison.OrdinalIgnoreCase);
 }

@@ -1,0 +1,187 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 9a0b8b1..1e5df7d 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -92,6 +92,9 @@ public sealed record BriefingInsightContributionDto(
+     string? Assessment,
+     Dictionary<string, JsonNode?> Metadata,
+     Guid? ContributionId = null);
++{
++    public Dictionary<string, JsonNode?> ConfidenceMetadata { get; init; } = new(StringComparer.OrdinalIgnoreCase);
++}
+ 
+ public sealed record BriefingInsightAggregationRequest(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs b/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs
+index 7181f7a..aa52d76 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs
+@@ -45,7 +45,8 @@ public sealed class BriefingInsightAggregationService
+             Narrative = NormalizeWhitespace(contribution.Narrative),
+             Assessment = NormalizeOptional(contribution.Assessment),
+             EventCorrelationId = NormalizeOptional(contribution.EventCorrelationId),
+-            Metadata = CloneNodes(contribution.Metadata)
++            Metadata = CloneNodes(contribution.Metadata),
++            ConfidenceMetadata = CloneNodes(contribution.ConfidenceMetadata)
+         };
+ 
+     private static GroupingKey ResolveGroupingKey(BriefingInsightContributionDto contribution)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 3eab05b..fd827cc 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -87,9 +87,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var existing = await _dbContext.CompanyBriefings
+             .IgnoreQueryFilters()
+-            .Include(x => x.Sections)
+-                .ThenInclude(x => x.Contributions)
+             .AsNoTracking()
++            .Include(x => x.Sections.Where(section => section.CompanyId == companyId))
++                .ThenInclude(section => section.Contributions.Where(contribution => contribution.CompanyId == companyId))
+             .SingleOrDefaultAsync(
+                 x => x.CompanyId == companyId &&
+                      x.BriefingType == briefingType &&
+@@ -224,19 +224,26 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+ 
+-        var briefings = await _dbContext.CompanyBriefings
++        var daily = await GetLatestBriefingAsync(companyId, CompanyBriefingType.Daily, cancellationToken);
++        var weekly = await GetLatestBriefingAsync(companyId, CompanyBriefingType.Weekly, cancellationToken);
++        return new DashboardBriefingCardDto(
++            daily is null ? null : ToDto(daily),
++            weekly is null ? null : ToDto(weekly));
++    }
++
++    private async Task<CompanyBriefing?> GetLatestBriefingAsync(
++        Guid companyId,
++        CompanyBriefingType briefingType,
++        CancellationToken cancellationToken) =>
++        await _dbContext.CompanyBriefings
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId)
+-            .Include(x => x.Sections)
+-                .ThenInclude(x => x.Contributions)
+-            .GroupBy(x => x.BriefingType)
+-            .Select(x => x.OrderByDescending(briefing => briefing.GeneratedUtc).First())
+-            .ToListAsync(cancellationToken);
+-
+-        var daily = briefings.SingleOrDefault(x => x.BriefingType == CompanyBriefingType.Daily);
+-        var weekly = briefings.SingleOrDefault(x => x.BriefingType == CompanyBriefingType.Weekly);
+-        return new DashboardBriefingCardDto(
+-            daily is null ? null : ToDto(daily),
+-            weekly is null ? null : ToDto(weekly));
+-    }
++            .Where(x => x.CompanyId == companyId && x.BriefingType == briefingType)
++            .OrderByDescending(x => x.GeneratedUtc)
++            .Include(x => x.Sections.Where(section => section.CompanyId == companyId))
++                .ThenInclude(section => section.Contributions.Where(contribution => contribution.CompanyId == companyId))
++            .FirstOrDefaultAsync(cancellationToken);
+ 
+     public async Task<CompanyBriefingDeliveryPreferenceDto> GetDeliveryPreferenceAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+@@ -681,7 +688,10 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 item.Title,
+                 string.IsNullOrWhiteSpace(item.Summary) ? item.Title : item.Summary,
+                 item.Assessment ?? item.Status ?? item.Severity,
+-                item.Metadata))
++                item.Metadata)
++            {
++                ConfidenceMetadata = item.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase)
++            })
+             .ToList();
+ 
+     private void AddStructuredSections(Guid companyId, Guid briefingId, IReadOnlyList<AggregatedBriefingSectionDto> sections)
+@@ -736,7 +746,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                     reference.SourceStatus,
+                     reference.SourceRoute,
+                     contribution.TimestampUtc,
+                     contribution.Confidence,
+-                    confidenceMetadata,
++                    contribution.ConfidenceMetadata.Count == 0 ? confidenceMetadata : contribution.ConfidenceMetadata,
+                     contribution.CompanyEntityId,
+                     contribution.WorkflowInstanceId,
+                     contribution.TaskId,
+@@ -764,6 +774,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+         return briefing.Sections
++            .Where(section => section.CompanyId == briefing.CompanyId)
+             .OrderBy(section => section.CreatedUtc)
+             .ThenBy(section => section.SectionKey, StringComparer.OrdinalIgnoreCase)
+             .Select(section => ToStructuredSectionDto(briefing.CompanyId, section))
+@@ -952,6 +963,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private static AggregatedBriefingSectionDto ToStructuredSectionDto(Guid companyId, CompanyBriefingSection section)
+     {
+         var contributions = section.Contributions
++            .Where(contribution => contribution.CompanyId == companyId && contribution.SectionId == section.Id)
+             .OrderByDescending(contribution => contribution.TimestampUtc)
+             .ThenBy(contribution => contribution.AgentId)
+             .Select(contribution => new BriefingInsightContributionDto(
+@@ -974,7 +986,10 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 contribution.Assessment,
+                 contribution.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
+                 contribution.Id))
++            {
++                ConfidenceMetadata = contribution.ConfidenceMetadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase)
++            })
+             .ToList();
+ 
+         var viewpoints = contributions
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+index 27e750c..3b2a935 100644
+--- a/src/VirtualCompany.Shared/BriefingContracts.cs
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -1,3 +1,5 @@
++using System.Text.Json.Nodes;
++
+ namespace VirtualCompany.Shared;
+ 
+ public sealed record SharedBriefingSourceReference(
+@@ -20,7 +22,10 @@ public sealed record SharedBriefingInsightContribution(
+     string? EventCorrelationId,
+     string Topic,
+     string Narrative,
+-    string? Assessment);
++    string? Assessment)
++{
++    public Dictionary<string, JsonNode?> ConfidenceMetadata { get; init; } = new(StringComparer.OrdinalIgnoreCase);
++}
+ 
+ public sealed record SharedBriefingConflictViewpoint(
+     string Assessment,
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index 94d0a13..2ef42a4 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -257,6 +257,18 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(seed.CompanyId, latest.Weekly!.CompanyId);
+         Assert.NotNull(latest.Daily.MessageId);
+         Assert.NotNull(latest.Weekly.MessageId);
++        Assert.False(string.IsNullOrWhiteSpace(latest.Daily.NarrativeText));
++        var dailySection = Assert.Single(latest.Daily.StructuredSections.Where(section =>
++            section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId)));
++        Assert.False(string.IsNullOrWhiteSpace(dailySection.Narrative));
++        var contribution = Assert.Single(dailySection.Contributions.Where(item => item.TaskId == seed.CompletedTaskId));
++        Assert.Equal(seed.AgentId, contribution.AgentId);
++        Assert.False(string.IsNullOrWhiteSpace(contribution.Topic));
++        Assert.False(string.IsNullOrWhiteSpace(contribution.SourceReference.EntityType));
++        Assert.NotEqual(Guid.Empty, contribution.SourceReference.EntityId);
++        Assert.NotEqual(default, contribution.TimestampUtc);
++        Assert.NotNull(contribution.ConfidenceMetadata);
++        Assert.DoesNotContain(latest.Daily.StructuredSections.SelectMany(section => section.Contributions), item => item.SourceReference.EntityId == seed.OtherCompanyApprovalId);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+@@ -717,8 +729,11 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+     private sealed class BriefingInsightContributionResponse
+     {
+         public Guid AgentId { get; set; }
++        public BriefingSourceReferenceResponse SourceReference { get; set; } = new();
++        public DateTime TimestampUtc { get; set; }
+         public Guid? TaskId { get; set; }
+         public string Topic { get; set; } = string.Empty;
+         public decimal? Confidence { get; set; }
++        public Dictionary<string, JsonElement> ConfidenceMetadata { get; set; } = [];
+     }
+ }
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.3.3",
+  "promptPath": ".ai-design/prompts/TASK-3.3.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:06:23.034Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-06-23-034Z_TASK-3.3.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-06-23-034Z_TASK-3.3.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:09:20.908Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "aled class ExecutiveCockpitKpiDashboardIntegrationTests : IClassFixture<\n         Assert.DoesNotContain(salesDashboard.Anomalies, item => item.Department == \"Operations\");\n     }\n \n+    [Fact]\n+    public async Task Kpis_filter_by_time_range()\n+    {\n+        var seed = await SeedKpiCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var currentStartUtc = DateTime.UtcNow.AddDays(-7);\n+        var currentEndUtc = DateTime.UtcNow.AddDays(1);\n+        var currentResponse = await client.GetAsync($\"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(currentStartUtc.ToString(\"O\"))}&endUtc={Uri.EscapeDataString(currentEndUtc.ToString(\"O\"))}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, currentResponse.StatusCode);\n+        var currentDashboard = await currentResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();\n+        Assert.NotNull(currentDashboard);\n+        Assert.Contains(currentDashboard!.Kpis, tile => tile.Key == \"blocked_tasks\" && tile.CurrentValue == 3);\n+\n+        var historicalStartUtc = DateTime.UtcNow.AddDays(-30);\n+        var historicalEndUtc = DateTime.UtcNow.AddDays(-20);\n+        var historicalResponse = await client.GetAsync($\"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(historicalStartUtc.ToString(\"O\"))}&endUtc={Uri.EscapeDataString(historicalEndUtc.ToString(\"O\"))}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, historicalResponse.StatusCode);\n+        var historicalDashboard = await historicalResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();\n+        Assert.NotNull(historicalDashboard);\n+        Assert.Contains(historicalDashboard!.Kpis, tile => tile.Key == \"blocked_tasks\" && tile.CurrentValue == 0);\n+        Assert.DoesNotContain(historicalDashboard.Anomalies, item => item.KpiKey == \"blocked_tasks\");\n+    }\n+\n     [Fact]\n     public async Task Kpis_are_tenant_scoped()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "eCockpitKpiDashboardIntegrationTests : IClassFixture<\n         Assert.DoesNotContain(salesDashboard.Anomalies, item => item.Department == \"Operations\");\n     }\n \n+    [Fact]\n+    public async Task Kpis_filter_by_time_range()\n+    {\n+        var seed = await SeedKpiCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var currentStartUtc = DateTime.UtcNow.AddDays(-7);\n+        var currentEndUtc = DateTime.UtcNow.AddDays(1);\n+        var currentResponse = await client.GetAsync($\"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(currentStartUtc.ToString(\"O\"))}&endUtc={Uri.EscapeDataString(currentEndUtc.ToString(\"O\"))}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, currentResponse.StatusCode);\n+        var currentDashboard = await currentResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();\n+        Assert.NotNull(currentDashboard);\n+        Assert.Contains(currentDashboard!.Kpis, tile => tile.Key == \"blocked_tasks\" && tile.CurrentValue == 3);\n+\n+        var historicalStartUtc = DateTime.UtcNow.AddDays(-30);\n+        var historicalEndUtc = DateTime.UtcNow.AddDays(-20);\n+        var historicalResponse = await client.GetAsync($\"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(historicalStartUtc.ToString(\"O\"))}&endUtc={Uri.EscapeDataString(historicalEndUtc.ToString(\"O\"))}\");\n+\n+        Assert.Equal(HttpStatusCode.OK, historicalResponse.StatusCode);\n+        var historicalDashboard = await historicalResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();\n+        Assert.NotNull(historicalDashboard);\n+        Assert.Contains(historicalDashboard!.Kpis, tile => tile.Key == \"blocked_tasks\" && tile.CurrentValue == 0);\n+        Assert.DoesNotContain(historicalDashboard.Anomalies, item => item.KpiKey == \"blocked_tasks\");\n+    }\n+\n     [Fact]\n     public async Task Kpis_are_tenant_scoped()\n     {\nEND_OF_PATCH\ntokens used\n76,561\n",
+  "verbosityMode": "summary"
+}

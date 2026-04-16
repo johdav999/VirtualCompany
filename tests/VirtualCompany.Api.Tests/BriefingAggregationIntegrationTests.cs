@@ -67,6 +67,18 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         Assert.Contains(aggregate.KpiHighlights, x => x.Status == "completed");
         Assert.Contains(aggregate.Anomalies, x => x.SourceEntityId == seed.BlockedTaskId && x.SourceEntityType == "task");
         Assert.Contains(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.AgentId && x.SourceEntityType == "agent");
+        Assert.False(string.IsNullOrWhiteSpace(aggregate.NarrativeText));
+        Assert.Contains(aggregate.StructuredSections, section => section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId));
+        Assert.True(aggregate.SummaryCounts.OpenApprovalsCount > 0);
+        Assert.True(aggregate.SummaryCounts.BlockedWorkflowsCount > 0);
+        Assert.True(aggregate.SummaryCounts.CriticalAlertsCount > 0);
+        Assert.True(aggregate.SummaryCounts.OverdueTasksCount > 0);
+        Assert.All(aggregate.StructuredSections, section =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(section.PriorityCategory));
+            Assert.True(section.PriorityScore >= 0);
+        });
+        Assert.True(aggregate.StructuredSections.SequenceEqual(aggregate.StructuredSections.OrderByDescending(x => x.PriorityScore).ThenBy(x => x.SectionKey, StringComparer.OrdinalIgnoreCase)));
         Assert.DoesNotContain(aggregate.PendingApprovals, x => x.SourceEntityId == seed.OtherCompanyApprovalId);
         Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
     }
@@ -96,6 +108,19 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         Assert.True(result.Briefing.StructuredPayload.ContainsKey("anomalies"));
         Assert.True(result.Briefing.StructuredPayload.ContainsKey("notableAgentUpdates"));
         Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryItems"));
+        Assert.True(result.Briefing.StructuredPayload.ContainsKey("narrativeText"));
+        Assert.True(result.Briefing.StructuredPayload.ContainsKey("structuredSections"));
+        Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryCounts"));
+        Assert.True(result.Briefing.SummaryCounts.OpenApprovalsCount > 0);
+        Assert.True(result.Briefing.SummaryCounts.BlockedWorkflowsCount > 0);
+        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "task" && reference.EntityId == seed.CompletedTaskId && reference.IsAccessible && reference.State == "available" && reference.EntityStatus == "completed"));
+        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "workflow_instance" && reference.IsAccessible && reference.State == "available"));
+        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "approval" && reference.EntityId == seed.ApprovalId && reference.IsAccessible && reference.State == "available" && reference.EntityStatus == "pending"));
+        Assert.All(result.Briefing.StructuredSections.SelectMany(section => section.LinkedEntities), reference =>
+        {
+            Assert.True(reference.EntityId != Guid.Empty);
+        });
+        Assert.NotEmpty(result.Briefing.StructuredSections);
         Assert.Contains(result.Briefing.SourceReferences, reference =>
             reference.EntityType == "approval" &&
             reference.EntityId == seed.ApprovalId &&
@@ -252,6 +277,18 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         Assert.Equal(seed.CompanyId, latest.Weekly!.CompanyId);
         Assert.NotNull(latest.Daily.MessageId);
         Assert.NotNull(latest.Weekly.MessageId);
+        Assert.False(string.IsNullOrWhiteSpace(latest.Daily.NarrativeText));
+        var dailySection = Assert.Single(latest.Daily.StructuredSections.Where(section =>
+            section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId)));
+        Assert.False(string.IsNullOrWhiteSpace(dailySection.Narrative));
+        var contribution = Assert.Single(dailySection.Contributions.Where(item => item.TaskId == seed.CompletedTaskId));
+        Assert.Equal(seed.AgentId, contribution.AgentId);
+        Assert.False(string.IsNullOrWhiteSpace(contribution.Topic));
+        Assert.False(string.IsNullOrWhiteSpace(contribution.SourceReference.EntityType));
+        Assert.NotEqual(Guid.Empty, contribution.SourceReference.EntityId);
+        Assert.NotEqual(default, contribution.TimestampUtc);
+        Assert.NotNull(contribution.ConfidenceMetadata);
+        Assert.DoesNotContain(latest.Daily.StructuredSections.SelectMany(section => section.Contributions), item => item.SourceReference.EntityId == seed.OtherCompanyApprovalId);
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
@@ -282,6 +319,28 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
 
         var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/briefings/latest");
         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Latest_returns_inaccessible_placeholder_for_cross_tenant_link_without_leaking_details()
+    {
+        var seed = await SeedBriefingWithCrossTenantTaskLinkAsync();
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/briefings/latest");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var latest = await response.Content.ReadFromJsonAsync<DashboardBriefingCardResponse>();
+
+        Assert.NotNull(latest?.Daily);
+        var link = Assert.Single(latest!.Daily!.StructuredSections.SelectMany(section => section.LinkedEntities));
+        Assert.Equal("task", link.EntityType);
+        Assert.Equal(seed.OtherCompanyTaskId, link.EntityId);
+        Assert.Equal("inaccessible", link.State);
+        Assert.Null(link.EntityStatus);
+        Assert.False(link.IsAccessible);
+        Assert.Equal("deleted_or_inaccessible", link.PlaceholderReason);
+        Assert.Equal("Unavailable task", link.DisplayLabel);
     }
 
     [Fact]
@@ -503,6 +562,105 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         return new EmptyBriefingSeed(companyId);
     }
 
+    private async Task<MissingLinkBriefingSeed> SeedBriefingWithMissingTaskLinkAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var briefingId = Guid.NewGuid();
+        var missingTaskId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.Add(new Company(companyId, "Briefing Missing Link Company"));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            var sourceReferences = Payload(("items", JsonSerializer.SerializeToNode(new[]
+            {
+                new BriefingSourceReferenceDto("task", missingTaskId, "Deleted task", "blocked", null)
+            })));
+            var briefing = new CompanyBriefing(
+                briefingId,
+                companyId,
+                CompanyBriefingType.Daily,
+                now.AddDays(-1),
+                now,
+                "Daily briefing",
+                "A linked task is no longer available.",
+                Payload(
+                    ("narrativeText", JsonValue.Create("A linked task is no longer available.")),
+                    ("summaryCounts", JsonSerializer.SerializeToNode(new BriefingSummaryCountsDto(0, 0, 0, 0)))),
+                Payload(("items", JsonSerializer.SerializeToNode(Array.Empty<BriefingSourceReferenceDto>()))));
+            dbContext.CompanyBriefings.Add(briefing);
+            dbContext.CompanyBriefingSections.Add(new CompanyBriefingSection(
+                Guid.NewGuid(),
+                companyId,
+                briefingId,
+                "task:" + missingTaskId.ToString("N"),
+                "Deleted task",
+                BriefingInsightGroupingTypes.Task,
+                missingTaskId.ToString("N"),
+                "The task is referenced by the briefing but cannot be resolved.",
+                false,
+                null,
+                missingTaskId,
+                "task",
+                BriefingSectionPriorityCategory.High,
+                80,
+                "high_task_blocked",
+                null,
+                missingTaskId,
+                null,
+                sourceReferences));
+            return Task.CompletedTask;
+        });
+
+        return new MissingLinkBriefingSeed(companyId, missingTaskId);
+    }
+
+    private async Task<CrossTenantLinkBriefingSeed> SeedBriefingWithCrossTenantTaskLinkAsync()
+    {
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var briefingId = Guid.NewGuid();
+        var otherCompanyTaskId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            dbContext.Companies.AddRange(new Company(companyId, "Briefing Inaccessible Link Company"), new Company(otherCompanyId, "Other Link Company"));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            dbContext.WorkTasks.Add(new WorkTask(otherCompanyTaskId, otherCompanyId, "briefing", "Other tenant task", null, WorkTaskPriority.High, null, null, "user", userId));
+            var sourceReferences = Payload(("items", JsonSerializer.SerializeToNode(new[]
+            {
+                new BriefingSourceReferenceDto("task", otherCompanyTaskId, "Other tenant task", "blocked", null)
+            })));
+            var briefing = new CompanyBriefing(
+                briefingId,
+                companyId,
+                CompanyBriefingType.Daily,
+                now.AddDays(-1),
+                now,
+                "Daily briefing",
+                "A linked task is outside the current tenant.",
+                Payload(
+                    ("narrativeText", JsonValue.Create("A linked task is outside the current tenant.")),
+                    ("summaryCounts", JsonSerializer.SerializeToNode(new BriefingSummaryCountsDto(0, 0, 0, 0)))),
+                Payload(("items", JsonSerializer.SerializeToNode(Array.Empty<BriefingSourceReferenceDto>()))));
+            dbContext.CompanyBriefings.Add(briefing);
+            dbContext.CompanyBriefingSections.Add(new CompanyBriefingSection(
+                Guid.NewGuid(), companyId, briefingId, "task:" + otherCompanyTaskId.ToString("N"), "Other tenant task",
+                BriefingInsightGroupingTypes.Task, otherCompanyTaskId.ToString("N"), "The task is referenced but inaccessible.",
+                false, null, otherCompanyTaskId, "task", BriefingSectionPriorityCategory.High, 80, "high_task_blocked",
+                null, otherCompanyTaskId, null, sourceReferences));
+            return Task.CompletedTask;
+        });
+
+        return new CrossTenantLinkBriefingSeed(companyId, otherCompanyTaskId);
+    }
+
     private async Task<Guid> AddCompletedTaskAsync(BriefingSeed seed, string title)
     {
         var taskId = Guid.NewGuid();
@@ -559,6 +717,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
             completedTask.UpdateStatus(WorkTaskStatus.Completed);
             var blockedTask = new WorkTask(blockedTaskId, companyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
             blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
+            blockedTask.SetDueDate(now.AddDays(-2));
             var otherCompanyTask = new WorkTask(otherCompanyTaskId, otherCompanyId, "briefing", "Other company task", null, WorkTaskPriority.High, otherCompanyAgentId, null, "user", userId, workflowInstanceId: otherCompanyWorkflowInstanceId);
             otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
             dbContext.WorkTasks.AddRange(completedTask, blockedTask, otherCompanyTask);
@@ -577,6 +736,17 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
 
             dbContext.ToolExecutionAttempts.AddRange(toolExecution, otherCompanyToolExecution);
             dbContext.ApprovalRequests.AddRange(approval, otherCompanyApproval);
+            dbContext.Alerts.Add(new Alert(
+                Guid.NewGuid(),
+                companyId,
+                AlertType.Risk,
+                AlertSeverity.Critical,
+                "Critical margin risk",
+                "Margin risk needs executive attention.",
+                Payload(("signal", JsonValue.Create("margin"))),
+                "briefing-critical-alert",
+                $"briefing-critical-alert:{companyId:N}",
+                AlertStatus.Open));
             return Task.CompletedTask;
         });
 
@@ -626,6 +796,10 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
 
     private sealed record EmptyBriefingSeed(Guid CompanyId);
 
+    private sealed record MissingLinkBriefingSeed(Guid CompanyId, Guid MissingTaskId);
+
+    private sealed record CrossTenantLinkBriefingSeed(Guid CompanyId, Guid OtherCompanyTaskId);
+
     private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);
 
     private sealed record BriefingSeed(
@@ -649,6 +823,9 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         public List<BriefingAggregateItemResponse> KpiHighlights { get; set; } = [];
         public List<BriefingAggregateItemResponse> Anomalies { get; set; } = [];
         public List<BriefingAggregateItemResponse> NotableAgentUpdates { get; set; } = [];
+        public string NarrativeText { get; set; } = string.Empty;
+        public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
+        public BriefingSummaryCountsResponse SummaryCounts { get; set; } = new();
     }
 
     private sealed class BriefingAggregateItemResponse
@@ -691,7 +868,10 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         public Guid? MessageId { get; set; }
         public string SummaryBody { get; set; } = string.Empty;
         public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];
+        public string NarrativeText { get; set; } = string.Empty;
+        public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
         public List<BriefingSourceReferenceResponse> SourceReferences { get; set; } = [];
+        public BriefingSummaryCountsResponse SummaryCounts { get; set; } = new();
     }
 
     private sealed class BriefingSourceReferenceResponse
@@ -701,5 +881,51 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         public string Label { get; set; } = string.Empty;
         public string? Status { get; set; }
         public string? Route { get; set; }
+    }
+
+    private sealed class AggregatedBriefingSectionResponse
+    {
+        public string SectionKey { get; set; } = string.Empty;
+        public string Title { get; set; } = string.Empty;
+        public string GroupingType { get; set; } = string.Empty;
+        public string GroupingKey { get; set; } = string.Empty;
+        public string Narrative { get; set; } = string.Empty;
+        public bool IsConflicting { get; set; }
+        public string SectionType { get; set; } = string.Empty;
+        public string PriorityCategory { get; set; } = string.Empty;
+        public int PriorityScore { get; set; }
+        public string? PriorityRuleCode { get; set; }
+        public List<BriefingLinkedEntityReferenceResponse> LinkedEntities { get; set; } = [];
+        public List<BriefingInsightContributionResponse> Contributions { get; set; } = [];
+    }
+
+    private sealed class BriefingLinkedEntityReferenceResponse
+    {
+        public string EntityType { get; set; } = string.Empty;
+        public Guid EntityId { get; set; }
+        public string DisplayLabel { get; set; } = string.Empty;
+        public string State { get; set; } = string.Empty;
+        public string? EntityStatus { get; set; }
+        public bool IsAccessible { get; set; }
+        public string? PlaceholderReason { get; set; }
+    }
+
+    private sealed class BriefingSummaryCountsResponse
+    {
+        public int CriticalAlertsCount { get; set; }
+        public int OpenApprovalsCount { get; set; }
+        public int BlockedWorkflowsCount { get; set; }
+        public int OverdueTasksCount { get; set; }
+    }
+
+    private sealed class BriefingInsightContributionResponse
+    {
+        public Guid AgentId { get; set; }
+        public BriefingSourceReferenceResponse SourceReference { get; set; } = new();
+        public DateTime TimestampUtc { get; set; }
+        public Guid? TaskId { get; set; }
+        public string Topic { get; set; } = string.Empty;
+        public decimal? Confidence { get; set; }
+        public Dictionary<string, JsonElement> ConfidenceMetadata { get; set; } = [];
     }
 }

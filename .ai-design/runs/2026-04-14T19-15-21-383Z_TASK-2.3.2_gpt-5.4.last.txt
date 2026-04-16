@@ -1,0 +1,470 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -293,6 +293,256 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+ 
+         return builder.ToString().TrimEnd();
+     }
++
++    private static IReadOnlyList<MemorySnippet> ResolveMemorySnippets(PromptBuildRequest request)
++    {
++        if (request.MemorySnippets is not null)
++        {
++            return request.MemorySnippets;
++        }
++
++        var memories = request.RuntimeContext.GroundedContext?.Context.Memory.Items;
++        if (memories is null || memories.Count == 0)
++        {
++            return [];
++        }
++
++        return memories
++            .Select(static x => new MemorySnippet(
++                x.MemoryId,
++                x.Title,
++                x.Summary,
++                x.MemoryType,
++                x.Scope,
++                x.RelevanceScore ?? x.Salience))
++            .ToList();
++    }
++
++    private static IReadOnlyList<PolicyInstruction> ResolvePolicyInstructions(PromptBuildRequest request)
++    {
++        var instructions = new List<PolicyInstruction>
++        {
++            new("system_safety_default_deny", DefaultPolicyInstruction, "system_safety", 0)
++        };
++
++        if (request.PolicyInstructions is not null)
++        {
++            instructions.AddRange(request.PolicyInstructions);
++        }
++
++        if (IsWorkerSubtask(request.RuntimeContext))
++        {
++            instructions.Add(new PolicyInstruction(
++                "manager_worker_topology",
++                "Manager-worker topology: this agent is executing a worker subtask. The worker must communicate results back through the parent task context, must not message or coordinate with other workers, and must not create subtasks or request further delegation unless explicitly allowed by task context.",
++                "task_context",
++                10));
++        }
++
++        return instructions;
++    }
++
++    private static IReadOnlyList<ToolSchemaDefinition> ResolveToolSchemas(PromptBuildRequest request)
++    {
++        if (request.ToolSchemas is not null)
++        {
++            return request.ToolSchemas;
++        }
++
++        return request.RuntimeContext.AvailableTools
++            .OrderBy(static x => x.Name, StringComparer.OrdinalIgnoreCase)
++            .Select(static x => new ToolSchemaDefinition(
++                x.Name,
++                x.SupportedActions,
++                x.Scopes,
++                x.PolicyMetadata))
++            .ToList();
++    }
++
++    private static PromptIdentitySectionDto ResolveIdentitySection(SingleAgentRuntimeContext context)
++    {
++        var tenant = context.Company.IdentityPolicy;
++        var task = ResolveTaskIdentityOverrides(context.Task.InputPayload);
++        var agentBusinessResponsibility = FirstNonBlank(context.Agent.RoleBrief, context.GroundedContext?.Company.AgentRoleBrief);
++        var agentCollaborationNorms = MergeIdentityList(
++            context.Agent.CommunicationProfile.StyleDirectives,
++            context.Agent.CommunicationProfile.CommunicationRules);
++        var agentPersonalityTraits = MergeIdentityList(
++            ExtractIdentityStrings(context.Agent.Personality),
++            SplitIdentityText(context.Agent.CommunicationProfile.Persona),
++            SplitIdentityText(context.Agent.CommunicationProfile.Tone));
++
++        var role = FirstNonBlank(context.Agent.RoleName, tenant?.Role, task.Role, "Business agent");
++        var seniority = FirstNonBlank(context.Agent.Seniority, tenant?.Seniority, task.Seniority, "Unspecified");
++        var businessResponsibility = JoinIdentityParts(
++            tenant?.BusinessResponsibility,
++            agentBusinessResponsibility,
++            task.BusinessResponsibility,
++            $"Execute {context.Agent.Department} responsibilities for {context.Company.Name}.");
++        var collaborationNorms = MergeIdentityList(
++            tenant?.CollaborationNorms,
++            agentCollaborationNorms,
++            task.CollaborationNorms);
++        var personalityTraits = MergeIdentityList(
++            tenant?.PersonalityTraits,
++            agentPersonalityTraits,
++            task.PersonalityTraits);
++        var additionalNotes = MergeIdentityList(
++            SplitIdentityText(tenant?.AdditionalNotes),
++            SplitIdentityText(task.AdditionalNotes));
++
++        // Precedence is intentionally field-aware: protected system safety is outside identity,
++        // agent identity wins scalar identity fields, and task context may refine composite fields.
++        var sources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["role"] = ResolveScalarSource(context.Agent.RoleName, tenant?.Role, task.Role),
++            ["seniority"] = ResolveScalarSource(context.Agent.Seniority, tenant?.Seniority, task.Seniority),
++            ["businessResponsibility"] = BuildSourceLabel(tenant?.BusinessResponsibility, agentBusinessResponsibility, task.BusinessResponsibility),
++            ["collaborationNorms"] = BuildSourceLabel(tenant?.CollaborationNorms, agentCollaborationNorms, task.CollaborationNorms),
++            ["personalityTraits"] = BuildSourceLabel(tenant?.PersonalityTraits, agentPersonalityTraits, task.PersonalityTraits),
++            ["additionalNotes"] = BuildSourceLabel(SplitIdentityText(tenant?.AdditionalNotes), null, SplitIdentityText(task.AdditionalNotes))
++        };
++
++        return new PromptIdentitySectionDto(
++            role,
++            seniority,
++            businessResponsibility,
++            collaborationNorms,
++            personalityTraits,
++            additionalNotes,
++            sources);
++    }
++
++    private static string RenderIdentitySection(PromptIdentitySectionDto identity)
++    {
++        var builder = new StringBuilder();
++        builder.Append("Role: ");
++        builder.AppendLine(identity.Role);
++        builder.Append("Seniority: ");
++        builder.AppendLine(identity.Seniority);
++        builder.Append("Business responsibility: ");
++        builder.AppendLine(identity.BusinessResponsibility);
++        builder.Append("Collaboration norms: ");
++        builder.AppendLine(identity.CollaborationNorms.Count == 0 ? "none" : string.Join("; ", identity.CollaborationNorms));
++        builder.Append("Personality traits: ");
++        builder.AppendLine(identity.PersonalityTraits.Count == 0 ? "none" : string.Join("; ", identity.PersonalityTraits));
++
++        if (identity.AdditionalNotes.Count > 0)
++        {
++            builder.Append("Additional notes: ");
++            builder.AppendLine(string.Join("; ", identity.AdditionalNotes));
++        }
++
++        builder.AppendLine("Apply this resolved identity without changing protected system safety instructions.");
++        return builder.ToString().TrimEnd();
++    }
++
++    private static string BuildPolicyContext(IReadOnlyList<PolicyInstruction> policyInstructions)
++    {
++        var builder = new StringBuilder();
++        foreach (var instruction in policyInstructions
++            .OrderBy(static x => x.Priority)
++            .ThenBy(static x => x.Id, StringComparer.OrdinalIgnoreCase))
++        {
++            if (builder.Length > 0)
++            {
++                builder.AppendLine();
++            }
++
++            builder.Append("- ");
++            builder.Append(instruction.Id);
++            builder.Append(" [");
++            builder.Append(instruction.Source);
++            builder.Append("]: ");
++            builder.Append(instruction.Content.Trim());
++        }
++
++        return builder.ToString();
++    }
++
++    private static string BuildToolSchemaContext(IReadOnlyList<ToolSchemaDefinition> toolSchemas)
++    {
++        if (toolSchemas.Count == 0)
++        {
++            return EmptyToolsText;
++        }
++
++        var builder = new StringBuilder();
++        foreach (var tool in toolSchemas.OrderBy(static x => x.Name, StringComparer.OrdinalIgnoreCase))
++        {
++            if (builder.Length > 0)
++            {
++                builder.AppendLine();
++            }
++
++            builder.Append("- ");
++            builder.Append(tool.Name);
++            builder.Append(" actions=");
++            builder.Append(JoinOrNone(tool.SupportedActions));
++            builder.Append(" scopes=");
++            builder.Append(JoinOrNone(tool.Scopes));
++            if (tool.Schema.Count > 0)
++            {
++                builder.Append(" schema=");
++                builder.Append(JsonSerializer.Serialize(tool.Schema, JsonOptions));
++            }
++        }
++
++        return builder.ToString();
++    }
++
++    private static string BuildGenerationInput(SingleAgentRuntimeContext context, string promptPath)
++    {
++        var builder = new StringBuilder();
++        builder.Append("Generate ");
++        builder.Append(promptPath switch
++        {
++            PromptGenerationPathValues.Chat => "a direct chat message",
++            PromptGenerationPathValues.DocumentGeneration => "a document or generated artifact",
++            _ => "task output and summary"
++        });
++        builder.AppendLine(" using only the prompt package context.");
++        builder.Append("Task title: ");
++        builder.AppendLine(context.Task.Title);
++        AppendOptionalLine(builder, "Task description", context.Task.Description);
++        builder.Append("Intent: ");
++        builder.AppendLine(context.Intent);
++        builder.AppendLine("Do not expose hidden reasoning or internal chain-of-thought.");
++        return builder.ToString().TrimEnd();
++    }
++
++    private static Dictionary<string, JsonNode?> BuildPayload(
++        SingleAgentRuntimeContext context,
++        PromptIdentitySectionDto resolvedIdentity,
++        IReadOnlyList<PromptSectionDto> sections,
++        IReadOnlyList<PromptMessageDto> messages,
++        IReadOnlyList<MemorySnippet> memorySnippets,
++        IReadOnlyList<PolicyInstruction> policyInstructions,
++        IReadOnlyList<ToolSchemaDefinition> toolSchemas,
++        string promptPath,
++        PromptDebugMode debugMode)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-14"),
++            ["companyId"] = JsonValue.Create(context.Company.CompanyId.ToString("N")),
++            ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
++            ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
++            ["correlationId"] = JsonValue.Create(context.CorrelationId),
++            ["promptPath"] = JsonValue.Create(promptPath),
++            ["systemPrompt"] = JsonValue.Create(messages[0].Content),
++            ["messages"] = JsonSerializer.SerializeToNode(messages, JsonOptions),
++            ["sections"] = JsonSerializer.SerializeToNode(sections, JsonOptions),
++            ["sectionOrder"] = JsonSerializer.SerializeToNode(PromptSectionIds.Ordered, JsonOptions),
++            ["identitySection"] = JsonSerializer.SerializeToNode(resolvedIdentity, JsonOptions),
++            ["renderedIdentitySection"] = JsonValue.Create(RenderIdentitySection(resolvedIdentity)),
++            ["agentIdentityProfile"] = JsonSerializer.SerializeToNode(AgentCommunicationProfileJsonMapper.ToJsonDictionary(context.Agent.CommunicationProfile), JsonOptions),
++            ["agentIdentityDirectives"] = JsonSerializer.SerializeToNode(AgentCommunicationProfilePromptRenderer.ToStableDirectiveMap(context.Agent.CommunicationProfile), JsonOptions),
++            ["memorySnippets"] = JsonSerializer.SerializeToNode(memorySnippets, JsonOptions),
++            ["policyInstructions"] = JsonSerializer.SerializeToNode(policyInstructions, JsonOptions),
++            ["toolSchemas"] = JsonSerializer.SerializeToNode(toolSchemas, JsonOptions),
++            ["sourceReferenceIds"] = JsonSerializer.SerializeToNode(ResolveSourceReferenceIds(context, memorySnippets), JsonOptions)
++        };
++
++        if (string.Equals(promptPath, PromptGenerationPathValues.DocumentGeneration, StringComparison.OrdinalIgnoreCase))
++        {
++            payload["documentGenerationContract"] = JsonSerializer.SerializeToNode(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["outputKind"] = "document_or_artifact",
++                ["groundingRequirement"] = "use_prompt_package_context_only"
++            }, JsonOptions);
++        }
++
++        if (IsWorkerSubtask(context))
++        {
++            payload["collaborationContract"] = JsonSerializer.SerializeToNode(new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["topology"] = JsonValue.Create("manager_worker"),
++                ["allowedCommunicationPath"] = JsonValue.Create("manager_to_worker_to_manager"),
++                ["workerToWorkerMessagingAllowed"] = JsonValue.Create(false),
++                ["furtherDelegationAllowed"] = JsonValue.Create(TryGetBoolean(context.Task.InputPayload, "allowFurtherDelegation") is true)
++            }, JsonOptions);
++        }
++
++        if (debugMode == PromptDebugMode.NonProduction)
++        {
++            payload["resolvedIdentity"] = JsonSerializer.SerializeToNode(resolvedIdentity, JsonOptions);
++        }
++
++        return payload;
++    }
++
++    private static string ResolvePromptPath(SingleAgentRuntimeContext context)
++    {
++        if (string.Equals(context.Intent, OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(context.Intent, OrchestrationIntentValues.GeneralAgentRequest, StringComparison.OrdinalIgnoreCase))
++        {
++            return PromptGenerationPathValues.Chat;
++        }
++
++        return string.Equals(context.Task.Type, PromptGenerationPathValues.DocumentGeneration, StringComparison.OrdinalIgnoreCase) ||
++               string.Equals(context.Intent, PromptGenerationPathValues.DocumentGeneration, StringComparison.OrdinalIgnoreCase)
++            ? PromptGenerationPathValues.DocumentGeneration
++            : PromptGenerationPathValues.TaskOutput;
++    }
++
++    private static IReadOnlyList<string> ResolveSourceReferenceIds(SingleAgentRuntimeContext context, IReadOnlyList<MemorySnippet> memorySnippets) =>
++        context.GroundedContext?.Context.SourceReferences
++            .Select(static x => x.SourceId)
++            .Where(static x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase)
++            .ToList()
++        ?? memorySnippets
++            .Select(static x => x.SourceId)
++            .Where(static x => !string.IsNullOrWhiteSpace(x))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++    private static Guid CreateDeterministicPromptId(
++        SingleAgentRuntimeContext context,
++        IReadOnlyList<PromptSectionDto> sections,
++        IReadOnlyList<ToolSchemaDefinition> toolSchemas)
++    {
++        var fingerprint = JsonSerializer.Serialize(new
++        {
++            context.Company.CompanyId,
++            AgentId = context.Agent.Id,
++            TaskId = context.Task.Id,
++            context.Intent,
++            Sections = sections.Select(static x => new { x.Id, x.Order, x.Content }),
++            Tools = toolSchemas.Select(static x => new { x.Name, x.SupportedActions, x.Scopes })
++        }, JsonOptions);
++        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(fingerprint));
++        return new Guid(hash.Take(16).ToArray());
++    }
++
++    private static DateTime ResolveBuiltAtUtc(SingleAgentRuntimeContext context) =>
++        context.GroundedContext?.GeneratedAtUtc ?? context.Task.UpdatedAt;
+ 
+     private static PromptIdentityTaskOverrides ResolveTaskIdentityOverrides(IReadOnlyDictionary<string, JsonNode?> payload) =>
+         new(
+             TryGetString(payload, PromptIdentityPayloadKeys.Role, out var role) ? role : null,
+@@ -342,7 +592,22 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+     private static string FirstNonBlank(params string?[] values) =>
+         values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+ 
++    private static string ResolveScalarSource(string? agent, string? tenant, string? task)
++    {
++        if (!string.IsNullOrWhiteSpace(agent))
++        {
++            return "agent_identity";
++        }
++
++        if (!string.IsNullOrWhiteSpace(tenant))
++        {
++            return "tenant_policy";
++        }
++
++        return !string.IsNullOrWhiteSpace(task) ? "task_context" : "default";
++    }
++
+     private static string BuildSourceLabel(string? tenant, string? agent, string? task)
+     {
+         var sources = new List<string>();
+@@ -390,6 +655,15 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+     private static string BuildSourceLabel(IReadOnlyList<string>? tenant, IReadOnlyDictionary<string, JsonNode?> agent, IReadOnlyList<string>? task) =>
+         BuildSourceLabel(tenant, ExtractIdentityStrings(agent), task);
+ 
++    private static bool IsWorkerSubtask(SingleAgentRuntimeContext context) =>
++        string.Equals(context.Task.Type, MultiAgentCollaborationTaskTypes.WorkerSubtask, StringComparison.OrdinalIgnoreCase) ||
++        (TryGetString(context.Task.InputPayload, "collaborationRole", out var role) &&
++         string.Equals(role, "worker_subtask", StringComparison.OrdinalIgnoreCase));
++
++    private static void AppendOptionalLine(StringBuilder builder, string label, string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return;
++        }
++
++        builder.Append(label);
++        builder.Append(": ");
++        builder.AppendLine(value.Trim());
++    }
++
+     private static void AppendJsonSection(StringBuilder builder, string label, IReadOnlyDictionary<string, JsonNode?> values)
+     {
+         if (values.Count == 0)
+@@ -435,6 +709,20 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+ 
+         return [];
+     }
++
++    private static bool? TryGetBoolean(IReadOnlyDictionary<string, JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<bool>(out var boolean))
++        {
++            return boolean;
++        }
++
++        return null;
++    }
+ 
+     private static string JoinOrNone(IEnumerable<string> values)
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+@@ -294,6 +294,54 @@ public sealed class PromptBuilderTests
+         Assert.Equal("Finance Manager", nonProduction.Payload["resolvedIdentity"]!["role"]!.GetValue<string>());
+     }
+ 
++    [Fact]
++    public void Build_does_not_allow_empty_task_identity_values_to_override_agent_identity()
++    {
++        var builder = new StructuredPromptBuilder();
++        var context = CreateRuntimeContext(
++            identityPolicy: new PromptIdentityPolicyDto(
++                Role: "Tenant Role",
++                Seniority: "Tenant Seniority",
++                BusinessResponsibility: "Tenant baseline responsibility."),
++            inputPayload: Payload(
++                (PromptIdentityPayloadKeys.Role, JsonValue.Create(" ")),
++                (PromptIdentityPayloadKeys.Seniority, JsonValue.Create("")),
++                (PromptIdentityPayloadKeys.BusinessResponsibility, JsonValue.Create("Task refinement."))));
++
++        var result = builder.Build(new PromptBuildRequest(context, DebugMode: PromptDebugMode.NonProduction));
++
++        Assert.Equal("Finance Manager", result.ResolvedIdentity.Role);
++        Assert.Equal("Senior", result.ResolvedIdentity.Seniority);
++        Assert.Contains("Tenant baseline responsibility.", result.ResolvedIdentity.BusinessResponsibility);
++        Assert.Contains("Execute finance operations through approved tools.", result.ResolvedIdentity.BusinessResponsibility);
++        Assert.Contains("Task refinement.", result.ResolvedIdentity.BusinessResponsibility);
++        Assert.Equal("agent_identity", result.Payload["resolvedIdentity"]!["sources"]!["role"]!.GetValue<string>());
++        Assert.Equal("agent_identity", result.Payload["resolvedIdentity"]!["sources"]!["seniority"]!.GetValue<string>());
++    }
++
++    [Fact]
++    public void Build_merges_identity_lists_in_stable_order_with_deduplication()
++    {
++        var builder = new StructuredPromptBuilder();
++        var context = CreateRuntimeContext(
++            identityPolicy: new PromptIdentityPolicyDto(
++                CollaborationNorms: ["Cite assumptions", "Keep legal context visible"],
++                PersonalityTraits: ["risk-aware", "precise"]),
++            communicationProfile: new AgentCommunicationProfileDto(
++                "precise",
++                "pragmatic operator",
++                ["Cite assumptions", "Use bullets for decisions"],
++                ["Keep legal context visible"],
++                ["Do not use flippant"],
++                AgentCommunicationProfileSources.Explicit,
++                false),
++            inputPayload: Payload(
++                (PromptIdentityPayloadKeys.CollaborationNorms, new JsonArray(JsonValue.Create("Use bullets for decisions"), JsonValue.Create("Coordinate with AP owner"))),
++                (PromptIdentityPayloadKeys.PersonalityTraits, new JsonArray(JsonValue.Create("risk-aware"), JsonValue.Create("calm under pressure")))));
++
++        var result = builder.Build(new PromptBuildRequest(context));
++
++        Assert.Equal(["Cite assumptions", "Keep legal context visible", "Use bullets for decisions", "Coordinate with AP owner"], result.ResolvedIdentity.CollaborationNorms);
++        Assert.Equal(["risk-aware", "precise", "pragmatic operator", "calm under pressure"], result.ResolvedIdentity.PersonalityTraits);
++    }
++
+     private static SingleAgentRuntimeContext CreateRuntimeContext(
+         GroundedPromptContextDto? groundedContext = null,
+         IReadOnlyList<ToolMetadataDto>? availableTools = null,
+END_OF_PATCH

@@ -93,6 +93,16 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
         _dbContext.ToolExecutionAttempts.Add(attempt);
 
+        await WriteBoundaryEnforcementAuditAsync(
+            companyId,
+            agentId,
+            command,
+            decision,
+            runtimeProfile,
+            attempt.Id,
+            correlationId,
+            cancellationToken);
+
         var serializedDecision = SerializeDecision(decision);
         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
         {
@@ -313,6 +323,45 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         return membership;
     }
+
+    private Task WriteBoundaryEnforcementAuditAsync(
+        Guid companyId,
+        Guid agentId,
+        ExecuteAgentToolCommand command,
+        ToolExecutionDecisionDto decision,
+        AgentRuntimeProfileDto runtimeProfile,
+        Guid executionId,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        var boundaryDecisionOutcome = ResolveBoundaryDecisionOutcome(decision);
+
+        return _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                companyId,
+                AuditActorTypes.Agent,
+                agentId,
+                AuditEventActions.BoundaryEnforcement,
+                AuditTargetTypes.AgentToolExecution,
+                executionId.ToString("N"),
+                ResolveBoundaryAuditOutcome(decision),
+                DataSources: ["agent_execution", "policy_guardrail"],
+                CorrelationId: correlationId,
+                RationaleSummary: BuildAuditRationaleSummary(decision),
+                Metadata: BuildAuditMetadata(command, decision),
+                AgentName: runtimeProfile.DisplayName,
+                AgentRole: runtimeProfile.RoleName,
+                ResponsibilityDomain: runtimeProfile.Department,
+                PromptProfileVersion: BuildPromptProfileVersion(runtimeProfile),
+                BoundaryDecisionOutcome: boundaryDecisionOutcome,
+                BoundaryReasonCode: string.Equals(boundaryDecisionOutcome, AuditBoundaryDecisionOutcomes.DeniedByPolicy, StringComparison.OrdinalIgnoreCase)
+                    ? AuditReasonCodes.BoundaryDeniedByPolicy
+                    : null),
+            cancellationToken);
+    }
+
+    private static string BuildPromptProfileVersion(AgentRuntimeProfileDto agent) =>
+        agent.UpdatedUtc.ToUniversalTime().ToString("yyyyMMddHHmmss");
 
     private static Dictionary<string, string?> BuildAuditMetadata(
         ExecuteAgentToolCommand command,
@@ -580,11 +629,28 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 => "This action was blocked by policy because the agent autonomy level does not permit it.",
             PolicyDecisionReasonCodes.InvalidActionType
                 => "This action was blocked by policy because the requested action type is not supported.",
-            PolicyDecisionReasonCodes.MissingPolicyConfiguration or PolicyDecisionReasonCodes.InvalidPolicyConfiguration or PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ApprovalRouteMissing
+            PolicyDecisionReasonCodes.MissingPolicyConfiguration or
+            PolicyDecisionReasonCodes.InvalidPolicyConfiguration or
+            PolicyDecisionReasonCodes.AmbiguousPolicyConfiguration or
+            PolicyDecisionReasonCodes.ThresholdConfigurationMissing or
+            PolicyDecisionReasonCodes.ApprovalRouteMissing
                 => "This action was blocked by policy because the required guardrail configuration could not be verified.",
             _ => "This action was blocked by policy."
         };
     }
+
+    private static string ResolveBoundaryAuditOutcome(ToolExecutionDecisionDto decision) =>
+        decision.Outcome switch
+        {
+            PolicyDecisionOutcomeValues.Deny => AuditEventOutcomes.Denied,
+            PolicyDecisionOutcomeValues.RequireApproval => AuditEventOutcomes.Pending,
+            _ => AuditEventOutcomes.Succeeded
+        };
+
+    private static string ResolveBoundaryDecisionOutcome(ToolExecutionDecisionDto decision) =>
+        string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase)
+            ? AuditBoundaryDecisionOutcomes.DeniedByPolicy
+            : AuditBoundaryDecisionOutcomes.InScope;
 
     private static string? GetPrimaryReasonCode(ToolExecutionDecisionDto decision) =>
         decision.ReasonCodes.FirstOrDefault(static code => !string.IsNullOrWhiteSpace(code));
@@ -612,7 +678,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
 
         return string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
-            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+            ? System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : _correlationContextAccessor.CorrelationId!;
     }
 }

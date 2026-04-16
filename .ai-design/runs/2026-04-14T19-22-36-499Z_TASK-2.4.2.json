@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-2.4.2",
+  "promptPath": ".ai-design/prompts/TASK-2.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T19:22:36.499Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T19-22-36-499Z_TASK-2.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T19-22-36-499Z_TASK-2.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T19:25:32.390Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>\n             x.CompanyId == seed.CompanyId &&\n             x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&\n             x.ActorId == seed.AgentId));\n@@ -197,6 +212,15 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"tool_not_permitted\", auditEvent.Metadata[\"primaryReasonCode\"]);\n         Assert.Equal(\"orch-denial-correlation\", auditEvent.CorrelationId);\n+\n+        var boundaryAudit = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>\n+            x.CompanyId == seed.CompanyId &&\n+            x.Action == AuditEventActions.BoundaryEnforcement &&\n+            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString(\"N\"));\n+\n+        Assert.Equal(AuditBoundaryDecisionOutcomes.DeniedByPolicy, boundaryAudit.BoundaryDecisionOutcome);\n+        Assert.Equal(AuditReasonCodes.BoundaryDeniedByPolicy, boundaryAudit.BoundaryReasonCode);\n+        Assert.Equal(\"tool_not_permitted\", boundaryAudit.Metadata[\"primaryReasonCode\"]);\n     }\n \n     [Theory]\n@@ -286,6 +310,16 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, payloadRoot.GetProperty(\"matchedRule\").GetString());\n         Assert.Equal(delegationTarget, payloadRoot.GetProperty(\"delegationTarget\").GetString());\n+\n+        var boundaryAudit = await dbContext.AuditEvents\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x =>\n+                x.CompanyId == outOfScopeSeed.CompanyId &&\n+                x.Action == AuditEventActions.BoundaryEnforcement &&\n+                x.ActorId == outOfScopeSeed.AgentId);\n+\n+        Assert.Equal(AuditBoundaryDecisionOutcomes.DelegatedOutOfScope, boundaryAudit.BoundaryDecisionOutcome);\n+        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, boundaryAudit.BoundaryReasonCode);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "ts.AsNoTracking().AnyAsync(x =>\n             x.CompanyId == seed.CompanyId &&\n             x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&\n             x.ActorId == seed.AgentId));\n@@ -197,6 +212,15 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"tool_not_permitted\", auditEvent.Metadata[\"primaryReasonCode\"]);\n         Assert.Equal(\"orch-denial-correlation\", auditEvent.CorrelationId);\n+\n+        var boundaryAudit = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>\n+            x.CompanyId == seed.CompanyId &&\n+            x.Action == AuditEventActions.BoundaryEnforcement &&\n+            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString(\"N\"));\n+\n+        Assert.Equal(AuditBoundaryDecisionOutcomes.DeniedByPolicy, boundaryAudit.BoundaryDecisionOutcome);\n+        Assert.Equal(AuditReasonCodes.BoundaryDeniedByPolicy, boundaryAudit.BoundaryReasonCode);\n+        Assert.Equal(\"tool_not_permitted\", boundaryAudit.Metadata[\"primaryReasonCode\"]);\n     }\n \n     [Theory]\n@@ -286,6 +310,16 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, payloadRoot.GetProperty(\"matchedRule\").GetString());\n         Assert.Equal(delegationTarget, payloadRoot.GetProperty(\"delegationTarget\").GetString());\n+\n+        var boundaryAudit = await dbContext.AuditEvents\n+            .IgnoreQueryFilters()\n+            .AsNoTracking()\n+            .SingleAsync(x =>\n+                x.CompanyId == outOfScopeSeed.CompanyId &&\n+                x.Action == AuditEventActions.BoundaryEnforcement &&\n+                x.ActorId == outOfScopeSeed.AgentId);\n+\n+        Assert.Equal(AuditBoundaryDecisionOutcomes.DelegatedOutOfScope, boundaryAudit.BoundaryDecisionOutcome);\n+        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, boundaryAudit.BoundaryReasonCode);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n84,566\n",
+  "verbosityMode": "summary"
+}

@@ -34,7 +34,15 @@ public sealed class AuditQueryServiceTests
             Guid.NewGuid().ToString(),
             AuditEventOutcomes.Succeeded,
             "Executed after policy checks passed.",
-            ["policy guardrails"]));
+            ["policy guardrails"],
+            metadata: new Dictionary<string, string?>
+            {
+                ["agentName"] = "Finance Agent",
+                ["agentRole"] = "Finance",
+                ["responsibilityDomain"] = "finance.payments",
+                ["promptProfileVersion"] = "20260414120000",
+                ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope
+            }));
         dbContext.AuditEvents.Add(new AuditEvent(
             Guid.NewGuid(),
             companyId,
@@ -43,7 +51,8 @@ public sealed class AuditQueryServiceTests
             AuditEventActions.AgentToolExecutionExecuted,
             AuditTargetTypes.AgentToolExecution,
             Guid.NewGuid().ToString(),
-            AuditEventOutcomes.Succeeded));
+            AuditEventOutcomes.Succeeded,
+            ["policy guardrails"]));
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
@@ -53,6 +62,11 @@ public sealed class AuditQueryServiceTests
         Assert.Single(result.Items);
         Assert.Equal(agentId, result.Items[0].ActorId);
         Assert.Equal("Finance Agent", result.Items[0].ActorLabel);
+        Assert.Equal("Finance Agent", result.Items[0].AgentName);
+        Assert.Equal("Finance", result.Items[0].AgentRole);
+        Assert.Equal("finance.payments", result.Items[0].ResponsibilityDomain);
+        Assert.Equal("20260414120000", result.Items[0].PromptProfileVersion);
+        Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, result.Items[0].BoundaryDecisionOutcome);
     }
 
     [Fact]

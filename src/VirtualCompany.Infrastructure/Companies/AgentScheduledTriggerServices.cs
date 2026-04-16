@@ -586,6 +586,8 @@ public sealed class AgentScheduledTriggerSchedulerCoordinator : IAgentScheduledT
 
 public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTriggerPollingService
 {
+    private const int MaxCatchUpOccurrencesPerTrigger = 1000;
+
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAgentScheduledTriggerRepository _repository;
     private readonly IScheduledTriggerNextRunCalculator _nextRunCalculator;
@@ -668,38 +670,98 @@ public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTrigger
             return false;
         }
 
-        var scheduledAtUtc = trigger.NextRunUtc.Value.Kind == DateTimeKind.Utc
-            ? trigger.NextRunUtc.Value
-            : trigger.NextRunUtc.Value.ToUniversalTime();
+        var nextDueRunUtc = NormalizeUtc(trigger.NextRunUtc.Value);
 
-        if (!trigger.IsEligibleForEnqueue(scheduledAtUtc))
+        if (!trigger.IsEligibleForEnqueue(nextDueRunUtc))
         {
-            trigger.MarkEvaluated(dueAtUtc, trigger.IsEnabled ? scheduledAtUtc : null);
+            trigger.MarkEvaluated(dueAtUtc, trigger.IsEnabled ? nextDueRunUtc : null);
             await _repository.SaveChangesAsync(cancellationToken);
             return false;
         }
 
-        var nextRunUtc = _nextRunCalculator.GetNextRunUtc(trigger.CronExpression, trigger.TimeZoneId, scheduledAtUtc);
-        var windowEndUtc = nextRunUtc.HasValue && nextRunUtc.Value > scheduledAtUtc
-            ? nextRunUtc.Value
-            : scheduledAtUtc.AddMinutes(1);
-        var idempotencyKey = $"agent-scheduled-trigger:{trigger.CompanyId:N}:{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
-        var correlationId = idempotencyKey;
-        var executionRequestId = $"{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
+        var enqueuedAny = false;
+        var occurrencesProcessed = 0;
 
+        while (nextDueRunUtc <= dueAtUtc)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!trigger.IsEligibleForEnqueue(nextDueRunUtc))
+            {
+                break;
+            }
+
+            var followingRunUtc = _nextRunCalculator.GetNextRunUtc(
+                trigger.CronExpression,
+                trigger.TimeZoneId,
+                nextDueRunUtc);
+            var windowEndUtc = followingRunUtc.HasValue && followingRunUtc.Value > nextDueRunUtc
+                ? NormalizeUtc(followingRunUtc.Value)
+                : nextDueRunUtc.AddMinutes(1);
+
+            if (await TryRecordAndEnqueueExecutionRequestAsync(
+                trigger,
+                nextDueRunUtc,
+                windowEndUtc,
+                dueAtUtc,
+                cancellationToken))
+            {
+                enqueuedAny = true;
+            }
+
+            occurrencesProcessed++;
+            if (!followingRunUtc.HasValue)
+            {
+                nextDueRunUtc = default;
+                break;
+            }
+
+            nextDueRunUtc = NormalizeUtc(followingRunUtc.Value);
+            if (occurrencesProcessed >= MaxCatchUpOccurrencesPerTrigger && nextDueRunUtc <= dueAtUtc)
+            {
+                _logger.LogWarning(
+                    "Agent scheduled trigger {TriggerId} for company {CompanyId} reached the catch-up limit of {Limit} due schedule windows.",
+                    trigger.Id,
+                    trigger.CompanyId,
+                    MaxCatchUpOccurrencesPerTrigger);
+                break;
+            }
+        }
+
+        DateTime? nextRunUtc = nextDueRunUtc == default ? null : nextDueRunUtc;
+        if (enqueuedAny)
+        {
+            trigger.MarkEnqueued(dueAtUtc, nextRunUtc);
+        }
+        else
+        {
+            trigger.MarkEvaluated(dueAtUtc, nextRunUtc);
+        }
+
+        await _repository.SaveChangesAsync(cancellationToken);
+        return enqueuedAny;
+    }
+
+    private async Task<bool> TryRecordAndEnqueueExecutionRequestAsync(
+        AgentScheduledTrigger trigger,
+        DateTime scheduledAtUtc,
+        DateTime windowEndUtc,
+        DateTime enqueuedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var idempotencyKey = $"agent-scheduled-trigger:{trigger.CompanyId:N}:{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
+        var executionRequestId = $"{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}";
         var window = new AgentScheduledTriggerEnqueueWindow(
             Guid.NewGuid(),
             trigger.CompanyId,
             trigger.Id,
             scheduledAtUtc,
             windowEndUtc,
-            dueAtUtc,
+            enqueuedAtUtc,
             executionRequestId);
 
         if (!await _repository.TryRecordEnqueueWindowAsync(window, cancellationToken))
         {
-            trigger.MarkEvaluated(dueAtUtc, nextRunUtc);
-            await _repository.SaveChangesAsync(cancellationToken);
             return false;
         }
 
@@ -715,17 +777,18 @@ public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTrigger
                 trigger.CronExpression,
                 trigger.TimeZoneId,
                 trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
-                correlationId,
+                idempotencyKey,
                 idempotencyKey),
-            correlationId,
-            availableAtUtc: dueAtUtc,
+            idempotencyKey,
+            availableAtUtc: enqueuedAtUtc,
             idempotencyKey: idempotencyKey,
             causationId: trigger.Id.ToString("N"));
 
-        trigger.MarkEnqueued(dueAtUtc, nextRunUtc);
-        await _repository.SaveChangesAsync(cancellationToken);
         return true;
     }
+
+    private static DateTime NormalizeUtc(DateTime value) =>
+        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
 
     private async Task<IReadOnlyList<Guid>> ResolveDueCompanyIdsAsync(
         DateTime dueAtUtc,

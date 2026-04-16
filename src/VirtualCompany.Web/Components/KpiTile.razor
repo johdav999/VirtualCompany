@@ -1,0 +1,76 @@
+@using Microsoft.AspNetCore.Components
+@using VirtualCompany.Web.Services
+
+<a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(Item.Route, FallbackRoute)" aria-label="@($"Open {Item.Label}")">
+    <div class="cockpit-card__header">
+        <strong>@Item.Label</strong>
+        <span class="@TrendClass(Item.TrendDirection)">@TrendGlyph(Item.TrendDirection)</span>
+    </div>
+    <div class="text-body-secondary">@Item.Department</div>
+    <dl class="cockpit-kpi-list mb-0 mt-3">
+        <div>
+            <dt>Current</dt>
+            <dd>@FormatMetric(Item.CurrentValue, Item.Unit)</dd>
+        </div>
+        <div>
+            <dt>Baseline</dt>
+            <dd>@FormatMetric(Item.BaselineValue, Item.Unit)</dd>
+        </div>
+        <div>
+            <dt>Delta</dt>
+            <dd>@FormatDelta(Item)</dd>
+        </div>
+    </dl>
+</a>
+
+@code {
+    [Parameter, EditorRequired]
+    public ExecutiveCockpitKpiTileViewModel Item { get; set; } = default!;
+
+    [Parameter]
+    public string FallbackRoute { get; set; } = "/dashboard";
+
+    private static bool HasDrillRoute(string? route) =>
+        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+
+    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
+        HasDrillRoute(route) ? route! : fallbackRoute;
+
+    private static string TrendClass(string trendDirection) =>
+        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(trendDirection)}";
+
+    private static string NormalizeCssToken(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+
+    private static string TrendGlyph(string? direction) =>
+        string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
+        string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
+        string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
+        "Trend";
+
+    private static string FormatMetric(decimal? value, string? unit)
+    {
+        if (value is null)
+        {
+            return "n/a";
+        }
+
+        var formatted = value.Value % 1 == 0
+            ? value.Value.ToString("0")
+            : value.Value.ToString("0.##");
+        return string.IsNullOrWhiteSpace(unit) ? formatted : $"{formatted} {unit}";
+    }
+
+    private static string FormatDelta(ExecutiveCockpitKpiTileViewModel kpi)
+    {
+        if (kpi.DeltaValue is null)
+        {
+            return "n/a";
+        }
+
+        var value = kpi.DeltaValue.Value > 0 ? $"+{kpi.DeltaValue.Value:0.##}" : kpi.DeltaValue.Value.ToString("0.##");
+        return kpi.DeltaPercentage is null
+            ? value
+            : $"{value} ({kpi.DeltaPercentage.Value:+0.#;-0.#;0}%)";
+    }
+}

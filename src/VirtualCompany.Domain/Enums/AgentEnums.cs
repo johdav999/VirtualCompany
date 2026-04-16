@@ -23,7 +23,9 @@ public enum AgentAutonomyLevel
 {
     Level0 = 0,
     Level1 = 1,
+    Assisted = 1,
     Level2 = 2,
+    Guided = 2,
     Level3 = 3
 }
 

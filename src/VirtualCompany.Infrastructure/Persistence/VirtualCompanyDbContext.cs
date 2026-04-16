@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Infrastructure.Persistence;
@@ -7,13 +8,16 @@ namespace VirtualCompany.Infrastructure.Persistence;
 public sealed class VirtualCompanyDbContext : DbContext
 {
     private readonly ICompanyContextAccessor? _companyContextAccessor;
+    private readonly IExecutiveCockpitDashboardCacheInvalidator? _dashboardCacheInvalidator;
 
     public VirtualCompanyDbContext(
         DbContextOptions<VirtualCompanyDbContext> options,
-        ICompanyContextAccessor? companyContextAccessor = null)
+        ICompanyContextAccessor? companyContextAccessor = null,
+        IExecutiveCockpitDashboardCacheInvalidator? dashboardCacheInvalidator = null)
         : base(options)
     {
         _companyContextAccessor = companyContextAccessor;
+        _dashboardCacheInvalidator = dashboardCacheInvalidator;
     }
 
     public DbSet<User> Users => Set<User>();
@@ -22,6 +26,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
     public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
+    public DbSet<ActivityEvent> ActivityEvents => Set<ActivityEvent>();
     public DbSet<ExecutionExceptionRecord> ExecutionExceptionRecords => Set<ExecutionExceptionRecord>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
@@ -41,7 +46,13 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
+    public DbSet<CompanyBriefingSection> CompanyBriefingSections => Set<CompanyBriefingSection>();
+    public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+    public DbSet<CompanyBriefingSeverityRule> CompanyBriefingSeverityRules => Set<CompanyBriefingSeverityRule>();
+    public DbSet<UserBriefingPreference> UserBriefingPreferences => Set<UserBriefingPreference>();
+    public DbSet<TenantBriefingDefault> TenantBriefingDefaults => Set<TenantBriefingDefault>();
+    public DbSet<CompanyBriefingUpdateJob> CompanyBriefingUpdateJobs => Set<CompanyBriefingUpdateJob>();
     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
     public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
     public DbSet<ProactiveMessagePolicyDecision> ProactiveMessagePolicyDecisions => Set<ProactiveMessagePolicyDecision>();
@@ -58,8 +69,59 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
     public DbSet<Alert> Alerts => Set<Alert>();
     public DbSet<Escalation> Escalations => Set<Escalation>();
+    public DbSet<InsightAcknowledgment> InsightAcknowledgments => Set<InsightAcknowledgment>();
+    public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
+    public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+
+    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
+        var result = await base.SaveChangesAsync(cancellationToken);
+
+        if (_dashboardCacheInvalidator is not null)
+        {
+            foreach (var companyId in companiesToInvalidate)
+            {
+                await _dashboardCacheInvalidator.InvalidateAsync(companyId, cancellationToken);
+            }
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<Guid> CaptureDashboardInvalidationCompanies() =>
+        ChangeTracker.Entries()
+            .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .Where(entry =>
+                entry.Entity is WorkTask ||
+                entry.Entity is ApprovalRequest ||
+                entry.Entity is Agent ||
+                entry.Entity is ActivityEvent ||
+                entry.Entity is ToolExecutionAttempt ||
+                entry.Entity is TriggerExecutionAttempt ||
+                entry.Entity is WorkflowDefinition ||
+                entry.Entity is WorkflowInstance ||
+                entry.Entity is WorkflowException ||
+                entry.Entity is CompanyBriefing ||
+                entry.Entity is CompanyBriefingSection ||
+                entry.Entity is CompanyBriefingContribution ||
+                entry.Entity is CompanyBriefingSeverityRule ||
+                entry.Entity is CompanyBriefingUpdateJob ||
+                entry.Entity is UserBriefingPreference ||
+                entry.Entity is TenantBriefingDefault ||
+                entry.Entity is DashboardDepartmentConfig ||
+                entry.Entity is DashboardWidgetConfig ||
+                entry.Entity is Alert)
+            .Select(entry =>
+            {
+                var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+                return property?.CurrentValue is Guid companyId ? companyId : Guid.Empty;
+            })
+            .Where(companyId => companyId != Guid.Empty)
+            .Distinct()
+            .ToArray();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -78,6 +140,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AuditEvent>()
             .HasQueryFilter(auditEvent =>
                 CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<ActivityEvent>()
+            .HasQueryFilter(activityEvent =>
+                CurrentCompanyId.HasValue && activityEvent.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
@@ -114,9 +179,27 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyBriefing>()
             .HasQueryFilter(briefing =>
                 CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefingSection>()
+            .HasQueryFilter(section =>
+                CurrentCompanyId.HasValue && section.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefingContribution>()
+            .HasQueryFilter(contribution =>
+                CurrentCompanyId.HasValue && contribution.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefingUpdateJob>()
+            .HasQueryFilter(job =>
+                CurrentCompanyId.HasValue && job.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
             .HasQueryFilter(preference =>
                 CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CompanyBriefingSeverityRule>()
+            .HasQueryFilter(rule =>
+                CurrentCompanyId.HasValue && rule.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<UserBriefingPreference>()
+            .HasQueryFilter(preference =>
+                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<TenantBriefingDefault>()
+            .HasQueryFilter(defaults =>
+                CurrentCompanyId.HasValue && defaults.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanyNotification>()
             .HasQueryFilter(notification =>
                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
@@ -165,5 +248,14 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Escalation>()
             .HasQueryFilter(escalation =>
                 CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DashboardDepartmentConfig>()
+            .HasQueryFilter(config =>
+                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DashboardWidgetConfig>()
+            .HasQueryFilter(config =>
+                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<InsightAcknowledgment>()
+            .HasQueryFilter(acknowledgment =>
+                CurrentCompanyId.HasValue && acknowledgment.CompanyId == CurrentCompanyId.Value);
     }
 }

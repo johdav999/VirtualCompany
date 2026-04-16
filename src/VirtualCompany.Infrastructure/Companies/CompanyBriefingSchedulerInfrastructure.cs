@@ -12,6 +12,7 @@ public sealed class BriefingSchedulerOptions
     public const string SectionName = "BriefingScheduler";
 
     public bool Enabled { get; set; } = true;
+    // Scheduled scans can be slow; due update jobs are executed by BriefingUpdateJobBackgroundService.
     public int PollIntervalSeconds { get; set; } = 900;
     public int LockTtlSeconds { get; set; } = 300;
     public int BatchSize { get; set; } = 50;

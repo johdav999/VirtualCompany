@@ -1,6 +1,15 @@
 namespace VirtualCompany.Application.Cockpit;
 
+using VirtualCompany.Domain.Enums;
+
 public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
+
+public sealed record GetExecutiveCockpitWidgetPayloadQuery(
+    Guid CompanyId,
+    string WidgetKey,
+    string? Department,
+    DateTime? StartUtc,
+    DateTime? EndUtc);
 
 public sealed record ExecutiveCockpitDashboardDto(
     Guid CompanyId,
@@ -12,6 +21,7 @@ public sealed record ExecutiveCockpitDashboardDto(
     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
+    IReadOnlyList<DepartmentDashboardSectionDto> DepartmentSections,
     IReadOnlyList<ExecutiveCockpitActivityItemDto> RecentActivity,
     ExecutiveCockpitSetupStateDto SetupState,
     ExecutiveCockpitEmptyStateFlagsDto EmptyStateFlags);
@@ -28,6 +38,23 @@ public sealed record ExecutiveCockpitSummaryKpiDto(
     string ComparisonLabel,
     string? StatusHint,
     bool IsEmpty);
+
+public static class ExecutiveCockpitWidgetKeys
+{
+    public const string SummaryKpis = "summary-kpis";
+    public const string DailyBriefing = "daily-briefing";
+    public const string PendingApprovals = "pending-approvals";
+    public const string Alerts = "alerts";
+    public const string DepartmentKpis = "department-kpis";
+    public const string DepartmentSections = "department-sections";
+    public const string RecentActivity = "recent-activity";
+    public const string Kpis = "kpis";
+
+    public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, RecentActivity, Kpis
+    };
+}
 
 public static class ExecutiveCockpitTrendDirections
 {
@@ -160,12 +187,85 @@ public sealed record ExecutiveCockpitEmptyStateFlagsDto(
     bool NoPendingApprovals,
     bool NoAlerts);
 
+public sealed record GetDepartmentDashboardConfigurationQuery(Guid CompanyId);
+
+public sealed record DepartmentDashboardConfigurationDto(
+    Guid CompanyId,
+    DateTime GeneratedAtUtc,
+    IReadOnlyList<DepartmentDashboardSectionDto> Sections);
+
+public sealed record DepartmentDashboardSectionDto(
+    Guid Id,
+    string DepartmentKey,
+    string DisplayName,
+    int DisplayOrder,
+    bool IsVisible,
+    string? Icon,
+    bool HasData,
+    IReadOnlyDictionary<string, int> SummaryCounts,
+    bool IsEmpty,
+    DepartmentDashboardNavigationDto Navigation,
+    DepartmentDashboardEmptyStateDto EmptyState,
+    IReadOnlyList<DepartmentDashboardWidgetDto> Widgets);
+
+public sealed record DepartmentDashboardWidgetDto(
+    Guid Id,
+    string WidgetKey,
+    string Title,
+    string WidgetType,
+    int DisplayOrder,
+    bool IsVisible,
+    string SummaryBinding,
+    int SummaryValue,
+    bool HasData,
+    bool IsEmpty,
+    DepartmentDashboardNavigationDto Navigation,
+    DepartmentDashboardEmptyStateDto EmptyState);
+
+public sealed record DepartmentDashboardNavigationDto(
+    string Label,
+    string Route);
+
+public sealed record DepartmentDashboardEmptyStateDto(
+    string Title,
+    string Message,
+    string? ActionLabel,
+    string? ActionRoute);
+
+public static class DepartmentDashboardSummaryBindings
+{
+    public const string ActiveAgents = "active_agents";
+    public const string OpenTasks = "open_tasks";
+    public const string CompletedTasksLast7Days = "completed_tasks_7d";
+    public const string PendingApprovals = "pending_approvals";
+    public const string ActiveWorkflows = "active_workflows";
+    public const string WorkflowExceptions = "workflow_exceptions";
+}
+
+public interface IDepartmentDashboardConfigurationService
+{
+    Task<DepartmentDashboardConfigurationDto> GetAsync(
+        GetDepartmentDashboardConfigurationQuery query,
+        CancellationToken cancellationToken);
+}
+
 public interface IExecutiveCockpitDashboardService
 {
     Task<ExecutiveCockpitDashboardDto> GetAsync(
         GetExecutiveCockpitDashboardQuery query,
         CancellationToken cancellationToken);
+
+    Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
+        GetExecutiveCockpitWidgetPayloadQuery query,
+        CancellationToken cancellationToken);
 }
+
+public sealed record ExecutiveCockpitWidgetPayloadDto(
+    Guid CompanyId,
+    string WidgetKey,
+    DateTime GeneratedAtUtc,
+    DateTime? CacheTimestampUtc,
+    object? Payload);
 
 public interface IExecutiveCockpitDashboardCache
 {
@@ -173,16 +273,84 @@ public interface IExecutiveCockpitDashboardCache
         Guid companyId,
         CancellationToken cancellationToken);
 
+    Task<CachedExecutiveCockpitDashboardDto?> TryGetDashboardAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken);
+
     Task SetAsync(
         CachedExecutiveCockpitDashboardDto snapshot,
+        CancellationToken cancellationToken);
+
+    Task SetDashboardAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedExecutiveCockpitDashboardDto snapshot,
+        CancellationToken cancellationToken);
+
+    Task<CachedExecutiveCockpitKpiDashboardDto?> TryGetKpiDashboardAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken);
+
+    Task SetKpiDashboardAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedExecutiveCockpitKpiDashboardDto snapshot,
+        CancellationToken cancellationToken);
+
+    Task<CachedExecutiveCockpitWidgetDto<TPayload>?> TryGetWidgetAsync<TPayload>(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken);
+
+    Task SetWidgetAsync<TPayload>(
+        ExecutiveCockpitCacheScope scope,
+        CachedExecutiveCockpitWidgetDto<TPayload> snapshot,
         CancellationToken cancellationToken);
 
     Task InvalidateAsync(
         Guid companyId,
         CancellationToken cancellationToken);
+
+    Task InvalidateAsync(
+        ExecutiveCockpitCacheInvalidationEvent invalidationEvent,
+        CancellationToken cancellationToken);
 }
+
+public interface IExecutiveCockpitDashboardCacheInvalidator
+{
+    Task InvalidateAsync(
+        Guid companyId,
+        CancellationToken cancellationToken);
+
+    Task InvalidateAsync(
+        ExecutiveCockpitCacheInvalidationEvent invalidationEvent,
+        CancellationToken cancellationToken);
+}
+
+public sealed record ExecutiveCockpitCacheInvalidationEvent(
+    Guid CompanyId,
+    string TriggerType,
+    string? EntityType,
+    Guid? EntityId,
+    DateTime OccurredAtUtc);
+
+public sealed record ExecutiveCockpitCacheScope(
+    Guid CompanyId,
+    string EffectiveRole,
+    IReadOnlyList<string> DepartmentFilters,
+    DateTime? StartUtc,
+    DateTime? EndUtc,
+    string Identity);
 
 public sealed record CachedExecutiveCockpitDashboardDto(
     Guid CompanyId,
     DateTime CachedAtUtc,
     ExecutiveCockpitDashboardDto Dashboard);
+
+public sealed record CachedExecutiveCockpitKpiDashboardDto(
+    Guid CompanyId,
+    DateTime CachedAtUtc,
+    ExecutiveCockpitKpiDashboardDto Dashboard);
+
+public sealed record CachedExecutiveCockpitWidgetDto<TPayload>(
+    Guid CompanyId,
+    string WidgetKey,
+    DateTime CachedAtUtc,
+    TPayload Payload);

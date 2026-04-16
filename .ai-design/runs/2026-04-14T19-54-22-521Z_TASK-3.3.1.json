@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.3.1",
+  "promptPath": ".ai-design/prompts/TASK-3.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T19:54:22.521Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T19-54-22-521Z_TASK-3.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T19-54-22-521Z_TASK-3.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T19:59:39.082Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "       CriticalDeviationPercentage = 75\n+        };\n+        var metric = Metric(\"open_tasks\", 15, 5, definition);\n+\n+        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);\n+\n+        Assert.NotNull(anomaly);\n+        Assert.Equal(\"threshold_breach,baseline_deviation\", anomaly!.Reason);\n+        Assert.Equal(\"critical\", anomaly.Severity);\n+        Assert.Equal(5, anomaly.ThresholdValue);\n+        Assert.Equal(200, anomaly.DeviationPercentage);\n+    }\n+\n+    [Fact]\n+    public void DetectAnomaly_returns_null_when_metric_is_within_baseline_and_thresholds()\n+    {\n+        var metric = Metric(\n+            \"open_tasks\",\n+            4,\n+            4,\n+            ExecutiveCockpitKpiMetricCatalog.Find(\"open_tasks\"));\n+\n+        Assert.Null(ExecutiveCockpitKpiCalculator.DetectAnomaly(metric));\n+    }\n+\n+    [Theory]\n+    [InlineData(4, 4, null)]\n+    [InlineData(5, 4, \"warning\")]\n+    [InlineData(9, 4, \"warning\")]\n+    [InlineData(10, 4, \"critical\")]\n+    public void Severity_mapping_respects_threshold_boundaries(decimal current, decimal baseline, string? expectedSeverity)\n+    {\n+        var definition = ExecutiveCockpitKpiMetricCatalog.Find(\"open_tasks\") with\n+        {\n+            WarningDeviationPercentage = 500,\n+            CriticalDeviationPercentage = 1000\n+        };\n+        var metric = Metric(\"open_tasks\", current, baseline, definition);\n+\n+        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);\n+\n+        Assert.Equal(expectedSeverity, anomaly?.Severity);\n+    }\n+\n+    private static ExecutiveCockpitKpiMetricValue Metric(\n+        string key,\n+        decimal current,\n+        decimal? baseline,\n+        ExecutiveCockpitKpiMetricDefinition definition) =>\n+        new(\n+            key,\n+            definition.Label,\n+            \"Operations\",\n+            current,\n+            baseline,\n+            new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc),\n+            \"/tasks\",\n+            definition);\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ationPercentage = 75\n+        };\n+        var metric = Metric(\"open_tasks\", 15, 5, definition);\n+\n+        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);\n+\n+        Assert.NotNull(anomaly);\n+        Assert.Equal(\"threshold_breach,baseline_deviation\", anomaly!.Reason);\n+        Assert.Equal(\"critical\", anomaly.Severity);\n+        Assert.Equal(5, anomaly.ThresholdValue);\n+        Assert.Equal(200, anomaly.DeviationPercentage);\n+    }\n+\n+    [Fact]\n+    public void DetectAnomaly_returns_null_when_metric_is_within_baseline_and_thresholds()\n+    {\n+        var metric = Metric(\n+            \"open_tasks\",\n+            4,\n+            4,\n+            ExecutiveCockpitKpiMetricCatalog.Find(\"open_tasks\"));\n+\n+        Assert.Null(ExecutiveCockpitKpiCalculator.DetectAnomaly(metric));\n+    }\n+\n+    [Theory]\n+    [InlineData(4, 4, null)]\n+    [InlineData(5, 4, \"warning\")]\n+    [InlineData(9, 4, \"warning\")]\n+    [InlineData(10, 4, \"critical\")]\n+    public void Severity_mapping_respects_threshold_boundaries(decimal current, decimal baseline, string? expectedSeverity)\n+    {\n+        var definition = ExecutiveCockpitKpiMetricCatalog.Find(\"open_tasks\") with\n+        {\n+            WarningDeviationPercentage = 500,\n+            CriticalDeviationPercentage = 1000\n+        };\n+        var metric = Metric(\"open_tasks\", current, baseline, definition);\n+\n+        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);\n+\n+        Assert.Equal(expectedSeverity, anomaly?.Severity);\n+    }\n+\n+    private static ExecutiveCockpitKpiMetricValue Metric(\n+        string key,\n+        decimal current,\n+        decimal? baseline,\n+        ExecutiveCockpitKpiMetricDefinition definition) =>\n+        new(\n+            key,\n+            definition.Label,\n+            \"Operations\",\n+            current,\n+            baseline,\n+            new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc),\n+            \"/tasks\",\n+            definition);\n+}\nEND_OF_PATCH\ntokens used\n77,002\n",
+  "verbosityMode": "summary"
+}

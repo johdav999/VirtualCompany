@@ -1,0 +1,108 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 6f6d9af..f2b760c 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -158,6 +158,7 @@ public static class AuditEventActions
+     public const string TriggerEvaluationSkipped = "trigger.evaluation.skipped";
+     public const string TriggerExecutionAttemptStarted = "trigger.execution_attempt.started";
+     public const string TriggerExecutionAttemptRetried = "trigger.execution_attempt.retried";
++    public const string TriggerExecutionAttemptRetryDeferred = "trigger.execution_attempt.retry_deferred";
+     public const string TriggerExecutionAttemptDuplicateSkipped = "trigger.execution_attempt.duplicate_skipped";
+     public const string TriggerExecutionAttemptBlocked = "trigger.execution_attempt.blocked";
+     public const string TriggerOrchestrationStartRequested = "trigger.orchestration.start_requested";
+diff --git a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+index a57fbb9..ffdbbdf 100644
+--- a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+@@ -87,6 +87,11 @@ public interface ITriggerAuditEventWriter
+         TriggerExecutionAttempt attempt,
+         CancellationToken cancellationToken);
+ 
++    Task WriteRetryDeferredAsync(
++        TriggerExecutionAttempt attempt,
++        string reason,
++        CancellationToken cancellationToken);
++
+     Task WriteDuplicatePreventedAsync(
+         TriggerExecutionAttempt attempt,
+         CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+index 8ac0362..6a09902 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+@@ -273,6 +273,21 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
+             null,
+             cancellationToken);
+ 
++    public Task WriteRetryDeferredAsync(
++        TriggerExecutionAttempt attempt,
++        string reason,
++        CancellationToken cancellationToken) =>
++        WriteAttemptAsync(
++            attempt,
++            AuditEventActions.TriggerExecutionAttemptRetryDeferred,
++            AuditEventOutcomes.Pending,
++            string.IsNullOrWhiteSpace(reason)
++                ? "Trigger execution retry was deferred until the recorded retry window."
++                : reason.Trim(),
++            new Dictionary<string, string?>
++            {
++                ["retryDeferred"] = "true"
++            },
++            cancellationToken);
++
+     public Task WriteDuplicatePreventedAsync(
+         TriggerExecutionAttempt attempt,
+         CancellationToken cancellationToken) =>
+@@ -464,6 +479,12 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
+ 
+         if (reservation.RetryDeferred)
+         {
++            if (!await HasRetryDeferredAuditAsync(attempt, cancellationToken))
++            {
++                await _triggerAuditEventWriter.WriteRetryDeferredAsync(attempt, "Trigger execution retry is not due yet.", cancellationToken);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++            }
++
+             return TriggerExecutionAttemptStatus.RetryScheduled;
+         }
+ 
+@@ -549,6 +570,16 @@ public sealed class TriggerExecutionService : ITriggerExecutionService
+         return TimeSpan.FromSeconds(Math.Min(3600, baseDelaySeconds * multiplier));
+     }
+ 
++    private Task<bool> HasRetryDeferredAuditAsync(TriggerExecutionAttempt attempt, CancellationToken cancellationToken) =>
++        _dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.CompanyId == attempt.CompanyId &&
++                    x.Action == AuditEventActions.TriggerExecutionAttemptRetryDeferred &&
++                    x.TargetType == AuditTargetTypes.TriggerExecutionAttempt &&
++                    x.TargetId == attempt.Id.ToString("N"),
++                cancellationToken);
++
+     private async Task MarkSourceTriggerRunAsync(TriggerExecutionWorkItem workItem, CancellationToken cancellationToken)
+     {
+         if (!string.Equals(workItem.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
+diff --git a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+index 86788af..52da9f0 100644
+--- a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+@@ -142,6 +142,16 @@ public sealed class TriggerExecutionServiceTests
+         var retryDeferred = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
+         Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled, retryDeferred);
+         Assert.Equal(1, dispatcher.DispatchCount);
++        var retryDeferredAudit = await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptRetryDeferred);
++        Assert.Equal(companyId, retryDeferredAudit.CompanyId);
++        Assert.Equal(AuditEventOutcomes.Pending, retryDeferredAudit.Outcome);
++        Assert.Equal(workItem.CorrelationId, retryDeferredAudit.CorrelationId);
++        Assert.Equal(workItem.TriggerId.ToString("N"), retryDeferredAudit.Metadata["triggerId"]);
++        Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled.ToStorageValue(), retryDeferredAudit.Metadata["executionStatus"]);
++        Assert.Equal(workItem.IdempotencyKey, retryDeferredAudit.Metadata["idempotencyKey"]);
++        Assert.Equal("true", retryDeferredAudit.Metadata["retryDeferred"]);
+ 
+         failedAttempt.MarkRetried(failedAttempt.RetryAttemptCount + 1);
+         await dbContext.SaveChangesAsync();
+END_OF_PATCH

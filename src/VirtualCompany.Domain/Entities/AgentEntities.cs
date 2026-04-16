@@ -351,7 +351,8 @@ public sealed class Agent : ICompanyOwnedEntity
         IDictionary<string, JsonNode?>? escalationRules = null,
         string? roleBrief = null,
         IDictionary<string, JsonNode?>? triggerLogic = null,
-        IDictionary<string, JsonNode?>? workingHours = null)
+        IDictionary<string, JsonNode?>? workingHours = null,
+        IDictionary<string, JsonNode?>? communicationProfile = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -384,6 +385,7 @@ public sealed class Agent : ICompanyOwnedEntity
         EscalationRules = CloneNodes(escalationRules);
         TriggerLogic = CloneNodes(triggerLogic);
         WorkingHours = CloneNodes(workingHours);
+        CommunicationProfile = CloneNodes(communicationProfile);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
     }
@@ -408,6 +410,7 @@ public sealed class Agent : ICompanyOwnedEntity
     public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> TriggerLogic { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> WorkingHours { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> CommunicationProfile { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
@@ -425,7 +428,8 @@ public sealed class Agent : ICompanyOwnedEntity
         IDictionary<string, JsonNode?>? thresholds,
         IDictionary<string, JsonNode?>? escalationRules,
         IDictionary<string, JsonNode?>? triggerLogic,
-        IDictionary<string, JsonNode?>? workingHours)
+        IDictionary<string, JsonNode?>? workingHours,
+        IDictionary<string, JsonNode?>? communicationProfile = null)
     {
         AgentStatusValues.EnsureSupported(status, nameof(status));
         AgentAutonomyLevelValues.EnsureSupported(autonomyLevel, nameof(autonomyLevel));
@@ -439,6 +443,7 @@ public sealed class Agent : ICompanyOwnedEntity
         var updatedEscalationRules = CloneNodes(escalationRules);
         var updatedTriggerLogic = CloneNodes(triggerLogic);
         var updatedWorkingHours = CloneNodes(workingHours);
+        var updatedCommunicationProfile = CloneNodes(communicationProfile);
 
         if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
             Status == status &&
@@ -450,7 +455,8 @@ public sealed class Agent : ICompanyOwnedEntity
             JsonDictionariesEqual(Thresholds, updatedThresholds) &&
             JsonDictionariesEqual(EscalationRules, updatedEscalationRules) &&
             JsonDictionariesEqual(TriggerLogic, updatedTriggerLogic) &&
-            JsonDictionariesEqual(WorkingHours, updatedWorkingHours))
+            JsonDictionariesEqual(WorkingHours, updatedWorkingHours) &&
+            JsonDictionariesEqual(CommunicationProfile, updatedCommunicationProfile))
         {
             return false;
         }
@@ -466,6 +472,7 @@ public sealed class Agent : ICompanyOwnedEntity
         EscalationRules = updatedEscalationRules;
         TriggerLogic = updatedTriggerLogic;
         WorkingHours = updatedWorkingHours;
+        CommunicationProfile = updatedCommunicationProfile;
         UpdatedUtc = DateTime.UtcNow;
         return true;
     }

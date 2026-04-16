@@ -40,7 +40,8 @@ public sealed class WorkTask : ICompanyOwnedEntity
         Guid? originatingAgentId = null,
         string? triggerSource = null,
         string? creationReason = null,
-        string? triggerEventId = null)
+        string? triggerEventId = null,
+        WorkTaskStatus? status = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -78,6 +79,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
         }
 
         _ = priority.ToStorageValue();
+        _ = (status ?? WorkTaskStatusValues.DefaultStatus).ToStorageValue();
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
@@ -85,7 +87,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
         Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
         Description = NormalizeOptional(description, nameof(description), DescriptionMaxLength);
         Priority = priority;
-        Status = WorkTaskStatusValues.DefaultStatus;
+        Status = status ?? WorkTaskStatusValues.DefaultStatus;
         AssignedAgentId = assignedAgentId;
         ParentTaskId = parentTaskId;
         CreatedByActorType = NormalizeRequired(createdByActorType, nameof(createdByActorType), ActorTypeMaxLength);

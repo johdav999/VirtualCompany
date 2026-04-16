@@ -130,6 +130,52 @@ public sealed class AgentScheduledTriggerPersistenceTests
         Assert.Equal(1, await dbContext.AgentScheduledTriggerEnqueueWindows.IgnoreQueryFilters().CountAsync());
     }
 
+    [Fact]
+    public async Task Trigger_persistence_rejects_agent_from_different_company()
+    {
+        await using var connection = CreateOpenConnection();
+        var triggerCompanyId = Guid.NewGuid();
+        var agentCompanyId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        await using var dbContext = await CreateDbContextAsync(connection);
+        dbContext.Companies.Add(new Company(triggerCompanyId, "Trigger Company"));
+        await SeedCompanyAndAgentAsync(dbContext, agentCompanyId, agentId);
+
+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(
+            triggerCompanyId,
+            agentId,
+            new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task Enqueue_window_persistence_rejects_trigger_from_different_company()
+    {
+        await using var connection = CreateOpenConnection();
+        var triggerCompanyId = Guid.NewGuid();
+        var windowCompanyId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        var triggerId = Guid.NewGuid();
+        var windowStart = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
+        await using var dbContext = await CreateDbContextAsync(connection);
+        await SeedCompanyAndAgentAsync(dbContext, triggerCompanyId, agentId);
+        dbContext.Companies.Add(new Company(windowCompanyId, "Window Company"));
+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(triggerCompanyId, agentId, windowStart, triggerId));
+        await dbContext.SaveChangesAsync();
+
+        dbContext.AgentScheduledTriggerEnqueueWindows.Add(new AgentScheduledTriggerEnqueueWindow(
+            Guid.NewGuid(),
+            windowCompanyId,
+            triggerId,
+            windowStart,
+            windowStart.AddMinutes(1),
+            windowStart,
+            "exec-tenant-mismatch"));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
+    }
+
     private static SqliteConnection CreateOpenConnection()
     {
         var connection = new SqliteConnection("Data Source=:memory:");

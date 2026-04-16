@@ -1,0 +1,618 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AuditEvent.cs b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+index 6f5a2c1..8b7e4d2 100644
+--- a/src/VirtualCompany.Domain/Entities/AuditEvent.cs
++++ b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+@@ -24,7 +24,14 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         string? correlationId = null,
+         DateTime? occurredUtc = null,
+         IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null,
+-        string? payloadDiffJson = null)
++        string? payloadDiffJson = null,
++        string? agentName = null,
++        string? agentRole = null,
++        string? responsibilityDomain = null,
++        string? promptProfileVersion = null,
++        string? boundaryDecisionOutcome = null,
++        string? identityReasonCode = null,
++        string? boundaryReasonCode = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -59,6 +66,13 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         RelatedToolExecutionAttemptId = ResolveRelatedId(AgentToolExecutionTargetType, "toolExecutionId", "toolExecutionAttemptId");
+         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
+         PayloadDiffJson = NormalizeOptional(payloadDiffJson, nameof(payloadDiffJson), 16000);
++        AgentName = NormalizeOptional(agentName ?? ResolveMetadataValue("agentName", "agentDisplayName"), nameof(agentName), 200);
++        AgentRole = NormalizeOptional(agentRole ?? ResolveMetadataValue("agentRole", "agentRoleName"), nameof(agentRole), 128);
++        ResponsibilityDomain = NormalizeOptional(responsibilityDomain ?? ResolveMetadataValue("responsibilityDomain", "requestedDomain"), nameof(responsibilityDomain), 128);
++        PromptProfileVersion = NormalizeOptional(promptProfileVersion ?? ResolveMetadataValue("promptProfileVersion"), nameof(promptProfileVersion), 64);
++        BoundaryDecisionOutcome = NormalizeOptional(boundaryDecisionOutcome ?? ResolveMetadataValue("boundaryDecisionOutcome"), nameof(boundaryDecisionOutcome), 64);
++        IdentityReasonCode = NormalizeOptional(identityReasonCode ?? ResolveMetadataValue("identityReasonCode", "reasonCode"), nameof(identityReasonCode), 128);
++        BoundaryReasonCode = NormalizeOptional(boundaryReasonCode ?? ResolveMetadataValue("boundaryReasonCode"), nameof(boundaryReasonCode), 128);
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -80,6 +94,13 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+     public Guid? RelatedToolExecutionAttemptId { get; private set; }
+     public DateTime OccurredUtc { get; private set; }
+     public string? PayloadDiffJson { get; private set; }
++    public string? AgentName { get; private set; }
++    public string? AgentRole { get; private set; }
++    public string? ResponsibilityDomain { get; private set; }
++    public string? PromptProfileVersion { get; private set; }
++    public string? BoundaryDecisionOutcome { get; private set; }
++    public string? IdentityReasonCode { get; private set; }
++    public string? BoundaryReasonCode { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+@@ -198,6 +219,18 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+             : null;
+ 
++    private string? ResolveMetadataValue(params string[] keys)
++    {
++        foreach (var key in keys)
++        {
++            if (Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
++            {
++                return value;
++            }
++        }
++
++        return null;
++    }
++
+     private Guid? ResolveRelatedId(string targetType, params string[] metadataKeys)
+     {
+         if (string.Equals(TargetType, targetType, StringComparison.OrdinalIgnoreCase) &&
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 83b9c47..6d1e3c0 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -15,7 +15,14 @@ public sealed record AuditEventWriteRequest(
+     string? CorrelationId = null,
+     DateTime? OccurredUtc = null,
+     IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null,
+-    string? PayloadDiffJson = null);
++    string? PayloadDiffJson = null,
++    string? AgentName = null,
++    string? AgentRole = null,
++    string? ResponsibilityDomain = null,
++    string? PromptProfileVersion = null,
++    string? BoundaryDecisionOutcome = null,
++    string? IdentityReasonCode = null,
++    string? BoundaryReasonCode = null);
+ 
+ // Business audit history is an explicit application concern.
+ // Technical diagnostics belong on ILogger and must not be inferred from audit records.
+@@ -49,7 +56,14 @@ public sealed record AuditHistoryListItem(
+     DateTime OccurredAt,
+     AuditSafeExplanationDto Explanation,
+     string? CorrelationId,
+-    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
++    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities,
++    string? AgentName,
++    string? AgentRole,
++    string? ResponsibilityDomain,
++    string? PromptProfileVersion,
++    string? BoundaryDecisionOutcome,
++    string? IdentityReasonCode,
++    string? BoundaryReasonCode);
+ 
+ public sealed record AuditHistoryResult(
+     IReadOnlyList<AuditHistoryListItem> Items,
+@@ -79,7 +93,14 @@ public sealed record AuditDetailDto(
+     IReadOnlyDictionary<string, string?> Metadata,
+     IReadOnlyList<AuditApprovalReferenceDto> LinkedApprovals,
+     IReadOnlyList<AuditToolExecutionReferenceDto> LinkedToolExecutions,
+-    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities);
++    IReadOnlyList<AuditEntityReferenceDto> AffectedEntities,
++    string? AgentName,
++    string? AgentRole,
++    string? ResponsibilityDomain,
++    string? PromptProfileVersion,
++    string? BoundaryDecisionOutcome,
++    string? IdentityReasonCode,
++    string? BoundaryReasonCode);
+ 
+ public sealed record AuditSafeExplanationDto(
+     string Summary,
+@@ -196,3 +217,21 @@ public static class AuditEventActions
+     public const string ProactiveMessageBlocked = "proactive_message.blocked";
+     public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
+ }
++
++public static class AuditBoundaryDecisionOutcomes
++{
++    public const string InScope = "in_scope";
++    public const string DelegatedOutOfScope = "delegated_out_of_scope";
++    public const string EscalatedOutOfScope = "escalated_out_of_scope";
++    public const string DeniedByPolicy = "denied_by_policy";
++}
++
++public static class AuditReasonCodes
++{
++    public const string IdentityFallbackMissingConfig = "identity_fallback_missing_config";
++    public const string IdentityFallbackIncompleteProfile = "identity_fallback_incomplete_profile";
++    public const string BoundaryDelegateOutOfScope = "boundary_delegate_out_of_scope";
++    public const string BoundaryDelegatePolicyRestriction = "boundary_delegate_policy_restriction";
++    public const string BoundaryEscalateOutOfScope = "boundary_escalate_out_of_scope";
++    public const string BoundaryDeniedByPolicy = "boundary_denied_by_policy";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+index b1cdbb4..1a75f3d 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+@@ -32,7 +32,14 @@ public sealed class AuditEventWriter : IAuditEventWriter
+             auditEvent.CorrelationId,
+             auditEvent.OccurredUtc,
+             BuildDataSourcesUsed(auditEvent),
+-            auditEvent.PayloadDiffJson));
++            auditEvent.PayloadDiffJson,
++            auditEvent.AgentName,
++            auditEvent.AgentRole,
++            auditEvent.ResponsibilityDomain,
++            auditEvent.PromptProfileVersion,
++            auditEvent.BoundaryDecisionOutcome,
++            auditEvent.IdentityReasonCode,
++            auditEvent.BoundaryReasonCode));
+         return Task.CompletedTask;
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+index 9c8a428..1a9f3a6 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/CompanyAuditQueryService.cs
+@@ -127,7 +127,14 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             SafeAuditExplanationMapper.SanitizeMetadata(auditEvent.Metadata),
+             linkedApprovals,
+             linkedToolExecutions,
+-            BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions));
++            BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions),
++            auditEvent.AgentName,
++            auditEvent.AgentRole,
++            auditEvent.ResponsibilityDomain,
++            auditEvent.PromptProfileVersion,
++            auditEvent.BoundaryDecisionOutcome,
++            auditEvent.IdentityReasonCode,
++            auditEvent.BoundaryReasonCode);
+     }
+ 
+     private void EnsureTenant(Guid companyId)
+@@ -443,7 +450,14 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
+             auditEvent.OccurredUtc,
+             BuildSafeExplanation(auditEvent),
+             auditEvent.CorrelationId,
+-            BuildAffectedEntities(auditEvent, related));
++            BuildAffectedEntities(auditEvent, related),
++            auditEvent.AgentName,
++            auditEvent.AgentRole,
++            auditEvent.ResponsibilityDomain,
++            auditEvent.PromptProfileVersion,
++            auditEvent.BoundaryDecisionOutcome,
++            auditEvent.IdentityReasonCode,
++            auditEvent.BoundaryReasonCode);
+ 
+     private static AuditSafeExplanationDto BuildSafeExplanation(
+         AuditEvent auditEvent,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 25b6f9a..03c9b6c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -501,6 +501,13 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEve
+         builder.Property(x => x.OccurredUtc).IsRequired();
+         builder.Property(x => x.PayloadDiffJson).HasColumnName("payload_diff_json").HasMaxLength(16000);
++        builder.Property(x => x.AgentName).HasColumnName("agent_name").HasMaxLength(200);
++        builder.Property(x => x.AgentRole).HasColumnName("agent_role").HasMaxLength(128);
++        builder.Property(x => x.ResponsibilityDomain).HasColumnName("responsibility_domain").HasMaxLength(128);
++        builder.Property(x => x.PromptProfileVersion).HasColumnName("prompt_profile_version").HasMaxLength(64);
++        builder.Property(x => x.BoundaryDecisionOutcome).HasColumnName("boundary_decision_outcome").HasMaxLength(64);
++        builder.Property(x => x.IdentityReasonCode).HasColumnName("identity_reason_code").HasMaxLength(128);
++        builder.Property(x => x.BoundaryReasonCode).HasColumnName("boundary_reason_code").HasMaxLength(128);
+         builder.Property(x => x.DataSources)
+             .HasColumnName("data_sources_json")
+             .HasJsonConversion<List<string>>()
+@@ -526,6 +533,7 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEve
+         builder.HasIndex(x => new { x.CompanyId, x.ActorType, x.ActorId });
+         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.RelatedAgentId, x.OccurredUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.RelatedAgentId, x.BoundaryDecisionOutcome, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.RelatedTaskId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.RelatedWorkflowInstanceId, x.OccurredUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.RelatedApprovalRequestId, x.OccurredUtc });
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 2d1b0d5..5ad807d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -919,8 +919,15 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ["orchestrationId"] = metadata.OrchestrationId.ToString("N"),
+             ["promptId"] = metadata.PromptId.ToString("N"),
+             ["correlationId"] = metadata.CorrelationId,
+-            ["status"] = status
++            ["status"] = status,
++            ["agentName"] = context.Agent.DisplayName,
++            ["agentRole"] = context.Agent.RoleName,
++            ["responsibilityDomain"] = context.Agent.Department,
++            ["promptProfileVersion"] = BuildPromptProfileVersion(context.Agent),
++            ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope
+         };
++        AddIdentityFallbackAuditMetadata(auditMetadata, context.Agent);
+ 
+         return
+         [
+@@ -965,12 +972,26 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 ["sourceReferenceCount"] = (context.GroundedContext?.Context.Counts.SourceReferences ?? 0).ToString(),
+                 ["agentRoleName"] = context.Agent.RoleName,
+                 ["agentAutonomyLevel"] = context.Agent.AutonomyLevel,
++                ["agentName"] = context.Agent.DisplayName,
++                ["agentRole"] = context.Agent.RoleName,
++                ["responsibilityDomain"] = context.Agent.Department,
++                ["promptProfileVersion"] = BuildPromptProfileVersion(context.Agent),
++                ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope,
+                 ["taskType"] = context.Task.Type,
+                 ["initiatingActorType"] = context.InitiatingActorType,
+                 ["initiatingActorId"] = context.InitiatingActorId?.ToString("N"),
+                 ["policyInterceptionPoint"] = "tool_executor",
+                 ["communicationProfileSource"] = context.Agent.CommunicationProfile.ProfileSource,
+                 ["communicationProfileFallback"] = context.Agent.CommunicationProfile.IsFallback.ToString(),
+                 ["communicationStylePassed"] = styleCheck.Passed.ToString()
+-            });
++            }.Tap(metadata => AddIdentityFallbackAuditMetadata(metadata, context.Agent)));
+     }
+ 
+     private static OrchestrationResult BuildOutOfScopeResult(
+@@ -1027,11 +1048,19 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 ["matchedRule"] = decision.MatchedRule,
+                 ["delegationTarget"] = decision.DelegationTarget,
+                 ["delegationAction"] = decision.DecisionType,
+-                ["agentRoleName"] = agent.RoleName
++                ["agentRoleName"] = agent.RoleName,
++                ["agentName"] = agent.DisplayName,
++                ["agentRole"] = agent.RoleName,
++                ["responsibilityDomain"] = decision.RequestedDomain,
++                ["promptProfileVersion"] = BuildPromptProfileVersion(agent),
++                ["boundaryDecisionOutcome"] = ResolveBoundaryDecisionOutcome(decision),
++                ["boundaryReasonCode"] = ResolveBoundaryReasonCode(decision)
+             });
++        AddIdentityFallbackAuditMetadata((Dictionary<string, string?>)metadata.AuditMetadata, agent);
+         var taskArtifact = new OrchestrationTaskArtifact(task.Id, WorkTaskStatus.Completed.ToStorageValue(), CloneNodes(structuredOutput), decision.Reason, 1m, [], [], correlationId);
+         var auditArtifact = new OrchestrationAuditArtifact(
+             company.CompanyId,
+@@ -1094,15 +1123,53 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 artifact.RationaleSummary,
+                 artifact.DataSources,
+                 artifact.Metadata,
+                 artifact.CorrelationId,
+-                artifact.OccurredUtc),
+                 PayloadDiffJson: JsonSerializer.Serialize(new
+                 {
+                     agentId = result.AgentId,
+                     requestedDomain = decision.RequestedDomain,
+                     matchedRule = decision.MatchedRule,
+                     delegationTarget = decision.DelegationTarget
+                 })),
+             cancellationToken);
+     }
+ 
++    private static string BuildPromptProfileVersion(AgentRuntimeProfileDto agent) =>
++        agent.UpdatedUtc.ToUniversalTime().ToString("yyyyMMddHHmmss");
++
++    private static void AddIdentityFallbackAuditMetadata(
++        IDictionary<string, string?> metadata,
++        AgentRuntimeProfileDto agent)
++    {
++        if (!agent.CommunicationProfile.IsFallback)
++        {
++            return;
++        }
++
++        metadata["identityReasonCode"] = AuditReasonCodes.IdentityFallbackMissingConfig;
++        metadata["reasonCode"] = AuditReasonCodes.IdentityFallbackMissingConfig;
++    }
++
++    private static string ResolveBoundaryDecisionOutcome(ResponsibilityPolicyDecision decision) =>
++        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
++            ? AuditBoundaryDecisionOutcomes.EscalatedOutOfScope
++            : AuditBoundaryDecisionOutcomes.DelegatedOutOfScope;
++
++    private static string ResolveBoundaryReasonCode(ResponsibilityPolicyDecision decision)
++    {
++        if (string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase))
++        {
++            return AuditReasonCodes.BoundaryEscalateOutOfScope;
++        }
++
++        return string.Equals(decision.MatchedRule, ResponsibilityPolicyRuleKinds.ExplicitDeny, StringComparison.OrdinalIgnoreCase)
++            ? AuditReasonCodes.BoundaryDelegatePolicyRestriction
++            : AuditReasonCodes.BoundaryDelegateOutOfScope;
++    }
++
+     private static Dictionary<string, object?> ToToolExecutionSummary(ToolInvocationResult result) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -1267,6 +1334,14 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
+         _auditEventWriter = auditEventWriter;
+     }
+ 
++    private static Dictionary<string, string?> AddIdentityMetadata(
++        IReadOnlyDictionary<string, string?> metadata,
++        SingleAgentRuntimeContext context) =>
++        new(metadata, StringComparer.OrdinalIgnoreCase)
++        {
++            ["agentName"] = context.Agent.DisplayName,
++            ["agentRole"] = context.Agent.RoleName
++        };
++
+     public Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken)
+     {
+         ArgumentNullException.ThrowIfNull(request);
+@@ -1284,7 +1359,7 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
+                 artifact?.Outcome ?? ResolveAuditOutcome(request.Result.Status),
+                 artifact?.RationaleSummary ?? request.Result.RationaleSummary,
+                 artifact?.DataSources ?? ["single_agent_orchestration", "prompt_builder", "tool_executor"],
+-                artifact?.Metadata ?? BuildFallbackAuditMetadata(request),
++                AddIdentityMetadata(artifact?.Metadata ?? BuildFallbackAuditMetadata(request), request.RuntimeContext),
+                 artifact?.CorrelationId ?? request.Result.CorrelationId,
+                 artifact?.OccurredUtc ?? request.Result.Metadata.CompletedAtUtc,
+                 BuildDataSourcesUsed(request)),
+diff --git a/src/VirtualCompany.Api/Controllers/AuditController.cs b/src/VirtualCompany.Api/Controllers/AuditController.cs
+index 6e0a0dc..3d8bc0f 100644
+--- a/src/VirtualCompany.Api/Controllers/AuditController.cs
++++ b/src/VirtualCompany.Api/Controllers/AuditController.cs
+@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Api.Controllers;
+@@ -12,10 +13,12 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class AuditController : ControllerBase
+ {
+     private readonly IAuditQueryService _auditQueryService;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
+ 
+-    public AuditController(IAuditQueryService auditQueryService)
++    public AuditController(IAuditQueryService auditQueryService, ICompanyContextAccessor companyContextAccessor)
+     {
+         _auditQueryService = auditQueryService;
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
+     [HttpGet]
+@@ -51,6 +54,40 @@ public sealed class AuditController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("/internal/audit-events")]
++    public async Task<ActionResult<AuditHistoryResult>> ListInternalAsync(
++        CancellationToken cancellationToken,
++        [FromQuery] Guid agentId,
++        [FromQuery] DateTime from,
++        [FromQuery] DateTime to,
++        [FromQuery] int? skip = null,
++        [FromQuery] int? take = null)
++    {
++        if (agentId == Guid.Empty)
++        {
++            ModelState.AddModelError(nameof(agentId), "Agent id is required.");
++            return ValidationProblem(ModelState);
++        }
++
++        if (!_companyContextAccessor.IsResolved || _companyContextAccessor.CompanyId is not Guid companyId)
++        {
++            return Forbid();
++        }
++
++        try
++        {
++            return Ok(await _auditQueryService.ListAsync(
++                companyId,
++                new AuditHistoryFilter(agentId, FromUtc: from, ToUtc: to, Skip: skip, Take: take),
++                cancellationToken));
++        }
++        catch (ArgumentException ex) when (ex.ParamName == "filter")
++        {
++            ModelState.AddModelError("dateRange", ex.Message);
++            return ValidationProblem(ModelState);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("{auditEventId:guid}")]
+     public async Task<ActionResult<AuditDetailDto>> GetAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414200000_AddAgentGenerationAuditMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414200000_AddAgentGenerationAuditMetadata.cs
+new file mode 100644
+index 0000000..4db63b7
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414200000_AddAgentGenerationAuditMetadata.cs
+@@ -0,0 +1,113 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260414200000_AddAgentGenerationAuditMetadata")]
++public partial class AddAgentGenerationAuditMetadata : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "agent_name",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(200)" : "nvarchar(200)",
++            maxLength: 200,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "agent_role",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "responsibility_domain",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "prompt_profile_version",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)",
++            maxLength: 64,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "boundary_decision_outcome",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)",
++            maxLength: 64,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "identity_reason_code",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "boundary_reason_code",
++            table: "audit_events",
++            type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)",
++            maxLength: 128,
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_audit_events_CompanyId_RelatedAgentId_BoundaryDecisionOutcome_OccurredUtc",
++            table: "audit_events",
++            columns: new[] { "CompanyId", "RelatedAgentId", "boundary_decision_outcome", "OccurredUtc" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_audit_events_CompanyId_RelatedAgentId_BoundaryDecisionOutcome_OccurredUtc",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "agent_name",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "agent_role",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "responsibility_domain",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "prompt_profile_version",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "boundary_decision_outcome",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "identity_reason_code",
++            table: "audit_events");
++
++        migrationBuilder.DropColumn(
++            name: "boundary_reason_code",
++            table: "audit_events");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index 4afdbb9..5cc0a1e 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -115,6 +115,12 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicat
+         Assert.Equal("orch-test-correlation", auditEvent.CorrelationId);
+         Assert.Equal(payload.OrchestrationId.ToString("N"), auditEvent.Metadata["orchestrationId"]);
+         Assert.Equal(seed.AgentId, auditEvent.ActorId);
++        Assert.Equal("Nora Ledger", auditEvent.AgentName);
++        Assert.Equal("Finance Manager", auditEvent.AgentRole);
++        Assert.Equal("Finance", auditEvent.ResponsibilityDomain);
++        Assert.NotNull(auditEvent.PromptProfileVersion);
++        Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, auditEvent.BoundaryDecisionOutcome);
++        Assert.Null(auditEvent.IdentityReasonCode);
+         Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
+@@ -260,6 +266,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicat
+             x.ActorId == outOfScopeSeed.AgentId);
+ 
+         Assert.Equal(AuditEventOutcomes.Denied, outOfScopeAudit.Outcome);
++        Assert.Equal(displayName, outOfScopeAudit.AgentName);
++        Assert.Equal(roleName, outOfScopeAudit.AgentRole);
++        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, outOfScopeAudit.BoundaryReasonCode);
+         Assert.Equal(outOfScopeDomain, outOfScopeAudit.Metadata["requestedDomain"]);
+         Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, outOfScopeAudit.Metadata["matchedRule"]);
+         Assert.Equal(delegationTarget, outOfScopeAudit.Metadata["delegationTarget"]);
+diff --git a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+index 29af267..9321ac4 100644
+--- a/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AuditQueryServiceTests.cs
+@@ -29,7 +29,17 @@ public sealed class AuditQueryServiceTests
+             AuditTargetTypes.AgentToolExecution,
+             Guid.NewGuid().ToString(),
+             AuditEventOutcomes.Succeeded,
+-            "Executed after policy checks passed.",
++            "Executed after policy checks passed.",
++            ["policy guardrails"],
++            metadata: new Dictionary<string, string?>
++            {
++                ["agentName"] = "Finance Agent",
++                ["agentRole"] = "Finance",
++                ["responsibilityDomain"] = "finance.payments",
++                ["promptProfileVersion"] = "20260414120000",
++                ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope
++            }));
++        dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            AuditActorTypes.Agent,
++            Guid.NewGuid(),
++            AuditEventActions.AgentToolExecutionExecuted,
++            AuditTargetTypes.AgentToolExecution,
++            Guid.NewGuid().ToString(),
++            AuditEventOutcomes.Succeeded,
+             ["policy guardrails"]));
+-        dbContext.AuditEvents.Add(new AuditEvent(
+-            Guid.NewGuid(),
+-            companyId,
+-            AuditActorTypes.Agent,
+-            Guid.NewGuid(),
+-            AuditEventActions.AgentToolExecutionExecuted,
+-            AuditTargetTypes.AgentToolExecution,
+-            Guid.NewGuid().ToString(),
+-            AuditEventOutcomes.Succeeded));
+         await dbContext.SaveChangesAsync();
+ 
+         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
+@@ -39,6 +49,11 @@ public sealed class AuditQueryServiceTests
+         Assert.Single(result.Items);
+         Assert.Equal(agentId, result.Items[0].ActorId);
+         Assert.Equal("Finance Agent", result.Items[0].ActorLabel);
++        Assert.Equal("Finance Agent", result.Items[0].AgentName);
++        Assert.Equal("Finance", result.Items[0].AgentRole);
++        Assert.Equal("finance.payments", result.Items[0].ResponsibilityDomain);
++        Assert.Equal("20260414120000", result.Items[0].PromptProfileVersion);
++        Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, result.Items[0].BoundaryDecisionOutcome);
+     }
+ 
+     [Fact]
+END_OF_PATCH

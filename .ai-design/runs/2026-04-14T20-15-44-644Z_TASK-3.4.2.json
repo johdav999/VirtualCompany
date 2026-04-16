@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.4.2",
+  "promptPath": ".ai-design/prompts/TASK-3.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:15:44.644Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-15-44-644Z_TASK-3.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-15-44-644Z_TASK-3.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:18:29.523Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "sts.cs\n@@ -7,7 +7,7 @@ namespace VirtualCompany.Api.Tests;\n public sealed class InsightScoringTests\n {\n     private readonly DefaultInsightScoringService _scoring = new();\n-    private readonly DefaultInsightDeepLinkBuilder _links = new();\n+    private readonly DefaultActionDeepLinkResolver _links = new();\n \n     [Fact]\n     public void Breached_approval_scores_above_non_urgent_opportunity()\n@@ -49,16 +49,24 @@ public sealed class InsightScoringTests\n \n     [Theory]\n     [InlineData(ActionInsightTargetType.Approval, \"/approvals?companyId=\")]\n     [InlineData(ActionInsightTargetType.Task, \"/tasks?companyId=\")]\n     [InlineData(ActionInsightTargetType.Workflow, \"/workflows?companyId=\")]\n-    public void Deep_links_use_dashboard_routes(ActionInsightTargetType targetType, string routePrefix)\n+    public void Deep_links_use_canonical_action_routes(ActionInsightTargetType targetType, string routePrefix)\n     {\n         var companyId = Guid.NewGuid();\n         var targetId = Guid.NewGuid();\n \n-        var link = _links.Build(companyId, targetType, targetId);\n+        var link = _links.Resolve(companyId, new ActionDeepLinkTarget(targetType, targetId));\n \n-        Assert.StartsWith(routePrefix, link);\n-        Assert.Contains(companyId.ToString(\"D\"), link);\n-        Assert.Contains(targetId.ToString(\"D\"), link);\n+        Assert.StartsWith(routePrefix, link.Href);\n+        Assert.Equal(targetType, link.TargetType);\n+        Assert.Equal(targetId, link.TargetId);\n+        Assert.Contains(companyId.ToString(\"D\"), link.Href);\n+        Assert.Contains(targetId.ToString(\"D\"), link.Href);\n+    }\n+\n+    [Fact]\n+    public void Insight_keys_are_stable_for_same_action_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var sourceId = Guid.NewGuid();\n+\n+        Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));\n     }\n \n     private static InsightCandidate Candidate(\nEND_OF_PATCH\n",
+  "stderrTail": " @@ namespace VirtualCompany.Api.Tests;\n public sealed class InsightScoringTests\n {\n     private readonly DefaultInsightScoringService _scoring = new();\n-    private readonly DefaultInsightDeepLinkBuilder _links = new();\n+    private readonly DefaultActionDeepLinkResolver _links = new();\n \n     [Fact]\n     public void Breached_approval_scores_above_non_urgent_opportunity()\n@@ -49,16 +49,24 @@ public sealed class InsightScoringTests\n \n     [Theory]\n     [InlineData(ActionInsightTargetType.Approval, \"/approvals?companyId=\")]\n     [InlineData(ActionInsightTargetType.Task, \"/tasks?companyId=\")]\n     [InlineData(ActionInsightTargetType.Workflow, \"/workflows?companyId=\")]\n-    public void Deep_links_use_dashboard_routes(ActionInsightTargetType targetType, string routePrefix)\n+    public void Deep_links_use_canonical_action_routes(ActionInsightTargetType targetType, string routePrefix)\n     {\n         var companyId = Guid.NewGuid();\n         var targetId = Guid.NewGuid();\n \n-        var link = _links.Build(companyId, targetType, targetId);\n+        var link = _links.Resolve(companyId, new ActionDeepLinkTarget(targetType, targetId));\n \n-        Assert.StartsWith(routePrefix, link);\n-        Assert.Contains(companyId.ToString(\"D\"), link);\n-        Assert.Contains(targetId.ToString(\"D\"), link);\n+        Assert.StartsWith(routePrefix, link.Href);\n+        Assert.Equal(targetType, link.TargetType);\n+        Assert.Equal(targetId, link.TargetId);\n+        Assert.Contains(companyId.ToString(\"D\"), link.Href);\n+        Assert.Contains(targetId.ToString(\"D\"), link.Href);\n+    }\n+\n+    [Fact]\n+    public void Insight_keys_are_stable_for_same_action_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var sourceId = Guid.NewGuid();\n+\n+        Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));\n     }\n \n     private static InsightCandidate Candidate(\nEND_OF_PATCH\ntokens used\n62,533\n",
+  "verbosityMode": "summary"
+}

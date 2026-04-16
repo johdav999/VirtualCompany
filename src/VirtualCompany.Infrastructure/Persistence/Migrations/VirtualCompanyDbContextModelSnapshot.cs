@@ -41,12 +41,27 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<string>("AgentName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("agent_name");
+
+                    b.Property<string>("AgentRole")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("agent_role");
+
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("CorrelationId")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("BoundaryDecisionOutcome")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("boundary_decision_outcome");
 
                     b.Property<string>("DataSources")
                         .IsRequired()
@@ -62,6 +77,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnName("data_sources_used_json")
                         .HasDefaultValueSql("N'[]'");
 
+                    b.Property<string>("IdentityReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("identity_reason_code");
+
                     b.Property<string>("Metadata")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -69,8 +89,23 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnName("metadata_json")
                         .HasDefaultValueSql("N'{}'");
 
+                    b.Property<string>("PromptProfileVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("prompt_profile_version");
+
                     b.Property<DateTime>("OccurredUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("PayloadDiffJson")
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("payload_diff_json");
+
+                    b.Property<string>("BoundaryReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("boundary_reason_code");
 
                     b.Property<string>("Outcome")
                         .IsRequired()
@@ -91,6 +126,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("RelatedWorkflowInstanceId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResponsibilityDomain")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("responsibility_domain");
 
                     b.Property<string>("RationaleSummary")
                         .HasMaxLength(512)
@@ -115,6 +155,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.HasIndex("CompanyId", "OccurredUtc");
 
                     b.HasIndex("CompanyId", "RelatedAgentId", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "RelatedAgentId", "BoundaryDecisionOutcome", "OccurredUtc");
 
                     b.HasIndex("CompanyId", "RelatedApprovalRequestId", "OccurredUtc");
 
@@ -144,6 +186,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("CommunicationProfile")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("communication_profile_json")
+                        .HasDefaultValueSql("N'{}'");
 
                     b.Property<string>("Department")
                         .IsRequired()

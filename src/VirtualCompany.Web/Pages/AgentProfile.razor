@@ -275,6 +275,129 @@ else
                     </div>
                 }
             </section>
+
+            @if (statusDetail is not null)
+            {
+                <section id="work" class="wizard-card agent-profile-section agent-profile-section--wide">
+                    <div class="agent-profile-section-heading">
+                        <div>
+                            <span class="dashboard-kicker">Live operations</span>
+                            <h2 class="h5 mb-1 mt-2">Active work, workflows, and alerts</h2>
+                            <p class="text-body-secondary mb-0">Tenant-scoped status refreshed from current task, workflow, approval, alert, audit, and tool execution records.</p>
+                        </div>
+                        <span class="text-body-secondary small">Generated @statusDetail.GeneratedUtc.ToLocalTime().ToString("g")</span>
+                    </div>
+
+                    <div class="summary-pill-grid mb-4">
+                        <div class="summary-pill">
+                            <span class="dashboard-kicker">Workload</span>
+                            <strong>@statusDetail.Workload.WorkloadLevel</strong>
+                        </div>
+                        <div class="summary-pill">
+                            <span class="dashboard-kicker">Active tasks</span>
+                            <strong>@statusDetail.Workload.ActiveTaskCount</strong>
+                        </div>
+                        <div class="summary-pill">
+                            <span class="dashboard-kicker">Active workflows</span>
+                            <strong>@statusDetail.Workload.ActiveWorkflowCount</strong>
+                        </div>
+                        <div class="summary-pill">
+                            <span class="dashboard-kicker">Active alerts</span>
+                            <strong>@statusDetail.ActiveAlertsCount</strong>
+                        </div>
+                    </div>
+
+                    <div class="agent-status-detail-grid">
+                        <section>
+                            <h3 class="h6">Health</h3>
+                            <dl class="kv-list mb-3">
+                                <dt>Status</dt>
+                                <dd><span class="@GetHealthCss(statusDetail.Health.Status)">@ToDisplayText(statusDetail.Health.Status)</span></dd>
+                                <dt>Failed runs</dt>
+                                <dd>@statusDetail.Health.Metrics.FailedRunCount</dd>
+                                <dt>Stalled work</dt>
+                                <dd>@statusDetail.Health.Metrics.StalledWorkCount</dd>
+                                <dt>Policy violations</dt>
+                                <dd>@statusDetail.Health.Metrics.PolicyViolationCount</dd>
+                            </dl>
+                            @foreach (var reason in statusDetail.Health.Reasons)
+                            {
+                                <p class="text-body-secondary mb-2">@reason</p>
+                            }
+                        </section>
+
+                        <section>
+                            <h3 class="h6">Active tasks</h3>
+                            @if (statusDetail.ActiveTasks.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">No active tasks are assigned.</p>
+                            }
+                            else
+                            {
+                                <div class="activity-list">
+                                    @foreach (var task in statusDetail.ActiveTasks)
+                                    {
+                                        <article class="activity-item">
+                                            <div class="agent-template-header">
+                                                <strong>@task.Title</strong>
+                                                <span class="badge text-bg-light">@ToDisplayText(task.Status)</span>
+                                            </div>
+                                            <div class="text-body-secondary small mt-1">@ToDisplayText(task.Type) | @ToDisplayText(task.Priority) | @FormatDate(task.UpdatedUtc)</div>
+                                        </article>
+                                    }
+                                </div>
+                            }
+                        </section>
+
+                        <section>
+                            <h3 class="h6">Active workflows</h3>
+                            @if (statusDetail.ActiveWorkflows.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">No active workflows are linked to this agent.</p>
+                            }
+                            else
+                            {
+                                <div class="activity-list">
+                                    @foreach (var workflow in statusDetail.ActiveWorkflows)
+                                    {
+                                        <article class="activity-item">
+                                            <div class="agent-template-header">
+                                                <strong>@workflow.DefinitionName</strong>
+                                                <span class="badge text-bg-light">@ToDisplayText(workflow.State)</span>
+                                            </div>
+                                            <div class="text-body-secondary small mt-1">@GetOptionalText(workflow.CurrentStep) | @FormatDate(workflow.UpdatedUtc)</div>
+                                        </article>
+                                    }
+                                </div>
+                            }
+                        </section>
+
+                        <section>
+                            <h3 class="h6">Active alerts</h3>
+                            @if (statusDetail.ActiveAlerts.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">No active alerts are linked to this agent.</p>
+                            }
+                            else
+                            {
+                                <div class="activity-list">
+                                    @foreach (var alert in statusDetail.ActiveAlerts)
+                                    {
+                                        <article class="activity-item">
+                                            <div class="agent-template-header">
+                                                <strong>@alert.Title</strong>
+                                                <span class="badge text-bg-warning">@ToDisplayText(alert.Severity)</span>
+                                            </div>
+                                            <p class="mb-0 mt-2">@alert.Summary</p>
+                                            <div class="text-body-secondary small mt-1">@ToDisplayText(alert.Type) | @ToDisplayText(alert.Status) | @FormatDate(alert.UpdatedUtc)</div>
+                                        </article>
+                                    }
+                                </div>
+                            }
+                        </section>
+                    </div>
+                </section>
+            }
         </div>
     </section>
 }
@@ -290,6 +413,7 @@ else
     private bool isLoading = true;
     private string? errorMessage;
     private AgentProfileViewModel? profile;
+    private AgentStatusDetailViewModel? statusDetail;
 
     private CompanyMembershipViewModel? ActiveMembership =>
         CompanyId is Guid companyId
@@ -309,6 +433,7 @@ else
         errorMessage = null;
         profile = null;
         currentUser = null;
+        statusDetail = null;
 
         try
         {
@@ -337,6 +462,7 @@ else
             if (CompanyId is Guid companyIdForProfile)
             {
                 profile = await AgentApiClient.GetProfileViewAsync(companyIdForProfile, AgentId);
+                statusDetail = await AgentApiClient.GetStatusDetailAsync(companyIdForProfile, AgentId);
             }
         }
         catch (InvalidOperationException)

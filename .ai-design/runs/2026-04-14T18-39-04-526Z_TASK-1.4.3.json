@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.4.3",
+  "promptPath": ".ai-design/prompts/TASK-1.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:39:04.526Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-39-04-526Z_TASK-1.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-39-04-526Z_TASK-1.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:41:08.015Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ntityType = \"proactive_task\",\n             sourceEntityId = seed.TaskId,\n             channel = \"inbox\",\n-            recipientUserId = seed.UserId\n+            recipientUserId = seed.UserId,\n+            subject = \"Blocked proactive cash briefing\",\n+            body = \"This content must be captured in the policy decision record without being delivered.\"\n         });\n \n         Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n@@ -124,6 +126,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp\n         Assert.Null(policyDecision.ProactiveMessageId);\n         Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Blocked, policyDecision.Outcome);\n         Assert.Equal(seed.TaskId, policyDecision.SourceEntityId);\n+        Assert.Equal(\"Blocked proactive cash briefing\", policyDecision.Subject);\n+        Assert.Equal(\"This content must be captured in the policy decision record without being delivered.\", policyDecision.Body);\n         Assert.Equal(\"proactive_task\", policyDecision.SourceEntityType.ToStorageValue());\n         Assert.Equal(ProactiveMessageChannel.Inbox, policyDecision.Channel);\n         Assert.Equal(seed.UserId, policyDecision.RecipientUserId);\n@@ -201,6 +205,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp\n         var stored = await dbContext.ProactiveMessages.AsNoTracking().SingleAsync(x => x.Id == result.Message.Id);\n         Assert.Equal(ProactiveMessageChannel.Inbox, stored.Channel);\n         Assert.Null(stored.NotificationId);\n         Assert.Equal(\"escalation\", stored.SourceEntityType.ToStorageValue());\n+\n+        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.ProactiveMessageId == stored.Id);\n+        Assert.Equal(stored.Subject, policyDecision.Subject);\n+        Assert.Equal(stored.Body, policyDecision.Body);\n     }\n \n     private async Task<SeededProactiveMessaging> SeedAsync(AgentAutonomyLevel autonomyLevel)\nEND_OF_PATCH\n",
+  "stderrTail": "ive_task\",\n             sourceEntityId = seed.TaskId,\n             channel = \"inbox\",\n-            recipientUserId = seed.UserId\n+            recipientUserId = seed.UserId,\n+            subject = \"Blocked proactive cash briefing\",\n+            body = \"This content must be captured in the policy decision record without being delivered.\"\n         });\n \n         Assert.Equal(HttpStatusCode.OK, response.StatusCode);\n@@ -124,6 +126,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp\n         Assert.Null(policyDecision.ProactiveMessageId);\n         Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Blocked, policyDecision.Outcome);\n         Assert.Equal(seed.TaskId, policyDecision.SourceEntityId);\n+        Assert.Equal(\"Blocked proactive cash briefing\", policyDecision.Subject);\n+        Assert.Equal(\"This content must be captured in the policy decision record without being delivered.\", policyDecision.Body);\n         Assert.Equal(\"proactive_task\", policyDecision.SourceEntityType.ToStorageValue());\n         Assert.Equal(ProactiveMessageChannel.Inbox, policyDecision.Channel);\n         Assert.Equal(seed.UserId, policyDecision.RecipientUserId);\n@@ -201,6 +205,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp\n         var stored = await dbContext.ProactiveMessages.AsNoTracking().SingleAsync(x => x.Id == result.Message.Id);\n         Assert.Equal(ProactiveMessageChannel.Inbox, stored.Channel);\n         Assert.Null(stored.NotificationId);\n         Assert.Equal(\"escalation\", stored.SourceEntityType.ToStorageValue());\n+\n+        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.ProactiveMessageId == stored.Id);\n+        Assert.Equal(stored.Subject, policyDecision.Subject);\n+        Assert.Equal(stored.Body, policyDecision.Body);\n     }\n \n     private async Task<SeededProactiveMessaging> SeedAsync(AgentAutonomyLevel autonomyLevel)\nEND_OF_PATCH\ntokens used\n67,289\n",
+  "verbosityMode": "summary"
+}

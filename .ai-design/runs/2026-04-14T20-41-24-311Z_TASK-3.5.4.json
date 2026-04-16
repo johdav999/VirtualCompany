@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.5.4",
+  "promptPath": ".ai-design/prompts/TASK-3.5.4.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:41:24.311Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-41-24-311Z_TASK-3.5.4_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-41-24-311Z_TASK-3.5.4.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:45:51.877Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "OMPANY_ID` are set.\n+\n+Run:\n+\n+```bash\n+EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com \\\n+EXECUTIVE_COCKPIT_PERF_COMPANY_ID=00000000-0000-0000-0000-000000000000 \\\n+EXECUTIVE_COCKPIT_PERF_SAMPLE_COUNT=50 \\\n+dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests\n+```\n+\n+Optional authentication inputs are `EXECUTIVE_COCKPIT_PERF_BEARER_TOKEN` for bearer auth or `EXECUTIVE_COCKPIT_PERF_DEV_SUBJECT`, `EXECUTIVE_COCKPIT_PERF_DEV_EMAIL`, and `EXECUTIVE_COCKPIT_PERF_DEV_DISPLAY_NAME` for a staging dev-header profile.\n+\n+The cached dashboard and widget p95 target is 2.5 seconds. Invalidation should be visible within 60 seconds. If an environment exposes a safe mutation probe, set `EXECUTIVE_COCKPIT_PERF_INVALIDATION_PROBE_PATH` to a company-scoped POST endpoint that triggers a task, workflow, approval, or agent-status update.\ndiff --git a/README.md b/README.md\nindex 7f8c2d9..17485a7 100644\n--- a/README.md\n+++ b/README.md\n@@ -160,3 +160,12 @@ Run the API and web projects locally, then use the seeded development identity he\n - `X-Dev-User-Subject`\n - `X-Dev-User-Email`\n - `X-Dev-User-DisplayName`\n+\n+## Executive Cockpit Performance\n+\n+The executive cockpit uses scoped Redis-backed cache keys for tenant, role, department filters, time range, and widget/query identity. Dashboard invalidation is version-token based so task, workflow, approval, and agent-status updates avoid wildcard Redis scans while making prior namespace entries stale.\n+\n+Observability details, metric names, example queries, and staging-style performance commands are documented in `docs/executive-cockpit-observability.md`.\n+\n+The perf harness is disabled unless staging inputs are provided:\n+\n+`EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com EXECUTIVE_COCKPIT_PERF_COMPANY_ID=<company-guid> dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests`\nEND_OF_PATCH\n",
+  "stderrTail": "+\n+Run:\n+\n+```bash\n+EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com \\\n+EXECUTIVE_COCKPIT_PERF_COMPANY_ID=00000000-0000-0000-0000-000000000000 \\\n+EXECUTIVE_COCKPIT_PERF_SAMPLE_COUNT=50 \\\n+dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests\n+```\n+\n+Optional authentication inputs are `EXECUTIVE_COCKPIT_PERF_BEARER_TOKEN` for bearer auth or `EXECUTIVE_COCKPIT_PERF_DEV_SUBJECT`, `EXECUTIVE_COCKPIT_PERF_DEV_EMAIL`, and `EXECUTIVE_COCKPIT_PERF_DEV_DISPLAY_NAME` for a staging dev-header profile.\n+\n+The cached dashboard and widget p95 target is 2.5 seconds. Invalidation should be visible within 60 seconds. If an environment exposes a safe mutation probe, set `EXECUTIVE_COCKPIT_PERF_INVALIDATION_PROBE_PATH` to a company-scoped POST endpoint that triggers a task, workflow, approval, or agent-status update.\ndiff --git a/README.md b/README.md\nindex 7f8c2d9..17485a7 100644\n--- a/README.md\n+++ b/README.md\n@@ -160,3 +160,12 @@ Run the API and web projects locally, then use the seeded development identity he\n - `X-Dev-User-Subject`\n - `X-Dev-User-Email`\n - `X-Dev-User-DisplayName`\n+\n+## Executive Cockpit Performance\n+\n+The executive cockpit uses scoped Redis-backed cache keys for tenant, role, department filters, time range, and widget/query identity. Dashboard invalidation is version-token based so task, workflow, approval, and agent-status updates avoid wildcard Redis scans while making prior namespace entries stale.\n+\n+Observability details, metric names, example queries, and staging-style performance commands are documented in `docs/executive-cockpit-observability.md`.\n+\n+The perf harness is disabled unless staging inputs are provided:\n+\n+`EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com EXECUTIVE_COCKPIT_PERF_COMPANY_ID=<company-guid> dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests`\nEND_OF_PATCH\ntokens used\n126,216\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,1783 @@
+diff --git a/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs b/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs
+new file mode 100644
+index 0000000..a7f7e86
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ActionInsightEnums.cs
+@@ -0,0 +1,86 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ActionInsightType
++{
++    Approval = 1,
++    Risk = 2,
++    BlockedWorkflow = 3,
++    Opportunity = 4,
++    Task = 5
++}
++
++public enum ActionInsightPriority
++{
++    Low = 1,
++    Medium = 2,
++    High = 3,
++    Critical = 4
++}
++
++public enum ActionInsightSlaState
++{
++    None = 1,
++    OnTrack = 2,
++    DueSoon = 3,
++    Breached = 4
++}
++
++public enum ActionInsightTargetType
++{
++    Approval = 1,
++    Task = 2,
++    Workflow = 3,
++    Alert = 4
++}
++
++public static class ActionInsightTypeValues
++{
++    public static string ToStorageValue(this ActionInsightType type) =>
++        type switch
++        {
++            ActionInsightType.Approval => "approval",
++            ActionInsightType.Risk => "risk",
++            ActionInsightType.BlockedWorkflow => "blocked_workflow",
++            ActionInsightType.Opportunity => "opportunity",
++            ActionInsightType.Task => "task",
++            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported action insight type.")
++        };
++}
++
++public static class ActionInsightPriorityValues
++{
++    public static string ToStorageValue(this ActionInsightPriority priority) =>
++        priority switch
++        {
++            ActionInsightPriority.Critical => "critical",
++            ActionInsightPriority.High => "high",
++            ActionInsightPriority.Medium => "medium",
++            ActionInsightPriority.Low => "low",
++            _ => throw new ArgumentOutOfRangeException(nameof(priority), priority, "Unsupported action insight priority.")
++        };
++
++    public static ActionInsightPriority FromScore(int score) =>
++        score switch
++        {
++            >= 90 => ActionInsightPriority.Critical,
++            >= 70 => ActionInsightPriority.High,
++            >= 45 => ActionInsightPriority.Medium,
++            _ => ActionInsightPriority.Low
++        };
++}
++
++public static class ActionInsightSlaStateValues
++{
++    public static string ToStorageValue(this ActionInsightSlaState state) =>
++        state switch
++        {
++            ActionInsightSlaState.None => "none",
++            ActionInsightSlaState.OnTrack => "on_track",
++            ActionInsightSlaState.DueSoon => "due_soon",
++            ActionInsightSlaState.Breached => "breached",
++            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unsupported SLA state.")
++        };
++}
++
++public static class ActionInsightTargetTypeValues
++{
++    public static string ToStorageValue(this ActionInsightTargetType type) =>
++        type switch
++        {
++            ActionInsightTargetType.Approval => "approval",
++            ActionInsightTargetType.Task => "task",
++            ActionInsightTargetType.Workflow => "workflow",
++            ActionInsightTargetType.Alert => "alert",
++            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unsupported action insight target type.")
++        };
++}
+diff --git a/src/VirtualCompany.Domain/Entities/InsightAcknowledgment.cs b/src/VirtualCompany.Domain/Entities/InsightAcknowledgment.cs
+new file mode 100644
+index 0000000..7617d0a
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/InsightAcknowledgment.cs
+@@ -0,0 +1,66 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class InsightAcknowledgment : ICompanyOwnedEntity
++{
++    private const int InsightKeyMaxLength = 200;
++
++    private InsightAcknowledgment()
++    {
++    }
++
++    public InsightAcknowledgment(Guid id, Guid companyId, Guid userId, string insightKey, DateTime acknowledgedUtc)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        UserId = userId;
++        InsightKey = NormalizeInsightKey(insightKey);
++        AcknowledgedUtc = NormalizeUtc(acknowledgedUtc);
++        CreatedUtc = AcknowledgedUtc;
++        UpdatedUtc = AcknowledgedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public string InsightKey { get; private set; } = null!;
++    public DateTime AcknowledgedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++
++    public void MarkAcknowledged(DateTime acknowledgedUtc)
++    {
++        AcknowledgedUtc = NormalizeUtc(acknowledgedUtc);
++        UpdatedUtc = AcknowledgedUtc;
++    }
++
++    private static string NormalizeInsightKey(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("InsightKey is required.", nameof(value));
++        }
++
++        var trimmed = value.Trim().ToLowerInvariant();
++        if (trimmed.Length > InsightKeyMaxLength)
++        {
++            throw new ArgumentOutOfRangeException(nameof(value), $"InsightKey must be {InsightKeyMaxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
+diff --git a/src/VirtualCompany.Application/Insights/InsightContracts.cs b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+new file mode 100644
+index 0000000..93df3de
+--- /dev/null
++++ b/src/VirtualCompany.Application/Insights/InsightContracts.cs
+@@ -0,0 +1,169 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Insights;
++
++public sealed record ActionQueueItemDto(
++    string InsightKey,
++    Guid CompanyId,
++    string Type,
++    string SourceEntityType,
++    Guid SourceEntityId,
++    string TargetType,
++    Guid TargetId,
++    string Title,
++    string Reason,
++    string Owner,
++    DateTime? DueUtc,
++    string SlaState,
++    int PriorityScore,
++    string Priority,
++    string DeepLink,
++    bool IsAcknowledged,
++    DateTime? AcknowledgedAt,
++    string StableSortKey);
++
++public sealed record AcknowledgeInsightCommand(string InsightKey);
++
++public sealed record InsightCandidate(
++    string InsightKey,
++    Guid CompanyId,
++    ActionInsightType Type,
++    string SourceEntityType,
++    Guid SourceEntityId,
++    ActionInsightTargetType TargetType,
++    Guid TargetId,
++    string Title,
++    string Reason,
++    string Owner,
++    DateTime? DueUtc,
++    ActionInsightSlaState SlaState,
++    DateTime CreatedUtc,
++    int SeverityWeight = 0,
++    int OccurrenceCount = 1);
++
++public sealed record ScoredInsightCandidate(
++    InsightCandidate Candidate,
++    int PriorityScore,
++    ActionInsightPriority Priority);
++
++public sealed record ActionDeepLinkTarget(ActionInsightTargetType TargetType, Guid TargetId);
++
++public sealed record ActionDeepLink(
++    string Href,
++    ActionInsightTargetType TargetType,
++    Guid TargetId);
++
++public static class ActionDeepLinkRoutes
++{
++    public const string ApprovalDetail = "/approvals";
++    public const string TaskDetail = "/tasks";
++    public const string WorkflowInstanceDetail = "/workflows";
++    public const string Dashboard = "/dashboard";
++}
++
++public interface IActionInsightService
++{
++    Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken);
++
++    Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken);
++}
++
++public interface IInsightScoringService
++{
++    ScoredInsightCandidate Score(InsightCandidate candidate, DateTime nowUtc);
++
++    IReadOnlyList<ScoredInsightCandidate> Prioritize(IEnumerable<InsightCandidate> candidates, DateTime nowUtc);
++}
++
++public interface IActionDeepLinkResolver
++{
++    ActionDeepLink Resolve(Guid companyId, ActionDeepLinkTarget target);
++}
++
++public sealed class DefaultInsightScoringService : IInsightScoringService
++{
++    public ScoredInsightCandidate Score(InsightCandidate candidate, DateTime nowUtc)
++    {
++        var score =
++            SourceWeight(candidate.Type) +
++            SlaWeight(candidate.SlaState) +
++            DueTimeWeight(candidate.DueUtc, nowUtc) +
++            SeverityWeight(candidate.SeverityWeight) +
++            OccurrenceWeight(candidate.OccurrenceCount);
++
++        return new ScoredInsightCandidate(
++            candidate,
++            score,
++            ActionInsightPriorityValues.FromScore(score));
++    }
++
++    public IReadOnlyList<ScoredInsightCandidate> Prioritize(IEnumerable<InsightCandidate> candidates, DateTime nowUtc) =>
++        candidates
++            .Select(candidate => Score(candidate, nowUtc))
++            .OrderByDescending(scored => scored.PriorityScore)
++            .ThenBy(scored => scored.Candidate.DueUtc ?? DateTime.MaxValue)
++            .ThenBy(scored => scored.Candidate.CreatedUtc)
++            .ThenBy(scored => scored.Candidate.InsightKey, StringComparer.Ordinal)
++            .ThenBy(scored => scored.Candidate.TargetId)
++            .ToList();
++
++    private static int SourceWeight(ActionInsightType type) =>
++        type switch
++        {
++            ActionInsightType.Approval => 55,
++            ActionInsightType.BlockedWorkflow => 50,
++            ActionInsightType.Risk => 45,
++            ActionInsightType.Task => 40,
++            ActionInsightType.Opportunity => 25,
++            _ => 0
++        };
++
++    private static int SlaWeight(ActionInsightSlaState state) =>
++        state switch
++        {
++            ActionInsightSlaState.Breached => 35,
++            ActionInsightSlaState.DueSoon => 20,
++            ActionInsightSlaState.OnTrack => 5,
++            _ => 0
++        };
++
++    private static int DueTimeWeight(DateTime? dueUtc, DateTime nowUtc)
++    {
++        if (!dueUtc.HasValue)
++        {
++            return 0;
++        }
++
++        var remaining = dueUtc.Value - nowUtc;
++        if (remaining <= TimeSpan.Zero)
++        {
++            return 20;
++        }
++
++        if (remaining <= TimeSpan.FromHours(4))
++        {
++            return 15;
++        }
++
++        if (remaining <= TimeSpan.FromDays(1))
++        {
++            return 8;
++        }
++
++        return 0;
++    }
++
++    private static int SeverityWeight(int severityWeight) => Math.Clamp(severityWeight, 0, 20);
++
++    private static int OccurrenceWeight(int occurrenceCount) => Math.Clamp(Math.Max(occurrenceCount, 1) - 1, 0, 5);
++}
++
++public sealed class DefaultActionDeepLinkResolver : IActionDeepLinkResolver
++{
++    public ActionDeepLink Resolve(Guid companyId, ActionDeepLinkTarget target)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (target.TargetId == Guid.Empty)
++        {
++            throw new ArgumentException("TargetId is required.", nameof(target));
++        }
++
++        var companyQuery = $"companyId={companyId:D}";
++        var href = target.TargetType switch
++        {
++            ActionInsightTargetType.Approval => $"{ActionDeepLinkRoutes.ApprovalDetail}?{companyQuery}&approvalId={target.TargetId:D}",
++            ActionInsightTargetType.Task => $"{ActionDeepLinkRoutes.TaskDetail}?{companyQuery}&taskId={target.TargetId:D}",
++            ActionInsightTargetType.Workflow => $"{ActionDeepLinkRoutes.WorkflowInstanceDetail}?{companyQuery}&workflowInstanceId={target.TargetId:D}",
++            ActionInsightTargetType.Alert => $"{ActionDeepLinkRoutes.Dashboard}?{companyQuery}&alertId={target.TargetId:D}",
++            _ => $"{ActionDeepLinkRoutes.Dashboard}?{companyQuery}"
++        };
++
++        return new ActionDeepLink(href, target.TargetType, target.TargetId);
++    }
++}
++
++public static class InsightKey
++{
++    public static string For(Guid companyId, ActionInsightType type, Guid sourceEntityId, int sourceLifecycleVersion = 0) =>
++        $"{companyId:N}:{type.ToStorageValue()}:{sourceEntityId:N}:v{sourceLifecycleVersion}";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+new file mode 100644
+index 0000000..734c66f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyActionInsightService.cs
+@@ -0,0 +1,338 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Insights;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyActionInsightService : IActionInsightService
++{
++    private const int MaxCandidatesPerSource = 50;
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ICurrentUserAccessor _currentUserAccessor;
++    private readonly IInsightScoringService _scoringService;
++    private readonly IActionDeepLinkResolver _deepLinkResolver;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyActionInsightService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyContextAccessor companyContextAccessor,
++        ICurrentUserAccessor currentUserAccessor,
++        IInsightScoringService scoringService,
++        IActionDeepLinkResolver deepLinkResolver,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++        _currentUserAccessor = currentUserAccessor;
++        _scoringService = scoringService;
++        _deepLinkResolver = deepLinkResolver;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<IReadOnlyList<ActionQueueItemDto>> GetActionQueueAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
++        var keys = candidates.Select(candidate => candidate.InsightKey).Distinct(StringComparer.Ordinal).ToArray();
++
++        var acknowledgments = await _dbContext.InsightAcknowledgments
++            .Where(ack => ack.CompanyId == companyId && ack.UserId == userId && keys.Contains(ack.InsightKey))
++            .ToDictionaryAsync(ack => ack.InsightKey, ack => ack.AcknowledgedUtc, StringComparer.Ordinal, cancellationToken);
++
++        return _scoringService
++            .Prioritize(candidates, nowUtc)
++            .Select(scored => Map(scored, acknowledgments))
++            .ToList();
++    }
++
++    public async Task<ActionQueueItemDto?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken)
++    {
++        var userId = ResolveUserId();
++        var normalizedKey = NormalizeInsightKey(insightKey);
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var candidates = await GetCandidatesAsync(companyId, nowUtc, cancellationToken);
++
++        if (!candidates.Any(candidate => string.Equals(candidate.InsightKey, normalizedKey, StringComparison.Ordinal)))
++        {
++            return null;
++        }
++
++        var existing = await _dbContext.InsightAcknowledgments.SingleOrDefaultAsync(
++            ack => ack.CompanyId == companyId && ack.UserId == userId && ack.InsightKey == normalizedKey,
++            cancellationToken);
++
++        if (existing is null)
++        {
++            _dbContext.InsightAcknowledgments.Add(new InsightAcknowledgment(Guid.NewGuid(), companyId, userId, normalizedKey, nowUtc));
++        }
++        else
++        {
++            existing.MarkAcknowledged(nowUtc);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var queue = await GetActionQueueAsync(companyId, cancellationToken);
++        return queue.FirstOrDefault(item => string.Equals(item.InsightKey, normalizedKey, StringComparison.Ordinal));
++    }
++
++    private async Task<IReadOnlyList<InsightCandidate>> GetCandidatesAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var candidates = new List<InsightCandidate>();
++        candidates.AddRange(await GetPendingApprovalsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetTaskInsightsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetBlockedWorkflowsAsync(companyId, nowUtc, cancellationToken));
++        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Risk, nowUtc, cancellationToken));
++        candidates.AddRange(await GetAlertInsightsAsync(companyId, AlertType.Opportunity, nowUtc, cancellationToken));
++
++        return candidates;
++    }
++
++    private Guid ResolveUserId()
++    {
++        var userId = _companyContextAccessor.UserId ?? _currentUserAccessor.UserId;
++        return userId ?? throw new UnauthorizedAccessException("A resolved user is required for action insights.");
++    }
++
++    private async Task<IReadOnlyList<InsightCandidate>> GetPendingApprovalsAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var approvals = await _dbContext.ApprovalRequests
++            .Where(approval => approval.CompanyId == companyId && approval.Status == ApprovalRequestStatus.Pending)
++            .OrderBy(approval => approval.CreatedUtc)
++            .Take(MaxCandidatesPerSource)
++            .Select(approval => new
++            {
++                approval.Id,
++                approval.CompanyId,
++                approval.TargetEntityType,
++                approval.TargetEntityId,
++                approval.ApprovalType,
++                approval.RequiredRole,
++                approval.RequiredUserId,
++                approval.CreatedUtc,
++                approval.DecisionSummary
++            })
++            .ToListAsync(cancellationToken);
++
++        return approvals
++            .Select(approval =>
++            {
++                var dueUtc = approval.CreatedUtc.AddHours(8);
++                return new InsightCandidate(
++                    InsightKey.For(companyId, ActionInsightType.Approval, approval.Id),
++                    approval.CompanyId,
++                    ActionInsightType.Approval,
++                    "approval",
++                    approval.Id,
++                    ActionInsightTargetType.Approval,
++                    approval.Id,
++                    "Approval required",
++                    string.IsNullOrWhiteSpace(approval.DecisionSummary)
++                        ? $"Pending {approval.ApprovalType} approval for {approval.TargetEntityType}."
++                        : approval.DecisionSummary,
++                    ResolveApprovalOwner(approval.RequiredRole, approval.RequiredUserId),
++                    dueUtc,
++                    ResolveSlaState(dueUtc, nowUtc, TimeSpan.FromHours(2)),
++                    approval.CreatedUtc);
++            })
++            .ToList();
++    }
++
++    private async Task<IReadOnlyList<InsightCandidate>> GetTaskInsightsAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var dueSoonUtc = nowUtc.AddHours(24);
++        var tasks = await _dbContext.WorkTasks
++            .Where(task =>
++                task.CompanyId == companyId &&
++                task.Status != WorkTaskStatus.Completed &&
++                task.Status != WorkTaskStatus.Failed &&
++                (task.Status == WorkTaskStatus.Blocked ||
++                 task.Status == WorkTaskStatus.AwaitingApproval ||
++                 (task.DueUtc.HasValue && task.DueUtc <= dueSoonUtc)))
++            .OrderBy(task => task.DueUtc ?? DateTime.MaxValue)
++            .ThenBy(task => task.CreatedUtc)
++            .Take(MaxCandidatesPerSource)
++            .Select(task => new
++            {
++                task.Id,
++                task.CompanyId,
++                task.Title,
++                task.Status,
++                task.Priority,
++                task.DueUtc,
++                task.CreatedUtc,
++                task.SourceLifecycleVersion,
++                Owner = task.AssignedAgent == null ? null : task.AssignedAgent.DisplayName
++            })
++            .ToListAsync(cancellationToken);
++
++        return tasks
++            .Select(task =>
++            {
++                var dueUtc = task.DueUtc ?? task.CreatedUtc.AddHours(24);
++                return new InsightCandidate(
++                    InsightKey.For(companyId, ActionInsightType.Task, task.Id, task.SourceLifecycleVersion),
++                    task.CompanyId,
++                    ActionInsightType.Task,
++                    "task",
++                    task.Id,
++                    ActionInsightTargetType.Task,
++                    task.Id,
++                    task.Title,
++                    ResolveTaskReason(task.Status, task.DueUtc, nowUtc),
++                    string.IsNullOrWhiteSpace(task.Owner) ? "Operations" : task.Owner,
++                    task.DueUtc,
++                    ResolveSlaState(dueUtc, nowUtc, TimeSpan.FromHours(4)),
++                    task.CreatedUtc,
++                    TaskPriorityScore(task.Priority));
++            })
++            .ToList();
++    }
++
++    private async Task<IReadOnlyList<InsightCandidate>> GetBlockedWorkflowsAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var workflows = await _dbContext.WorkflowInstances
++            .Where(instance => instance.CompanyId == companyId && instance.State == WorkflowInstanceStatus.Blocked)
++            .OrderBy(instance => instance.StartedUtc)
++            .Take(MaxCandidatesPerSource)
++            .Select(instance => new
++            {
++                instance.Id,
++                instance.CompanyId,
++                instance.StartedUtc,
++                instance.CurrentStep,
++                DefinitionName = instance.Definition.Name,
++                Department = instance.Definition.Department
++            })
++            .ToListAsync(cancellationToken);
++
++        return workflows
++            .Select(workflow =>
++            {
++                var dueUtc = workflow.StartedUtc.AddHours(4);
++                return new InsightCandidate(
++                    InsightKey.For(companyId, ActionInsightType.BlockedWorkflow, workflow.Id),
++                    workflow.CompanyId,
++                    ActionInsightType.BlockedWorkflow,
++                    "workflow",
++                    workflow.Id,
++                    ActionInsightTargetType.Workflow,
++                    workflow.Id,
++                    workflow.DefinitionName,
++                    string.IsNullOrWhiteSpace(workflow.CurrentStep)
++                        ? "Workflow is blocked and needs intervention."
++                        : $"Workflow is blocked at step {workflow.CurrentStep}.",
++                    string.IsNullOrWhiteSpace(workflow.Department) ? "Operations" : workflow.Department,
++                    dueUtc,
++                    ResolveSlaState(dueUtc, nowUtc, TimeSpan.FromHours(1)),
++                    workflow.StartedUtc);
++            })
++            .ToList();
++    }
++
++    private async Task<IReadOnlyList<InsightCandidate>> GetAlertInsightsAsync(Guid companyId, AlertType type, DateTime nowUtc, CancellationToken cancellationToken)
++    {
++        var alerts = await _dbContext.Alerts
++            .Where(alert =>
++                alert.CompanyId == companyId &&
++                alert.Type == type &&
++                (alert.Status == AlertStatus.Open || alert.Status == AlertStatus.Acknowledged))
++            .OrderByDescending(alert => alert.Severity)
++            .ThenBy(alert => alert.CreatedUtc)
++            .Take(MaxCandidatesPerSource)
++            .Select(alert => new
++            {
++                alert.Id,
++                alert.CompanyId,
++                alert.Title,
++                alert.Summary,
++                alert.Type,
++                alert.Severity,
++                alert.OccurrenceCount,
++                alert.SourceLifecycleVersion,
++                alert.CreatedUtc,
++                alert.LastDetectedUtc,
++                Owner = alert.SourceAgent == null ? null : alert.SourceAgent.DisplayName
++            })
++            .ToListAsync(cancellationToken);
++
++        return alerts
++            .Select(alert =>
++            {
++                var insightType = alert.Type == AlertType.Opportunity
++                    ? ActionInsightType.Opportunity
++                    : ActionInsightType.Risk;
++                var dueUtc = CalculateAlertDueUtc(alert.CreatedUtc, alert.Severity, insightType);
++
++                return new InsightCandidate(
++                    InsightKey.For(companyId, insightType, alert.Id, alert.SourceLifecycleVersion),
++                    alert.CompanyId,
++                    insightType,
++                    "alert",
++                    alert.Id,
++                    ActionInsightTargetType.Alert,
++                    alert.Id,
++                    alert.Title,
++                    alert.Summary,
++                    string.IsNullOrWhiteSpace(alert.Owner) ? "Operations" : alert.Owner,
++                    dueUtc,
++                    ResolveSlaState(dueUtc, nowUtc, TimeSpan.FromHours(6)),
++                    alert.LastDetectedUtc ?? alert.CreatedUtc,
++                    SeverityScore(alert.Severity),
++                    alert.OccurrenceCount);
++            })
++            .ToList();
++    }
++
++    private ActionQueueItemDto Map(ScoredInsightCandidate scored, IReadOnlyDictionary<string, DateTime> acknowledgments)
++    {
++        var candidate = scored.Candidate;
++        var acknowledged = acknowledgments.TryGetValue(candidate.InsightKey, out var acknowledgedAt);
++        var deepLink = _deepLinkResolver.Resolve(candidate.CompanyId, new ActionDeepLinkTarget(candidate.TargetType, candidate.TargetId));
++
++        return new ActionQueueItemDto(
++            candidate.InsightKey,
++            candidate.CompanyId,
++            candidate.Type.ToStorageValue(),
++            candidate.SourceEntityType,
++            candidate.SourceEntityId,
++            candidate.TargetType.ToStorageValue(),
++            candidate.TargetId,
++            candidate.Title,
++            candidate.Reason,
++            candidate.Owner,
++            candidate.DueUtc,
++            candidate.SlaState.ToStorageValue(),
++            scored.PriorityScore,
++            scored.Priority.ToStorageValue(),
++            deepLink.Href,
++            acknowledged,
++            acknowledged ? acknowledgedAt : null,
++            candidate.InsightKey);
++    }
++
++    private static string ResolveApprovalOwner(string? requiredRole, Guid? requiredUserId)
++    {
++        if (requiredUserId.HasValue)
++        {
++            return $"User {requiredUserId.Value:N}";
++        }
++
++        return string.IsNullOrWhiteSpace(requiredRole) ? "Approver" : requiredRole.Trim();
++    }
++
++    private static string ResolveTaskReason(WorkTaskStatus status, DateTime? dueUtc, DateTime nowUtc) =>
++        status switch
++        {
++            WorkTaskStatus.Blocked => "Task is blocked and needs intervention.",
++            WorkTaskStatus.AwaitingApproval => "Task is waiting for an approval decision.",
++            _ when dueUtc.HasValue && dueUtc.Value <= nowUtc => "Task is past due.",
++            _ when dueUtc.HasValue => "Task is due soon.",
++            _ => "Task needs follow-up."
++        };
++
++    private static int TaskPriorityScore(WorkTaskPriority priority) =>
++        priority switch
++        {
++            WorkTaskPriority.Critical => 20,
++            WorkTaskPriority.High => 15,
++            WorkTaskPriority.Normal => 8,
++            _ => 2
++        };
++
++    private static DateTime CalculateAlertDueUtc(DateTime createdUtc, AlertSeverity severity, ActionInsightType insightType)
++    {
++        if (insightType == ActionInsightType.Opportunity)
++        {
++            return createdUtc.AddHours(48);
++        }
++
++        return severity switch
++        {
++            AlertSeverity.Critical => createdUtc.AddHours(4),
++            AlertSeverity.High => createdUtc.AddHours(8),
++            AlertSeverity.Medium => createdUtc.AddHours(24),
++            _ => createdUtc.AddHours(72)
++        };
++    }
++
++    private static int SeverityScore(AlertSeverity severity) =>
++        severity switch
++        {
++            AlertSeverity.Critical => 20,
++            AlertSeverity.High => 15,
++            AlertSeverity.Medium => 8,
++            _ => 2
++        };
++
++    private static ActionInsightSlaState ResolveSlaState(DateTime? dueUtc, DateTime nowUtc, TimeSpan dueSoonWindow)
++    {
++        if (!dueUtc.HasValue)
++        {
++            return ActionInsightSlaState.None;
++        }
++
++        if (dueUtc.Value <= nowUtc)
++        {
++            return ActionInsightSlaState.Breached;
++        }
++
++        return dueUtc.Value - nowUtc <= dueSoonWindow
++            ? ActionInsightSlaState.DueSoon
++            : ActionInsightSlaState.OnTrack;
++    }
++
++    private static string NormalizeInsightKey(string insightKey) =>
++        string.IsNullOrWhiteSpace(insightKey)
++            ? throw new ArgumentException("Insight key is required.", nameof(insightKey))
++            : insightKey.Trim().ToLowerInvariant();
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index d153c05..d413cf5 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -58,6 +58,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+     public DbSet<Alert> Alerts => Set<Alert>();
+     public DbSet<Escalation> Escalations => Set<Escalation>();
++    public DbSet<InsightAcknowledgment> InsightAcknowledgments => Set<InsightAcknowledgment>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -165,5 +166,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<Escalation>()
+             .HasQueryFilter(escalation =>
+                 CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<InsightAcknowledgment>()
++            .HasQueryFilter(acknowledgment =>
++                CurrentCompanyId.HasValue && acknowledgment.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index cfb5584..e38589a 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2038,6 +2038,32 @@ internal sealed class EscalationConfiguration : IEntityTypeConfiguration<Escalat
+     }
+ }
+ 
++internal sealed class InsightAcknowledgmentConfiguration : IEntityTypeConfiguration<InsightAcknowledgment>
++{
++    public void Configure(EntityTypeBuilder<InsightAcknowledgment> builder)
++    {
++        builder.ToTable("insight_acknowledgments");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.InsightKey).HasColumnName("insight_key").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.AcknowledgedUtc).HasColumnName("acknowledged_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.InsightKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.AcknowledgedUtc });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal static class ActiveProviderConstraint
+ {
+     // EF model configuration is provider-agnostic here; the expression is valid for SQL Server and SQLite.
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414223000_AddInsightAcknowledgments.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414223000_AddInsightAcknowledgments.cs
+new file mode 100644
+index 0000000..a5fb3d3
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414223000_AddInsightAcknowledgments.cs
+@@ -0,0 +1,62 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddInsightAcknowledgments : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "insight_acknowledgments",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    insight_key = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    acknowledged_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_insight_acknowledgments", x => x.id);
++                    table.ForeignKey(
++                        name: "FK_insight_acknowledgments_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_insight_acknowledgments_users_user_id",
++                        column: x => x.user_id,
++                        principalTable: "users",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_insight_acknowledgments_company_id_user_id_acknowledged_at",
++                table: "insight_acknowledgments",
++                columns: new[] { "company_id", "user_id", "acknowledged_at" });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_insight_acknowledgments_company_id_user_id_insight_key",
++                table: "insight_acknowledgments",
++                columns: new[] { "company_id", "user_id", "insight_key" },
++                unique: true);
++
++            migrationBuilder.CreateIndex(
++                name: "IX_insight_acknowledgments_user_id",
++                table: "insight_acknowledgments",
++                column: "user_id");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "insight_acknowledgments");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 43b8d17..bcb97a8 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -17,6 +17,7 @@ using VirtualCompany.Application.ExecutionExceptions;
+ using VirtualCompany.Application.Escalations;
+ using VirtualCompany.Application.Orchestration;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Insights;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Tasks;
+ using VirtualCompany.Application.Documents;
+@@ -251,6 +252,9 @@ public static class DependencyInjection
+         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
+         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();
++        services.AddSingleton<IInsightScoringService, DefaultInsightScoringService>();
++        services.AddSingleton<IActionDeepLinkResolver, DefaultActionDeepLinkResolver>();
++        services.AddScoped<IActionInsightService, CompanyActionInsightService>();
+         services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
+         services.AddScoped<CompanyContextResolutionMiddleware>();
+diff --git a/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+new file mode 100644
+index 0000000..81c5ea6
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/ActionInsightsController.cs
+@@ -0,0 +1,57 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Insights;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/action-insights")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class ActionInsightsController : ControllerBase
++{
++    private readonly IActionInsightService _insights;
++
++    public ActionInsightsController(IActionInsightService insights)
++    {
++        _insights = insights;
++    }
++
++    [HttpGet("queue")]
++    public async Task<ActionResult<IReadOnlyList<ActionQueueItemDto>>> GetQueueAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _insights.GetActionQueueAsync(companyId, cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpPost("{insightKey}/acknowledgment")]
++    public async Task<ActionResult<ActionQueueItemDto?>> AcknowledgeAsync(
++        Guid companyId,
++        string insightKey,
++        CancellationToken cancellationToken)
++    {
++        if (string.IsNullOrWhiteSpace(insightKey))
++        {
++            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
++            {
++                [nameof(insightKey)] = ["Insight key is required."]
++            }));
++        }
++
++        try
++        {
++            return Ok(await _insights.AcknowledgeAsync(companyId, Uri.UnescapeDataString(insightKey), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 5d95672..8ad6b2a 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -74,6 +74,11 @@ builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new ActionInsightApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+new file mode 100644
+index 0000000..38ef94a
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/ActionInsightApiClient.cs
+@@ -0,0 +1,201 @@
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class ActionInsightApiClient
++{
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++    private readonly List<ActionQueueItemViewModel> _offlineItems = [];
++
++    public ActionInsightApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<IReadOnlyList<ActionQueueItemViewModel>> GetQueueAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            if (_offlineItems.Count == 0)
++            {
++                _offlineItems.AddRange(OfflineQueue(companyId));
++            }
++
++            return Task.FromResult<IReadOnlyList<ActionQueueItemViewModel>>(_offlineItems.ToList());
++        }
++
++        return GetAsync<IReadOnlyList<ActionQueueItemViewModel>>($"api/companies/{companyId}/action-insights/queue", cancellationToken);
++    }
++
++    public async Task<ActionQueueItemViewModel?> AcknowledgeAsync(Guid companyId, string insightKey, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            var item = _offlineItems.FirstOrDefault(x => string.Equals(x.InsightKey, insightKey, StringComparison.Ordinal));
++            if (item is not null)
++            {
++                item.IsAcknowledged = true;
++                item.AcknowledgedAt = DateTime.UtcNow;
++            }
++
++            return item;
++        }
++
++        return await SendAsync<ActionQueueItemViewModel?>(
++            HttpMethod.Post,
++            $"api/companies/{companyId}/action-insights/{Uri.EscapeDataString(insightKey)}/acknowledgment",
++            cancellationToken);
++    }
++
++    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync(uri, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<T> SendAsync<T>(HttpMethod method, string uri, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var request = new HttpRequestMessage(method, uri);
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
++                    ?? throw new OnboardingApiException("The server returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
++    private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
++    }
++
++    private OnboardingApiException CreateNetworkException(HttpRequestException ex)
++    {
++        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
++        return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
++    }
++
++    private static IReadOnlyList<ActionQueueItemViewModel> OfflineQueue(Guid companyId) =>
++    [
++        new()
++        {
++            InsightKey = $"{companyId:N}:approval:d0131d5718954b7596249b8b04d8a116:v0",
++            CompanyId = companyId,
++            Type = "approval",
++            SourceEntityType = "approval",
++            SourceEntityId = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"),
++            TargetType = "approval",
++            TargetId = Guid.Parse("d0131d57-1895-4b75-9624-9b8b04d8a116"),
++            Title = "Approval required",
++            Reason = "Pending threshold approval for task.",
++            Owner = "owner",
++            DueUtc = DateTime.UtcNow.AddHours(2),
++            SlaState = "due_soon",
++            PriorityScore = 90,
++            Priority = "critical",
++            DeepLink = $"/approvals?companyId={companyId}&approvalId=d0131d57-1895-4b75-9624-9b8b04d8a116",
++            StableSortKey = $"{companyId:N}:approval:d0131d5718954b7596249b8b04d8a116:v0"
++        },
++        new()
++        {
++            InsightKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0",
++            CompanyId = companyId,
++            Type = "task",
++            SourceEntityType = "task",
++            SourceEntityId = Guid.Parse("21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"),
++            TargetType = "task",
++            TargetId = Guid.Parse("21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b"),
++            Title = "Resolve blocked fulfillment task",
++            Reason = "Task is blocked and needs intervention.",
++            Owner = "Operations",
++            DueUtc = DateTime.UtcNow.AddHours(4),
++            SlaState = "due_soon",
++            PriorityScore = 75,
++            Priority = "high",
++            DeepLink = $"/tasks?companyId={companyId}&taskId=21fa1767-fd77-42d7-a4d5-c6d50ec8bf5b",
++            StableSortKey = $"{companyId:N}:task:21fa1767fd7742d7a4d5c6d50ec8bf5b:v0"
++        },
++        new()
++        {
++            InsightKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0",
++            CompanyId = companyId,
++            Type = "blocked_workflow",
++            SourceEntityType = "workflow",
++            SourceEntityId = Guid.Parse("2cf1da39-93ad-4543-bdd2-3862eedec738"),
++            TargetType = "workflow",
++            TargetId = Guid.Parse("2cf1da39-93ad-4543-bdd2-3862eedec738"),
++            Title = "Fulfillment workflow",
++            Reason = "Workflow is blocked at step review.",
++            Owner = "Operations",
++            DueUtc = DateTime.UtcNow.AddHours(1),
++            SlaState = "due_soon",
++            PriorityScore = 85,
++            Priority = "high",
++            DeepLink = $"/workflows?companyId={companyId}&workflowInstanceId=2cf1da39-93ad-4543-bdd2-3862eedec738",
++            StableSortKey = $"{companyId:N}:blocked_workflow:2cf1da3993ad4543bdd23862eedec738:v0"
++        }
++    ];
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++    }
++}
++
++public sealed class ActionQueueItemViewModel
++{
++    public string InsightKey { get; set; } = string.Empty;
++    public Guid CompanyId { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string SourceEntityType { get; set; } = string.Empty;
++    public Guid SourceEntityId { get; set; }
++    public string TargetType { get; set; } = string.Empty;
++    public Guid TargetId { get; set; }
++    public string Title { get; set; } = string.Empty;
++    public string Reason { get; set; } = string.Empty;
++    public string Owner { get; set; } = string.Empty;
++    public DateTime? DueUtc { get; set; }
++    public string SlaState { get; set; } = string.Empty;
++    public int PriorityScore { get; set; }
++    public string Priority { get; set; } = string.Empty;
++    public string DeepLink { get; set; } = string.Empty;
++    public bool IsAcknowledged { get; set; }
++    public DateTime? AcknowledgedAt { get; set; }
++    public string StableSortKey { get; set; } = string.Empty;
++}
+diff --git a/src/VirtualCompany.Web/Pages/Dashboard.razor b/src/VirtualCompany.Web/Pages/Dashboard.razor
+index d138bd3..f158180 100644
+--- a/src/VirtualCompany.Web/Pages/Dashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Dashboard.razor
+@@ -1,5 +1,7 @@
+ @page "/dashboard"
++@rendermode InteractiveServer
+ @inject OnboardingApiClient ApiClient
++@inject ActionInsightApiClient ActionInsightApiClient
+ @inject NavigationManager Navigation
+ @using Microsoft.AspNetCore.Components
+ 
+@@ -109,6 +111,49 @@ else
+             {
+                 <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
+             }
++
++            <div class="wizard-card wizard-card--compact action-queue">
++                <div class="action-queue__header">
++                    <div>
++                        <span class="dashboard-kicker">Action queue</span>
++                        <h2 class="h5 mb-0">Prioritized operational work</h2>
++                    </div>
++                    <span class="text-body-secondary">@actionQueue.Count item@(actionQueue.Count == 1 ? string.Empty : "s")</span>
++                </div>
++
++                @if (actionQueue.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
++                }
++                else
++                {
++                    <div class="action-queue__list">
++                        @foreach (var item in actionQueue)
++                        {
++                            <article class="action-queue__item @(item.IsAcknowledged ? "action-queue__item--acknowledged" : string.Empty)">
++                                <div class="action-queue__topline">
++                                    <span class="action-queue__priority action-queue__priority--@item.Priority">@FormatPriority(item.Priority)</span>
++                                    <span class="text-body-secondary">@FormatInsightType(item.Type)</span>
++                                </div>
++                                <h3 class="h6 mb-1">@item.Title</h3>
++                                <p class="mb-2">@item.Reason</p>
++                                <div class="action-queue__meta">
++                                    <span>Owner: @item.Owner</span>
++                                    <span>@FormatDueState(item)</span>
++                                    <span>Score: @item.PriorityScore</span>
++                                </div>
++                                <div class="action-queue__actions">
++                                    <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
++                                    <button class="btn btn-sm btn-outline-secondary" disabled="@item.IsAcknowledged" @onclick="() => AcknowledgeAsync(item)">
++                                        @(item.IsAcknowledged ? "Acknowledged" : "Acknowledge")
++                                    </button>
++                                </div>
++                            </article>
++                        }
++                    </div>
++                }
++            </div>
++
+             <div class="wizard-card wizard-card--compact">
+                 <h2 class="h5">Executive briefings</h2>
+                 @if (briefings?.Daily is null && briefings?.Weekly is null)
+@@ -184,6 +229,7 @@ else
+     private CompanyAccessViewModel? companyAccess;
+     private CompanyDashboardEntryViewModel? dashboardEntry;
+     private DashboardBriefingCardViewModel? briefings;
++    private List<ActionQueueItemViewModel> actionQueue = [];
+     private string? errorMessage;
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
+     private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
+@@ -211,6 +257,7 @@ else
+             companyAccess = null;
+             dashboardEntry = null;
+             briefings = null;
++            actionQueue = [];
+ 
+             if (CompanyId is not Guid companyId)
+             {
+@@ -232,6 +279,7 @@ else
+             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
+             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
+             briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
++            actionQueue = companyAccess is null ? [] : (await ActionInsightApiClient.GetQueueAsync(companyId)).ToList();
+ 
+             if (dashboardEntry?.RequiresOnboarding == true)
+             {
+@@ -244,6 +292,7 @@ else
+             errorMessage = ex.Message;
+             companyAccess = null;
+             briefings = null;
++            actionQueue = [];
+             dashboardEntry = null;
+         }
+         finally
+@@ -252,6 +301,21 @@ else
+         }
+     }
+ 
++    private async Task AcknowledgeAsync(ActionQueueItemViewModel item)
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        var acknowledged = await ActionInsightApiClient.AcknowledgeAsync(companyId, item.InsightKey);
++        if (acknowledged is not null)
++        {
++            item.IsAcknowledged = acknowledged.IsAcknowledged;
++            item.AcknowledgedAt = acknowledged.AcknowledgedAt;
++        }
++    }
++
+     private bool IsWelcomeEntry() => string.Equals(Welcome, "onboarding", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(Welcome, "true", StringComparison.OrdinalIgnoreCase);
+ 
+     private static string FirstParagraph(string value)
+@@ -287,4 +351,21 @@ else
+         string.IsNullOrWhiteSpace(reference.Status)
+             ? reference.Label
+             : $"{reference.Label} ({reference.Status})";
++
++    private static string FormatPriority(string priority) =>
++        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
++
++    private static string FormatInsightType(string type) =>
++        type.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string FormatDueState(ActionQueueItemViewModel item)
++    {
++        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
++        if (item.DueUtc is not DateTime dueUtc)
++        {
++            return $"SLA: {sla}";
++        }
++
++        return $"{sla}: {dueUtc.ToLocalTime():g}";
++    }
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 90e394a..f9d8921 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -380,6 +380,74 @@ a {
+     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+ }
+ 
++.action-queue {
++    display: grid;
++    gap: 1rem;
++}
++
++.action-queue__header,
++.action-queue__topline,
++.action-queue__meta,
++.action-queue__actions {
++    display: flex;
++    align-items: center;
++    gap: 0.75rem;
++    flex-wrap: wrap;
++}
++
++.action-queue__header {
++    justify-content: space-between;
++}
++
++.action-queue__list {
++    display: grid;
++    gap: 0.75rem;
++}
++
++.action-queue__item {
++    border: 1px solid var(--bs-border-color);
++    border-radius: 8px;
++    padding: 1rem;
++    background: var(--bs-body-bg);
++}
++
++.action-queue__item--acknowledged {
++    opacity: 0.72;
++}
++
++.action-queue__priority {
++    border-radius: 6px;
++    padding: 0.15rem 0.5rem;
++    font-size: 0.75rem;
++    font-weight: 700;
++    letter-spacing: 0;
++}
++
++.action-queue__priority--critical {
++    color: #fff;
++    background: #9f1239;
++}
++
++.action-queue__priority--high {
++    color: #fff;
++    background: #b45309;
++}
++
++.action-queue__priority--medium {
++    color: #111827;
++    background: #facc15;
++}
++
++.action-queue__priority--low {
++    color: #fff;
++    background: #166534;
++}
++
++.action-queue__meta {
++    color: var(--bs-secondary-color);
++    font-size: 0.9rem;
++}
++
++.action-queue__actions {
++    margin-top: 0.75rem;
++}
++
+ .summary-pill-grid {
+     display: grid;
+     gap: 1rem;
+diff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+new file mode 100644
+index 0000000..e010797
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs
+@@ -0,0 +1,123 @@
++using VirtualCompany.Application.Insights;
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class InsightScoringTests
++{
++    private readonly DefaultInsightScoringService _scoring = new();
++    private readonly DefaultActionDeepLinkResolver _links = new();
++
++    [Fact]
++    public void Breached_approval_scores_above_non_urgent_opportunity()
++    {
++        var now = new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc);
++        var companyId = Guid.NewGuid();
++
++        var approval = Candidate(
++            companyId,
++            ActionInsightType.Approval,
++            ActionInsightTargetType.Approval,
++            dueUtc: now.AddMinutes(-10),
++            slaState: ActionInsightSlaState.Breached);
++        var opportunity = Candidate(
++            companyId,
++            ActionInsightType.Opportunity,
++            ActionInsightTargetType.Alert,
++            dueUtc: now.AddDays(2),
++            slaState: ActionInsightSlaState.OnTrack);
++
++        Assert.True(_scoring.Score(approval, now).PriorityScore > _scoring.Score(opportunity, now).PriorityScore);
++    }
++
++    [Fact]
++    public void Equal_scores_use_stable_tie_breakers()
++    {
++        var now = new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc);
++        var companyId = Guid.NewGuid();
++        var laterKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "z-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
++        var earlierKey = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "a-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(2));
++        var earliestCreated = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "m-key", now.AddHours(8), ActionInsightSlaState.OnTrack, now.AddMinutes(1));
++        var earliestDue = Candidate(companyId, ActionInsightType.Risk, ActionInsightTargetType.Alert, "x-key", now.AddHours(4), ActionInsightSlaState.OnTrack, now.AddMinutes(3));
++
++        var ordered = _scoring.Prioritize([laterKey, earlierKey, earliestCreated, earliestDue], now);
++
++        Assert.Equal(["x-key", "m-key", "a-key", "z-key"], ordered.Select(x => x.Candidate.InsightKey).ToArray());
++    }
++
++    [Theory]
++    [InlineData(ActionInsightTargetType.Approval, "/approvals?companyId=")]
++    [InlineData(ActionInsightTargetType.Task, "/tasks?companyId=")]
++    [InlineData(ActionInsightTargetType.Workflow, "/workflows?companyId=")]
++    public void Deep_links_use_canonical_action_routes(ActionInsightTargetType targetType, string routePrefix)
++    {
++        var companyId = Guid.NewGuid();
++        var targetId = Guid.NewGuid();
++
++        var link = _links.Resolve(companyId, new ActionDeepLinkTarget(targetType, targetId));
++
++        Assert.StartsWith(routePrefix, link.Href);
++        Assert.Equal(targetType, link.TargetType);
++        Assert.Equal(targetId, link.TargetId);
++        Assert.Contains(companyId.ToString("D"), link.Href);
++        Assert.Contains(targetId.ToString("D"), link.Href);
++    }
++
++    [Fact]
++    public void Unsupported_deep_link_target_returns_dashboard_fallback()
++    {
++        var companyId = Guid.NewGuid();
++        var targetId = Guid.NewGuid();
++
++        var link = _links.Resolve(companyId, new ActionDeepLinkTarget((ActionInsightTargetType)999, targetId));
++
++        Assert.Equal($"/dashboard?companyId={companyId:D}", link.Href);
++    }
++
++    [Fact]
++    public void Insight_keys_are_stable_for_same_action_identity()
++    {
++        var companyId = Guid.NewGuid();
++        var sourceId = Guid.NewGuid();
++
++        Assert.Equal(InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3), InsightKey.For(companyId, ActionInsightType.Task, sourceId, 3));
++    }
++
++    private static InsightCandidate Candidate(
++        Guid companyId,
++        ActionInsightType type,
++        ActionInsightTargetType targetType,
++        DateTime? dueUtc,
++        ActionInsightSlaState slaState) =>
++        Candidate(companyId, type, targetType, InsightKey.For(companyId, type, Guid.NewGuid()), dueUtc, slaState, DateTime.UtcNow);
++
++    private static InsightCandidate Candidate(
++        Guid companyId,
++        ActionInsightType type,
++        ActionInsightTargetType targetType,
++        string key,
++        DateTime? dueUtc,
++        ActionInsightSlaState slaState,
++        DateTime createdUtc)
++    {
++        var sourceId = Guid.NewGuid();
++        return new InsightCandidate(
++            key,
++            companyId,
++            type,
++            targetType.ToStorageValue(),
++            sourceId,
++            targetType,
++            sourceId,
++            "Insight",
++            "Reason",
++            "Owner",
++            dueUtc,
++            slaState,
++            createdUtc);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+new file mode 100644
+index 0000000..bf1ccbf
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ActionQueueEndpointTests.cs
+@@ -0,0 +1,213 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ActionQueueEndpointTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Queue_contains_all_action_types_with_required_fields()
++    {
++        var seed = await SeedActionQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var items = await client.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++
++        Assert.NotNull(items);
++        Assert.Contains(items!, item => item.Type == "approval");
++        Assert.Contains(items!, item => item.Type == "task");
++        Assert.Contains(items!, item => item.Type == "risk");
++        Assert.Contains(items!, item => item.Type == "blocked_workflow");
++        Assert.Contains(items!, item => item.Type == "opportunity");
++        Assert.All(items!, item =>
++        {
++            Assert.NotEmpty(item.InsightKey);
++            Assert.NotEmpty(item.Priority);
++            Assert.NotEmpty(item.Reason);
++            Assert.NotEmpty(item.Owner);
++            Assert.False(string.IsNullOrWhiteSpace(item.SlaState));
++            Assert.False(string.IsNullOrWhiteSpace(item.DeepLink));
++            Assert.Contains($"companyId={item.CompanyId:D}", item.DeepLink);
++            Assert.False(string.IsNullOrWhiteSpace(item.StableSortKey));
++        });
++    }
++
++    [Fact]
++    public async Task Queue_deep_links_are_resolved_for_tasks_workflows_and_approvals()
++    {
++        var seed = await SeedActionQueueAsync();
++        using var client = CreateAuthenticatedClient("founder", "founder@example.com");
++
++        var items = await client.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++
++        Assert.Contains(items!, item => item.TargetType == "approval" && item.DeepLink == $"/approvals?companyId={seed.CompanyId:D}&approvalId={item.TargetId:D}");
++        Assert.Contains(items!, item => item.TargetType == "task" && item.DeepLink == $"/tasks?companyId={seed.CompanyId:D}&taskId={item.TargetId:D}");
++        Assert.Contains(items!, item => item.TargetType == "workflow" && item.DeepLink == $"/workflows?companyId={seed.CompanyId:D}&workflowInstanceId={item.TargetId:D}");
++    }
++
++    [Fact]
++    public async Task Acknowledgment_persists_for_same_user_and_does_not_leak()
++    {
++        var seed = await SeedActionQueueAsync();
++        using var founder = CreateAuthenticatedClient("founder", "founder@example.com");
++        using var otherUser = CreateAuthenticatedClient("other-user", "other@example.com");
++
++        var initial = await founder.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++        var target = Assert.Single(initial!.Where(item => item.Type == "approval"));
++
++        var acknowledge = await founder.PostAsync(
++            $"/api/companies/{seed.CompanyId}/action-insights/{Uri.EscapeDataString(target.InsightKey)}/acknowledgment",
++            null);
++
++        Assert.Equal(HttpStatusCode.OK, acknowledge.StatusCode);
++
++        var refreshed = await founder.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++        Assert.True(refreshed!.Single(item => item.InsightKey == target.InsightKey).IsAcknowledged);
++
++        var otherUserQueue = await otherUser.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.CompanyId}/action-insights/queue");
++        Assert.False(otherUserQueue!.Single(item => item.InsightKey == target.InsightKey).IsAcknowledged);
++
++        var otherTenantQueue = await founder.GetFromJsonAsync<List<ActionQueueItemResponse>>($"/api/companies/{seed.OtherCompanyId}/action-insights/queue");
++        Assert.DoesNotContain(otherTenantQueue!, item => item.InsightKey == target.InsightKey);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, subject);
++        return client;
++    }
++
++    private async Task<ActionQueueSeed> SeedActionQueueAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var otherUserId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(userId, "founder@example.com", "Founder", "dev-header", "founder"),
++                new User(otherUserId, "other@example.com", "Other", "dev-header", "other-user"));
++            dbContext.Companies.AddRange(new Company(companyId, "Action Queue Company"), new Company(otherCompanyId, "Other Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyId, otherUserId, CompanyMembershipRole.Member, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Operations Lead", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var task = new WorkTask(
++                taskId,
++                companyId,
++                "approval-test",
++                "Approve contract",
++                "Contract needs approval.",
++                WorkTaskPriority.High,
++                agentId,
++                null,
++                "user",
++                userId);
++            task.SetDueDate(DateTime.UtcNow.AddHours(2));
++            dbContext.WorkTasks.Add(task);
++
++            dbContext.ApprovalRequests.Add(ApprovalRequest.CreateForTarget(
++                approvalId,
++                companyId,
++                ApprovalTargetEntityType.Task,
++                taskId,
++                "user",
++                userId,
++                "threshold",
++                new Dictionary<string, JsonNode?> { ["amount"] = JsonValue.Create(10000) },
++                "owner",
++                null,
++                []));
++
++            var definition = new WorkflowDefinition(
++                workflowDefinitionId,
++                companyId,
++                "FULFILLMENT",
++                "Fulfillment workflow",
++                "Operations",
++                WorkflowTriggerType.Manual,
++                1,
++                new Dictionary<string, JsonNode?> { ["steps"] = new JsonArray("review") });
++            var instance = new WorkflowInstance(workflowInstanceId, companyId, workflowDefinitionId, null, currentStep: "review");
++            instance.UpdateState(WorkflowInstanceStatus.Blocked, "review");
++            dbContext.WorkflowDefinitions.Add(definition);
++            dbContext.WorkflowInstances.Add(instance);
++
++            dbContext.Alerts.AddRange(
++                new Alert(
++                    Guid.NewGuid(),
++                    companyId,
++                    AlertType.Risk,
++                    AlertSeverity.High,
++                    "Margin at risk",
++                    "Gross margin dropped below threshold.",
++                    new Dictionary<string, JsonNode?> { ["metric"] = JsonValue.Create("margin") },
++                    "risk-corr",
++                    "risk-fp",
++                    AlertStatus.Open,
++                    agentId),
++                new Alert(
++                    Guid.NewGuid(),
++                    companyId,
++                    AlertType.Opportunity,
++                    AlertSeverity.Medium,
++                    "Upsell opportunity",
++                    "Expansion signal detected.",
++                    new Dictionary<string, JsonNode?> { ["metric"] = JsonValue.Create("usage") },
++                    "opp-corr",
++                    "opp-fp",
++                    AlertStatus.Open,
++                    agentId),
++                new Alert(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    AlertType.Risk,
++                    AlertSeverity.Critical,
++                    "Other tenant risk",
++                    "Should not leak.",
++                    new Dictionary<string, JsonNode?> { ["metric"] = JsonValue.Create("other") },
++                    "other-corr",
++                    "other-fp",
++                    AlertStatus.Open));
++
++            return Task.CompletedTask;
++        });
++
++        return new ActionQueueSeed(companyId, otherCompanyId);
++    }
++
++    private sealed record ActionQueueSeed(Guid CompanyId, Guid OtherCompanyId);
++
++    private sealed class ActionQueueItemResponse
++    {
++        public string InsightKey { get; set; } = string.Empty;
++        public Guid CompanyId { get; set; }
++        public string Type { get; set; } = string.Empty;
++        public string SourceEntityType { get; set; } = string.Empty;
++        public Guid SourceEntityId { get; set; }
++        public string TargetType { get; set; } = string.Empty;
++        public Guid TargetId { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string Reason { get; set; } = string.Empty;
++        public string Owner { get; set; } = string.Empty;
++        public DateTime? DueUtc { get; set; }
++        public string SlaState { get; set; } = string.Empty;
++        public int PriorityScore { get; set; }
++        public string Priority { get; set; } = string.Empty;
++        public string DeepLink { get; set; } = string.Empty;
++        public bool IsAcknowledged { get; set; }
++        public DateTime? AcknowledgedAt { get; set; }
++        public string StableSortKey { get; set; } = string.Empty;
++    }
++}
+END_OF_PATCH

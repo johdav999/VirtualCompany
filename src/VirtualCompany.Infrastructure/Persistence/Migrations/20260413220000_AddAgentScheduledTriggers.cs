@@ -22,6 +22,11 @@ public partial class AddAgentScheduledTriggers : Migration
         var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
         var checkSql = isPostgres ? "window_end_at > window_start_at" : "[window_end_at] > [window_start_at]";
 
+        migrationBuilder.AddUniqueConstraint(
+            name: "AK_agents_company_id_id",
+            table: "agents",
+            columns: new[] { "CompanyId", "Id" });
+
         migrationBuilder.CreateTable(
             name: "agent_scheduled_triggers",
             columns: table => new
@@ -47,11 +52,12 @@ public partial class AddAgentScheduledTriggers : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_agent_scheduled_triggers", x => x.id);
+                table.UniqueConstraint("AK_agent_scheduled_triggers_company_id_id", x => new { x.company_id, x.id });
                 table.ForeignKey(
-                    name: "FK_agent_scheduled_triggers_agents_agent_id",
-                    column: x => x.agent_id,
+                    name: "FK_agent_scheduled_triggers_agents_company_id_agent_id",
+                    columns: x => new { x.company_id, x.agent_id },
                     principalTable: "agents",
-                    principalColumn: "id",
+                    principalColumns: new[] { "CompanyId", "Id" },
                     onDelete: ReferentialAction.Cascade);
                 table.ForeignKey(
                     name: "FK_agent_scheduled_triggers_companies_company_id",
@@ -79,10 +85,10 @@ public partial class AddAgentScheduledTriggers : Migration
                 table.PrimaryKey("PK_agent_scheduled_trigger_enqueue_windows", x => x.id);
                 table.CheckConstraint("CK_agent_scheduled_trigger_enqueue_windows_window_order", checkSql);
                 table.ForeignKey(
-                    name: "FK_agent_scheduled_trigger_enqueue_windows_agent_scheduled_triggers_scheduled_trigger_id",
-                    column: x => x.scheduled_trigger_id,
+                    name: "FK_agent_scheduled_trigger_enqueue_windows_agent_scheduled_triggers_company_id_scheduled_trigger_id",
+                    columns: x => new { x.company_id, x.scheduled_trigger_id },
                     principalTable: "agent_scheduled_triggers",
-                    principalColumn: "id",
+                    principalColumns: new[] { "company_id", "id" },
                     onDelete: ReferentialAction.Cascade);
                 table.ForeignKey(
                     name: "FK_agent_scheduled_trigger_enqueue_windows_companies_company_id",
@@ -138,5 +144,9 @@ public partial class AddAgentScheduledTriggers : Migration
     {
         migrationBuilder.DropTable(name: "agent_scheduled_trigger_enqueue_windows");
         migrationBuilder.DropTable(name: "agent_scheduled_triggers");
+
+        migrationBuilder.DropUniqueConstraint(
+            name: "AK_agents_company_id_id",
+            table: "agents");
     }
 }

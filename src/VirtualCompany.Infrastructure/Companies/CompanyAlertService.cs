@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Alerts;
+using VirtualCompany.Application.Briefings;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -15,37 +16,49 @@ public sealed class CompanyAlertService : ICompanyAlertService
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+    private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
 
-    public CompanyAlertService(VirtualCompanyDbContext dbContext, ICompanyMembershipContextResolver membershipContextResolver)
+    public CompanyAlertService(
+        VirtualCompanyDbContext dbContext,
+        ICompanyMembershipContextResolver membershipContextResolver,
+        IBriefingUpdateJobProducer briefingUpdateJobProducer)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
+        _briefingUpdateJobProducer = briefingUpdateJobProducer;
     }
 
     public async Task<AlertMutationResultDto> CreateAsync(Guid companyId, CreateAlertCommand command, CancellationToken cancellationToken)
     {
         await RequireMembershipAsync(companyId, cancellationToken);
         ValidateTenant(companyId, command.CompanyId);
-        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+        Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+        await ValidateSourceAgentScopeAsync(companyId, command.SourceAgentId, nameof(CreateAlertCommand.SourceAgentId), cancellationToken);
 
         var type = AlertTypeValues.Parse(command.Type);
         var severity = AlertSeverityValues.Parse(command.Severity);
-        var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
-        if (existing is not null)
+        var status = AlertStatusValues.Parse(command.Status);
+        if (status.IsOpenForDeduplication())
         {
-            existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
+            var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
+            if (existing is not null)
+            {
+                existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
+            }
         }
 
-        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
+        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, status, command.SourceAgentId, command.Metadata);
         _dbContext.Alerts.Add(alert);
-        var deduplicated = await SaveCreateAsync(alert, cancellationToken);
+        var deduplicated = status.IsOpenForDeduplication()
+            ? await SaveCreateAsync(alert, cancellationToken)
+            : await SaveCreateWithoutDedupAsync(cancellationToken);
         if (deduplicated is not null)
         {
             return deduplicated;
         }
-
+        await EnqueueAlertBriefingJobAsync(alert, cancellationToken);
         return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
     }
 
@@ -53,9 +66,16 @@ public sealed class CompanyAlertService : ICompanyAlertService
     {
         await RequireMembershipAsync(companyId, cancellationToken);
         ValidateTenant(companyId, command.CompanyId);
-        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+        Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+        await ValidateSourceAgentScopeAsync(companyId, command.SourceAgentId, nameof(CreateDetectionAlertCommand.SourceAgentId), cancellationToken);
 
         var type = AlertTypeValues.Parse(command.Type);
+        var status = AlertStatusValues.Parse(command.Status);
+        if (!status.IsOpenForDeduplication())
+        {
+            throw BuildValidationException(nameof(CreateDetectionAlertCommand.Status), "Detection alerts must be open or acknowledged so fingerprint deduplication remains well-defined.");
+        }
+
         var severity = AlertSeverityValues.Parse(command.Severity);
         var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
         if (existing is not null)
@@ -65,7 +85,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
             return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
         }
 
-        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
+        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, status, command.SourceAgentId, command.Metadata);
         _dbContext.Alerts.Add(alert);
         var deduplicated = await SaveCreateAsync(alert, cancellationToken);
         if (deduplicated is not null)
@@ -73,7 +93,29 @@ public sealed class CompanyAlertService : ICompanyAlertService
             return deduplicated;
         }
 
+        await EnqueueAlertBriefingJobAsync(alert, cancellationToken);
         return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+    }
+
+    private Task EnqueueAlertBriefingJobAsync(Alert alert, CancellationToken cancellationToken)
+    {
+        var idempotencyKey = $"briefing-event:{alert.CompanyId:N}:agent-generated-alert:{alert.Id:N}";
+        return _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
+            alert.CompanyId,
+            BriefingUpdateEventTypes.AgentGeneratedAlert,
+            alert.CorrelationId,
+            idempotencyKey,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sourceEntityType"] = JsonValue.Create("alert"),
+                ["sourceEntityId"] = JsonValue.Create(alert.Id.ToString("N")),
+                ["alertType"] = JsonValue.Create(alert.Type.ToStorageValue()),
+                ["severity"] = JsonValue.Create(alert.Severity.ToStorageValue()),
+                ["status"] = JsonValue.Create(alert.Status.ToStorageValue()),
+                ["sourceAgentId"] = alert.SourceAgentId.HasValue ? JsonValue.Create(alert.SourceAgentId.Value.ToString("N")) : null,
+                ["payloadRef"] = JsonValue.Create($"alerts/{alert.Id:N}")
+            },
+            cancellationToken);
     }
 
     public async Task<AlertDto> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
@@ -88,6 +130,26 @@ public sealed class CompanyAlertService : ICompanyAlertService
         await RequireMembershipAsync(companyId, cancellationToken);
         Validate(query);
 
+        var alerts = BuildFilteredAlertQuery(companyId, query);
+        var totalCount = await alerts.CountAsync(cancellationToken);
+        var pageSize = Math.Clamp(query.PageSize ?? query.Take ?? DefaultPageSize, 1, MaxPageSize);
+        var skip = query.Page.HasValue
+            ? (query.Page.Value - 1) * pageSize
+            : Math.Max(0, query.Skip ?? 0);
+        var page = query.Page ?? (skip / pageSize) + 1;
+        var items = await alerts
+            .OrderByDescending(x => x.CreatedUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip(skip)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, pageSize, page, pageSize, totalPages);
+    }
+
+    private IQueryable<Alert> BuildFilteredAlertQuery(Guid companyId, ListAlertsQuery query)
+    {
         var alerts = _dbContext.Alerts.AsNoTracking().Where(x => x.CompanyId == companyId);
         if (!string.IsNullOrWhiteSpace(query.Type))
         {
@@ -117,21 +179,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
             alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);
         }
 
-        var totalCount = await alerts.CountAsync(cancellationToken);
-        var pageSize = Math.Clamp(query.PageSize ?? query.Take ?? DefaultPageSize, 1, MaxPageSize);
-        var skip = query.Page.HasValue
-            ? (query.Page.Value - 1) * pageSize
-            : Math.Max(0, query.Skip ?? 0);
-        var page = query.Page ?? (skip / pageSize) + 1;
-        var items = await alerts
-            .OrderByDescending(x => x.CreatedUtc)
-            .ThenByDescending(x => x.Id)
-            .Skip(skip)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
-        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
-
-        return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, pageSize, page, pageSize, totalPages);
+        return alerts;
     }
 
     public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)
@@ -144,9 +192,18 @@ public sealed class CompanyAlertService : ICompanyAlertService
         {
             throw new KeyNotFoundException("Alert not found.");
         }
+        var nextStatus = AlertStatusValues.Parse(command.Status);
+        if (nextStatus.IsOpenForDeduplication())
+        {
+            var existingOpen = await FindOpenByFingerprintAsync(companyId, alert.Fingerprint, cancellationToken);
+            if (existingOpen is not null && existingOpen.Id != alert.Id)
+            {
+                throw BuildValidationException(nameof(UpdateAlertCommand.Status), "Another open alert already exists for this fingerprint in the requested company.");
+            }
+        }
 
         alert.UpdateDetails(AlertSeverityValues.Parse(command.Severity), command.Title, command.Summary, command.Evidence!, command.Metadata);
-        alert.UpdateStatus(AlertStatusValues.Parse(command.Status));
+        alert.UpdateStatus(nextStatus);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return ToDto(alert);
     }
@@ -166,7 +223,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
 
     private async Task<Alert?> FindOpenByFingerprintAsync(Guid companyId, string fingerprint, CancellationToken cancellationToken)
     {
-        var normalizedFingerprint = fingerprint.Trim();
+        var normalizedFingerprint = Alert.NormalizeFingerprint(fingerprint);
         return await _dbContext.Alerts
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.Fingerprint == normalizedFingerprint)
@@ -197,11 +254,33 @@ public sealed class CompanyAlertService : ICompanyAlertService
         }
     }
 
+    private async Task<AlertMutationResultDto?> SaveCreateWithoutDedupAsync(CancellationToken cancellationToken)
+    {
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return null;
+    }
+
     private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
     {
         if (await _membershipContextResolver.ResolveAsync(companyId, cancellationToken) is null)
         {
             throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+        }
+    }
+
+    private async Task ValidateSourceAgentScopeAsync(Guid companyId, Guid? sourceAgentId, string fieldName, CancellationToken cancellationToken)
+    {
+        if (!sourceAgentId.HasValue)
+        {
+            return;
+        }
+
+        var belongsToCompany = await _dbContext.Agents
+            .IgnoreQueryFilters()
+            .AnyAsync(agent => agent.Id == sourceAgentId.Value && agent.CompanyId == companyId, cancellationToken);
+        if (!belongsToCompany)
+        {
+            throw BuildValidationException(fieldName, "SourceAgentId must reference an agent in the requested company.");
         }
     }
 
@@ -363,6 +442,15 @@ public sealed class CompanyAlertService : ICompanyAlertService
             throw new AlertValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
         }
     }
+
+    private static AlertValidationException BuildValidationException(string key, string message) =>
+        new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [key] =
+            [
+                message
+            ]
+        });
 
     private static bool IsDedupUniqueViolation(DbUpdateException exception)
     {

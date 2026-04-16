@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.1.2",
+  "promptPath": ".ai-design/prompts/TASK-1.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:21:11.743Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-21-11-743Z_TASK-1.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-21-11-743Z_TASK-1.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:22:37.781Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "errors, nameof(request.Status), WorkTaskStatusValues.BuildValidationMessage(request.Status));\n+        }\n+\n         if (errors.Count > 0)\n         {\n             throw new TaskValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));\ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 9af0c2a..9ef77fb 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -39,6 +39,9 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(\"correlation-1\", mapped.CorrelationId);\n         Assert.Equal(\"Review inventory drift\", mapped.Title);\n         Assert.Equal(\"high\", mapped.Priority);\n+        Assert.Equal(WorkTaskStatus.New.ToStorageValue(), mapped.Status);\n+        Assert.Equal(WorkTaskSourceTypes.Agent, mapped.InputPayload[\"sourceType\"]!.GetValue<string>());\n+        Assert.Equal(\"trigger-event-1\", mapped.InputPayload[\"triggerEventKey\"]!.GetValue<string>());\n         Assert.Equal(agentId.ToString(\"N\"), mapped.InputPayload[\"originatingAgentId\"]!.GetValue<string>());\n     }\n \n@@ -156,6 +159,7 @@ public sealed class ProactiveTaskCreationServiceTests\n                 null,\n                 \"\",\n+                \"\",\n                 null,\n                 null,\n                 [])));\n@@ -176,6 +180,7 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.Description), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);\n+        Assert.Contains(nameof(MappedTaskCreationRequest.Status), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);\n     }\nEND_OF_PATCH\n",
+  "stderrTail": "est.Status), WorkTaskStatusValues.BuildValidationMessage(request.Status));\n+        }\n+\n         if (errors.Count > 0)\n         {\n             throw new TaskValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));\ndiff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\nindex 9af0c2a..9ef77fb 100644\n--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs\n@@ -39,6 +39,9 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Equal(\"correlation-1\", mapped.CorrelationId);\n         Assert.Equal(\"Review inventory drift\", mapped.Title);\n         Assert.Equal(\"high\", mapped.Priority);\n+        Assert.Equal(WorkTaskStatus.New.ToStorageValue(), mapped.Status);\n+        Assert.Equal(WorkTaskSourceTypes.Agent, mapped.InputPayload[\"sourceType\"]!.GetValue<string>());\n+        Assert.Equal(\"trigger-event-1\", mapped.InputPayload[\"triggerEventKey\"]!.GetValue<string>());\n         Assert.Equal(agentId.ToString(\"N\"), mapped.InputPayload[\"originatingAgentId\"]!.GetValue<string>());\n     }\n \n@@ -156,6 +159,7 @@ public sealed class ProactiveTaskCreationServiceTests\n                 null,\n                 \"\",\n+                \"\",\n                 null,\n                 null,\n                 [])));\n@@ -176,6 +180,7 @@ public sealed class ProactiveTaskCreationServiceTests\n         Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.Description), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);\n+        Assert.Contains(nameof(MappedTaskCreationRequest.Status), ex.Errors.Keys);\n         Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);\n     }\nEND_OF_PATCH\ntokens used\n66,826\n",
+  "verbosityMode": "summary"
+}

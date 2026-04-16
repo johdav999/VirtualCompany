@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Persistence;
@@ -96,6 +97,79 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
         Assert.Equal(11, latest.InputValues["currentValue"]!.GetValue<int>());
     }
 
+    [Fact]
+    public async Task Evaluation_service_loads_prior_state_and_fires_only_on_false_to_true_transition()
+    {
+        await using var connection = CreateOpenConnection();
+        await using var dbContext = await CreateDbContextAsync(connection);
+        var companyId = Guid.NewGuid();
+        await SeedCompanyAsync(dbContext, companyId);
+        var repository = new EfConditionTriggerEvaluationRepository(dbContext);
+        var metricResolver = new RecordingMetricResolver(JsonValue.Create(9));
+        var service = new ConditionTriggerEvaluationService(
+            new ConditionTriggerEvaluator(),
+            metricResolver,
+            new MissingConditionEntityFieldValueResolver(),
+            repository);
+        var condition = MetricCondition(
+            ConditionOperator.GreaterThan,
+            ConditionValueType.Number,
+            JsonValue.Create(10));
+
+        var first = await service.EvaluateAndPersistAsync(
+            new EvaluateConditionTriggerCommand(companyId, "task-backlog", null, condition, new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        metricResolver.Value = JsonValue.Create(11);
+        var second = await service.EvaluateAndPersistAsync(
+            new EvaluateConditionTriggerCommand(companyId, "task-backlog", null, condition, new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        var third = await service.EvaluateAndPersistAsync(
+            new EvaluateConditionTriggerCommand(companyId, "task-backlog", null, condition, new DateTime(2026, 4, 13, 8, 10, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        Assert.False(first.Outcome);
+        Assert.False(first.ShouldFire);
+        Assert.True(second.Outcome);
+        Assert.True(second.ShouldFire);
+        Assert.True(third.Outcome);
+        Assert.False(third.ShouldFire);
+        Assert.Equal(3, await dbContext.ConditionTriggerEvaluations.IgnoreQueryFilters().CountAsync());
+    }
+
+    [Fact]
+    public async Task Evaluation_service_changed_since_last_evaluation_compares_against_persisted_input_value()
+    {
+        await using var connection = CreateOpenConnection();
+        await using var dbContext = await CreateDbContextAsync(connection);
+        var companyId = Guid.NewGuid();
+        await SeedCompanyAsync(dbContext, companyId);
+        var repository = new EfConditionTriggerEvaluationRepository(dbContext);
+        var metricResolver = new RecordingMetricResolver(JsonValue.Create("green"));
+        var service = new ConditionTriggerEvaluationService(
+            new ConditionTriggerEvaluator(),
+            metricResolver,
+            new MissingConditionEntityFieldValueResolver(),
+            repository);
+        var condition = MetricCondition(ConditionOperator.ChangedSinceLastEvaluation, null, null);
+
+        var first = await service.EvaluateAndPersistAsync(
+            new EvaluateConditionTriggerCommand(companyId, "status-color", null, condition, new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        metricResolver.Value = JsonValue.Create("red");
+        var second = await service.EvaluateAndPersistAsync(
+            new EvaluateConditionTriggerCommand(companyId, "status-color", null, condition, new DateTime(2026, 4, 13, 8, 5, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        Assert.False(first.Outcome);
+        Assert.False(first.ShouldFire);
+        Assert.True(second.Outcome);
+        Assert.True(second.ShouldFire);
+        Assert.Equal("green", second.InputValues["previousValue"]!.GetValue<string>());
+    }
+
     private static SqliteConnection CreateOpenConnection()
     {
         var connection = new SqliteConnection("Data Source=:memory:");
@@ -147,4 +221,26 @@ public sealed class ConditionTriggerEvaluationPersistenceTests
             previousOutcome,
             currentOutcome,
             fired);
+
+    private static ConditionExpression MetricCondition(
+        ConditionOperator conditionOperator,
+        ConditionValueType? valueType,
+        JsonNode? comparisonValue,
+        RepeatFiringMode repeatFiringMode = RepeatFiringMode.FalseToTrueTransition) =>
+        new(
+            new ConditionTargetReference(ConditionOperandSourceType.Metric, "task.backlog.count", null, null),
+            conditionOperator,
+            valueType,
+            comparisonValue,
+            repeatFiringMode);
+
+    private sealed class RecordingMetricResolver : IConditionMetricValueResolver
+    {
+        public RecordingMetricResolver(JsonNode? value) => Value = value;
+
+        public JsonNode? Value { get; set; }
+
+        public Task<ConditionResolvedValue> ResolveMetricAsync(Guid companyId, string metricName, CancellationToken cancellationToken) =>
+            Task.FromResult(ConditionResolvedValue.FoundValue(Value));
+    }
 }

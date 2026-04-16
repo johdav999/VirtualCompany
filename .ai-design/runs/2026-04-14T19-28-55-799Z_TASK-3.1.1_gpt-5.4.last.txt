@@ -1,0 +1,1272 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 8a6d2a1..7fd9b2c 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -1,5 +1,7 @@
+ namespace VirtualCompany.Application.Cockpit;
+ 
++using VirtualCompany.Domain.Enums;
++
+ public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
+ 
+ public sealed record ExecutiveCockpitDashboardDto(
+@@ -129,6 +131,56 @@ public sealed record ExecutiveCockpitEmptyStateFlagsDto(
+     bool NoPendingApprovals,
+     bool NoAlerts);
+ 
++public sealed record GetDepartmentDashboardConfigurationQuery(Guid CompanyId);
++
++public sealed record DepartmentDashboardConfigurationDto(
++    Guid CompanyId,
++    DateTime GeneratedAtUtc,
++    IReadOnlyList<DepartmentDashboardSectionDto> Sections);
++
++public sealed record DepartmentDashboardSectionDto(
++    Guid Id,
++    string DepartmentKey,
++    string DisplayName,
++    int DisplayOrder,
++    string? Icon,
++    bool HasData,
++    IReadOnlyDictionary<string, int> SummaryCounts,
++    DepartmentDashboardNavigationDto Navigation,
++    DepartmentDashboardEmptyStateDto EmptyState,
++    IReadOnlyList<DepartmentDashboardWidgetDto> Widgets);
++
++public sealed record DepartmentDashboardWidgetDto(
++    Guid Id,
++    string WidgetKey,
++    string Title,
++    string WidgetType,
++    int DisplayOrder,
++    string SummaryBinding,
++    int SummaryValue,
++    bool HasData,
++    DepartmentDashboardNavigationDto Navigation,
++    DepartmentDashboardEmptyStateDto EmptyState);
++
++public sealed record DepartmentDashboardNavigationDto(
++    string Label,
++    string Route);
++
++public sealed record DepartmentDashboardEmptyStateDto(
++    string Title,
++    string Message,
++    string? ActionLabel,
++    string? ActionRoute);
++
++public static class DepartmentDashboardSummaryBindings
++{
++    public const string ActiveAgents = "active_agents";
++    public const string OpenTasks = "open_tasks";
++    public const string CompletedTasksLast7Days = "completed_tasks_7d";
++    public const string PendingApprovals = "pending_approvals";
++    public const string ActiveWorkflows = "active_workflows";
++    public const string WorkflowExceptions = "workflow_exceptions";
++}
++
++public interface IDepartmentDashboardConfigurationService
++{
++    Task<DepartmentDashboardConfigurationDto> GetAsync(
++        GetDepartmentDashboardConfigurationQuery query,
++        CancellationToken cancellationToken);
++}
++
+ public interface IExecutiveCockpitDashboardService
+ {
+     Task<ExecutiveCockpitDashboardDto> GetAsync(
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 92f79d2..014c24a 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -12,10 +12,13 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class ExecutiveCockpitController : ControllerBase
+ {
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
++    private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+ 
+-    public ExecutiveCockpitController(IExecutiveCockpitDashboardService dashboardService)
++    public ExecutiveCockpitController(
++        IExecutiveCockpitDashboardService dashboardService,
++        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService)
+     {
+         _dashboardService = dashboardService;
++        _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+     }
+ 
+     [HttpGet]
+@@ -34,4 +37,21 @@ public sealed class ExecutiveCockpitController : ControllerBase
+             return NotFound();
+         }
+     }
++
++    [HttpGet("department-sections")]
++    public async Task<ActionResult<DepartmentDashboardConfigurationDto>> GetDepartmentSectionsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _departmentDashboardConfigurationService.GetAsync(new GetDepartmentDashboardConfigurationQuery(companyId), cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/DashboardConfigurationEntities.cs b/src/VirtualCompany.Domain/Entities/DashboardConfigurationEntities.cs
+new file mode 100644
+index 0000000..2f1f92d
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/DashboardConfigurationEntities.cs
+@@ -0,0 +1,188 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class DashboardDepartmentConfig : ICompanyOwnedEntity
++{
++    private const int DepartmentMaxLength = 64;
++    private const int DisplayNameMaxLength = 128;
++    private const int IconMaxLength = 64;
++
++    private DashboardDepartmentConfig()
++    {
++    }
++
++    public DashboardDepartmentConfig(
++        Guid id,
++        Guid companyId,
++        string department,
++        string displayName,
++        int displayOrder,
++        bool isEnabled,
++        string? icon,
++        IDictionary<string, JsonNode?>? navigation,
++        IDictionary<string, JsonNode?>? visibility,
++        IDictionary<string, JsonNode?>? emptyState)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (displayOrder < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(displayOrder), "Display order cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Department = NormalizeRequired(department, nameof(department), DepartmentMaxLength).ToLowerInvariant();
++        DisplayName = NormalizeRequired(displayName, nameof(displayName), DisplayNameMaxLength);
++        DisplayOrder = displayOrder;
++        IsEnabled = isEnabled;
++        Icon = NormalizeOptional(icon, nameof(icon), IconMaxLength);
++        Navigation = CloneNodes(navigation);
++        Visibility = CloneNodes(visibility);
++        EmptyState = CloneNodes(emptyState);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Department { get; private set; } = null!;
++    public string DisplayName { get; private set; } = null!;
++    public int DisplayOrder { get; private set; }
++    public bool IsEnabled { get; private set; }
++    public string? Icon { get; private set; }
++    public Dictionary<string, JsonNode?> Navigation { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Visibility { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EmptyState { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<DashboardWidgetConfig> Widgets { get; } = new List<DashboardWidgetConfig>();
++
++    public void AddWidget(DashboardWidgetConfig widget)
++    {
++        if (widget.CompanyId != CompanyId)
++        {
++            throw new InvalidOperationException("Dashboard widget company must match the department dashboard company.");
++        }
++
++        Widgets.Add(widget);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class DashboardWidgetConfig : ICompanyOwnedEntity
++{
++    private const int WidgetKeyMaxLength = 128;
++    private const int TitleMaxLength = 160;
++    private const int WidgetTypeMaxLength = 64;
++    private const int SummaryBindingMaxLength = 128;
++
++    private DashboardWidgetConfig()
++    {
++    }
++
++    public DashboardWidgetConfig(
++        Guid id,
++        Guid companyId,
++        Guid departmentConfigId,
++        string widgetKey,
++        string title,
++        string widgetType,
++        int displayOrder,
++        bool isEnabled,
++        string summaryBinding,
++        IDictionary<string, JsonNode?>? navigation,
++        IDictionary<string, JsonNode?>? visibility,
++        IDictionary<string, JsonNode?>? emptyState)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (departmentConfigId == Guid.Empty)
++        {
++            throw new ArgumentException("DepartmentConfigId is required.", nameof(departmentConfigId));
++        }
++
++        if (displayOrder < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(displayOrder), "Display order cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DepartmentConfigId = departmentConfigId;
++        WidgetKey = NormalizeRequired(widgetKey, nameof(widgetKey), WidgetKeyMaxLength).ToLowerInvariant();
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        WidgetType = NormalizeRequired(widgetType, nameof(widgetType), WidgetTypeMaxLength);
++        DisplayOrder = displayOrder;
++        IsEnabled = isEnabled;
++        SummaryBinding = NormalizeRequired(summaryBinding, nameof(summaryBinding), SummaryBindingMaxLength);
++        Navigation = CloneNodes(navigation);
++        Visibility = CloneNodes(visibility);
++        EmptyState = CloneNodes(emptyState);
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DepartmentConfigId { get; private set; }
++    public string WidgetKey { get; private set; } = null!;
++    public string Title { get; private set; } = null!;
++    public string WidgetType { get; private set; } = null!;
++    public int DisplayOrder { get; private set; }
++    public bool IsEnabled { get; private set; }
++    public string SummaryBinding { get; private set; } = null!;
++    public Dictionary<string, JsonNode?> Navigation { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> Visibility { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> EmptyState { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public DashboardDepartmentConfig DepartmentConfig { get; private set; } = null!;
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+new file mode 100644
+index 0000000..51c6d0a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+@@ -0,0 +1,423 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyDepartmentDashboardConfigurationService : IDepartmentDashboardConfigurationService
++{
++    private static readonly WorkTaskStatus[] OpenTaskStatuses =
++    [
++        WorkTaskStatus.New,
++        WorkTaskStatus.InProgress,
++        WorkTaskStatus.Blocked,
++        WorkTaskStatus.AwaitingApproval
++    ];
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyDepartmentDashboardConfigurationService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<DepartmentDashboardConfigurationDto> GetAsync(
++        GetDepartmentDashboardConfigurationQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++
++        if (!await _dbContext.Companies.IgnoreQueryFilters().AnyAsync(x => x.Id == query.CompanyId, cancellationToken))
++        {
++            throw new KeyNotFoundException("Company not found.");
++        }
++
++        await EnsureDefaultConfigurationAsync(query.CompanyId, cancellationToken);
++
++        var configs = await _dbContext.DashboardDepartmentConfigs
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Widgets)
++            .Where(x => x.CompanyId == query.CompanyId && x.IsEnabled)
++            .OrderBy(x => x.DisplayOrder)
++            .ThenBy(x => x.Department)
++            .ToListAsync(cancellationToken);
++
++        var roleValue = membership.MembershipRole.ToStorageValue();
++        var visibleConfigs = configs
++            .Where(x => IsVisibleToRole(x.Visibility, roleValue))
++            .ToList();
++
++        if (visibleConfigs.Count == 0)
++        {
++            return new DepartmentDashboardConfigurationDto(
++                query.CompanyId,
++                _timeProvider.GetUtcNow().UtcDateTime,
++                []);
++        }
++
++        var metrics = await LoadMetricsAsync(
++            query.CompanyId,
++            visibleConfigs.Select(x => x.Department),
++            cancellationToken);
++
++        var sections = visibleConfigs
++            .Select(config =>
++            {
++                var departmentMetrics = metrics.GetValueOrDefault(config.Department, DepartmentDashboardMetrics.Empty);
++                var widgets = config.Widgets
++                    .Where(x => x.IsEnabled && IsVisibleToRole(x.Visibility, roleValue))
++                    .OrderBy(x => x.DisplayOrder)
++                    .ThenBy(x => x.WidgetKey, StringComparer.OrdinalIgnoreCase)
++                    .Select(widget =>
++                    {
++                        var summaryValue = ResolveSummaryValue(departmentMetrics, widget.SummaryBinding);
++                        return new DepartmentDashboardWidgetDto(
++                            widget.Id,
++                            widget.WidgetKey,
++                            widget.Title,
++                            widget.WidgetType,
++                            widget.DisplayOrder,
++                            widget.SummaryBinding,
++                            summaryValue,
++                            summaryValue > 0,
++                            ReadNavigation(widget.Navigation, widget.Title, $"/dashboard?companyId={query.CompanyId}&department={Uri.EscapeDataString(config.Department)}"),
++                            ReadEmptyState(widget.EmptyState, widget.Title, config.DisplayName, query.CompanyId, config.Department));
++                    })
++                    .ToList();
++
++                return new DepartmentDashboardSectionDto(
++                    config.Id,
++                    config.Department,
++                    config.DisplayName,
++                    config.DisplayOrder,
++                    config.Icon,
++                    departmentMetrics.HasData,
++                    departmentMetrics.ToSummaryCounts(),
++                    ReadNavigation(config.Navigation, config.DisplayName, $"/dashboard?companyId={query.CompanyId}&department={Uri.EscapeDataString(config.Department)}"),
++                    ReadEmptyState(config.EmptyState, config.DisplayName, config.DisplayName, query.CompanyId, config.Department),
++                    widgets);
++            })
++            .ToList();
++
++        return new DepartmentDashboardConfigurationDto(
++            query.CompanyId,
++            _timeProvider.GetUtcNow().UtcDateTime,
++            sections);
++    }
++
++    private async Task EnsureDefaultConfigurationAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var hasAnyConfig = await _dbContext.DashboardDepartmentConfigs
++            .IgnoreQueryFilters()
++            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++
++        if (hasAnyConfig)
++        {
++            return;
++        }
++
++        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        foreach (var seed in DefaultDepartmentDashboardConfigSeeds.Create(companyId))
++        {
++            SetTimestamp(seed, nowUtc);
++            foreach (var widget in seed.Widgets)
++            {
++                SetTimestamp(widget, nowUtc);
++            }
++
++            _dbContext.DashboardDepartmentConfigs.Add(seed);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private async Task<IReadOnlyDictionary<string, DepartmentDashboardMetrics>> LoadMetricsAsync(
++        Guid companyId,
++        IEnumerable<string> departments,
++        CancellationToken cancellationToken)
++    {
++        var departmentSet = departments
++            .Select(NormalizeDepartmentKey)
++            .ToHashSet(StringComparer.OrdinalIgnoreCase);
++
++        var agentRows = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => new { x.Id, x.Department, x.Status })
++            .ToListAsync(cancellationToken);
++
++        var agentDepartmentById = agentRows
++            .Select(x => new { x.Id, Department = NormalizeDepartmentKey(x.Department) })
++            .Where(x => departmentSet.Contains(x.Department))
++            .ToDictionary(x => x.Id, x => x.Department);
++
++        var taskRows = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AssignedAgentId.HasValue)
++            .Select(x => new { x.AssignedAgentId, x.Status, x.CompletedUtc })
++            .ToListAsync(cancellationToken);
++
++        var pendingApprovalRows = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .Select(x => new { x.AgentId })
++            .ToListAsync(cancellationToken);
++
++        var workflowRows = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Active)
++            .Select(x => x.Department)
++            .ToListAsync(cancellationToken);
++
++        var workflowExceptionRows = await (
++            from exception in _dbContext.WorkflowExceptions.IgnoreQueryFilters().AsNoTracking()
++            join definition in _dbContext.WorkflowDefinitions.IgnoreQueryFilters().AsNoTracking()
++                on exception.WorkflowDefinitionId equals definition.Id
++            where exception.CompanyId == companyId &&
++                  definition.CompanyId == companyId &&
++                  exception.Status == WorkflowExceptionStatus.Open
++            select definition.Department)
++            .ToListAsync(cancellationToken);
++
++        var completedSinceUtc = _timeProvider.GetUtcNow().UtcDateTime.AddDays(-7);
++        var metrics = departmentSet.ToDictionary(
++            x => x,
++            _ => new MutableDepartmentDashboardMetrics(),
++            StringComparer.OrdinalIgnoreCase);
++
++        foreach (var agent in agentRows)
++        {
++            var department = NormalizeDepartmentKey(agent.Department);
++            if (metrics.TryGetValue(department, out var metric) && agent.Status == AgentStatus.Active)
++            {
++                metric.ActiveAgents++;
++            }
++        }
++
++        foreach (var task in taskRows)
++        {
++            if (task.AssignedAgentId is not Guid agentId ||
++                !agentDepartmentById.TryGetValue(agentId, out var department) ||
++                !metrics.TryGetValue(department, out var metric))
++            {
++                continue;
++            }
++
++            if (OpenTaskStatuses.Contains(task.Status))
++            {
++                metric.OpenTasks++;
++            }
++
++            if (task.Status == WorkTaskStatus.Completed && task.CompletedUtc >= completedSinceUtc)
++            {
++                metric.CompletedTasksLast7Days++;
++            }
++        }
++
++        foreach (var approval in pendingApprovalRows)
++        {
++            if (agentDepartmentById.TryGetValue(approval.AgentId, out var department) &&
++                metrics.TryGetValue(department, out var metric))
++            {
++                metric.PendingApprovals++;
++            }
++        }
++
++        foreach (var department in workflowRows.Select(NormalizeDepartmentKey))
++        {
++            if (metrics.TryGetValue(department, out var metric))
++            {
++                metric.ActiveWorkflows++;
++            }
++        }
++
++        foreach (var department in workflowExceptionRows.Select(NormalizeDepartmentKey))
++        {
++            if (metrics.TryGetValue(department, out var metric))
++            {
++                metric.WorkflowExceptions++;
++            }
++        }
++
++        return metrics.ToDictionary(
++            x => x.Key,
++            x => x.Value.ToImmutable(),
++            StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static int ResolveSummaryValue(DepartmentDashboardMetrics metrics, string summaryBinding) =>
++        summaryBinding switch
++        {
++            DepartmentDashboardSummaryBindings.ActiveAgents => metrics.ActiveAgents,
++            DepartmentDashboardSummaryBindings.OpenTasks => metrics.OpenTasks,
++            DepartmentDashboardSummaryBindings.CompletedTasksLast7Days => metrics.CompletedTasksLast7Days,
++            DepartmentDashboardSummaryBindings.PendingApprovals => metrics.PendingApprovals,
++            DepartmentDashboardSummaryBindings.ActiveWorkflows => metrics.ActiveWorkflows,
++            DepartmentDashboardSummaryBindings.WorkflowExceptions => metrics.WorkflowExceptions,
++            _ => 0
++        };
++
++    private static bool IsVisibleToRole(IReadOnlyDictionary<string, JsonNode?> visibility, string roleValue)
++    {
++        if (!visibility.TryGetValue("roles", out var rolesNode) || rolesNode is not JsonArray roles || roles.Count == 0)
++        {
++            return false;
++        }
++
++        return roles
++            .OfType<JsonValue>()
++            .Any(x => x.TryGetValue<string>(out var configuredRole) &&
++                      string.Equals(configuredRole, roleValue, StringComparison.OrdinalIgnoreCase));
++    }
++
++    private static DepartmentDashboardNavigationDto ReadNavigation(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        string fallbackLabel,
++        string fallbackRoute)
++    {
++        var label = ReadString(metadata, "label") ?? fallbackLabel;
++        var route = ReadString(metadata, "route") ?? fallbackRoute;
++        return new DepartmentDashboardNavigationDto(label, route);
++    }
++
++    private static DepartmentDashboardEmptyStateDto ReadEmptyState(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        string fallbackTitle,
++        string departmentName,
++        Guid companyId,
++        string departmentKey)
++    {
++        var defaultRoute = $"/agents?companyId={companyId}&department={Uri.EscapeDataString(departmentKey)}";
++        return new DepartmentDashboardEmptyStateDto(
++            ReadString(metadata, "title") ?? fallbackTitle,
++            ReadString(metadata, "message") ?? $"{departmentName} has no activity yet.",
++            ReadString(metadata, "actionLabel"),
++            ReadString(metadata, "actionRoute") ?? defaultRoute);
++    }
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> metadata, string key)
++    {
++        if (!metadata.TryGetValue(key, out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        return value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++    }
++
++    private static string NormalizeDepartmentKey(string? department) =>
++        string.IsNullOrWhiteSpace(department) ? "unassigned" : department.Trim().ToLowerInvariant();
++
++    private static void SetTimestamp(object entity, DateTime nowUtc)
++    {
++        entity.GetType().GetProperty("CreatedUtc")?.SetValue(entity, nowUtc);
++        entity.GetType().GetProperty("UpdatedUtc")?.SetValue(entity, nowUtc);
++    }
++
++    private sealed record DepartmentDashboardMetrics(
++        int ActiveAgents,
++        int OpenTasks,
++        int CompletedTasksLast7Days,
++        int PendingApprovals,
++        int ActiveWorkflows,
++        int WorkflowExceptions)
++    {
++        public static DepartmentDashboardMetrics Empty { get; } = new(0, 0, 0, 0, 0, 0);
++
++        public bool HasData =>
++            ActiveAgents > 0 ||
++            OpenTasks > 0 ||
++            CompletedTasksLast7Days > 0 ||
++            PendingApprovals > 0 ||
++            ActiveWorkflows > 0 ||
++            WorkflowExceptions > 0;
++
++        public IReadOnlyDictionary<string, int> ToSummaryCounts() =>
++            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++            {
++                [DepartmentDashboardSummaryBindings.ActiveAgents] = ActiveAgents,
++                [DepartmentDashboardSummaryBindings.OpenTasks] = OpenTasks,
++                [DepartmentDashboardSummaryBindings.CompletedTasksLast7Days] = CompletedTasksLast7Days,
++                [DepartmentDashboardSummaryBindings.PendingApprovals] = PendingApprovals,
++                [DepartmentDashboardSummaryBindings.ActiveWorkflows] = ActiveWorkflows,
++                [DepartmentDashboardSummaryBindings.WorkflowExceptions] = WorkflowExceptions
++            };
++    }
++
++    private sealed class MutableDepartmentDashboardMetrics
++    {
++        public int ActiveAgents { get; set; }
++        public int OpenTasks { get; set; }
++        public int CompletedTasksLast7Days { get; set; }
++        public int PendingApprovals { get; set; }
++        public int ActiveWorkflows { get; set; }
++        public int WorkflowExceptions { get; set; }
++
++        public DepartmentDashboardMetrics ToImmutable() =>
++            new(ActiveAgents, OpenTasks, CompletedTasksLast7Days, PendingApprovals, ActiveWorkflows, WorkflowExceptions);
++    }
++}
++
++internal static class DefaultDepartmentDashboardConfigSeeds
++{
++    private static readonly string[] ExecutiveRoles = ["owner", "admin", "manager"];
++
++    public static IReadOnlyList<DashboardDepartmentConfig> Create(Guid companyId) =>
++    [
++        Department(companyId, "finance", "Finance", 10, "cash-stack", Roles("owner", "admin", "finance_approver"), "Approvals", "Review finance approvals", DepartmentDashboardSummaryBindings.PendingApprovals, "Spend anomalies", "Review exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Invoice queue", "Open finance tasks", DepartmentDashboardSummaryBindings.OpenTasks),
++        Department(companyId, "sales", "Sales", 20, "graph-up", ExecutiveRoles, "Pipeline", "Active sales workflows", DepartmentDashboardSummaryBindings.ActiveWorkflows, "Open deals", "Open sales tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Follow-ups", "Completed sales tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days),
++        Department(companyId, "support", "Support", 30, "headset", Roles("owner", "admin", "manager", "support_supervisor"), "Open tickets", "Open support tasks", DepartmentDashboardSummaryBindings.OpenTasks, "SLA risk", "Support exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Escalations", "Pending support approvals", DepartmentDashboardSummaryBindings.PendingApprovals),
++        Department(companyId, "operations", "Operations", 40, "gear", ExecutiveRoles, "Workflow exceptions", "Open workflow exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Task backlog", "Open operations tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Throughput", "Completed operations tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days)
++    ];
++
++    private static DashboardDepartmentConfig Department(
++        Guid companyId,
++        string department,
++        string displayName,
++        int order,
++        string icon,
++        IReadOnlyCollection<string> roles,
++        string widgetOneTitle,
++        string widgetOneEmpty,
++        string widgetOneBinding,
++        string widgetTwoTitle,
++        string widgetTwoEmpty,
++        string widgetTwoBinding,
++        string widgetThreeTitle,
++        string widgetThreeEmpty,
++        string widgetThreeBinding)
++    {
++        var id = Guid.NewGuid();
++        var section = new DashboardDepartmentConfig(
++            id,
++            companyId,
++            department,
++            displayName,
++            order,
++            true,
++            icon,
++            Navigation($"Open {displayName}", $"/dashboard?companyId={companyId}&department={department}"),
++            Visibility(roles),
++            EmptyState($"{displayName} is ready", $"Add agents, workflows, or tasks to start filling the {displayName.ToLowerInvariant()} dashboard.", "Open agents", $"/agents?companyId={companyId}&department={department}"));
++
++        section.AddWidget(Widget(companyId, id, $"{department}_{widgetOneBinding}", widgetOneTitle, 10, widgetOneBinding, roles, widgetOneEmpty, department));
++        section.AddWidget(Widget(companyId, id, $"{department}_{widgetTwoBinding}", widgetTwoTitle, 20, widgetTwoBinding, roles, widgetTwoEmpty, department));
++        section.AddWidget(Widget(companyId, id, $"{department}_{widgetThreeBinding}", widgetThreeTitle, 30, widgetThreeBinding, roles, widgetThreeEmpty, department));
++        return section;
++    }
++
++    private static DashboardWidgetConfig Widget(Guid companyId, Guid departmentId, string key, string title, int order, string binding, IReadOnlyCollection<string> roles, string emptyMessage, string department) =>
++        new(
++            Guid.NewGuid(),
++            companyId,
++            departmentId,
++            key,
++            title,
++            "summary_count",
++            order,
++            true,
++            binding,
++            Navigation($"Open {title}", $"/dashboard?companyId={companyId}&department={department}&widget={key}"),
++            Visibility(roles),
++            EmptyState(title, emptyMessage, "Open tasks", $"/tasks?companyId={companyId}"));
++
++    private static IReadOnlyCollection<string> Roles(params string[] roles) => roles;
++
++    private static Dictionary<string, JsonNode?> Visibility(IEnumerable<string> roles) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["roles"] = new JsonArray(roles.Select(role => JsonValue.Create(role)).ToArray<JsonNode?>())
++        };
++
++    private static Dictionary<string, JsonNode?> Navigation(string label, string route) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["label"] = JsonValue.Create(label),
++            ["route"] = JsonValue.Create(route)
++        };
++
++    private static Dictionary<string, JsonNode?> EmptyState(string title, string message, string actionLabel, string actionRoute) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["title"] = JsonValue.Create(title),
++            ["message"] = JsonValue.Create(message),
++            ["actionLabel"] = JsonValue.Create(actionLabel),
++            ["actionRoute"] = JsonValue.Create(actionRoute)
++        };
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 52c4a1a..6919f83 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -249,6 +249,7 @@ public static class DependencyInjection
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index f57580d..8fa8654 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -62,6 +62,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+     public DbSet<Alert> Alerts => Set<Alert>();
+     public DbSet<Escalation> Escalations => Set<Escalation>();
++    public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
++    public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -181,5 +183,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<Escalation>()
+             .HasQueryFilter(escalation =>
+                 CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DashboardDepartmentConfig>()
++            .HasQueryFilter(config =>
++                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DashboardWidgetConfig>()
++            .HasQueryFilter(config =>
++                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index c312781..785e91b 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -145,6 +145,76 @@ internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfiguratio
+     }
+ }
+ 
++internal sealed class DashboardDepartmentConfigConfiguration : IEntityTypeConfiguration<DashboardDepartmentConfig>
++{
++    public void Configure(EntityTypeBuilder<DashboardDepartmentConfig> builder)
++    {
++        builder.ToTable("dashboard_department_configs");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.DisplayName).HasColumnName("display_name").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.DisplayOrder).HasColumnName("display_order").IsRequired();
++        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.Icon).HasColumnName("icon").HasMaxLength(64);
++        builder.Property(x => x.Navigation)
++            .HasColumnName("navigation_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.Visibility)
++            .HasColumnName("visibility_roles_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.EmptyState)
++            .HasColumnName("empty_state_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.Department }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.DisplayOrder, x.Department });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasMany(x => x.Widgets).WithOne(x => x.DepartmentConfig).HasForeignKey(x => x.DepartmentConfigId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class DashboardWidgetConfigConfiguration : IEntityTypeConfiguration<DashboardWidgetConfig>
++{
++    public void Configure(EntityTypeBuilder<DashboardWidgetConfig> builder)
++    {
++        builder.ToTable("dashboard_widget_configs");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DepartmentConfigId).HasColumnName("department_config_id").IsRequired();
++        builder.Property(x => x.WidgetKey).HasColumnName("widget_key").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.WidgetType).HasColumnName("widget_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.DisplayOrder).HasColumnName("display_order").IsRequired();
++        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.SummaryBinding).HasColumnName("summary_binding").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.Navigation).HasColumnName("navigation_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
++        builder.Property(x => x.Visibility).HasColumnName("visibility_roles_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
++        builder.Property(x => x.EmptyState).HasColumnName("empty_state_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.DepartmentConfigId, x.DisplayOrder, x.WidgetKey });
++        builder.HasIndex(x => new { x.CompanyId, x.DepartmentConfigId, x.WidgetKey }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.NoAction);
++    }
++}
++
+ internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<AgentTemplate>
+ {
+     public void Configure(EntityTypeBuilder<AgentTemplate> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414210000_AddDepartmentDashboardConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414210000_AddDepartmentDashboardConfiguration.cs
+new file mode 100644
+index 0000000..4ef72d1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414210000_AddDepartmentDashboardConfiguration.cs
+@@ -0,0 +1,183 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260414210000_AddDepartmentDashboardConfiguration")]
++public partial class AddDepartmentDashboardConfiguration : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "dashboard_department_configs",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier", nullable: false),
++                department = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                display_name = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)", maxLength: 128, nullable: false),
++                display_order = table.Column<int>(type: "int", nullable: false),
++                is_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                icon = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: true),
++                navigation_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                visibility_roles_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                empty_state_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                created_at = table.Column<DateTime>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "timestamp with time zone" : "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "timestamp with time zone" : "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_dashboard_department_configs", x => x.id);
++                table.ForeignKey(
++                    name: "FK_dashboard_department_configs_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "dashboard_widget_configs",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier", nullable: false),
++                department_config_id = table.Column<Guid>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "uuid" : "uniqueidentifier", nullable: false),
++                widget_key = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)", maxLength: 128, nullable: false),
++                title = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(160)" : "nvarchar(160)", maxLength: 160, nullable: false),
++                widget_type = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
++                display_order = table.Column<int>(type: "int", nullable: false),
++                is_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                summary_binding = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "character varying(128)" : "nvarchar(128)", maxLength: 128, nullable: false),
++                navigation_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                visibility_roles_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                empty_state_json = table.Column<string>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "jsonb" : "nvarchar(max)", nullable: false, defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'"),
++                created_at = table.Column<DateTime>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "timestamp with time zone" : "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "timestamp with time zone" : "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_dashboard_widget_configs", x => x.id);
++                table.ForeignKey(
++                    name: "FK_dashboard_widget_configs_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.NoAction);
++                table.ForeignKey(
++                    name: "FK_dashboard_widget_configs_dashboard_department_configs_department_config_id",
++                    column: x => x.department_config_id,
++                    principalTable: "dashboard_department_configs",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_department_configs_company_id",
++            table: "dashboard_department_configs",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_department_configs_company_id_department",
++            table: "dashboard_department_configs",
++            columns: new[] { "company_id", "department" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_department_configs_company_id_display_order_department",
++            table: "dashboard_department_configs",
++            columns: new[] { "company_id", "display_order", "department" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_widget_configs_company_id",
++            table: "dashboard_widget_configs",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_widget_configs_department_config_id",
++            table: "dashboard_widget_configs",
++            column: "department_config_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_widget_configs_company_id_department_config_id_display_order_widget_key",
++            table: "dashboard_widget_configs",
++            columns: new[] { "company_id", "department_config_id", "display_order", "widget_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_dashboard_widget_configs_company_id_department_config_id_widget_key",
++            table: "dashboard_widget_configs",
++            columns: new[] { "company_id", "department_config_id", "widget_key" },
++            unique: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "dashboard_widget_configs");
++        migrationBuilder.DropTable(name: "dashboard_department_configs");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+new file mode 100644
+index 0000000..b76595b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+@@ -0,0 +1,258 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public DepartmentDashboardConfigurationIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Department_sections_are_returned_in_deterministic_order_with_ordered_widgets()
++    {
++        var companyId = await SeedCompanyAsync("dashboard-owner-order", "dashboard-owner-order@example.com", CompanyMembershipRole.Owner);
++
++        using var client = CreateAuthenticatedClient("dashboard-owner-order", "dashboard-owner-order@example.com");
++        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit/department-sections");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.Equal(["finance", "sales", "support", "operations"], dashboard!.Sections.Select(x => x.DepartmentKey).ToArray());
++        Assert.All(dashboard.Sections, section =>
++        {
++            Assert.NotEmpty(section.Widgets);
++            Assert.Equal(section.Widgets.OrderBy(x => x.DisplayOrder).ThenBy(x => x.WidgetKey).Select(x => x.WidgetKey), section.Widgets.Select(x => x.WidgetKey));
++            Assert.NotEmpty(section.Navigation.Route);
++            Assert.NotNull(section.EmptyState);
++        });
++    }
++
++    [Fact]
++    public async Task Department_sections_filter_by_membership_role()
++    {
++        var ownerCompanyId = await SeedCompanyAsync("dashboard-owner-role", "dashboard-owner-role@example.com", CompanyMembershipRole.Owner);
++        var employeeCompanyId = await SeedCompanyAsync("dashboard-employee-role", "dashboard-employee-role@example.com", CompanyMembershipRole.Employee);
++        var financeCompanyId = await SeedCompanyAsync("dashboard-finance-role", "dashboard-finance-role@example.com", CompanyMembershipRole.FinanceApprover);
++
++        using var ownerClient = CreateAuthenticatedClient("dashboard-owner-role", "dashboard-owner-role@example.com");
++        var ownerResponse = await ownerClient.GetAsync($"/api/companies/{ownerCompanyId}/executive-cockpit/department-sections");
++        var ownerDashboard = await ownerResponse.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        using var employeeClient = CreateAuthenticatedClient("dashboard-employee-role", "dashboard-employee-role@example.com");
++        var employeeResponse = await employeeClient.GetAsync($"/api/companies/{employeeCompanyId}/executive-cockpit/department-sections");
++        var employeeDashboard = await employeeResponse.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        using var financeClient = CreateAuthenticatedClient("dashboard-finance-role", "dashboard-finance-role@example.com");
++        var financeResponse = await financeClient.GetAsync($"/api/companies/{financeCompanyId}/executive-cockpit/department-sections");
++        var financeDashboard = await financeResponse.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, employeeResponse.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, financeResponse.StatusCode);
++        Assert.Equal(["finance", "sales", "support", "operations"], ownerDashboard!.Sections.Select(x => x.DepartmentKey).ToArray());
++        Assert.Empty(employeeDashboard!.Sections);
++        Assert.Equal(["finance"], financeDashboard!.Sections.Select(x => x.DepartmentKey).ToArray());
++    }
++
++    [Fact]
++    public async Task Department_sections_are_tenant_scoped()
++    {
++        var userA = Guid.NewGuid();
++        var userB = Guid.NewGuid();
++        var companyA = Guid.NewGuid();
++        var companyB = Guid.NewGuid();
++        var agentA = Guid.NewGuid();
++        var agentB = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.AddRange(
++                new User(userA, "dashboard-tenant-a@example.com", "Tenant A", "dev-header", "dashboard-tenant-a"),
++                new User(userB, "dashboard-tenant-b@example.com", "Tenant B", "dev-header", "dashboard-tenant-b"));
++            dbContext.Companies.AddRange(
++                new Company(companyA, "Tenant A Dashboard Company"),
++                new Company(companyB, "Tenant B Dashboard Company"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyA, userA, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyB, userB, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(agentA, companyA, "ops", "Ops A", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active),
++                new Agent(agentB, companyB, "ops", "Ops B", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
++            dbContext.WorkTasks.Add(new WorkTask(Guid.NewGuid(), companyB, "ops", "Other company task", null, WorkTaskPriority.Normal, agentB, null, "user", userB));
++            return Task.CompletedTask;
++        });
++
++        using var clientA = CreateAuthenticatedClient("dashboard-tenant-a", "dashboard-tenant-a@example.com");
++        var responseA = await clientA.GetAsync($"/api/companies/{companyA}/executive-cockpit/department-sections");
++        var dashboardA = await responseA.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        var forbidden = await clientA.GetAsync($"/api/companies/{companyB}/executive-cockpit/department-sections");
++
++        Assert.Equal(HttpStatusCode.OK, responseA.StatusCode);
++        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
++        var operationsA = Assert.Single(dashboardA!.Sections, x => x.DepartmentKey == "operations");
++        Assert.Equal(1, operationsA.SummaryCounts["active_agents"]);
++        Assert.Equal(0, operationsA.SummaryCounts["open_tasks"]);
++    }
++
++    [Fact]
++    public async Task Empty_departments_return_fallback_metadata_and_zero_counts()
++    {
++        var companyId = await SeedCompanyAsync("dashboard-empty-owner", "dashboard-empty-owner@example.com", CompanyMembershipRole.Owner);
++
++        using var client = CreateAuthenticatedClient("dashboard-empty-owner", "dashboard-empty-owner@example.com");
++        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit/department-sections");
++        var dashboard = await response.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var finance = Assert.Single(dashboard!.Sections, x => x.DepartmentKey == "finance");
++        Assert.False(finance.HasData);
++        Assert.All(finance.SummaryCounts.Values, value => Assert.Equal(0, value));
++        Assert.NotEmpty(finance.EmptyState.Title);
++        Assert.NotEmpty(finance.EmptyState.Message);
++        Assert.NotEmpty(finance.Navigation.Route);
++        Assert.All(finance.Widgets, widget =>
++        {
++            Assert.Equal(0, widget.SummaryValue);
++            Assert.False(widget.HasData);
++            Assert.NotEmpty(widget.EmptyState.Message);
++        });
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, subject);
++        return client;
++    }
++
++    private async Task<Guid> SeedCompanyAsync(string subject, string email, CompanyMembershipRole role)
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, email, subject, "dev-header", subject));
++            dbContext.Companies.Add(new Company(companyId, $"{subject} Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, role, CompanyMembershipStatus.Active));
++            return Task.CompletedTask;
++        });
++
++        return companyId;
++    }
++
++    private sealed class DepartmentDashboardConfigurationResponse
++    {
++        public Guid CompanyId { get; set; }
++        public List<DepartmentDashboardSectionResponse> Sections { get; set; } = [];
++    }
++
++    private sealed class DepartmentDashboardSectionResponse
++    {
++        public Guid Id { get; set; }
++        public string DepartmentKey { get; set; } = string.Empty;
++        public string DisplayName { get; set; } = string.Empty;
++        public int DisplayOrder { get; set; }
++        public string? Icon { get; set; }
++        public bool HasData { get; set; }
++        public Dictionary<string, int> SummaryCounts { get; set; } = [];
++        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
++        public DepartmentDashboardEmptyStateResponse EmptyState { get; set; } = new();
++        public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];
++    }
++
++    private sealed class DepartmentDashboardWidgetResponse
++    {
++        public Guid Id { get; set; }
++        public string WidgetKey { get; set; } = string.Empty;
++        public string Title { get; set; } = string.Empty;
++        public string WidgetType { get; set; } = string.Empty;
++        public int DisplayOrder { get; set; }
++        public string SummaryBinding { get; set; } = string.Empty;
++        public int SummaryValue { get; set; }
++        public bool HasData { get; set; }
++        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
++        public DepartmentDashboardEmptyStateResponse EmptyState { get; set; } = new();
++    }
++
++    private sealed class DepartmentDashboardNavigationResponse
++    {
++        public string Label { get; set; } = string.Empty;
++        public string Route { get; set; } = string.Empty;
++    }
++
++    private sealed class DepartmentDashboardEmptyStateResponse
++    {
++        public string Title { get; set; } = string.Empty;
++        public string Message { get; set; } = string.Empty;
++        public string? ActionLabel { get; set; }
++        public string? ActionRoute { get; set; }
++    }
++}
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.4.3",
+  "promptPath": ".ai-design/prompts/TASK-3.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:18:34.514Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-18-34-514Z_TASK-3.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-18-34-514Z_TASK-3.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:21:33.845Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "  Assert.False(string.IsNullOrWhiteSpace(item.DeepLink));\n             Assert.Contains($\"companyId={item.CompanyId:D}\", item.DeepLink);\n+            Assert.False(string.IsNullOrWhiteSpace(item.StableSortKey));\n         });\n     }\n \n@@ -51,8 +52,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF\n         Assert.Contains(items!, item => item.TargetType == \"task\" && item.DeepLink == $\"/tasks?companyId={seed.CompanyId:D}&taskId={item.TargetId:D}\");\n         Assert.Contains(items!, item => item.TargetType == \"workflow\" && item.DeepLink == $\"/workflows?companyId={seed.CompanyId:D}&workflowInstanceId={item.TargetId:D}\");\n     }\n-        });\n-    }\n \n     [Fact]\n     public async Task Acknowledgment_persists_for_same_user_and_does_not_leak()\n@@ -211,5 +210,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF\n         public string DeepLink { get; set; } = string.Empty;\n         public bool IsAcknowledged { get; set; }\n         public DateTime? AcknowledgedAt { get; set; }\n+        public string StableSortKey { get; set; } = string.Empty;\n     }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\nindex e7fef70..14d7c21 100644\n--- a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\n@@ -68,6 +68,17 @@ public sealed class InsightScoringTests\n         Assert.Contains(targetId.ToString(\"D\"), link.Href);\n     }\n \n+    [Fact]\n+    public void Unsupported_deep_link_target_returns_dashboard_fallback()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var targetId = Guid.NewGuid();\n+\n+        var link = _links.Resolve(companyId, new ActionDeepLinkTarget((ActionInsightTargetType)999, targetId));\n+\n+        Assert.Equal($\"/dashboard?companyId={companyId:D}\", link.Href);\n+    }\n+\n     [Fact]\n     public void Insight_keys_are_stable_for_same_action_identity()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "g.IsNullOrWhiteSpace(item.DeepLink));\n             Assert.Contains($\"companyId={item.CompanyId:D}\", item.DeepLink);\n+            Assert.False(string.IsNullOrWhiteSpace(item.StableSortKey));\n         });\n     }\n \n@@ -51,8 +52,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF\n         Assert.Contains(items!, item => item.TargetType == \"task\" && item.DeepLink == $\"/tasks?companyId={seed.CompanyId:D}&taskId={item.TargetId:D}\");\n         Assert.Contains(items!, item => item.TargetType == \"workflow\" && item.DeepLink == $\"/workflows?companyId={seed.CompanyId:D}&workflowInstanceId={item.TargetId:D}\");\n     }\n-        });\n-    }\n \n     [Fact]\n     public async Task Acknowledgment_persists_for_same_user_and_does_not_leak()\n@@ -211,5 +210,6 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF\n         public string DeepLink { get; set; } = string.Empty;\n         public bool IsAcknowledged { get; set; }\n         public DateTime? AcknowledgedAt { get; set; }\n+        public string StableSortKey { get; set; } = string.Empty;\n     }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\nindex e7fef70..14d7c21 100644\n--- a/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/InsightScoringTests.cs\n@@ -68,6 +68,17 @@ public sealed class InsightScoringTests\n         Assert.Contains(targetId.ToString(\"D\"), link.Href);\n     }\n \n+    [Fact]\n+    public void Unsupported_deep_link_target_returns_dashboard_fallback()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var targetId = Guid.NewGuid();\n+\n+        var link = _links.Resolve(companyId, new ActionDeepLinkTarget((ActionInsightTargetType)999, targetId));\n+\n+        Assert.Equal($\"/dashboard?companyId={companyId:D}\", link.Href);\n+    }\n+\n     [Fact]\n     public void Insight_keys_are_stable_for_same_action_identity()\n     {\nEND_OF_PATCH\ntokens used\n106,460\n",
+  "verbosityMode": "summary"
+}

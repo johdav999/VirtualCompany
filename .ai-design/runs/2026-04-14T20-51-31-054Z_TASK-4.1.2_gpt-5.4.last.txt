@@ -1,0 +1,951 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+index 7d9c8a1..e3b5f19 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+@@ -17,6 +17,16 @@ public sealed record BriefingUpdateJobEnqueueResult(
+     string Status,
+     string IdempotencyKey);
+ 
++public sealed record BriefingGenerationJobContext(
++    Guid JobId,
++    Guid CompanyId,
++    string TriggerType,
++    string? BriefingType,
++    string? EventType,
++    string CorrelationId,
++    string IdempotencyKey,
++    Dictionary<string, JsonNode?> SourceMetadata);
++
+ public static class BriefingUpdateEventTypes
+ {
+     public const string TaskStatusChanged = "task_status_changed";
+@@ -28,6 +38,17 @@ public static class BriefingUpdateEventTypes
+     public const string AgentGeneratedAlert = "agent_generated_alert";
+ }
+ 
++public static class BriefingUpdateJobSources
++{
++    public const string Scheduled = "scheduled";
++    public const string EventDriven = "event-driven";
++}
++
++public interface IBriefingGenerationPipeline
++{
++    Task<CompanyBriefingGenerationResult> GenerateAsync(BriefingGenerationJobContext job, CancellationToken cancellationToken);
++}
++
+ public interface IBriefingUpdateJobProducer
+ {
+     Task<BriefingUpdateJobEnqueueResult> EnqueueAsync(
+@@ -48,12 +69,16 @@ public interface IBriefingUpdateJobProducer
+         Guid companyId,
+         Guid jobId,
+         DateTime nextAttemptAtUtc,
+-        string error,
++        string? errorCode,
++        string error,
++        string? errorDetails,
+         CancellationToken cancellationToken);
+ 
+     Task RecordFinalFailureAsync(
+         Guid companyId,
+         Guid jobId,
++        string? errorCode,
+         string error,
++        string? errorDetails,
+         CancellationToken cancellationToken);
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 0e7a640..4d4f8dd 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -92,7 +92,9 @@ public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
+     private const int EventTypeMaxLength = 100;
+     private const int CorrelationIdMaxLength = 128;
+     private const int IdempotencyKeyMaxLength = 300;
++    private const int LastErrorCodeMaxLength = 256;
+     private const int LastErrorMaxLength = 4000;
++    private const int LastErrorDetailsMaxLength = 12000;
+ 
+     private CompanyBriefingUpdateJob()
+     {
+@@ -107,6 +109,7 @@ public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
+         string correlationId,
+         string idempotencyKey,
+         IDictionary<string, JsonNode?>? sourceMetadata,
++        int maxAttempts = 5,
+         DateTime? nextAttemptAtUtc = null)
+     {
+         if (companyId == Guid.Empty)
+@@ -128,6 +131,7 @@ public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
+         SourceMetadata = CloneNodes(sourceMetadata);
+         Status = CompanyBriefingUpdateJobStatus.Pending;
+         AttemptCount = 0;
++        MaxAttempts = Math.Max(1, maxAttempts);
+         NextAttemptAt = nextAttemptAtUtc is null ? DateTime.UtcNow : NormalizeUtc(nextAttemptAtUtc.Value);
+         CreatedAt = DateTime.UtcNow;
+         UpdatedAt = CreatedAt;
+@@ -143,31 +147,48 @@ public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
+     public string IdempotencyKey { get; private set; } = null!;
+     public CompanyBriefingUpdateJobStatus Status { get; private set; }
+     public int AttemptCount { get; private set; }
++    public int MaxAttempts { get; private set; }
+     public DateTime? NextAttemptAt { get; private set; }
++    public string? LastErrorCode { get; private set; }
+     public string? LastError { get; private set; }
++    public string? LastErrorDetails { get; private set; }
++    public DateTime? LastFailureAt { get; private set; }
++    public DateTime? StartedAt { get; private set; }
++    public DateTime? CompletedAt { get; private set; }
+     public DateTime? FinalFailedAt { get; private set; }
+     public DateTime CreatedAt { get; private set; }
+     public DateTime UpdatedAt { get; private set; }
+     public Dictionary<string, JsonNode?> SourceMetadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Company Company { get; private set; } = null!;
+ 
++    public bool IsTerminal => Status is CompanyBriefingUpdateJobStatus.Completed or CompanyBriefingUpdateJobStatus.Failed;
++
+     public void MarkProcessing(DateTime nowUtc)
+     {
++        var normalized = NormalizeUtc(nowUtc);
+         Status = CompanyBriefingUpdateJobStatus.Processing;
+         NextAttemptAt = null;
+-        UpdatedAt = NormalizeUtc(nowUtc);
++        StartedAt = normalized;
++        UpdatedAt = normalized;
+     }
+ 
+     public void MarkCompleted(DateTime nowUtc)
+     {
++        var normalized = NormalizeUtc(nowUtc);
+         Status = CompanyBriefingUpdateJobStatus.Completed;
+         NextAttemptAt = null;
++        LastErrorCode = null;
+         LastError = null;
+-        UpdatedAt = NormalizeUtc(nowUtc);
++        LastErrorDetails = null;
++        LastFailureAt = null;
++        CompletedAt = normalized;
++        UpdatedAt = normalized;
+     }
+ 
+-    public void ScheduleRetry(DateTime nextAttemptAtUtc, string error)
++    public void ScheduleRetry(DateTime nextAttemptAtUtc, string? errorCode, string error, string? errorDetails, DateTime nowUtc)
+     {
+         AttemptCount++;
+         Status = CompanyBriefingUpdateJobStatus.Retrying;
+         NextAttemptAt = NormalizeUtc(nextAttemptAtUtc);
++        LastErrorCode = NormalizeOptional(errorCode, nameof(errorCode), LastErrorCodeMaxLength);
+         LastError = NormalizeOptional(error, nameof(error), LastErrorMaxLength);
+-        UpdatedAt = DateTime.UtcNow;
++        LastErrorDetails = NormalizeOptional(errorDetails, nameof(errorDetails), LastErrorDetailsMaxLength);
++        LastFailureAt = NormalizeUtc(nowUtc);
++        UpdatedAt = LastFailureAt.Value;
+     }
+ 
+-    public void MarkFailed(string error, DateTime nowUtc)
++    public void MarkFailed(string? errorCode, string error, string? errorDetails, DateTime nowUtc)
+     {
++        var normalized = NormalizeUtc(nowUtc);
+         AttemptCount++;
+         Status = CompanyBriefingUpdateJobStatus.Failed;
+         NextAttemptAt = null;
++        LastErrorCode = NormalizeOptional(errorCode, nameof(errorCode), LastErrorCodeMaxLength);
+         LastError = NormalizeOptional(error, nameof(error), LastErrorMaxLength);
+-        FinalFailedAt = NormalizeUtc(nowUtc);
+-        UpdatedAt = FinalFailedAt.Value;
++        LastErrorDetails = NormalizeOptional(errorDetails, nameof(errorDetails), LastErrorDetailsMaxLength);
++        LastFailureAt = normalized;
++        FinalFailedAt = normalized;
++        CompletedAt = normalized;
++        UpdatedAt = normalized;
+     }
+ 
+     private static DateTime NormalizeUtc(DateTime value) =>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+index e58b57a..16ff402 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+@@ -73,6 +73,7 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+             command.CorrelationId,
+             idempotencyKey,
+             command.SourceMetadata,
++            maxAttempts: 5,
+             command.NextAttemptAtUtc);
+ 
+         _dbContext.CompanyBriefingUpdateJobs.Add(job);
+@@ -115,13 +116,15 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+         Guid companyId,
+         Guid jobId,
+         DateTime nextAttemptAtUtc,
+-        string error,
++        string? errorCode,
++        string error,
++        string? errorDetails,
+         CancellationToken cancellationToken)
+     {
+         var job = await GetJobAsync(companyId, jobId, cancellationToken);
+-        job.ScheduleRetry(nextAttemptAtUtc, error);
++        job.ScheduleRetry(nextAttemptAtUtc, errorCode, error, errorDetails, DateTime.UtcNow);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         _logger.LogWarning(
+-            "Scheduled retry for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} NextAttemptAt={NextAttemptAt}.",
++            "Scheduled retry for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} NextAttemptAt={NextAttemptAt} ErrorCode={ErrorCode}.",
+             job.Id,
+             job.CompanyId,
+             job.AttemptCount,
+@@ -131,12 +134,14 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+     public async Task RecordFinalFailureAsync(
+         Guid companyId,
+         Guid jobId,
++        string? errorCode,
+         string error,
++        string? errorDetails,
+         CancellationToken cancellationToken)
+     {
+         var job = await GetJobAsync(companyId, jobId, cancellationToken);
+-        job.MarkFailed(error, DateTime.UtcNow);
++        job.MarkFailed(errorCode, error, errorDetails, DateTime.UtcNow);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         _logger.LogError(
+-            "Recorded final failure for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} Error={Error}.",
++            "Recorded final failure for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} ErrorCode={ErrorCode} Error={Error}.",
+             job.Id,
+             job.CompanyId,
+             job.AttemptCount,
+@@ -178,6 +183,14 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+         AddRequired(errors, nameof(command.CorrelationId), command.CorrelationId, 128);
+         AddRequired(errors, nameof(command.IdempotencyKey), command.IdempotencyKey, 300);
+ 
++        if (string.Equals(command.TriggerType, CompanyBriefingUpdateJobTriggerTypeValues.EventDriven, StringComparison.OrdinalIgnoreCase) &&
++            !IsSupportedEventType(command.EventType))
++        {
++            errors[nameof(command.EventType)] =
++            [
++                "Event-driven briefing update jobs require a supported event type."
++            ];
++        }
++
+         if (errors.Count > 0)
+         {
+             throw new BriefingValidationException(errors);
+@@ -202,6 +215,16 @@ internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
+ 
+     private static string? NormalizeEventType(string? eventType) =>
+         string.IsNullOrWhiteSpace(eventType) ? null : eventType.Trim();
++
++    private static bool IsSupportedEventType(string? eventType) =>
++        string.Equals(eventType, BriefingUpdateEventTypes.TaskStatusChanged, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(eventType, BriefingUpdateEventTypes.WorkflowStateChanged, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(eventType, BriefingUpdateEventTypes.ApprovalRequested, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(eventType, BriefingUpdateEventTypes.ApprovalDecision, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(eventType, BriefingUpdateEventTypes.Escalation, StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(eventType, BriefingUpdateEventTypes.AgentGeneratedAlert, StringComparison.OrdinalIgnoreCase);
+ 
+     private static BriefingUpdateJobEnqueueResult ToResult(CompanyBriefingUpdateJob job, bool created) =>
+         new(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs
+new file mode 100644
+index 0000000..b4a7cc2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingGenerationPipeline.cs
+@@ -0,0 +1,32 @@
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyBriefingGenerationPipeline : IBriefingGenerationPipeline
++{
++    private readonly ICompanyBriefingService _briefingService;
++
++    public CompanyBriefingGenerationPipeline(ICompanyBriefingService briefingService)
++    {
++        _briefingService = briefingService;
++    }
++
++    public Task<CompanyBriefingGenerationResult> GenerateAsync(
++        BriefingGenerationJobContext job,
++        CancellationToken cancellationToken)
++    {
++        var briefingType = ResolveBriefingType(job).ToStorageValue();
++
++        return _briefingService.GenerateAsync(
++            job.CompanyId,
++            new GenerateCompanyBriefingCommand(
++                briefingType,
++                NowUtc: DateTime.UtcNow,
++                Force: string.Equals(job.TriggerType, CompanyBriefingUpdateJobTriggerTypeValues.EventDriven, StringComparison.OrdinalIgnoreCase),
++                CorrelationId: job.CorrelationId),
++            cancellationToken);
++    }
++
++    private static CompanyBriefingType ResolveBriefingType(BriefingGenerationJobContext job) =>
++        CompanyBriefingTypeValues.TryParse(job.BriefingType, out var briefingType)
++            ? briefingType
++            : CompanyBriefingType.Daily;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingUpdateJobRunner.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingUpdateJobRunner.cs
+new file mode 100644
+index 0000000..048fc30
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingUpdateJobRunner.cs
+@@ -0,0 +1,232 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.BackgroundExecution;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class BriefingUpdateJobWorkerOptions
++{
++    public const string SectionName = "BriefingUpdateJobs";
++
++    public bool Enabled { get; set; } = true;
++    public int PollIntervalSeconds { get; set; } = 10;
++    public int BatchSize { get; set; } = 20;
++    public int MaxAttempts { get; set; } = 5;
++    public int ClaimTimeoutSeconds { get; set; } = 300;
++}
++
++public interface IBriefingUpdateJobRunner
++{
++    Task<int> RunDueAsync(CancellationToken cancellationToken);
++}
++
++public sealed class CompanyBriefingUpdateJobRunner : IBriefingUpdateJobRunner
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IBriefingGenerationPipeline _pipeline;
++    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
++    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
++    private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IOptions<BriefingUpdateJobWorkerOptions> _options;
++    private readonly ILogger<CompanyBriefingUpdateJobRunner> _logger;
++
++    public CompanyBriefingUpdateJobRunner(
++        VirtualCompanyDbContext dbContext,
++        IBriefingGenerationPipeline pipeline,
++        IBackgroundJobExecutor backgroundJobExecutor,
++        IBackgroundExecutionRetryPolicy retryPolicy,
++        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IOptions<BriefingUpdateJobWorkerOptions> options,
++        ILogger<CompanyBriefingUpdateJobRunner> logger)
++    {
++        _dbContext = dbContext;
++        _pipeline = pipeline;
++        _backgroundJobExecutor = backgroundJobExecutor;
++        _retryPolicy = retryPolicy;
++        _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    public async Task<int> RunDueAsync(CancellationToken cancellationToken)
++    {
++        var jobs = await ClaimDueJobsAsync(cancellationToken);
++        var handled = 0;
++
++        foreach (var job in jobs)
++        {
++            using var tenantScope = _companyExecutionScopeFactory.BeginScope(job.CompanyId);
++            var attempt = job.AttemptCount + 1;
++            var maxAttempts = job.MaxAttempts > 0
++                ? job.MaxAttempts
++                : Math.Max(1, _options.Value.MaxAttempts);
++            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
++
++            var execution = await _backgroundJobExecutor.ExecuteAsync(
++                new BackgroundJobExecutionContext(
++                    $"briefing-update:{job.TriggerType.ToStorageValue()}",
++                    attempt,
++                    maxAttempts,
++                    job.CompanyId,
++                    job.CorrelationId,
++                    job.IdempotencyKey,
++                    requireCompanyContext: true),
++                innerCancellationToken => _pipeline.GenerateAsync(ToContext(job), innerCancellationToken),
++                retryDelay,
++                cancellationToken);
++
++            var nowUtc = DateTime.UtcNow;
++            switch (execution.Outcome)
++            {
++                case BackgroundJobExecutionOutcome.Succeeded:
++                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
++                    job.MarkCompleted(nowUtc);
++                    handled++;
++                    break;
++                case BackgroundJobExecutionOutcome.RetryScheduled:
++                    job.ScheduleRetry(
++                        nowUtc.Add(execution.RetryDelay ?? TimeSpan.Zero),
++                        ResolveFailureCode(execution),
++                        ResolveFailureMessage(execution),
++                        ResolveFailureDetails(execution),
++                        nowUtc);
++                    break;
++                case BackgroundJobExecutionOutcome.Blocked:
++                case BackgroundJobExecutionOutcome.PermanentFailure:
++                case BackgroundJobExecutionOutcome.RetryExhausted:
++                    job.MarkFailed(
++                        ResolveFailureCode(execution),
++                        ResolveFailureMessage(execution),
++                        ResolveFailureDetails(execution),
++                        nowUtc);
++                    handled++;
++                    break;
++            }
++
++            await _dbContext.SaveChangesAsync(cancellationToken);
++
++            _logger.LogInformation(
++                "Briefing update job {JobId} for company {CompanyId} completed worker cycle with status {Status}.",
++                job.Id,
++                job.CompanyId,
++                job.Status.ToStorageValue());
++        }
++
++        return handled;
++    }
++
++    private async Task<IReadOnlyList<CompanyBriefingUpdateJob>> ClaimDueJobsAsync(CancellationToken cancellationToken)
++    {
++        var nowUtc = DateTime.UtcNow;
++        var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
++        var batchSize = Math.Max(1, _options.Value.BatchSize);
++        var candidateIds = await _dbContext.CompanyBriefingUpdateJobs
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                (x.Status == CompanyBriefingUpdateJobStatus.Pending ||
++                 x.Status == CompanyBriefingUpdateJobStatus.Retrying) &&
++                (x.NextAttemptAt == null || x.NextAttemptAt <= nowUtc) ||
++                x.Status == CompanyBriefingUpdateJobStatus.Processing &&
++                x.StartedAt != null &&
++                x.StartedAt <= staleBeforeUtc)
++            .OrderBy(x => x.NextAttemptAt ?? x.CreatedAt)
++            .ThenBy(x => x.CreatedAt)
++            .Take(batchSize)
++            .Select(x => x.Id)
++            .ToArrayAsync(cancellationToken);
++
++        if (candidateIds.Length == 0)
++        {
++            return [];
++        }
++
++        // Conditional claiming keeps duplicate workers from executing the same due job.
++        await _dbContext.CompanyBriefingUpdateJobs
++            .IgnoreQueryFilters()
++            .Where(x =>
++                candidateIds.Contains(x.Id) &&
++                ((x.Status == CompanyBriefingUpdateJobStatus.Pending ||
++                  x.Status == CompanyBriefingUpdateJobStatus.Retrying) &&
++                 (x.NextAttemptAt == null || x.NextAttemptAt <= nowUtc) ||
++                 x.Status == CompanyBriefingUpdateJobStatus.Processing &&
++                 x.StartedAt != null &&
++                 x.StartedAt <= staleBeforeUtc))
++            .ExecuteUpdateAsync(setters => setters
++                .SetProperty(x => x.Status, CompanyBriefingUpdateJobStatus.Processing)
++                .SetProperty(x => x.StartedAt, nowUtc)
++                .SetProperty(x => x.NextAttemptAt, (DateTime?)null)
++                .SetProperty(x => x.UpdatedAt, nowUtc),
++                cancellationToken);
++
++        return await _dbContext.CompanyBriefingUpdateJobs
++            .IgnoreQueryFilters()
++            .Where(x => candidateIds.Contains(x.Id) && x.Status == CompanyBriefingUpdateJobStatus.Processing && x.StartedAt == nowUtc)
++            .OrderBy(x => x.CreatedAt)
++            .ToListAsync(cancellationToken);
++    }
++
++    private static BriefingGenerationJobContext ToContext(CompanyBriefingUpdateJob job) =>
++        new(
++            job.Id,
++            job.CompanyId,
++            job.TriggerType.ToStorageValue(),
++            job.BriefingType?.ToStorageValue(),
++            job.EventType,
++            job.CorrelationId,
++            job.IdempotencyKey,
++            job.SourceMetadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase));
++
++    private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) =>
++        string.IsNullOrWhiteSpace(execution.ErrorMessage)
++            ? "Briefing generation job failed."
++            : execution.ErrorMessage;
++
++    private static string ResolveFailureCode(BackgroundJobExecutionResult execution) =>
++        string.IsNullOrWhiteSpace(execution.ExceptionType)
++            ? execution.Outcome.ToString()
++            : execution.ExceptionType;
++
++    private static string ResolveFailureDetails(BackgroundJobExecutionResult execution) =>
++        $"Outcome={execution.Outcome}; Classification={execution.FailureClassification}; RetryDelay={execution.RetryDelay?.TotalSeconds}";
++}
++
++public sealed class BriefingUpdateJobBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<BriefingUpdateJobWorkerOptions> _options;
++    private readonly ILogger<BriefingUpdateJobBackgroundService> _logger;
++
++    public BriefingUpdateJobBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<BriefingUpdateJobWorkerOptions> options,
++        ILogger<BriefingUpdateJobBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Briefing update job worker is disabled.");
++            return;
++        }
++
++        var pollInterval = TimeSpan.FromSeconds(Math.Clamp(_options.Value.PollIntervalSeconds, 1, 30));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IBriefingUpdateJobRunner>();
++                var handled = await runner.RunDueAsync(stoppingToken);
++                if (handled == 0)
++                {
++                    await Task.Delay(pollInterval, stoppingToken);
++                }
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Briefing update job worker loop failed.");
++                await Task.Delay(pollInterval, stoppingToken);
++            }
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs
+index 4e07f5e..bfd3de5 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingSchedulerInfrastructure.cs
+@@ -7,6 +7,7 @@ using VirtualCompany.Application.Workflows;
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class BriefingSchedulerOptions
+ {
+     public const string SectionName = "BriefingScheduler";
+ 
+     public bool Enabled { get; set; } = true;
++    // Scheduled scans can be slow; due update jobs are executed by BriefingUpdateJobBackgroundService.
+     public int PollIntervalSeconds { get; set; } = 900;
+     public int LockTtlSeconds { get; set; } = 300;
+     public int BatchSize { get; set; } = 50;
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 71f5cc2..384077d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -139,9 +139,12 @@ public static class DependencyInjection
+         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
+         services.AddScoped<IWorkflowProgressionService, WorkflowProgressionService>();
+         services.AddOptions<BriefingSchedulerOptions>().Bind(configuration.GetSection(BriefingSchedulerOptions.SectionName));
++        services.AddOptions<BriefingUpdateJobWorkerOptions>().Bind(configuration.GetSection(BriefingUpdateJobWorkerOptions.SectionName));
+         services.AddScoped<BriefingSchedulerCoordinator>();
+         services.AddHostedService<BriefingSchedulerBackgroundService>();
++        services.AddHostedService<BriefingUpdateJobBackgroundService>();
+         services.AddHostedService<WorkflowProgressionBackgroundService>();
+         services.AddHostedService<TriggerEvaluationBackgroundService>();
+ 
+@@ -246,6 +249,8 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
+         services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
+         services.AddScoped<IBriefingUpdateJobProducer, BriefingUpdateJobProducer>();
++        services.AddScoped<IBriefingGenerationPipeline, CompanyBriefingGenerationPipeline>();
++        services.AddScoped<IBriefingUpdateJobRunner, CompanyBriefingUpdateJobRunner>();
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 5f2fc72..f18d146 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1336,9 +1336,15 @@ internal sealed class CompanyBriefingUpdateJobConfiguration : IEntityTypeConfigur
+             .IsRequired();
+         builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.MaxAttempts).HasColumnName("max_attempts").HasDefaultValue(5).IsRequired();
+         builder.Property(x => x.NextAttemptAt).HasColumnName("next_attempt_at");
++        builder.Property(x => x.LastErrorCode).HasColumnName("last_error_code").HasMaxLength(256);
+         builder.Property(x => x.LastError).HasColumnName("last_error").HasMaxLength(4000);
++        builder.Property(x => x.LastErrorDetails).HasColumnName("last_error_details").HasMaxLength(12000);
++        builder.Property(x => x.LastFailureAt).HasColumnName("last_failure_at");
++        builder.Property(x => x.StartedAt).HasColumnName("started_at");
++        builder.Property(x => x.CompletedAt).HasColumnName("completed_at");
+         builder.Property(x => x.FinalFailedAt).HasColumnName("final_failed_at");
+         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+@@ -1350,7 +1356,7 @@ internal sealed class CompanyBriefingUpdateJobConfiguration : IEntityTypeConfigur
+             .IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
+-        builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.CreatedAt });
++        builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.StartedAt, x.CreatedAt });
+         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedAt });
+         builder.HasIndex(x => new { x.CompanyId, x.EventType, x.CreatedAt });
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415010000_AddBriefingUpdateJobRetryFailureMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415010000_AddBriefingUpdateJobRetryFailureMetadata.cs
+new file mode 100644
+index 0000000..6dbfd02
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415010000_AddBriefingUpdateJobRetryFailureMetadata.cs
+@@ -0,0 +1,88 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddBriefingUpdateJobRetryFailureMetadata : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<int>(
++            name: "max_attempts",
++            table: "company_briefing_update_jobs",
++            type: "INTEGER",
++            nullable: false,
++            defaultValue: 5);
++
++        migrationBuilder.AddColumn<string>(
++            name: "last_error_code",
++            table: "company_briefing_update_jobs",
++            type: "TEXT",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "last_error_details",
++            table: "company_briefing_update_jobs",
++            type: "TEXT",
++            maxLength: 12000,
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "last_failure_at",
++            table: "company_briefing_update_jobs",
++            type: "TEXT",
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "started_at",
++            table: "company_briefing_update_jobs",
++            type: "TEXT",
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "completed_at",
++            table: "company_briefing_update_jobs",
++            type: "TEXT",
++            nullable: true);
++
++        migrationBuilder.DropIndex(
++            name: "ix_company_briefing_update_jobs_status_next_attempt_at_created_at",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_status_next_attempt_at_started_at_created_at",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "status", "next_attempt_at", "started_at", "created_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "ix_company_briefing_update_jobs_status_next_attempt_at_started_at_created_at",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_status_next_attempt_at_created_at",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "status", "next_attempt_at", "created_at" });
++
++        migrationBuilder.DropColumn(
++            name: "completed_at",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.DropColumn(
++            name: "last_error_code",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.DropColumn(
++            name: "last_error_details",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.DropColumn(
++            name: "last_failure_at",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.DropColumn(
++            name: "max_attempts",
++            table: "company_briefing_update_jobs");
++
++        migrationBuilder.DropColumn(
++            name: "started_at",
++            table: "company_briefing_update_jobs");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index b04da9a..f2ac95b 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -34,6 +34,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
+                 [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
+                 [$"{TriggerWorkerOptions.SectionName}:Enabled"] = "false",
++                [$"{BriefingUpdateJobWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs b/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs
+new file mode 100644
+index 0000000..aa67b5b
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BriefingUpdateJobRunnerTests.cs
+@@ -0,0 +1,164 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.BackgroundJobs;
++using VirtualCompany.Infrastructure.Companies;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BriefingUpdateJobRunnerTests
++{
++    [Fact]
++    public async Task Duplicate_idempotency_key_is_enforced_per_company()
++    {
++        await using var fixture = await BriefingJobFixture.CreateAsync();
++        var companyId = await fixture.SeedCompanyAsync();
++        var producer = new BriefingUpdateJobProducer(
++            fixture.DbContext,
++            NullLogger<BriefingUpdateJobProducer>.Instance);
++
++        var command = new EnqueueBriefingUpdateJobCommand(
++            companyId,
++            CompanyBriefingUpdateJobTriggerTypeValues.EventDriven,
++            null,
++            BriefingUpdateEventTypes.TaskStatusChanged,
++            "correlation-1",
++            "briefing-event:test",
++            null);
++
++        var first = await producer.EnqueueAsync(command, CancellationToken.None);
++        var second = await producer.EnqueueAsync(command with { CorrelationId = "correlation-2" }, CancellationToken.None);
++
++        Assert.True(first.Created);
++        Assert.False(second.Created);
++        Assert.Equal(first.JobId, second.JobId);
++        Assert.Equal(1, await fixture.DbContext.CompanyBriefingUpdateJobs.CountAsync());
++    }
++
++    [Fact]
++    public async Task Retryable_failure_schedules_retry_and_records_error_details()
++    {
++        await using var fixture = await BriefingJobFixture.CreateAsync();
++        var companyId = await fixture.SeedCompanyAsync();
++        var job = fixture.AddJob(companyId, maxAttempts: 3);
++        await fixture.DbContext.SaveChangesAsync();
++        fixture.Pipeline.FailuresBeforeSuccess = 1;
++
++        var handled = await fixture.Runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(0, handled);
++        Assert.Equal(CompanyBriefingUpdateJobStatus.Retrying, job.Status);
++        Assert.Equal(1, job.AttemptCount);
++        Assert.NotNull(job.NextAttemptAt);
++        Assert.NotNull(job.LastErrorCode);
++        Assert.Contains("Configured briefing pipeline failure", job.LastError);
++        Assert.NotNull(job.LastErrorDetails);
++    }
++
++    [Fact]
++    public async Task Exhausted_retry_marks_final_failure()
++    {
++        await using var fixture = await BriefingJobFixture.CreateAsync();
++        var companyId = await fixture.SeedCompanyAsync();
++        var job = fixture.AddJob(companyId, maxAttempts: 1);
++        await fixture.DbContext.SaveChangesAsync();
++        fixture.Pipeline.FailuresBeforeSuccess = 1;
++
++        var handled = await fixture.Runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(1, handled);
++        Assert.Equal(CompanyBriefingUpdateJobStatus.Failed, job.Status);
++        Assert.Equal(1, job.AttemptCount);
++        Assert.NotNull(job.FinalFailedAt);
++        Assert.NotNull(job.CompletedAt);
++        Assert.NotNull(job.LastErrorCode);
++    }
++
++    [Fact]
++    public async Task Scheduled_and_event_driven_jobs_use_same_pipeline()
++    {
++        await using var fixture = await BriefingJobFixture.CreateAsync();
++        var companyId = await fixture.SeedCompanyAsync();
++        fixture.AddJob(companyId, CompanyBriefingUpdateJobTriggerType.Daily, CompanyBriefingType.Daily, eventType: null);
++        fixture.AddJob(companyId, CompanyBriefingUpdateJobTriggerType.EventDriven, null, BriefingUpdateEventTypes.AgentGeneratedAlert);
++        await fixture.DbContext.SaveChangesAsync();
++
++        var handled = await fixture.Runner.RunDueAsync(CancellationToken.None);
++
++        Assert.Equal(2, handled);
++        Assert.Equal(2, fixture.Pipeline.Calls.Count);
++        Assert.Contains(fixture.Pipeline.Calls, x => x.TriggerType == CompanyBriefingUpdateJobTriggerTypeValues.Daily);
++        Assert.Contains(fixture.Pipeline.Calls, x => x.TriggerType == CompanyBriefingUpdateJobTriggerTypeValues.EventDriven);
++    }
++
++    private sealed class RecordingBriefingPipeline : IBriefingGenerationPipeline
++    {
++        private int _remainingFailures;
++
++        public List<BriefingGenerationJobContext> Calls { get; } = [];
++
++        public int FailuresBeforeSuccess
++        {
++            get => Volatile.Read(ref _remainingFailures);
++            set => Volatile.Write(ref _remainingFailures, value);
++        }
++
++        public Task<CompanyBriefingGenerationResult> GenerateAsync(BriefingGenerationJobContext job, CancellationToken cancellationToken)
++        {
++            Calls.Add(job);
++            if (Interlocked.Decrement(ref _remainingFailures) >= 0)
++            {
++                throw new TimeoutException("Configured briefing pipeline failure.");
++            }
++
++            var briefing = new CompanyBriefingDto(
++                Guid.NewGuid(),
++                job.CompanyId,
++                CompanyBriefingType.Daily.ToStorageValue(),
++                DateTime.UtcNow.AddDays(-1),
++                DateTime.UtcNow,
++                "Daily briefing",
++                "Briefing body",
++                [],
++                [],
++                null,
++                DateTime.UtcNow);
++            return Task.FromResult(new CompanyBriefingGenerationResult(briefing, false, 0));
++        }
++    }
++
++    private sealed class BriefingJobFixture : IAsyncDisposable
++    {
++        private readonly SqliteConnection _connection;
++
++        private BriefingJobFixture(SqliteConnection connection, VirtualCompanyDbContext dbContext, RecordingBriefingPipeline pipeline, CompanyBriefingUpdateJobRunner runner)
++        {
++            _connection = connection;
++            DbContext = dbContext;
++            Pipeline = pipeline;
++            Runner = runner;
++        }
++
++        public VirtualCompanyDbContext DbContext { get; }
++        public RecordingBriefingPipeline Pipeline { get; }
++        public CompanyBriefingUpdateJobRunner Runner { get; }
++
++        public static async Task<BriefingJobFixture> CreateAsync()
++        {
++            var connection = new SqliteConnection("Data Source=:memory:");
++            await connection.OpenAsync();
++            var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
++            await dbContext.Database.EnsureCreatedAsync();
++            var pipeline = new RecordingBriefingPipeline();
++            var runner = new CompanyBriefingUpdateJobRunner(
++                dbContext,
++                pipeline,
++                new BackgroundJobExecutor(NullLogger<BackgroundJobExecutor>.Instance, new DefaultBackgroundJobFailureClassifier()),
++                new ExponentialBackgroundExecutionRetryPolicy(Options.Create(new BackgroundExecutionOptions { BaseRetryDelaySeconds = 0, MaxRetryDelaySeconds = 0 })),
++                new NoopCompanyExecutionScopeFactory(),
++                Options.Create(new BriefingUpdateJobWorkerOptions { BatchSize = 10, MaxAttempts = 3, ClaimTimeoutSeconds = 30 }),
++                NullLogger<CompanyBriefingUpdateJobRunner>.Instance);
++            return new BriefingJobFixture(connection, dbContext, pipeline, runner);
++        }
++
++        public async Task<Guid> SeedCompanyAsync()
++        {
++            var company = new Company(Guid.NewGuid(), "Test Company", "Software", "SaaS", "UTC", "USD", "en", "EU");
++            DbContext.Companies.Add(company);
++            await DbContext.SaveChangesAsync();
++            return company.Id;
++        }
++
++        public CompanyBriefingUpdateJob AddJob(
++            Guid companyId,
++            CompanyBriefingUpdateJobTriggerType triggerType = CompanyBriefingUpdateJobTriggerType.EventDriven,
++            CompanyBriefingType? briefingType = null,
++            string? eventType = BriefingUpdateEventTypes.TaskStatusChanged,
++            int maxAttempts = 3)
++        {
++            var job = new CompanyBriefingUpdateJob(
++                Guid.NewGuid(),
++                companyId,
++                triggerType,
++                briefingType,
++                eventType,
++                Guid.NewGuid().ToString("N"),
++                Guid.NewGuid().ToString("N"),
++                null,
++                maxAttempts);
++            DbContext.CompanyBriefingUpdateJobs.Add(job);
++            return job;
++        }
++
++        public async ValueTask DisposeAsync()
++        {
++            await DbContext.DisposeAsync();
++            await _connection.DisposeAsync();
++        }
++    }
++
++    private sealed class NoopCompanyExecutionScopeFactory : ICompanyExecutionScopeFactory
++    {
++        public ICompanyExecutionScope BeginScope(Guid companyId) => new NoopCompanyExecutionScope();
++    }
++
++    private sealed class NoopCompanyExecutionScope : ICompanyExecutionScope
++    {
++        public void Dispose()
++        {
++        }
++    }
++}
+END_OF_PATCH

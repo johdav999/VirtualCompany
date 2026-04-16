@@ -26,6 +26,9 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
         var routeCompanyIdValue = context.Request.RouteValues.TryGetValue("companyId", out var routeCompanyId)
             ? routeCompanyId?.ToString()
             : null;
+        routeCompanyIdValue ??= context.Request.RouteValues.TryGetValue("tenantId", out var routeTenantId)
+            ? routeTenantId?.ToString()
+            : null;
 
         var headerCompanyIdValue = context.Request.Headers[CompanyHeaderName].FirstOrDefault();
 

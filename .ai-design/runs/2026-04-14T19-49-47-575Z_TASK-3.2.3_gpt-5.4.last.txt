@@ -1,0 +1,1068 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 4f0e0bb..c3f2b92 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -95,6 +95,51 @@ public sealed record AgentStatusCardsResponseDto(
+     IReadOnlyList<AgentStatusCardDto> Items,
+     DateTime GeneratedUtc);
+ 
++public sealed record AgentStatusDetailTaskDto(
++    Guid Id,
++    string Type,
++    string Title,
++    string Priority,
++    string Status,
++    DateTime? DueUtc,
++    DateTime UpdatedUtc);
++
++public sealed record AgentStatusDetailWorkflowDto(
++    Guid Id,
++    string DefinitionName,
++    string State,
++    string? CurrentStep,
++    DateTime StartedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record AgentStatusDetailAlertDto(
++    Guid Id,
++    string Type,
++    string Severity,
++    string Title,
++    string Summary,
++    string Status,
++    DateTime UpdatedUtc);
++
++public sealed record AgentStatusHealthBreakdownDto(
++    string Status,
++    IReadOnlyList<string> Reasons,
++    AgentStatusHealthMetrics Metrics);
++
++public sealed record AgentStatusDetailDto(
++    Guid AgentId,
++    Guid CompanyId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    AgentStatusWorkloadDto Workload,
++    AgentStatusHealthBreakdownDto Health,
++    int ActiveAlertsCount,
++    IReadOnlyList<AgentStatusDetailTaskDto> ActiveTasks,
++    IReadOnlyList<AgentStatusDetailWorkflowDto> ActiveWorkflows,
++    IReadOnlyList<AgentStatusDetailAlertDto> ActiveAlerts,
++    IReadOnlyList<AgentStatusRecentActionDto> RecentActions,
++    DateTime LastUpdatedUtc,
++    DateTime GeneratedUtc);
++
+ public sealed record AgentStatusHealthMetrics(
+     int FailedRunCount,
+     int StalledWorkCount,
+@@ -129,6 +174,7 @@ public sealed class AgentStatusHealthThresholds
+ public interface IAgentStatusAggregationService
+ {
+     Task<AgentStatusCardsResponseDto> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<AgentStatusDetailDto> GetStatusDetailAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+ }
+ 
+ public sealed record AgentRecentActivityDto(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+index 29b3b5a..a50e7e8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+@@ -242,6 +242,112 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+         return new AgentStatusCardsResponseDto(cards, generatedUtc);
+     }
+ 
++    public async Task<AgentStatusDetailDto> GetStatusDetailAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var generatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var recentSignalCutoffUtc = generatedUtc - RecentSignalWindow;
++        var stalledCutoffUtc = generatedUtc - StalledWorkThreshold;
++
++        var agent = await _dbContext.Agents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Id == agentId)
++            .Select(x => new AgentCardAgentProjection(
++                x.Id,
++                x.CompanyId,
++                x.DisplayName,
++                x.RoleName,
++                x.Department,
++                x.UpdatedUtc))
++            .SingleOrDefaultAsync(cancellationToken);
++
++        if (agent is null)
++        {
++            throw new KeyNotFoundException("Agent not found.");
++        }
++
++        var activeTasks = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId == agentId &&
++                (x.Status == WorkTaskStatus.New ||
++                 x.Status == WorkTaskStatus.InProgress ||
++                 x.Status == WorkTaskStatus.Blocked ||
++                 x.Status == WorkTaskStatus.AwaitingApproval))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => new AgentStatusDetailTaskDto(
++                x.Id,
++                x.Type,
++                x.Title,
++                x.Priority.ToStorageValue(),
++                x.Status.ToStorageValue(),
++                x.DueUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var activeWorkflows = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId == agentId &&
++                x.WorkflowInstanceId.HasValue &&
++                x.WorkflowInstance != null &&
++                (x.WorkflowInstance.State == WorkflowInstanceStatus.Started ||
++                 x.WorkflowInstance.State == WorkflowInstanceStatus.Running ||
++                 x.WorkflowInstance.State == WorkflowInstanceStatus.Blocked))
++            .Select(x => x.WorkflowInstance!)
++            .Distinct()
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => new AgentStatusDetailWorkflowDto(
++                x.Id,
++                x.Definition.Name,
++                x.State.ToStorageValue(),
++                x.CurrentStep,
++                x.StartedUtc,
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var activeAlerts = await _dbContext.Alerts
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.SourceAgentId == agentId &&
++                (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged))
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => new AgentStatusDetailAlertDto(
++                x.Id,
++                x.Type.ToStorageValue(),
++                x.Severity.ToStorageValue(),
++                x.Title,
++                x.Summary,
++                x.Status.ToStorageValue(),
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var failedRunCount = await CountFailedRunsAsync(companyId, agentId, recentSignalCutoffUtc, cancellationToken);
++        var stalledWorkCount = activeTasks.Count(x =>
++            (string.Equals(x.Status, WorkTaskStatus.InProgress.ToStorageValue(), StringComparison.OrdinalIgnoreCase) ||
++             string.Equals(x.Status, WorkTaskStatus.Blocked.ToStorageValue(), StringComparison.OrdinalIgnoreCase) ||
++             string.Equals(x.Status, WorkTaskStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase)) &&
++            x.UpdatedUtc <= stalledCutoffUtc);
++        var policyViolationCount = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.AgentId == agentId &&
++                x.Status == ToolExecutionStatus.Denied &&
++                x.UpdatedUtc >= recentSignalCutoffUtc,
++                cancellationToken);
++
++        var awaitingApprovalCount = activeTasks.Count(x => string.Equals(x.Status, WorkTaskStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase)) +
++            await _dbContext.ApprovalRequests.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.AgentId == agentId && x.Status == ApprovalRequestStatus.Pending, cancellationToken) +
++            await _dbContext.ToolExecutionAttempts.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.AgentId == agentId && x.Status == ToolExecutionStatus.AwaitingApproval, cancellationToken);
++        var blockedTaskCount = activeTasks.Count(x => string.Equals(x.Status, WorkTaskStatus.Blocked.ToStorageValue(), StringComparison.OrdinalIgnoreCase));
++        var health = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(failedRunCount, stalledWorkCount, policyViolationCount));
++        var recentActions = (await LoadRecentActionsAsync(companyId, [agentId], cancellationToken))
++            .OrderByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.ActionType, StringComparer.Ordinal)
++            .ThenBy(x => x.RelatedEntityId?.ToString("N") ?? string.Empty, StringComparer.Ordinal)
++            .Take(5)
++            .Select(x => x.Dto)
++            .ToList();
++
++        return new AgentStatusDetailDto(
++            agent.AgentId,
++            agent.CompanyId,
++            agent.DisplayName,
++            agent.RoleName,
++            agent.Department,
++            new AgentStatusWorkloadDto(activeTasks.Count, blockedTaskCount, awaitingApprovalCount, activeWorkflows.Count, ResolveWorkloadLevel(activeTasks.Count, blockedTaskCount, awaitingApprovalCount, activeWorkflows.Count)),
++            new AgentStatusHealthBreakdownDto(health.Status, health.Reasons, new AgentStatusHealthMetrics(failedRunCount, stalledWorkCount, policyViolationCount)),
++            activeAlerts.Count + awaitingApprovalCount + blockedTaskCount + failedRunCount + policyViolationCount,
++            activeTasks,
++            activeWorkflows,
++            activeAlerts,
++            recentActions,
++            MaxUtc(agent.LastUpdatedUtc, activeTasks.FirstOrDefault()?.UpdatedUtc, activeWorkflows.FirstOrDefault()?.UpdatedUtc, activeAlerts.FirstOrDefault()?.UpdatedUtc, recentActions.FirstOrDefault()?.OccurredUtc),
++            generatedUtc);
++    }
++
+     private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
+@@ -253,6 +359,40 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+         }
+     }
+ 
++    private async Task<int> CountFailedRunsAsync(Guid companyId, Guid agentId, DateTime recentSignalCutoffUtc, CancellationToken cancellationToken)
++    {
++        var failedTasks = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId == agentId &&
++                x.Status == WorkTaskStatus.Failed &&
++                x.UpdatedUtc >= recentSignalCutoffUtc,
++                cancellationToken);
++
++        var failedExecutions = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .CountAsync(x =>
++                x.CompanyId == companyId &&
++                x.AgentId == agentId &&
++                x.Status == ToolExecutionStatus.Failed &&
++                x.UpdatedUtc >= recentSignalCutoffUtc,
++                cancellationToken);
++
++        var failedWorkflows = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId == agentId &&
++                x.WorkflowInstanceId.HasValue &&
++                x.WorkflowInstance != null &&
++                x.WorkflowInstance.State == WorkflowInstanceStatus.Failed &&
++                x.WorkflowInstance.UpdatedUtc >= recentSignalCutoffUtc)
++            .Select(x => x.WorkflowInstanceId!.Value)
++            .Distinct()
++            .CountAsync(cancellationToken);
++
++        return failedTasks + failedExecutions + failedWorkflows;
++    }
++
+     private async Task<IReadOnlyList<RecentActionProjection>> LoadRecentActionsAsync(
+         Guid companyId,
+         Guid[] agentIds,
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 6d3b234..ab4f375 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -112,6 +112,27 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("{agentId:guid}/status-detail")]
++    [Authorize(Policy = CompanyPolicies.CompanyMember)]
++    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
++    public async Task<ActionResult<AgentStatusDetailDto>> GetStatusDetailAsync(
++        Guid companyId,
++        Guid agentId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var detail = await _agentStatusAggregationService.GetStatusDetailAsync(companyId, agentId, cancellationToken);
++            return Ok(detail);
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet("{agentId:guid}")]
+     [Authorize(Policy = CompanyPolicies.CompanyMember)]
+     public async Task<ActionResult<AgentProfileViewDto>> GetProfileViewAsync(
+diff --git a/src/VirtualCompany.Web/Services/AgentApiClient.cs b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+index 5d922a9..b8c0685 100644
+--- a/src/VirtualCompany.Web/Services/AgentApiClient.cs
++++ b/src/VirtualCompany.Web/Services/AgentApiClient.cs
+@@ -50,6 +50,18 @@ public sealed class AgentApiClient
+         return GetAsync<AgentRosterResponseViewModel>(uri, cancellationToken);
+     }
+ 
++    public Task<AgentStatusCardsResponseViewModel> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(OfflineStore.GetStatusCards(companyId))
++            : GetAsync<AgentStatusCardsResponseViewModel>($"api/companies/{companyId}/agents/status-cards", cancellationToken);
++
++    public Task<AgentStatusDetailViewModel> GetStatusDetailAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
++        _useOfflineMode
++            ? Task.FromResult(OfflineStore.GetStatusDetail(companyId, agentId))
++            : GetAsync<AgentStatusDetailViewModel>($"api/companies/{companyId}/agents/{agentId}/status-detail", cancellationToken);
++
+     public Task<CreateAgentFromTemplateResultViewModel> CreateAgentFromTemplateAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
+         _useOfflineMode
+             ? OfflineStore.CreateFromTemplateAsync(companyId, request, _httpClient, cancellationToken)
+@@ -243,6 +255,73 @@ public sealed class AgentApiClient
+             }
+         }
+ 
++        public AgentStatusCardsResponseViewModel GetStatusCards(Guid companyId)
++        {
++            lock (_sync)
++            {
++                var generatedUtc = DateTime.UtcNow;
++                var cards = GetRoster(companyId)
++                    .Select(agent => new AgentStatusCardViewModel
++                    {
++                        AgentId = agent.Id,
++                        CompanyId = agent.CompanyId,
++                        DisplayName = agent.DisplayName,
++                        RoleName = agent.RoleName,
++                        Department = agent.Department,
++                        Workload = new AgentStatusWorkloadViewModel
++                        {
++                            ActiveTaskCount = 0,
++                            BlockedTaskCount = 0,
++                            AwaitingApprovalCount = 0,
++                            ActiveWorkflowCount = 0,
++                            WorkloadLevel = "Idle"
++                        },
++                        HealthStatus = "Healthy",
++                        HealthReasons = ["Offline mode cannot inspect live task, workflow, or alert state."],
++                        ActiveAlertsCount = 0,
++                        RecentActions = [],
++                        LastUpdatedUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : generatedUtc,
++                        DetailLink = new AgentStatusDetailLinkViewModel
++                        {
++                            Path = $"/agents/{agent.Id}",
++                            ActiveTab = "work",
++                            Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++                            {
++                                ["companyId"] = companyId.ToString("D"),
++                                ["show"] = "active",
++                                ["include"] = "tasks,workflows,alerts"
++                            }
++                        }
++                    })
++                    .ToList();
++
++                return new AgentStatusCardsResponseViewModel
++                {
++                    Items = cards,
++                    GeneratedUtc = generatedUtc
++                };
++            }
++        }
++
++        public AgentStatusDetailViewModel GetStatusDetail(Guid companyId, Guid agentId)
++        {
++            var card = GetStatusCards(companyId).Items.SingleOrDefault(x => x.AgentId == agentId);
++            if (card is null)
++            {
++                throw new OnboardingApiException("The selected agent status could not be loaded.");
++            }
++
++            return new AgentStatusDetailViewModel
++            {
++                AgentId = card.AgentId,
++                CompanyId = card.CompanyId,
++                DisplayName = card.DisplayName,
++                RoleName = card.RoleName,
++                Department = card.Department,
++                Workload = card.Workload,
++                Health = new AgentStatusHealthBreakdownViewModel { Status = card.HealthStatus, Reasons = card.HealthReasons, Metrics = new AgentStatusHealthMetricsViewModel() },
++                ActiveAlertsCount = card.ActiveAlertsCount,
++                RecentActions = card.RecentActions,
++                LastUpdatedUtc = card.LastUpdatedUtc,
++                GeneratedUtc = DateTime.UtcNow
++            };
++        }
++
+         public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
+         {
+             lock (_sync)
+@@ -668,6 +747,125 @@ public sealed class AgentWorkloadSummaryViewModel
+     public string Summary { get; set; } = string.Empty;
+ }
+ 
++public sealed class AgentStatusCardsResponseViewModel
++{
++    public List<AgentStatusCardViewModel> Items { get; set; } = [];
++    public DateTime GeneratedUtc { get; set; }
++}
++
++public sealed class AgentStatusCardViewModel
++{
++    public Guid AgentId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public AgentStatusWorkloadViewModel Workload { get; set; } = new();
++    public string HealthStatus { get; set; } = string.Empty;
++    public List<string> HealthReasons { get; set; } = [];
++    public int ActiveAlertsCount { get; set; }
++    public List<AgentStatusRecentActionViewModel> RecentActions { get; set; } = [];
++    public DateTime LastUpdatedUtc { get; set; }
++    public AgentStatusDetailLinkViewModel DetailLink { get; set; } = new();
++}
++
++public sealed class AgentStatusWorkloadViewModel
++{
++    public int ActiveTaskCount { get; set; }
++    public int BlockedTaskCount { get; set; }
++    public int AwaitingApprovalCount { get; set; }
++    public int ActiveWorkflowCount { get; set; }
++    public string WorkloadLevel { get; set; } = string.Empty;
++}
++
++public sealed class AgentStatusRecentActionViewModel
++{
++    public DateTime OccurredUtc { get; set; }
++    public string ActionType { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public string RelatedEntityType { get; set; } = string.Empty;
++    public Guid? RelatedEntityId { get; set; }
++}
++
++public sealed class AgentStatusDetailLinkViewModel
++{
++    public string Path { get; set; } = string.Empty;
++    public string ActiveTab { get; set; } = string.Empty;
++    public Dictionary<string, string> Query { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class AgentStatusDetailViewModel
++{
++    public Guid AgentId { get; set; }
++    public Guid CompanyId { get; set; }
++    public string DisplayName { get; set; } = string.Empty;
++    public string RoleName { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public AgentStatusWorkloadViewModel Workload { get; set; } = new();
++    public AgentStatusHealthBreakdownViewModel Health { get; set; } = new();
++    public int ActiveAlertsCount { get; set; }
++    public List<AgentStatusDetailTaskViewModel> ActiveTasks { get; set; } = [];
++    public List<AgentStatusDetailWorkflowViewModel> ActiveWorkflows { get; set; } = [];
++    public List<AgentStatusDetailAlertViewModel> ActiveAlerts { get; set; } = [];
++    public List<AgentStatusRecentActionViewModel> RecentActions { get; set; } = [];
++    public DateTime LastUpdatedUtc { get; set; }
++    public DateTime GeneratedUtc { get; set; }
++}
++
++public sealed class AgentStatusHealthBreakdownViewModel
++{
++    public string Status { get; set; } = string.Empty;
++    public List<string> Reasons { get; set; } = [];
++    public AgentStatusHealthMetricsViewModel Metrics { get; set; } = new();
++}
++
++public sealed class AgentStatusHealthMetricsViewModel
++{
++    public int FailedRunCount { get; set; }
++    public int StalledWorkCount { get; set; }
++    public int PolicyViolationCount { get; set; }
++}
++
++public sealed class AgentStatusDetailTaskViewModel
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Priority { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime? DueUtc { get; set; }
++    public DateTime UpdatedUtc { get; set; }
++}
++
++public sealed class AgentStatusDetailWorkflowViewModel
++{
++    public Guid Id { get; set; }
++    public string DefinitionName { get; set; } = string.Empty;
++    public string State { get; set; } = string.Empty;
++    public string? CurrentStep { get; set; }
++    public DateTime StartedUtc { get; set; }
++    public DateTime UpdatedUtc { get; set; }
++}
++
++public sealed class AgentStatusDetailAlertViewModel
++{
++    public Guid Id { get; set; }
++    public string Type { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string Summary { get; set; } = string.Empty;
++    public string Status { get; set; } = string.Empty;
++    public DateTime UpdatedUtc { get; set; }
++}
++
+ public sealed class AgentHealthSummaryViewModel
+ {
+     public string Status { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Components/AgentStatusCard.razor b/src/VirtualCompany.Web/Components/AgentStatusCard.razor
+new file mode 100644
+index 0000000..d2a67db
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/AgentStatusCard.razor
+@@ -0,0 +1,70 @@
++@namespace VirtualCompany.Web.Components
++@using VirtualCompany.Web.Services
++
++<article class="agent-status-card">
++    <a class="agent-status-card__link" href="@DetailHref" aria-label="@($"Open {Card.DisplayName} status detail")">
++        <div class="agent-template-header">
++            <div>
++                <span class="dashboard-kicker">@Card.Department</span>
++                <h3 class="h5 mb-1 mt-2">@Card.DisplayName</h3>
++                <p class="text-body-secondary mb-0">@Card.RoleName</p>
++            </div>
++            <span class="badge @GetHealthBadgeCss(Card.HealthStatus)">@ToDisplayText(Card.HealthStatus)</span>
++        </div>
++
++        <div class="agent-status-metrics mt-4">
++            <div>
++                <span class="dashboard-kicker">Workload</span>
++                <strong>@Card.Workload.WorkloadLevel</strong>
++                <small>@Card.Workload.ActiveTaskCount task(s), @Card.Workload.ActiveWorkflowCount workflow(s)</small>
++            </div>
++            <div>
++                <span class="dashboard-kicker">Blocked</span>
++                <strong>@Card.Workload.BlockedTaskCount</strong>
++                <small>@Card.Workload.AwaitingApprovalCount awaiting approval</small>
++            </div>
++            <div>
++                <span class="dashboard-kicker">Alerts</span>
++                <strong>@Card.ActiveAlertsCount</strong>
++                <small>Active signals</small>
++            </div>
++        </div>
++
++        @if (Card.HealthReasons.Count > 0)
++        {
++            <p class="agent-status-reason mb-0 mt-3">@Card.HealthReasons[0]</p>
++        }
++
++        <div class="activity-list mt-4">
++            <div class="agent-template-header">
++                <strong>Recent actions</strong>
++                <span class="text-body-secondary small">Updated @Card.LastUpdatedUtc.ToLocalTime().ToString("g")</span>
++            </div>
++
++            @if (Card.RecentActions.Count == 0)
++            {
++                <p class="text-body-secondary mb-0">No recent actions are available.</p>
++            }
++            else
++            {
++                @foreach (var action in Card.RecentActions.Take(5))
++                {
++                    <div class="agent-status-action">
++                        <span>@action.Title</span>
++                        <small>@ToDisplayText(action.ActionType) | @ToDisplayText(action.Status) | @action.OccurredUtc.ToLocalTime().ToString("g")</small>
++                    </div>
++                }
++            }
++        </div>
++    </a>
++</article>
++
++@code {
++    [Parameter, EditorRequired]
++    public AgentStatusCardViewModel Card { get; set; } = new();
++
++    private string DetailHref => BuildDetailHref(Card.DetailLink, Card.CompanyId, Card.AgentId);
++
++    private static string BuildDetailHref(AgentStatusDetailLinkViewModel detailLink, Guid companyId, Guid agentId)
++    {
++        var path = string.IsNullOrWhiteSpace(detailLink.Path) ? $"/agents/{agentId}" : detailLink.Path;
++        var query = detailLink.Query.Count == 0 ? $"companyId={companyId}" : string.Join("&", detailLink.Query.Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(x.Value)}"));
++        return $"{path}?{query}#work";
++    }
++
++    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
++    private static string GetHealthBadgeCss(string? healthStatus) => string.Equals(healthStatus, "Critical", StringComparison.OrdinalIgnoreCase) ? "text-bg-danger" : string.Equals(healthStatus, "Warning", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" : "text-bg-success";
++}
+diff --git a/src/VirtualCompany.Web/_Imports.razor b/src/VirtualCompany.Web/_Imports.razor
+index 6fb784f..49c83e6 100644
+--- a/src/VirtualCompany.Web/_Imports.razor
++++ b/src/VirtualCompany.Web/_Imports.razor
+@@ -5,3 +5,4 @@
+ @using VirtualCompany.Web
+ @using VirtualCompany.Web.Layout
+ @using VirtualCompany.Web.Services
++@using VirtualCompany.Web.Components
+diff --git a/src/VirtualCompany.Web/Pages/AgentRoster.razor b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+index c30f690..842e4d4 100644
+--- a/src/VirtualCompany.Web/Pages/AgentRoster.razor
++++ b/src/VirtualCompany.Web/Pages/AgentRoster.razor
+@@ -116,6 +116,35 @@ else
+                     </div>
+                 </form>
+ 
++                <div class="agent-template-header mt-4">
++                    <div>
++                        <span class="dashboard-kicker">Live status</span>
++                        <h3 class="h5 mb-0 mt-2">Status cards</h3>
++                    </div>
++                    @if (statusCards is not null)
++                    {
++                        <span class="text-body-secondary small">Refreshed @statusCards.GeneratedUtc.ToLocalTime().ToString("g")</span>
++                    }
++                </div>
++
++                @if (!string.IsNullOrWhiteSpace(statusErrorMessage))
++                {
++                    <div class="alert alert-warning mt-3 mb-0">@statusErrorMessage</div>
++                }
++                else if (statusCards is null)
++                {
++                    <p class="text-body-secondary mb-0 mt-3">Loading live status cards...</p>
++                }
++                else if (statusCards.Items.Count == 0)
++                {
++                    <p class="text-body-secondary mb-0 mt-3">No live agent status is available yet.</p>
++                }
++                else
++                {
++                    <div class="agent-status-grid mt-3">
++                        @foreach (var card in statusCards.Items.Where(MatchesRosterFilters))
++                        {
++                            <AgentStatusCard Card="card" />
++                        }
++                    </div>
++                }
++
+                 @if (rosterResponse.Items.Count == 0)
+                 {
+                     <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+@@ -204,8 +233,11 @@ else
+     private string? errorMessage;
+     private CurrentUserContextViewModel? currentUser;
+     private CompanyAccessViewModel? companyAccess;
++    private AgentStatusCardsResponseViewModel? statusCards;
++    private string? statusErrorMessage;
+     private AgentRosterResponseViewModel rosterResponse = new();
++    private CancellationTokenSource? refreshCancellationTokenSource;
+ 
+     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
+         currentUser?.Memberships
+@@ -219,10 +251,27 @@ else
+ 
+     private bool CanManageProfiles => CanViewDirectory;
+ 
++    public void Dispose()
++    {
++        refreshCancellationTokenSource?.Cancel();
++        refreshCancellationTokenSource?.Dispose();
++    }
++
+     protected override async Task OnParametersSetAsync()
+     {
+         isLoading = true;
+         errorMessage = null;
++        statusErrorMessage = null;
++        statusCards = null;
++        refreshCancellationTokenSource?.Cancel();
++        refreshCancellationTokenSource?.Dispose();
++        refreshCancellationTokenSource = null;
+         rosterResponse = new AgentRosterResponseViewModel();
+ 
+         try
+@@ -247,6 +296,8 @@ else
+                 if (CanViewDirectory)
+                 {
+                     rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
++                    await LoadStatusCardsAsync(companyId, CancellationToken.None);
++                    StartStatusRefresh(companyId);
+                 }
+             }
+         }
+@@ -260,6 +311,43 @@ else
+         }
+     }
+ 
++    private void StartStatusRefresh(Guid companyId)
++    {
++        refreshCancellationTokenSource = new CancellationTokenSource();
++        var token = refreshCancellationTokenSource.Token;
++
++        _ = Task.Run(async () =>
++        {
++            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
++            try
++            {
++                while (await timer.WaitForNextTickAsync(token))
++                {
++                    await InvokeAsync(async () =>
++                    {
++                        await LoadStatusCardsAsync(companyId, token);
++                        StateHasChanged();
++                    });
++                }
++            }
++            catch (OperationCanceledException)
++            {
++            }
++        }, token);
++    }
++
++    private async Task LoadStatusCardsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            statusCards = await AgentApiClient.GetStatusCardsAsync(companyId, cancellationToken);
++            statusErrorMessage = null;
++        }
++        catch (OnboardingApiException ex)
++        {
++            statusErrorMessage = ex.Message;
++        }
++    }
++
++    private bool MatchesRosterFilters(AgentStatusCardViewModel card) =>
++        MatchesFilter(card.Department, Department) && MatchesFilter(card.HealthStatus, null) && MatchesFilter(card.DisplayName, null) && MatchesFilter(card.Department, Department);
++
+     private static bool IsSelected(string? currentValue, string expectedValue) =>
+         string.Equals(currentValue?.Trim(), expectedValue, StringComparison.OrdinalIgnoreCase);
+ 
+@@ -312,4 +400,8 @@ else
+         if (agentId is Guid selectedAgentId) query.Add($"agentId={selectedAgentId}");
+         return $"/agents/manage?{string.Join("&", query)}";
+     }
++
++    private static bool MatchesFilter(string value, string? filter) =>
++        string.IsNullOrWhiteSpace(filter) ||
++        string.Equals(value, filter.Trim(), StringComparison.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Web/Pages/AgentProfile.razor b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+index b05c450..ad67224 100644
+--- a/src/VirtualCompany.Web/Pages/AgentProfile.razor
++++ b/src/VirtualCompany.Web/Pages/AgentProfile.razor
+@@ -250,6 +250,117 @@ else
+                     </div>
+                 }
+             </section>
++
++            @if (statusDetail is not null)
++            {
++                <section id="work" class="wizard-card agent-profile-section agent-profile-section--wide">
++                    <div class="agent-profile-section-heading">
++                        <div>
++                            <span class="dashboard-kicker">Live operations</span>
++                            <h2 class="h5 mb-1 mt-2">Active work, workflows, and alerts</h2>
++                            <p class="text-body-secondary mb-0">Tenant-scoped status refreshed from current task, workflow, approval, alert, audit, and tool execution records.</p>
++                        </div>
++                        <span class="text-body-secondary small">Generated @statusDetail.GeneratedUtc.ToLocalTime().ToString("g")</span>
++                    </div>
++
++                    <div class="summary-pill-grid mb-4">
++                        <div class="summary-pill">
++                            <span class="dashboard-kicker">Workload</span>
++                            <strong>@statusDetail.Workload.WorkloadLevel</strong>
++                        </div>
++                        <div class="summary-pill">
++                            <span class="dashboard-kicker">Active tasks</span>
++                            <strong>@statusDetail.Workload.ActiveTaskCount</strong>
++                        </div>
++                        <div class="summary-pill">
++                            <span class="dashboard-kicker">Active workflows</span>
++                            <strong>@statusDetail.Workload.ActiveWorkflowCount</strong>
++                        </div>
++                        <div class="summary-pill">
++                            <span class="dashboard-kicker">Active alerts</span>
++                            <strong>@statusDetail.ActiveAlertsCount</strong>
++                        </div>
++                    </div>
++
++                    <div class="agent-status-detail-grid">
++                        <section>
++                            <h3 class="h6">Health</h3>
++                            <dl class="kv-list mb-3">
++                                <dt>Status</dt>
++                                <dd><span class="@GetHealthCss(statusDetail.Health.Status)">@ToDisplayText(statusDetail.Health.Status)</span></dd>
++                                <dt>Failed runs</dt>
++                                <dd>@statusDetail.Health.Metrics.FailedRunCount</dd>
++                                <dt>Stalled work</dt>
++                                <dd>@statusDetail.Health.Metrics.StalledWorkCount</dd>
++                                <dt>Policy violations</dt>
++                                <dd>@statusDetail.Health.Metrics.PolicyViolationCount</dd>
++                            </dl>
++                            @foreach (var reason in statusDetail.Health.Reasons)
++                            {
++                                <p class="text-body-secondary mb-2">@reason</p>
++                            }
++                        </section>
++
++                        <section>
++                            <h3 class="h6">Active tasks</h3>
++                            @if (statusDetail.ActiveTasks.Count == 0)
++                            {
++                                <p class="text-body-secondary mb-0">No active tasks are assigned.</p>
++                            }
++                            else
++                            {
++                                <div class="activity-list">
++                                    @foreach (var task in statusDetail.ActiveTasks)
++                                    {
++                                        <article class="activity-item">
++                                            <div class="agent-template-header">
++                                                <strong>@task.Title</strong>
++                                                <span class="badge text-bg-light">@ToDisplayText(task.Status)</span>
++                                            </div>
++                                            <div class="text-body-secondary small mt-1">@ToDisplayText(task.Type) | @ToDisplayText(task.Priority) | @FormatDate(task.UpdatedUtc)</div>
++                                        </article>
++                                    }
++                                </div>
++                            }
++                        </section>
++
++                        <section>
++                            <h3 class="h6">Active workflows</h3>
++                            @if (statusDetail.ActiveWorkflows.Count == 0)
++                            {
++                                <p class="text-body-secondary mb-0">No active workflows are linked to this agent.</p>
++                            }
++                            else
++                            {
++                                <div class="activity-list">
++                                    @foreach (var workflow in statusDetail.ActiveWorkflows)
++                                    {
++                                        <article class="activity-item">
++                                            <div class="agent-template-header">
++                                                <strong>@workflow.DefinitionName</strong>
++                                                <span class="badge text-bg-light">@ToDisplayText(workflow.State)</span>
++                                            </div>
++                                            <div class="text-body-secondary small mt-1">@GetOptionalText(workflow.CurrentStep) | @FormatDate(workflow.UpdatedUtc)</div>
++                                        </article>
++                                    }
++                                </div>
++                            }
++                        </section>
++
++                        <section>
++                            <h3 class="h6">Active alerts</h3>
++                            @if (statusDetail.ActiveAlerts.Count == 0)
++                            {
++                                <p class="text-body-secondary mb-0">No active alerts are linked to this agent.</p>
++                            }
++                            else
++                            {
++                                <div class="activity-list">
++                                    @foreach (var alert in statusDetail.ActiveAlerts)
++                                    {
++                                        <article class="activity-item">
++                                            <div class="agent-template-header">
++                                                <strong>@alert.Title</strong>
++                                                <span class="badge text-bg-warning">@ToDisplayText(alert.Severity)</span>
++                                            </div>
++                                            <p class="mb-0 mt-2">@alert.Summary</p>
++                                            <div class="text-body-secondary small mt-1">@ToDisplayText(alert.Type) | @ToDisplayText(alert.Status) | @FormatDate(alert.UpdatedUtc)</div>
++                                        </article>
++                                    }
++                                </div>
++                            }
++                        </section>
++                    </div>
++                </section>
++            }
+         </div>
+     </section>
+ }
+@@ -263,6 +374,7 @@ else
+     private bool isLoading = true;
+     private string? errorMessage;
+     private AgentProfileViewModel? profile;
++    private AgentStatusDetailViewModel? statusDetail;
+ 
+     private CompanyMembershipViewModel? ActiveMembership =>
+         CompanyId is Guid companyId
+@@ -283,6 +395,7 @@ else
+         errorMessage = null;
+         profile = null;
+         currentUser = null;
++        statusDetail = null;
+ 
+         try
+         {
+@@ -309,6 +422,7 @@ else
+             if (CompanyId is Guid companyIdForProfile)
+             {
+                 profile = await AgentApiClient.GetProfileViewAsync(companyIdForProfile, AgentId);
++                statusDetail = await AgentApiClient.GetStatusDetailAsync(companyIdForProfile, AgentId);
+             }
+         }
+         catch (InvalidOperationException)
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 99d679b..ef797f1 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -290,6 +290,70 @@ code {
+     min-height: 100%;
+ }
+ 
++.agent-status-grid {
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
++}
++
++.agent-status-card {
++    background: #fff;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 0.5rem;
++    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
++    min-width: 0;
++}
++
++.agent-status-card__link {
++    color: inherit;
++    display: block;
++    height: 100%;
++    padding: 1rem;
++    text-decoration: none;
++}
++
++.agent-status-card:hover {
++    border-color: #1b6ec2;
++}
++
++.agent-status-metrics {
++    display: grid;
++    gap: 0.75rem;
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++}
++
++.agent-status-metrics div {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 0.5rem;
++    display: grid;
++    gap: 0.25rem;
++    min-width: 0;
++    padding: 0.75rem;
++}
++
++.agent-status-metrics strong {
++    font-size: 1.2rem;
++}
++
++.agent-status-metrics small,
++.agent-status-action small {
++    color: #64748b;
++}
++
++.agent-status-reason {
++    color: #475569;
++}
++
++.agent-status-action {
++    border-top: 1px solid rgba(15, 23, 42, 0.08);
++    display: grid;
++    gap: 0.15rem;
++    padding-top: 0.65rem;
++}
++
++.agent-status-detail-grid {
++    display: grid;
++    gap: 1.25rem;
++    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
++}
++
+ .summary-pill-grid {
+     display: grid;
+     gap: 1rem;
+@@ -535,6 +599,10 @@ code {
+     .agent-identity {
+         grid-template-columns: 1fr;
+     }
++
++    .agent-status-metrics {
++        grid-template-columns: 1fr;
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+index e0b2e22..d3ebf99 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+@@ -74,6 +74,26 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         Assert.Equal("tasks,workflows,alerts", agent.DetailLink.Query["include"]);
+     }
+ 
++    [Fact]
++    public async Task Status_detail_endpoint_resolves_deep_link_payload_for_selected_agent()
++    {
++        var seed = await SeedStatusScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/status-detail");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentStatusDetailResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal(seed.AgentId, payload!.AgentId);
++        Assert.Equal(seed.CompanyId, payload.CompanyId);
++        Assert.NotEmpty(payload.ActiveTasks);
++        Assert.NotEmpty(payload.ActiveWorkflows);
++        Assert.NotEmpty(payload.ActiveAlerts);
++        Assert.Equal(AgentStatusHealthCalculator.Critical, payload.Health.Status);
++        Assert.True(payload.ActiveAlertsCount >= payload.ActiveAlerts.Count);
++    }
++
+     [Fact]
+     public async Task Recent_actions_are_newest_first_limited_to_five_with_deterministic_tie_breaker()
+     {
+@@ -273,5 +293,55 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         public Dictionary<string, string> Query { get; set; } = [];
+     }
++
++    private sealed class AgentStatusDetailResponse
++    {
++        public Guid AgentId { get; set; }
++        public Guid CompanyId { get; set; }
++        public AgentStatusWorkload Workload { get; set; } = new();
++        public AgentStatusHealthBreakdown Health { get; set; } = new();
++        public int ActiveAlertsCount { get; set; }
++        public List<AgentStatusDetailTask> ActiveTasks { get; set; } = [];
++        public List<AgentStatusDetailWorkflow> ActiveWorkflows { get; set; } = [];
++        public List<AgentStatusDetailAlert> ActiveAlerts { get; set; } = [];
++        public List<AgentStatusRecentAction> RecentActions { get; set; } = [];
++    }
++
++    private sealed class AgentStatusHealthBreakdown
++    {
++        public string Status { get; set; } = string.Empty;
++        public List<string> Reasons { get; set; } = [];
++        public AgentStatusHealthMetricsResponse Metrics { get; set; } = new();
++    }
++
++    private sealed class AgentStatusHealthMetricsResponse
++    {
++        public int FailedRunCount { get; set; }
++        public int StalledWorkCount { get; set; }
++        public int PolicyViolationCount { get; set; }
++    }
++
++    private sealed class AgentStatusDetailTask
++    {
++        public Guid Id { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++    }
++
++    private sealed class AgentStatusDetailWorkflow
++    {
++        public Guid Id { get; set; }
++        public string DefinitionName { get; set; } = string.Empty;
++        public string State { get; set; } = string.Empty;
++    }
++
++    private sealed class AgentStatusDetailAlert
++    {
++        public Guid Id { get; set; }
++        public string Title { get; set; } = string.Empty;
++        public string Status { get; set; } = string.Empty;
++    }
+ }
+END_OF_PATCH

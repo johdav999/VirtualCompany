@@ -1,0 +1,351 @@
+diff --git a/src/VirtualCompany.Application/Agents/ConditionExpressionCriteriaMapper.cs b/src/VirtualCompany.Application/Agents/ConditionExpressionCriteriaMapper.cs
+new file mode 100644
+index 0000000..e9f3c3d
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/ConditionExpressionCriteriaMapper.cs
+@@ -0,0 +1,149 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Agents;
++
++public static class ConditionExpressionCriteriaMapper
++{
++    public const string CriteriaConditionKey = "condition";
++
++    public static IReadOnlyDictionary<string, string[]> ValidateCriteriaCondition(
++        JsonNode? conditionNode,
++        string path = "criteriaJson.condition")
++    {
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++
++        if (!TryRead(conditionNode, path, errors, out var condition))
++        {
++            return ToResult(errors);
++        }
++
++        foreach (var error in ConditionExpressionValidator.Validate(condition, path))
++        {
++            foreach (var message in error.Value)
++            {
++                AddError(errors, error.Key, message);
++            }
++        }
++
++        return ToResult(errors);
++    }
++
++    private static bool TryRead(
++        JsonNode? conditionNode,
++        string path,
++        IDictionary<string, List<string>> errors,
++        out ConditionExpression? condition)
++    {
++        condition = null;
++
++        if (conditionNode is not JsonObject conditionObject)
++        {
++            AddError(errors, path, "Condition criteria must be an object.");
++            return false;
++        }
++
++        if (GetProperty(conditionObject, "target") is not JsonObject targetObject)
++        {
++            AddError(errors, $"{path}.target", "Condition target is required.");
++            return false;
++        }
++
++        var sourceType = ReadSourceType(GetProperty(targetObject, "sourceType"));
++        var conditionOperator = ReadOperator(GetProperty(conditionObject, "operator"));
++        var valueType = ReadValueType(GetProperty(conditionObject, "valueType"), $"{path}.valueType", errors);
++        var repeatFiringMode = ReadRepeatFiringMode(GetProperty(conditionObject, "repeatFiringMode"));
++
++        condition = new ConditionExpression(
++            new ConditionTargetReference(
++                sourceType,
++                ReadOptionalString(GetProperty(targetObject, "metricName")),
++                ReadOptionalString(GetProperty(targetObject, "entityType")),
++                ReadOptionalString(GetProperty(targetObject, "fieldPath"))),
++            conditionOperator,
++            valueType,
++            GetProperty(conditionObject, "comparisonValue")?.DeepClone(),
++            repeatFiringMode);
++
++        return true;
++    }
++
++    private static ConditionOperandSourceType ReadSourceType(JsonNode? node)
++    {
++        if (!TryGetString(node, out var sourceType))
++        {
++            return default;
++        }
++
++        return ConditionTriggerStorageValues.TryParseSourceType(sourceType, out var parsed)
++            ? parsed
++            : (ConditionOperandSourceType)99;
++    }
++
++    private static ConditionOperator ReadOperator(JsonNode? node)
++    {
++        if (!TryGetString(node, out var conditionOperator))
++        {
++            return default;
++        }
++
++        return ConditionTriggerStorageValues.TryParseOperator(conditionOperator, out var parsed)
++            ? parsed
++            : (ConditionOperator)99;
++    }
++
++    private static ConditionValueType? ReadValueType(
++        JsonNode? node,
++        string path,
++        IDictionary<string, List<string>> errors)
++    {
++        if (node is null)
++        {
++            return null;
++        }
++
++        if (!TryGetString(node, out var valueType) ||
++            !ConditionTriggerStorageValues.TryParseValueType(valueType, out var parsed))
++        {
++            AddError(errors, path, "Condition value type is not supported.");
++            return null;
++        }
++
++        return parsed;
++    }
++
++    private static RepeatFiringMode ReadRepeatFiringMode(JsonNode? node)
++    {
++        if (node is null)
++        {
++            return RepeatFiringMode.FalseToTrueTransition;
++        }
++
++        return TryGetString(node, out var repeatFiringMode) &&
++               ConditionTriggerStorageValues.TryParseRepeatFiringMode(repeatFiringMode, out var parsed)
++            ? parsed
++            : (RepeatFiringMode)99;
++    }
++
++    private static string? ReadOptionalString(JsonNode? node) =>
++        TryGetString(node, out var value) ? value : null;
++
++    private static bool TryGetString(JsonNode? node, out string value)
++    {
++        value = string.Empty;
++
++        if (node is not JsonValue jsonValue ||
++            !jsonValue.TryGetValue<string>(out var text))
++        {
++            return false;
++        }
++
++        value = text;
++        return true;
++    }
++
++    private static JsonNode? GetProperty(JsonObject jsonObject, string propertyName) =>
++        jsonObject.FirstOrDefault(pair => string.Equals(pair.Key, propertyName, StringComparison.OrdinalIgnoreCase)).Value;
++
++    private static void AddError(
++        IDictionary<string, List<string>> errors,
++        string key,
++        string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++
++    private static IReadOnlyDictionary<string, string[]> ToResult(Dictionary<string, List<string>> errors) =>
++        errors.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Application/Agents/ConditionExpressionValidator.cs b/src/VirtualCompany.Application/Agents/ConditionExpressionValidator.cs
+index 8f9d8a2..0d52b7b 100644
+--- a/src/VirtualCompany.Application/Agents/ConditionExpressionValidator.cs
++++ b/src/VirtualCompany.Application/Agents/ConditionExpressionValidator.cs
+@@ -52,9 +52,10 @@ public static class ConditionExpressionValidator
+             }
+         }
+ 
++        // Ordering comparisons are limited to scalar values with stable ordering semantics.
+         if (condition.Operator is ConditionOperator.GreaterThan or ConditionOperator.LessThan &&
+             condition.ValueType is not null &&
+-            condition.ValueType.Value is not ConditionValueType.Number)
++            condition.ValueType.Value is not (ConditionValueType.Number or ConditionValueType.DateTime))
+         {
+-            AddError(errors, $"{path}.valueType", "Greater-than and less-than conditions require number value type.");
++            AddError(errors, $"{path}.valueType", "Greater-than and less-than conditions require number or datetime value type.");
+         }
+ 
+         if (condition.Operator is ConditionOperator.ChangedSinceLastEvaluation)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 0c91d34..7747bd0 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Workflows;
+@@ -1102,9 +1103,33 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         {
+             AddError(errors, nameof(command.EventName), SupportedPlatformEventTypeRegistry.BuildValidationMessage(command.EventName));
+         }
++
++        AddConditionCriteriaErrors(errors, command.CriteriaJson);
+         ThrowIfInvalid(errors);
+     }
+ 
++    private static void AddConditionCriteriaErrors(
++        IDictionary<string, List<string>> errors,
++        IDictionary<string, JsonNode?>? criteriaJson)
++    {
++        if (criteriaJson is null)
++        {
++            return;
++        }
++
++        var conditionEntry = criteriaJson.FirstOrDefault(pair =>
++            string.Equals(pair.Key, ConditionExpressionCriteriaMapper.CriteriaConditionKey, StringComparison.OrdinalIgnoreCase));
++        if (conditionEntry.Key is null)
++        {
++            return;
++        }
++
++        var conditionErrors = ConditionExpressionCriteriaMapper.ValidateCriteriaCondition(
++            conditionEntry.Value,
++            $"{nameof(CreateWorkflowTriggerCommand.CriteriaJson)}.{ConditionExpressionCriteriaMapper.CriteriaConditionKey}");
++        foreach (var error in conditionErrors)
++        {
++            AddErrors(errors, error.Key, error.Value);
++        }
++    }
++
+     private static void Validate(StartManualWorkflowByCodeCommand command)
+     {
+         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+@@ -1211,6 +1236,15 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowSc
+         AddError(errors, key, $"{key} must be {maxLength} characters or fewer.");
+     }
+ 
++    private static void AddErrors(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IEnumerable<string> messages)
++    {
++        foreach (var message in messages)
++        {
++            AddError(errors, key, message);
++        }
++    }
++
+     private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
+     {
+         if (!errors.TryGetValue(key, out var messages))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 3fce59a..3f143e4 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1528,6 +1528,7 @@ internal sealed class ConditionTriggerEvaluationConfiguration : IEntityTypeConfig
+             .HasColumnName("value_type")
+             .HasConversion(
+                 value => value.HasValue ? value.Value.ToStorageValue() : null,
+-                value => string.IsNullOrWhiteSpace(value) ? null : ConditionTriggerStorageValues.ParseValueType(value));
++                value => string.IsNullOrWhiteSpace(value) ? null : ConditionTriggerStorageValues.ParseValueType(value))
++            .HasMaxLength(32);
+         builder.Property(x => x.RepeatFiringMode)
+             .HasColumnName("repeat_firing_mode")
+             .HasConversion(value => value.ToStorageValue(), value => ConditionTriggerStorageValues.ParseRepeatFiringMode(value))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+index fdb945e..c76d8ad 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260413233000_AddConditionTriggerEvaluations.cs
+@@ -32,7 +32,7 @@ public partial class AddConditionTriggerEvaluations : Migration
+                 field_path = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: true),
+                 @operator = table.Column<string>(name: "operator", type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
+-                value_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(max)", nullable: true),
++                value_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(32)", maxLength: 32, nullable: true),
+                 repeat_firing_mode = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false, defaultValue: "falseToTrueTransition"),
+                 input_values_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: isPostgres ? "'{}'::jsonb" : "N'{}'"),
+                 previous_outcome = table.Column<bool>(type: boolType, nullable: true),
+diff --git a/tests/VirtualCompany.Api.Tests/ConditionExpressionValidatorTests.cs b/tests/VirtualCompany.Api.Tests/ConditionExpressionValidatorTests.cs
+index 5edb9d2..b5e92ab 100644
+--- a/tests/VirtualCompany.Api.Tests/ConditionExpressionValidatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ConditionExpressionValidatorTests.cs
+@@ -43,6 +43,18 @@ public sealed class ConditionExpressionValidatorTests
+         Assert.Empty(errors);
+     }
+ 
++    [Fact]
++    public void Validate_accepts_datetime_ordering_condition()
++    {
++        var condition = MetricCondition(
++            ConditionOperator.GreaterThan,
++            ConditionValueType.DateTime,
++            JsonValue.Create("2026-04-13T08:00:00Z"));
++
++        var errors = ConditionExpressionValidator.Validate(condition);
++
++        Assert.Empty(errors);
++    }
++
+     [Fact]
+     public void Validate_accepts_omitted_repeat_mode_as_false_to_true_transition_default()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+index c30be12..49e6402 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -55,6 +55,35 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Trigger_creation_rejects_invalid_condition_criteria_with_field_errors()
++    {
++        var seed = await SeedMembershipAsync("condition-trigger-invalid", "condition-trigger-invalid@example.com", "Condition Trigger Invalid");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
++
++        var definition = await CreateEventDefinitionAsync(client, seed.CompanyId, "invalid-condition-definition");
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition.Id}/triggers", new
++        {
++            eventName = SupportedPlatformEventTypeRegistry.TaskUpdated,
++            criteriaJson = new Dictionary<string, JsonNode?>
++            {
++                ["condition"] = new JsonObject
++                {
++                    ["target"] = new JsonObject
++                    {
++                        ["sourceType"] = "metric"
++                    },
++                    ["operator"] = "greaterThan",
++                    ["valueType"] = "number"
++                }
++            },
++            isEnabled = true
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var content = await response.Content.ReadAsStringAsync();
++        Assert.Contains("CriteriaJson.condition.target.metricName", content);
++        Assert.Contains("CriteriaJson.condition.comparisonValue", content);
++    }
++
+     [Fact]
+     public async Task Event_envelope_matches_enabled_same_tenant_triggers_only()
+     {
+END_OF_PATCH

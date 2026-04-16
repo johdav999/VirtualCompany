@@ -101,7 +101,9 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
             sourceEntityType = "proactive_task",
             sourceEntityId = seed.TaskId,
             channel = "inbox",
-            recipientUserId = seed.UserId
+            recipientUserId = seed.UserId,
+            subject = "Blocked proactive cash briefing",
+            body = "This content must be captured in the policy decision record without being delivered."
         });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -129,12 +131,65 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
         Assert.Null(policyDecision.ProactiveMessageId);
         Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Blocked, policyDecision.Outcome);
         Assert.Equal(seed.TaskId, policyDecision.SourceEntityId);
+        Assert.Equal("Blocked proactive cash briefing", policyDecision.Subject);
+        Assert.Equal("This content must be captured in the policy decision record without being delivered.", policyDecision.Body);
         Assert.Equal("proactive_task", policyDecision.SourceEntityType.ToStorageValue());
         Assert.Equal(ProactiveMessageChannel.Inbox, policyDecision.Channel);
         Assert.Equal(seed.UserId, policyDecision.RecipientUserId);
         Assert.Equal("level_0", policyDecision.EvaluatedAutonomyLevel);
         Assert.Equal(PolicyDecisionReasonCodes.AutonomyLevelBlocksAction, policyDecision.ReasonCode);
         Assert.Equal("deny", policyDecision.PolicyDecision["outcome"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Level_1_agent_requires_approval_and_blocks_delivery_before_message_persistence()
+    {
+        var seed = await SeedAsync(AgentAutonomyLevel.Level1);
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/proactive-messages/deliveries", new
+        {
+            agentId = seed.AgentId,
+            sourceEntityType = "alert",
+            sourceEntityId = seed.AlertId,
+            channel = "notification",
+            recipientUserId = seed.UserId
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<ProactiveMessageDeliveryResponse>();
+
+        Assert.NotNull(result);
+        Assert.Equal("blocked", result!.Status);
+        Assert.Null(result.Message);
+        Assert.NotNull(result.PolicyBlock);
+        Assert.Equal("policy_denied", result.PolicyBlock!.Code);
+        Assert.Contains(PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval, result.PolicyBlock.ReasonCodes);
+        Assert.Equal("require_approval", result.PolicyBlock.PolicyDecision.Outcome);
+        Assert.Equal("level_1", result.PolicyBlock.PolicyDecision.EvaluatedAutonomyLevel);
+        Assert.Equal("This proactive message requires approval and was not delivered.", result.PolicyBlock.UserFacingMessage);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        Assert.False(await dbContext.ProactiveMessages.AnyAsync(x => x.CompanyId == seed.CompanyId && x.SourceEntityId == seed.AlertId));
+        Assert.False(await dbContext.CompanyNotifications.AnyAsync(x => x.CompanyId == seed.CompanyId && x.RelatedEntityId == seed.AlertId));
+
+        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions
+            .AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.SourceEntityId == seed.AlertId);
+
+        Assert.Null(policyDecision.ProactiveMessageId);
+        Assert.Equal(ProactiveMessagePolicyDecisionOutcome.RequiresApproval, policyDecision.Outcome);
+        Assert.Equal(seed.AlertId, policyDecision.SourceEntityId);
+        Assert.Equal("alert", policyDecision.SourceEntityType.ToStorageValue());
+        Assert.Equal(ProactiveMessageChannel.Notification, policyDecision.Channel);
+        Assert.Equal(seed.UserId, policyDecision.RecipientUserId);
+        Assert.Equal("level_1", policyDecision.EvaluatedAutonomyLevel);
+        Assert.Equal(PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval, policyDecision.ReasonCode);
+        Assert.Equal("require_approval", policyDecision.PolicyDecision["outcome"]!.GetValue<string>());
     }
 
     [Fact]
@@ -171,6 +226,10 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
         Assert.Equal(ProactiveMessageChannel.Inbox, stored.Channel);
         Assert.Null(stored.NotificationId);
         Assert.Equal("escalation", stored.SourceEntityType.ToStorageValue());
+
+        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.ProactiveMessageId == stored.Id);
+        Assert.Equal(stored.Subject, policyDecision.Subject);
+        Assert.Equal(stored.Body, policyDecision.Body);
     }
 
     private async Task<SeededProactiveMessaging> SeedAsync(AgentAutonomyLevel autonomyLevel)

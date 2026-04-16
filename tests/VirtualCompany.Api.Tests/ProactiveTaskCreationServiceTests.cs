@@ -44,7 +44,10 @@ public sealed class ProactiveTaskCreationServiceTests
         Assert.Equal("correlation-1", mapped.CorrelationId);
         Assert.Equal("Review inventory drift", mapped.Title);
         Assert.Equal("high", mapped.Priority);
-        Assert.Equal("agent", mapped.InputPayload["originatingAgentId"] is null ? null : "agent");
+        Assert.Equal(WorkTaskStatus.New.ToStorageValue(), mapped.Status);
+        Assert.Equal(WorkTaskSourceTypes.Agent, mapped.InputPayload["sourceType"]!.GetValue<string>());
+        Assert.Equal("trigger-event-1", mapped.InputPayload["triggerEventKey"]!.GetValue<string>());
+        Assert.Equal(agentId.ToString("N"), mapped.InputPayload["originatingAgentId"]!.GetValue<string>());
     }
 
     [Fact]
@@ -96,7 +99,8 @@ public sealed class ProactiveTaskCreationServiceTests
         Assert.Equal(agentId.ToString("N"), audit.Metadata["agentId"]);
         Assert.Equal(companyId.ToString("N"), audit.Metadata["companyId"]);
         Assert.Equal("condition", audit.Metadata["triggerSource"]);
-        Assert.Contains("Review inventory drift", audit.Metadata["payloadDiff"]);
+        Assert.NotNull(audit.PayloadDiffJson);
+        Assert.Contains("Review inventory drift", audit.PayloadDiffJson);
         Assert.True(audit.OccurredUtc > DateTime.UtcNow.AddMinutes(-1));
     }
 
@@ -154,6 +158,7 @@ public sealed class ProactiveTaskCreationServiceTests
                 "",
                 null,
                 "",
+                "",
                 null,
                 null,
                 [])));
@@ -171,6 +176,7 @@ public sealed class ProactiveTaskCreationServiceTests
         Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);
         Assert.Contains(nameof(MappedTaskCreationRequest.Description), ex.Errors.Keys);
         Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);
+        Assert.Contains(nameof(MappedTaskCreationRequest.Status), ex.Errors.Keys);
         Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);
     }
 

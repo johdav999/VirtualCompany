@@ -1,0 +1,1591 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/KpiQueryContracts.cs b/src/VirtualCompany.Application/Cockpit/KpiQueryContracts.cs
+new file mode 100644
+index 0000000..9a0e259
+--- /dev/null
++++ b/src/VirtualCompany.Application/Cockpit/KpiQueryContracts.cs
+@@ -0,0 +1,310 @@
++namespace VirtualCompany.Application.Cockpit;
++
++public sealed record GetExecutiveCockpitKpiDashboardQuery(
++    Guid CompanyId,
++    string? Department,
++    DateTime? StartUtc,
++    DateTime? EndUtc);
++
++public sealed record ExecutiveCockpitKpiDashboardDto(
++    Guid CompanyId,
++    DateTime GeneratedAtUtc,
++    DateTime StartUtc,
++    DateTime EndUtc,
++    string? Department,
++    IReadOnlyList<string> Departments,
++    IReadOnlyList<ExecutiveCockpitKpiTileDto> Kpis,
++    IReadOnlyList<ExecutiveCockpitAnomalyDto> Anomalies);
++
++public sealed record ExecutiveCockpitKpiTileDto(
++    string Key,
++    string Label,
++    string Department,
++    decimal CurrentValue,
++    decimal? BaselineValue,
++    decimal? DeltaValue,
++    decimal? DeltaPercentage,
++    string TrendDirection,
++    string ComparisonLabel,
++    DateTime AsOfUtc,
++    string? Unit,
++    string? Route);
++
++public sealed record ExecutiveCockpitAnomalyDto(
++    string KpiKey,
++    string Label,
++    string Department,
++    string Severity,
++    DateTime OccurredUtc,
++    string Reason,
++    decimal CurrentValue,
++    decimal? BaselineValue,
++    decimal? ThresholdValue,
++    decimal? DeviationPercentage,
++    string Summary,
++    string? Route);
++
++public sealed record ExecutiveCockpitKpiMetricDefinition(
++    string Key,
++    string Label,
++    string? Unit,
++    bool HigherIsRisk,
++    decimal? WarningThreshold,
++    decimal? CriticalThreshold,
++    decimal WarningDeviationPercentage,
++    decimal CriticalDeviationPercentage);
++
++public sealed record ExecutiveCockpitKpiMetricValue(
++    string Key,
++    string Label,
++    string Department,
++    decimal CurrentValue,
++    decimal? BaselineValue,
++    DateTime AsOfUtc,
++    string? Route,
++    ExecutiveCockpitKpiMetricDefinition Definition);
++
++public sealed record ExecutiveCockpitBaselineComparison(
++    decimal? DeltaValue,
++    decimal? DeltaPercentage,
++    string TrendDirection);
++
++public sealed record ExecutiveCockpitAnomalyEvaluation(
++    string Reason,
++    string Severity,
++    decimal? ThresholdValue,
++    decimal? DeviationPercentage,
++    string Summary);
++
++public static class ExecutiveCockpitKpiAnomalyReasons
++{
++    public const string ThresholdBreach = "threshold_breach";
++    public const string BaselineDeviation = "baseline_deviation";
++}
++
++public static class ExecutiveCockpitKpiSeverity
++{
++    public const string Info = "info";
++    public const string Warning = "warning";
++    public const string Critical = "critical";
++
++    public static string Max(string left, string right)
++    {
++        return Rank(right) > Rank(left) ? right : left;
++
++        static int Rank(string severity) =>
++            severity.Trim().ToLowerInvariant() switch
++            {
++                Critical => 3,
++                Warning => 2,
++                Info => 1,
++                _ => 0
++            };
++    }
++}
++
++public static class ExecutiveCockpitKpiMetricCatalog
++{
++    public static IReadOnlyList<ExecutiveCockpitKpiMetricDefinition> Defaults { get; } =
++    [
++        new(
++            "open_tasks",
++            "Open tasks",
++            null,
++            HigherIsRisk: true,
++            WarningThreshold: 5,
++            CriticalThreshold: 10,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 100),
++        new(
++            "blocked_tasks",
++            "Blocked tasks",
++            null,
++            HigherIsRisk: true,
++            WarningThreshold: 1,
++            CriticalThreshold: 3,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 100),
++        new(
++            "pending_approvals",
++            "Pending approvals",
++            null,
++            HigherIsRisk: true,
++            WarningThreshold: 3,
++            CriticalThreshold: 8,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 100),
++        new(
++            "completed_tasks",
++            "Completed tasks",
++            null,
++            HigherIsRisk: false,
++            WarningThreshold: null,
++            CriticalThreshold: null,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 80),
++        new(
++            "active_workflows",
++            "Active workflows",
++            null,
++            HigherIsRisk: false,
++            WarningThreshold: null,
++            CriticalThreshold: null,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 80),
++        new(
++            "workflow_exceptions",
++            "Workflow exceptions",
++            null,
++            HigherIsRisk: true,
++            WarningThreshold: 1,
++            CriticalThreshold: 3,
++            WarningDeviationPercentage: 50,
++            CriticalDeviationPercentage: 100)
++    ];
++
++    public static ExecutiveCockpitKpiMetricDefinition Find(string key) =>
++        Defaults.First(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
++}
++
++public static class ExecutiveCockpitKpiCalculator
++{
++    private const decimal FlatTolerance = 0.0001m;
++
++    public static ExecutiveCockpitBaselineComparison Compare(decimal currentValue, decimal? baselineValue)
++    {
++        if (baselineValue is null)
++        {
++            return new ExecutiveCockpitBaselineComparison(
++                null,
++                null,
++                ExecutiveCockpitTrendDirections.Unknown);
++        }
++
++        var delta = currentValue - baselineValue.Value;
++        var direction = Math.Abs(delta) <= FlatTolerance
++            ? ExecutiveCockpitTrendDirections.Flat
++            : delta > 0
++                ? ExecutiveCockpitTrendDirections.Up
++                : ExecutiveCockpitTrendDirections.Down;
++
++        var percentage = baselineValue.Value == 0
++            ? null
++            : Math.Round(delta / Math.Abs(baselineValue.Value) * 100m, 1, MidpointRounding.AwayFromZero);
++
++        return new ExecutiveCockpitBaselineComparison(delta, percentage, direction);
++    }
++
++    public static ExecutiveCockpitKpiTileDto CreateTile(
++        ExecutiveCockpitKpiMetricValue metric,
++        string comparisonLabel)
++    {
++        var comparison = Compare(metric.CurrentValue, metric.BaselineValue);
++        return new ExecutiveCockpitKpiTileDto(
++            metric.Key,
++            metric.Label,
++            metric.Department,
++            metric.CurrentValue,
++            metric.BaselineValue,
++            comparison.DeltaValue,
++            comparison.DeltaPercentage,
++            comparison.TrendDirection,
++            comparisonLabel,
++            metric.AsOfUtc,
++            metric.Definition.Unit,
++            metric.Route);
++    }
++
++    public static ExecutiveCockpitAnomalyEvaluation? DetectAnomaly(
++        ExecutiveCockpitKpiMetricValue metric)
++    {
++        var comparison = Compare(metric.CurrentValue, metric.BaselineValue);
++        var threshold = EvaluateThreshold(metric.CurrentValue, metric.Definition);
++        var deviation = EvaluateDeviation(comparison.DeltaPercentage, metric.Definition);
++
++        if (threshold is null && deviation is null)
++        {
++            return null;
++        }
++
++        var reason = threshold is not null && deviation is not null
++            ? $"{ExecutiveCockpitKpiAnomalyReasons.ThresholdBreach},{ExecutiveCockpitKpiAnomalyReasons.BaselineDeviation}"
++            : threshold is not null
++                ? ExecutiveCockpitKpiAnomalyReasons.ThresholdBreach
++                : ExecutiveCockpitKpiAnomalyReasons.BaselineDeviation;
++
++        var severity = threshold?.Severity ?? ExecutiveCockpitKpiSeverity.Info;
++        if (deviation is not null)
++        {
++            severity = ExecutiveCockpitKpiSeverity.Max(severity, deviation.Value.Severity);
++        }
++
++        var summary = threshold is not null && deviation is not null
++            ? $"{metric.Label} breached its configured threshold and moved {Math.Abs(deviation.Value.DeviationPercentage):0.#}% from baseline."
++            : threshold is not null
++                ? $"{metric.Label} breached the configured {threshold.Value.Severity} threshold."
++                : $"{metric.Label} moved {Math.Abs(deviation!.Value.DeviationPercentage):0.#}% from baseline.";
++
++        return new ExecutiveCockpitAnomalyEvaluation(
++            reason,
++            severity,
++            threshold?.ThresholdValue,
++            deviation?.DeviationPercentage,
++            summary);
++    }
++
++    private static (string Severity, decimal ThresholdValue)? EvaluateThreshold(
++        decimal currentValue,
++        ExecutiveCockpitKpiMetricDefinition definition)
++    {
++        if (!definition.HigherIsRisk)
++        {
++            return null;
++        }
++
++        if (definition.CriticalThreshold is decimal critical && currentValue >= critical)
++        {
++            return (ExecutiveCockpitKpiSeverity.Critical, critical);
++        }
++
++        if (definition.WarningThreshold is decimal warning && currentValue >= warning)
++        {
++            return (ExecutiveCockpitKpiSeverity.Warning, warning);
++        }
++
++        return null;
++    }
++
++    private static (string Severity, decimal DeviationPercentage)? EvaluateDeviation(
++        decimal? deltaPercentage,
++        ExecutiveCockpitKpiMetricDefinition definition)
++    {
++        if (deltaPercentage is null)
++        {
++            return null;
++        }
++
++        var riskDeviation = definition.HigherIsRisk
++            ? Math.Max(0, deltaPercentage.Value)
++            : Math.Max(0, -deltaPercentage.Value);
++
++        if (riskDeviation >= definition.CriticalDeviationPercentage)
++        {
++            return (ExecutiveCockpitKpiSeverity.Critical, deltaPercentage.Value);
++        }
++
++        if (riskDeviation >= definition.WarningDeviationPercentage)
++        {
++            return (ExecutiveCockpitKpiSeverity.Warning, deltaPercentage.Value);
++        }
++
++        return null;
++    }
++}
++
++public interface IExecutiveCockpitKpiQueryService
++{
++    Task<ExecutiveCockpitKpiDashboardDto> GetAsync(
++        GetExecutiveCockpitKpiDashboardQuery query,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs
+new file mode 100644
+index 0000000..9840a6a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs
+@@ -0,0 +1,418 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKpiQueryService
++{
++    private static readonly WorkTaskStatus[] OpenTaskStatuses =
++    [
++        WorkTaskStatus.New,
++        WorkTaskStatus.InProgress,
++        WorkTaskStatus.Blocked,
++        WorkTaskStatus.AwaitingApproval
++    ];
++
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly TimeProvider _timeProvider;
++
++    public CompanyExecutiveCockpitKpiQueryService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _membershipContextResolver = membershipContextResolver;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<ExecutiveCockpitKpiDashboardDto> GetAsync(
++        GetExecutiveCockpitKpiDashboardQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++
++        var (startUtc, endUtc) = NormalizeRange(query.StartUtc, query.EndUtc);
++        var period = endUtc - startUtc;
++        var baselineStartUtc = startUtc - period;
++        var baselineEndUtc = startUtc;
++        var selectedDepartment = NormalizeOptionalDepartment(query.Department);
++
++        var agents = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new AgentKpiRow(x.Id, x.Department, x.Status, x.Thresholds))
++            .ToListAsync(cancellationToken);
++
++        var agentDepartmentById = agents.ToDictionary(x => x.Id, x => NormalizeDepartment(x.Department));
++
++        var workflowDefinitions = await _dbContext.WorkflowDefinitions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId && x.Active)
++            .Select(x => new WorkflowDefinitionKpiRow(x.Id, x.Department))
++            .ToListAsync(cancellationToken);
++
++        var workflowDepartmentById = workflowDefinitions.ToDictionary(x => x.Id, x => NormalizeDepartment(x.Department));
++
++        var departments = agents
++            .Select(x => NormalizeDepartment(x.Department))
++            .Concat(workflowDefinitions.Select(x => NormalizeDepartment(x.Department)))
++            .DefaultIfEmpty("Company")
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        var includedDepartments = selectedDepartment is null
++            ? departments
++            : departments
++                .Where(x => string.Equals(x, selectedDepartment, StringComparison.OrdinalIgnoreCase))
++                .DefaultIfEmpty(selectedDepartment)
++                .ToList();
++
++        var tasks = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new TaskKpiRow(
++                x.Id,
++                x.AssignedAgentId,
++                x.Status,
++                x.CreatedUtc,
++                x.UpdatedUtc,
++                x.CompletedUtc))
++            .ToListAsync(cancellationToken);
++
++        var approvals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new ApprovalKpiRow(x.Id, x.AgentId, x.Status, x.CreatedUtc))
++            .ToListAsync(cancellationToken);
++
++        var workflowExceptions = await _dbContext.WorkflowExceptions
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == query.CompanyId)
++            .Select(x => new WorkflowExceptionKpiRow(
++                x.Id,
++                x.WorkflowDefinitionId,
++                x.Status,
++                x.OccurredUtc))
++            .ToListAsync(cancellationToken);
++
++        var definitionsByDepartment = BuildMetricDefinitionsByDepartment(agents);
++        var metricValues = new List<ExecutiveCockpitKpiMetricValue>();
++        foreach (var department in includedDepartments)
++        {
++            var departmentAgentIds = agentDepartmentById
++                .Where(x => string.Equals(x.Value, department, StringComparison.OrdinalIgnoreCase))
++                .Select(x => x.Key)
++                .ToHashSet();
++
++            var departmentWorkflowDefinitionIds = workflowDepartmentById
++                .Where(x => string.Equals(x.Value, department, StringComparison.OrdinalIgnoreCase))
++                .Select(x => x.Key)
++                .ToHashSet();
++
++            metricValues.AddRange(BuildDepartmentMetrics(
++                query.CompanyId,
++                department,
++                startUtc,
++                endUtc,
++                baselineStartUtc,
++                baselineEndUtc,
++                departmentAgentIds,
++                departmentWorkflowDefinitionIds,
++                tasks,
++                approvals,
++                workflowExceptions,
++                agents,
++                workflowDefinitions,
++                definitionsByDepartment.GetValueOrDefault(department) ?? ExecutiveCockpitKpiMetricCatalog.Defaults));
++        }
++
++        var comparisonLabel = $"vs previous {Math.Max(1, (int)Math.Ceiling(period.TotalDays))} days";
++        var tiles = metricValues
++            .Select(x => ExecutiveCockpitKpiCalculator.CreateTile(x, comparisonLabel))
++            .OrderBy(x => x.Department, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        var anomalies = metricValues
++            .Select(metric => (Metric: metric, Evaluation: ExecutiveCockpitKpiCalculator.DetectAnomaly(metric)))
++            .Where(x => x.Evaluation is not null)
++            .Select(x => new ExecutiveCockpitAnomalyDto(
++                x.Metric.Key,
++                x.Metric.Label,
++                x.Metric.Department,
++                x.Evaluation!.Severity,
++                x.Metric.AsOfUtc,
++                x.Evaluation.Reason,
++                x.Metric.CurrentValue,
++                x.Metric.BaselineValue,
++                x.Evaluation.ThresholdValue,
++                x.Evaluation.DeviationPercentage,
++                x.Evaluation.Summary,
++                x.Metric.Route))
++            .OrderByDescending(x => SeverityRank(x.Severity))
++            .ThenByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.Department, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++        return new ExecutiveCockpitKpiDashboardDto(
++            query.CompanyId,
++            _timeProvider.GetUtcNow().UtcDateTime,
++            startUtc,
++            endUtc,
++            selectedDepartment,
++            departments,
++            tiles,
++            anomalies);
++    }
++
++    private IEnumerable<ExecutiveCockpitKpiMetricValue> BuildDepartmentMetrics(
++        Guid companyId,
++        string department,
++        DateTime startUtc,
++        DateTime endUtc,
++        DateTime baselineStartUtc,
++        DateTime baselineEndUtc,
++        IReadOnlySet<Guid> departmentAgentIds,
++        IReadOnlySet<Guid> departmentWorkflowDefinitionIds,
++        IReadOnlyList<TaskKpiRow> tasks,
++        IReadOnlyList<ApprovalKpiRow> approvals,
++        IReadOnlyList<WorkflowExceptionKpiRow> workflowExceptions,
++        IReadOnlyList<AgentKpiRow> agents,
++        IReadOnlyList<WorkflowDefinitionKpiRow> workflowDefinitions,
++        IReadOnlyList<ExecutiveCockpitKpiMetricDefinition> definitions)
++    {
++        var routeDepartment = Uri.EscapeDataString(department);
++        var departmentTasks = tasks
++            .Where(x => x.AssignedAgentId is Guid agentId && departmentAgentIds.Contains(agentId))
++            .ToList();
++        var departmentApprovals = approvals
++            .Where(x => x.AgentId is Guid agentId && departmentAgentIds.Contains(agentId))
++            .ToList();
++        var departmentExceptions = workflowExceptions
++            .Where(x => departmentWorkflowDefinitionIds.Contains(x.WorkflowDefinitionId))
++            .ToList();
++
++        yield return CreateMetric(
++            "open_tasks",
++            department,
++            departmentTasks.Count(x => OpenTaskStatuses.Contains(x.Status) && x.CreatedUtc < endUtc),
++            departmentTasks.Count(x => OpenTaskStatuses.Contains(x.Status) && x.CreatedUtc < baselineEndUtc),
++            endUtc,
++            $"/tasks?companyId={companyId}&department={routeDepartment}",
++            definitions);
++
++        yield return CreateMetric(
++            "blocked_tasks",
++            department,
++            departmentTasks.Count(x => (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed) && x.UpdatedUtc >= startUtc && x.UpdatedUtc < endUtc),
++            departmentTasks.Count(x => (x.Status == WorkTaskStatus.Blocked || x.Status == WorkTaskStatus.Failed) && x.UpdatedUtc >= baselineStartUtc && x.UpdatedUtc < baselineEndUtc),
++            endUtc,
++            $"/tasks?companyId={companyId}&department={routeDepartment}&status=blocked",
++            definitions);
++
++        yield return CreateMetric(
++            "pending_approvals",
++            department,
++            departmentApprovals.Count(x => x.Status == ApprovalRequestStatus.Pending && x.CreatedUtc < endUtc),
++            departmentApprovals.Count(x => x.Status == ApprovalRequestStatus.Pending && x.CreatedUtc < baselineEndUtc),
++            endUtc,
++            $"/approvals?companyId={companyId}&department={routeDepartment}&status=pending",
++            definitions);
++
++        yield return CreateMetric(
++            "completed_tasks",
++            department,
++            departmentTasks.Count(x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= startUtc && x.CompletedUtc < endUtc),
++            departmentTasks.Count(x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= baselineStartUtc && x.CompletedUtc < baselineEndUtc),
++            endUtc,
++            $"/tasks?companyId={companyId}&department={routeDepartment}&status=completed",
++            definitions);
++
++        yield return CreateMetric(
++            "active_workflows",
++            department,
++            workflowDefinitions.Count(x => departmentWorkflowDefinitionIds.Contains(x.Id)),
++            workflowDefinitions.Count(x => departmentWorkflowDefinitionIds.Contains(x.Id)),
++            endUtc,
++            $"/workflows?companyId={companyId}&department={routeDepartment}",
++            definitions);
++
++        yield return CreateMetric(
++            "workflow_exceptions",
++            department,
++            departmentExceptions.Count(x => x.Status == WorkflowExceptionStatus.Open && x.OccurredUtc >= startUtc && x.OccurredUtc < endUtc),
++            departmentExceptions.Count(x => x.Status == WorkflowExceptionStatus.Open && x.OccurredUtc >= baselineStartUtc && x.OccurredUtc < baselineEndUtc),
++            endUtc,
++            $"/workflows?companyId={companyId}&department={routeDepartment}",
++            definitions);
++    }
++
++    private static ExecutiveCockpitKpiMetricValue CreateMetric(
++        string key,
++        string department,
++        decimal currentValue,
++        decimal? baselineValue,
++        DateTime asOfUtc,
++        string route,
++        IReadOnlyList<ExecutiveCockpitKpiMetricDefinition> definitions)
++    {
++        var definition = definitions.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase))
++            ?? ExecutiveCockpitKpiMetricCatalog.Find(key);
++
++        return new ExecutiveCockpitKpiMetricValue(
++            definition.Key,
++            definition.Label,
++            department,
++            currentValue,
++            baselineValue,
++            asOfUtc,
++            route,
++            definition);
++    }
++
++    private static Dictionary<string, IReadOnlyList<ExecutiveCockpitKpiMetricDefinition>> BuildMetricDefinitionsByDepartment(
++        IReadOnlyList<AgentKpiRow> agents)
++    {
++        var result = new Dictionary<string, IReadOnlyList<ExecutiveCockpitKpiMetricDefinition>>(StringComparer.OrdinalIgnoreCase);
++        foreach (var group in agents.GroupBy(x => NormalizeDepartment(x.Department), StringComparer.OrdinalIgnoreCase))
++        {
++            var definitions = ExecutiveCockpitKpiMetricCatalog.Defaults.ToDictionary(x => x.Key, StringComparer.OrdinalIgnoreCase);
++            foreach (var agent in group)
++            {
++                foreach (var metric in ExecutiveCockpitKpiMetricCatalog.Defaults)
++                {
++                    if (TryReadDefinitionOverride(agent.Thresholds, metric, out var overridden))
++                    {
++                        definitions[metric.Key] = overridden;
++                    }
++                }
++            }
++
++            result[group.Key] = definitions.Values.ToList();
++        }
++
++        return result;
++    }
++
++    private static bool TryReadDefinitionOverride(
++        IReadOnlyDictionary<string, JsonNode?> thresholds,
++        ExecutiveCockpitKpiMetricDefinition fallback,
++        out ExecutiveCockpitKpiMetricDefinition definition)
++    {
++        definition = fallback;
++        if (!thresholds.TryGetValue(fallback.Key, out var node) || node is not JsonObject obj)
++        {
++            return false;
++        }
++
++        definition = fallback with
++        {
++            WarningThreshold = ReadDecimal(obj, "warningThreshold") ?? fallback.WarningThreshold,
++            CriticalThreshold = ReadDecimal(obj, "criticalThreshold") ?? fallback.CriticalThreshold,
++            WarningDeviationPercentage = ReadDecimal(obj, "warningDeviationPercentage") ?? fallback.WarningDeviationPercentage,
++            CriticalDeviationPercentage = ReadDecimal(obj, "criticalDeviationPercentage") ?? fallback.CriticalDeviationPercentage
++        };
++        return true;
++    }
++
++    private static decimal? ReadDecimal(JsonObject obj, string key)
++    {
++        if (!obj.TryGetPropertyValue(key, out var node) || node is null)
++        {
++            return null;
++        }
++
++        return node is JsonValue value && value.TryGetValue<decimal>(out var number)
++            ? number
++            : null;
++    }
++
++    private (DateTime StartUtc, DateTime EndUtc) NormalizeRange(DateTime? startUtc, DateTime? endUtc)
++    {
++        var end = NormalizeUtc(endUtc) ?? _timeProvider.GetUtcNow().UtcDateTime;
++        var start = NormalizeUtc(startUtc) ?? end.AddDays(-7);
++        if (start >= end)
++        {
++            start = end.AddDays(-7);
++        }
++
++        return (start, end);
++    }
++
++    private static DateTime? NormalizeUtc(DateTime? value) =>
++        value is null
++            ? null
++            : value.Value.Kind == DateTimeKind.Utc
++                ? value.Value
++                : value.Value.ToUniversalTime();
++
++    private static string NormalizeDepartment(string? department) =>
++        string.IsNullOrWhiteSpace(department) ? "Unassigned" : department.Trim();
++
++    private static string? NormalizeOptionalDepartment(string? department) =>
++        string.IsNullOrWhiteSpace(department) ? null : NormalizeDepartment(department);
++
++    private static int SeverityRank(string severity) =>
++        severity.Trim().ToLowerInvariant() switch
++        {
++            ExecutiveCockpitKpiSeverity.Critical => 3,
++            ExecutiveCockpitKpiSeverity.Warning => 2,
++            ExecutiveCockpitKpiSeverity.Info => 1,
++            _ => 0
++        };
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private sealed record AgentKpiRow(
++        Guid Id,
++        string Department,
++        AgentStatus Status,
++        Dictionary<string, JsonNode?> Thresholds);
++
++    private sealed record WorkflowDefinitionKpiRow(Guid Id, string? Department);
++
++    private sealed record TaskKpiRow(
++        Guid Id,
++        Guid? AssignedAgentId,
++        WorkTaskStatus Status,
++        DateTime CreatedUtc,
++        DateTime UpdatedUtc,
++        DateTime? CompletedUtc);
++
++    private sealed record ApprovalKpiRow(
++        Guid Id,
++        Guid? AgentId,
++        ApprovalRequestStatus Status,
++        DateTime CreatedUtc);
++
++    private sealed record WorkflowExceptionKpiRow(
++        Guid Id,
++        Guid WorkflowDefinitionId,
++        WorkflowExceptionStatus Status,
++        DateTime OccurredUtc);
++}
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index ab1fa0f..71a1441 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -13,10 +13,15 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class ExecutiveCockpitController : ControllerBase
+ {
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
++    private readonly IExecutiveCockpitKpiQueryService _kpiQueryService;
+ 
+-    public ExecutiveCockpitController(IExecutiveCockpitDashboardService dashboardService)
++    public ExecutiveCockpitController(
++        IExecutiveCockpitDashboardService dashboardService,
++        IExecutiveCockpitKpiQueryService kpiQueryService)
+     {
+         _dashboardService = dashboardService;
++        _kpiQueryService = kpiQueryService;
+     }
+ 
+     [HttpGet]
+@@ -37,4 +42,30 @@ public sealed class ExecutiveCockpitController : ControllerBase
+             return NotFound();
+         }
+     }
+-}
+\ No newline at end of file
++
++    [HttpGet("kpis")]
++    public async Task<ActionResult<ExecutiveCockpitKpiDashboardDto>> GetKpisAsync(
++        Guid companyId,
++        [FromQuery] string? department,
++        [FromQuery] DateTime? startUtc,
++        [FromQuery] DateTime? endUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _kpiQueryService.GetAsync(
++                new GetExecutiveCockpitKpiDashboardQuery(companyId, department, startUtc, endUtc),
++                cancellationToken));
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6b23714..e09a08d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -264,6 +264,7 @@ public static class DependencyInjection
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 0dfe1ef..7f0159b 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -1,4 +1,5 @@
+ using System.Net.Http.Json;
++using System.Globalization;
+ using System.Text.Json;
+ 
+ namespace VirtualCompany.Web.Services;
+@@ -23,6 +24,22 @@ public sealed class ExecutiveCockpitApiClient
+         return GetCoreAsync(companyId, cancellationToken);
+     }
+ 
++    public Task<ExecutiveCockpitKpiDashboardViewModel?> GetKpisAsync(
++        Guid companyId,
++        string? department,
++        DateTime? startUtc,
++        DateTime? endUtc,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<ExecutiveCockpitKpiDashboardViewModel?>(OfflineKpis(companyId, department, startUtc, endUtc));
++        }
++
++        return GetKpisCoreAsync(companyId, department, startUtc, endUtc, cancellationToken);
++    }
++
+     private async Task<ExecutiveCockpitDashboardViewModel?> GetCoreAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         try
+@@ -45,6 +62,45 @@ public sealed class ExecutiveCockpitApiClient
+         }
+     }
+ 
++    private async Task<ExecutiveCockpitKpiDashboardViewModel?> GetKpisCoreAsync(
++        Guid companyId,
++        string? department,
++        DateTime? startUtc,
++        DateTime? endUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var query = new List<string>();
++            if (!string.IsNullOrWhiteSpace(department))
++            {
++                query.Add($"department={Uri.EscapeDataString(department)}");
++            }
++
++            if (startUtc is not null)
++            {
++                query.Add($"startUtc={Uri.EscapeDataString(startUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
++            }
++
++            if (endUtc is not null)
++            {
++                query.Add($"endUtc={Uri.EscapeDataString(endUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
++            }
++
++            var route = $"api/companies/{companyId}/executive-cockpit/kpis{(query.Count == 0 ? string.Empty : "?" + string.Join("&", query))}";
++            using var response = await _httpClient.GetAsync(route, cancellationToken);
++            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
++            {
++                return null;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<ExecutiveCockpitKpiDashboardViewModel>(SerializerOptions, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
+     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+     {
+         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+@@ -140,6 +196,64 @@ public sealed class ExecutiveCockpitApiClient
+             }
+         };
+ 
++    private static ExecutiveCockpitKpiDashboardViewModel OfflineKpis(Guid companyId, string? department, DateTime? startUtc, DateTime? endUtc)
++    {
++        var end = endUtc ?? DateTime.UtcNow;
++        var start = startUtc ?? end.AddDays(-7);
++        var selectedDepartment = string.IsNullOrWhiteSpace(department) ? "Company" : department.Trim();
++        return new ExecutiveCockpitKpiDashboardViewModel
++        {
++            CompanyId = companyId,
++            GeneratedAtUtc = DateTime.UtcNow,
++            StartUtc = start,
++            EndUtc = end,
++            Department = string.IsNullOrWhiteSpace(department) ? null : department.Trim(),
++            Departments = ["Company"],
++            Kpis =
++            [
++                new ExecutiveCockpitKpiTileViewModel
++                {
++                    Key = "open_tasks",
++                    Label = "Open tasks",
++                    Department = selectedDepartment,
++                    CurrentValue = 0,
++                    BaselineValue = 0,
++                    DeltaValue = 0,
++                    TrendDirection = "flat",
++                    ComparisonLabel = "vs previous 7 days",
++                    AsOfUtc = end,
++                    Route = $"/tasks?companyId={companyId}"
++                },
++                new ExecutiveCockpitKpiTileViewModel
++                {
++                    Key = "pending_approvals",
++                    Label = "Pending approvals",
++                    Department = selectedDepartment,
++                    CurrentValue = 0,
++                    BaselineValue = 0,
++                    DeltaValue = 0,
++                    TrendDirection = "flat",
++                    ComparisonLabel = "vs previous 7 days",
++                    AsOfUtc = end,
++                    Route = $"/approvals?companyId={companyId}"
++                },
++                new ExecutiveCockpitKpiTileViewModel
++                {
++                    Key = "workflow_exceptions",
++                    Label = "Workflow exceptions",
++                    Department = selectedDepartment,
++                    CurrentValue = 0,
++                    BaselineValue = 0,
++                    DeltaValue = 0,
++                    TrendDirection = "flat",
++                    ComparisonLabel = "vs previous 7 days",
++                    AsOfUtc = end,
++                    Route = $"/workflows?companyId={companyId}"
++                }
++            ]
++        };
++    }
++
+     private sealed class ApiProblemResponse
+     {
+         public string? Title { get; set; }
+@@ -148,6 +262,50 @@ public sealed class ExecutiveCockpitApiClient
+     }
+ }
+ 
++public sealed class ExecutiveCockpitKpiDashboardViewModel
++{
++    public Guid CompanyId { get; set; }
++    public DateTime GeneratedAtUtc { get; set; }
++    public DateTime StartUtc { get; set; }
++    public DateTime EndUtc { get; set; }
++    public string? Department { get; set; }
++    public List<string> Departments { get; set; } = [];
++    public List<ExecutiveCockpitKpiTileViewModel> Kpis { get; set; } = [];
++    public List<ExecutiveCockpitAnomalyViewModel> Anomalies { get; set; } = [];
++}
++
++public sealed class ExecutiveCockpitKpiTileViewModel
++{
++    public string Key { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public decimal CurrentValue { get; set; }
++    public decimal? BaselineValue { get; set; }
++    public decimal? DeltaValue { get; set; }
++    public decimal? DeltaPercentage { get; set; }
++    public string TrendDirection { get; set; } = "unknown";
++    public string ComparisonLabel { get; set; } = string.Empty;
++    public DateTime AsOfUtc { get; set; }
++    public string? Unit { get; set; }
++    public string? Route { get; set; }
++}
++
++public sealed class ExecutiveCockpitAnomalyViewModel
++{
++    public string KpiKey { get; set; } = string.Empty;
++    public string Label { get; set; } = string.Empty;
++    public string Department { get; set; } = string.Empty;
++    public string Severity { get; set; } = string.Empty;
++    public DateTime OccurredUtc { get; set; }
++    public string Reason { get; set; } = string.Empty;
++    public decimal CurrentValue { get; set; }
++    public decimal? BaselineValue { get; set; }
++    public decimal? ThresholdValue { get; set; }
++    public decimal? DeviationPercentage { get; set; }
++    public string Summary { get; set; } = string.Empty;
++    public string? Route { get; set; }
++}
++
+ public sealed class ExecutiveCockpitDashboardViewModel
+ {
+     public Guid CompanyId { get; set; }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index cd36b4c..2602a41 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -168,21 +168,86 @@
+         @if (!IsInitialSetupEmpty)
+         {
+             <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-                <h3 class="h5">Department KPIs</h3>
+-                <div class="cockpit-kpi-grid">
+-                    @foreach (var kpi in dashboard.DepartmentKpis)
++                <div class="cockpit-card__header">
++                    <div>
++                        <h3 class="h5 mb-1">Department KPIs</h3>
++                        <p class="text-body-secondary mb-0">Compare the selected range with the prior equivalent period.</p>
++                    </div>
++                </div>
++
++                <div class="row g-3 mt-1 align-items-end">
++                    <div class="col-12 col-md-4">
++                        <label class="form-label" for="kpi-department-filter">Department</label>
++                        <select id="kpi-department-filter" class="form-select" @bind="selectedKpiDepartment">
++                            <option value="">All departments</option>
++                            @foreach (var department in AvailableKpiDepartments)
++                            {
++                                <option value="@department">@department</option>
++                            }
++                        </select>
++                    </div>
++                    <div class="col-12 col-md-3">
++                        <label class="form-label" for="kpi-range-filter">Time range</label>
++                        <select id="kpi-range-filter" class="form-select" @bind="selectedKpiRange">
++                            <option value="7">Last 7 days</option>
++                            <option value="14">Last 14 days</option>
++                            <option value="30">Last 30 days</option>
++                            <option value="90">Last 90 days</option>
++                        </select>
++                    </div>
++                    <div class="col-12 col-md-auto">
++                        <button type="button" class="btn btn-primary" @onclick="ReloadKpisAsync" disabled="@isKpiLoading">Apply filters</button>
++                    </div>
++                </div>
++
++                @if (isKpiLoading)
++                {
++                    <p class="text-body-secondary mt-3 mb-0">Refreshing KPI signals...</p>
++                }
++                else if (!string.IsNullOrWhiteSpace(kpiErrorMessage))
++                {
++                    <div class="alert alert-warning mt-3 mb-0">@kpiErrorMessage</div>
++                }
++                else if (kpiDashboard is null || kpiDashboard.Kpis.Count == 0)
++                {
++                    <p class="text-body-secondary mt-3 mb-0">No KPI data is available for these filters.</p>
++                }
++                else
++                {
++                    <div class="cockpit-kpi-grid mt-3">
++                        @foreach (var kpi in kpiDashboard.Kpis)
++                        {
++                            <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, TasksPath)" aria-label="@($"Open {kpi.Label}")">
++                                <div class="cockpit-card__header">
++                                    <strong>@kpi.Label</strong>
++                                    <span class="@SummaryKpiTrendClass(kpi.TrendDirection)">@TrendGlyph(kpi.TrendDirection)</span>
++                                </div>
++                                <div class="text-body-secondary">@kpi.Department</div>
++                                <dl class="cockpit-kpi-list mb-0 mt-3">
++                                    <div><dt>Current</dt><dd>@FormatMetric(kpi.CurrentValue, kpi.Unit)</dd></div>
++                                    <div><dt>Baseline</dt><dd>@FormatMetric(kpi.BaselineValue, kpi.Unit)</dd></div>
++                                    <div><dt>Delta</dt><dd>@FormatDelta(kpi)</dd></div>
++                                </dl>
++                            </a>
++                        }
++                    </div>
++                }
++
++                <div class="mt-4">
++                    <h4 class="h6">Anomalies</h4>
++                    @if (kpiDashboard is null || kpiDashboard.Anomalies.Count == 0)
+                     {
+-                        <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
+-                            <strong>@kpi.Department</strong>
+-                            <dl class="cockpit-kpi-list mb-0 mt-3">
+-                                <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
+-                                <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
+-                                <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
+-                                <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
+-                                <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
+-                            </dl>
+-                        </a>
++                        <p class="text-body-secondary mb-0">No anomalies match the current filters.</p>
++                    }
++                    else
++                    {
++                        <div class="activity-list">
++                            @foreach (var anomaly in kpiDashboard.Anomalies)
++                            {
++                                <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(anomaly.Route, DashboardPath)">
++                                    <span class="@SeverityBadgeClass(anomaly.Severity)">@anomaly.Severity</span>
++                                    <strong class="d-block mt-2">@anomaly.Label</strong>
++                                    <div class="text-body-secondary">@anomaly.Department | @FormatReason(anomaly.Reason)</div>
++                                    <p class="mb-1">@anomaly.Summary</p>
++                                    <small>@anomaly.OccurredUtc.ToLocalTime():g</small>
++                                </a>
++                            }
++                        </div>
+                     }
+                 </div>
+             </article>
+@@ -242,6 +307,10 @@
+     private bool isLoading = true;
+     private string? errorMessage;
+     private ExecutiveCockpitDashboardViewModel? dashboard;
++    private ExecutiveCockpitKpiDashboardViewModel? kpiDashboard;
++    private bool isKpiLoading;
++    private string? kpiErrorMessage;
++    private string? selectedKpiDepartment;
++    private string selectedKpiRange = "7";
+ 
+     private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+     private string AgentsPath => $"/agents?companyId={CompanyId}";
+@@ -256,6 +325,8 @@
+     private bool IsInitialSetupEmpty =>
+         dashboard?.SetupState.IsInitialSetupEmpty == true ||
+         dashboard?.EmptyStateFlags is { NoAgents: true, NoWorkflows: true, NoKnowledge: true };
++    private IReadOnlyList<string> AvailableKpiDepartments =>
++        kpiDashboard?.Departments.Count > 0 ? kpiDashboard.Departments : dashboard?.DepartmentKpis.Select(x => x.Department).ToList() ?? [];
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -263,10 +334,12 @@
+         errorMessage = null;
+         dashboard = null;
++        kpiDashboard = null;
+ 
+         try
+         {
+             dashboard = await ApiClient.GetAsync(CompanyId);
++            await ReloadKpisAsync();
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -291,6 +364,9 @@
+     private static string SummaryKpiTrendClass(ExecutiveCockpitSummaryKpiViewModel kpi) =>
+         $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(kpi.TrendDirection)}";
+ 
++    private static string SummaryKpiTrendClass(string trendDirection) =>
++        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(trendDirection)}";
++
+     private static string NormalizeCssToken(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+ 
+@@ -300,6 +376,59 @@
+         string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
+         "Trend";
+ 
++    private async Task ReloadKpisAsync()
++    {
++        isKpiLoading = true;
++        kpiErrorMessage = null;
++
++        try
++        {
++            var days = int.TryParse(selectedKpiRange, out var parsedDays) ? parsedDays : 7;
++            var endUtc = DateTime.UtcNow;
++            var startUtc = endUtc.AddDays(-Math.Clamp(days, 1, 365));
++            kpiDashboard = await ApiClient.GetKpisAsync(
++                CompanyId,
++                selectedKpiDepartment,
++                startUtc,
++                endUtc);
++        }
++        catch (OnboardingApiException ex)
++        {
++            kpiErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isKpiLoading = false;
++        }
++    }
++
++    private static string FormatMetric(decimal? value, string? unit)
++    {
++        if (value is null)
++        {
++            return "n/a";
++        }
++
++        var formatted = value.Value % 1 == 0
++            ? value.Value.ToString("0")
++            : value.Value.ToString("0.##");
++        return string.IsNullOrWhiteSpace(unit) ? formatted : $"{formatted} {unit}";
++    }
++
++    private static string FormatDelta(ExecutiveCockpitKpiTileViewModel kpi)
++    {
++        if (kpi.DeltaValue is null)
++        {
++            return "n/a";
++        }
++
++        var value = kpi.DeltaValue.Value > 0 ? $"+{kpi.DeltaValue.Value:0.##}" : kpi.DeltaValue.Value.ToString("0.##");
++        return kpi.DeltaPercentage is null
++            ? value
++            : $"{value} ({kpi.DeltaPercentage.Value:+0.#;-0.#;0}%)";
++    }
++
++    private static string FormatReason(string reason) =>
++        string.Join(
++            ", ",
++            reason.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++                .Select(x => x.Replace("_", " ")));
++
++    private static string SeverityBadgeClass(string severity) =>
++        severity.Trim().ToLowerInvariant() switch
++        {
++            "critical" => "badge text-bg-danger",
++            "warning" => "badge text-bg-warning",
++            _ => "badge text-bg-secondary"
++        };
++
+     private RenderFragment AlertContent(ExecutiveCockpitAlertViewModel alert) => builder =>
+     {
+         var sequence = 0;
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs
+new file mode 100644
+index 0000000..97117ab
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs
+@@ -0,0 +1,161 @@
++using VirtualCompany.Application.Cockpit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitKpiCalculatorTests
++{
++    [Theory]
++    [InlineData(12, 10, "up", 2, 20)]
++    [InlineData(8, 10, "down", -2, -20)]
++    [InlineData(10, 10, "flat", 0, 0)]
++    public void Compare_derives_trend_and_delta(decimal current, decimal baseline, string direction, decimal delta, decimal percentage)
++    {
++        var comparison = ExecutiveCockpitKpiCalculator.Compare(current, baseline);
++
++        Assert.Equal(direction, comparison.TrendDirection);
++        Assert.Equal(delta, comparison.DeltaValue);
++        Assert.Equal(percentage, comparison.DeltaPercentage);
++    }
++
++    [Fact]
++    public void Compare_handles_missing_baseline()
++    {
++        var comparison = ExecutiveCockpitKpiCalculator.Compare(4, null);
++
++        Assert.Equal("unknown", comparison.TrendDirection);
++        Assert.Null(comparison.DeltaValue);
++        Assert.Null(comparison.DeltaPercentage);
++    }
++
++    [Fact]
++    public void Compare_handles_zero_baseline_without_dividing_by_zero()
++    {
++        var comparison = ExecutiveCockpitKpiCalculator.Compare(4, 0);
++
++        Assert.Equal("up", comparison.TrendDirection);
++        Assert.Equal(4, comparison.DeltaValue);
++        Assert.Null(comparison.DeltaPercentage);
++    }
++
++    [Fact]
++    public void DetectAnomaly_returns_threshold_breach()
++    {
++        var metric = Metric(
++            "blocked_tasks",
++            3,
++            2,
++            ExecutiveCockpitKpiMetricCatalog.Find("blocked_tasks"));
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.NotNull(anomaly);
++        Assert.Equal("threshold_breach", anomaly!.Reason);
++        Assert.Equal("critical", anomaly.Severity);
++        Assert.Equal(3, anomaly.ThresholdValue);
++    }
++
++    [Fact]
++    public void DetectAnomaly_returns_baseline_deviation_for_higher_is_risk_metric()
++    {
++        var definition = ExecutiveCockpitKpiMetricCatalog.Find("open_tasks") with
++        {
++            WarningThreshold = null,
++            CriticalThreshold = null,
++            WarningDeviationPercentage = 25,
++            CriticalDeviationPercentage = 75
++        };
++        var metric = Metric("open_tasks", 15, 10, definition);
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.NotNull(anomaly);
++        Assert.Equal("baseline_deviation", anomaly!.Reason);
++        Assert.Equal("warning", anomaly.Severity);
++        Assert.Equal(50, anomaly.DeviationPercentage);
++    }
++
++    [Fact]
++    public void DetectAnomaly_returns_baseline_deviation_for_lower_is_risk_metric()
++    {
++        var definition = ExecutiveCockpitKpiMetricCatalog.Find("completed_tasks") with
++        {
++            WarningDeviationPercentage = 25,
++            CriticalDeviationPercentage = 75
++        };
++        var metric = Metric("completed_tasks", 5, 10, definition);
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.NotNull(anomaly);
++        Assert.Equal("baseline_deviation", anomaly!.Reason);
++        Assert.Equal("warning", anomaly.Severity);
++        Assert.Equal(-50, anomaly.DeviationPercentage);
++    }
++
++    [Fact]
++    public void DetectAnomaly_returns_highest_severity_when_multiple_conditions_match()
++    {
++        var definition = ExecutiveCockpitKpiMetricCatalog.Find("open_tasks") with
++        {
++            WarningThreshold = 5,
++            CriticalThreshold = 20,
++            WarningDeviationPercentage = 25,
++            CriticalDeviationPercentage = 75
++        };
++        var metric = Metric("open_tasks", 15, 5, definition);
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.NotNull(anomaly);
++        Assert.Equal("threshold_breach,baseline_deviation", anomaly!.Reason);
++        Assert.Equal("critical", anomaly.Severity);
++        Assert.Equal(5, anomaly.ThresholdValue);
++        Assert.Equal(200, anomaly.DeviationPercentage);
++    }
++
++    [Fact]
++    public void DetectAnomaly_returns_null_when_metric_is_within_baseline_and_thresholds()
++    {
++        var metric = Metric(
++            "open_tasks",
++            4,
++            4,
++            ExecutiveCockpitKpiMetricCatalog.Find("open_tasks"));
++
++        Assert.Null(ExecutiveCockpitKpiCalculator.DetectAnomaly(metric));
++    }
++
++    [Theory]
++    [InlineData(4, 4, null)]
++    [InlineData(5, 4, "warning")]
++    [InlineData(9, 4, "warning")]
++    [InlineData(10, 4, "critical")]
++    public void Severity_mapping_respects_threshold_boundaries(decimal current, decimal baseline, string? expectedSeverity)
++    {
++        var definition = ExecutiveCockpitKpiMetricCatalog.Find("open_tasks") with
++        {
++            WarningDeviationPercentage = 500,
++            CriticalDeviationPercentage = 1000
++        };
++        var metric = Metric("open_tasks", current, baseline, definition);
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.Equal(expectedSeverity, anomaly?.Severity);
++    }
++
++    private static ExecutiveCockpitKpiMetricValue Metric(
++        string key,
++        decimal current,
++        decimal? baseline,
++        ExecutiveCockpitKpiMetricDefinition definition) =>
++        new(
++            key,
++            definition.Label,
++            "Operations",
++            current,
++            baseline,
++            new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc),
++            "/tasks",
++            definition);
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs
+new file mode 100644
+index 0000000..986f87c
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs
+@@ -0,0 +1,197 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitKpiDashboardIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ExecutiveCockpitKpiDashboardIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Kpis_filter_by_department_and_time_range_with_anomaly_context()
++    {
++        var seed = await SeedKpiCompanyAsync();
++        var startUtc = DateTime.UtcNow.AddDays(-7);
++        var endUtc = DateTime.UtcNow.AddDays(1);
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(startUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(endUtc.ToString("O"))}");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var dashboard = await response.Content.ReadFromJsonAsync<KpiDashboardResponse>();
++
++        Assert.NotNull(dashboard);
++        Assert.Equal(seed.CompanyId, dashboard!.CompanyId);
++        Assert.Equal("Operations", dashboard.Department);
++        Assert.Contains("Operations", dashboard.Departments);
++        Assert.Contains("Sales", dashboard.Departments);
++        Assert.All(dashboard.Kpis, tile => Assert.Equal("Operations", tile.Department));
++        Assert.Contains(dashboard.Kpis, tile => tile.Key == "blocked_tasks" && tile.CurrentValue == 3 && tile.BaselineValue == 0 && tile.TrendDirection == "up");
++        Assert.Contains(dashboard.Kpis, tile => tile.Key == "completed_tasks" && tile.CurrentValue == 1 && tile.BaselineValue == 1 && tile.TrendDirection == "flat");
++
++        var anomaly = Assert.Single(dashboard.Anomalies, item => item.KpiKey == "blocked_tasks");
++        Assert.Equal("critical", anomaly.Severity);
++        Assert.Equal("Operations", anomaly.Department);
++        Assert.Equal("threshold_breach", anomaly.Reason);
++        Assert.Equal(3, anomaly.CurrentValue);
++        Assert.Equal(3, anomaly.ThresholdValue);
++        Assert.Contains("department=Operations", anomaly.Route, StringComparison.OrdinalIgnoreCase);
++
++        var salesResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Sales&startUtc={Uri.EscapeDataString(startUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(endUtc.ToString("O"))}");
++        Assert.Equal(HttpStatusCode.OK, salesResponse.StatusCode);
++        var salesDashboard = await salesResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();
++        Assert.NotNull(salesDashboard);
++        Assert.All(salesDashboard!.Kpis, tile => Assert.Equal("Sales", tile.Department));
++        Assert.Contains(salesDashboard.Kpis, tile => tile.Key == "blocked_tasks" && tile.CurrentValue == 0);
++        Assert.DoesNotContain(salesDashboard.Anomalies, item => item.Department == "Operations");
++    }
++
++    [Fact]
++    public async Task Kpis_are_tenant_scoped()
++    {
++        var seed = await SeedKpiCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/executive-cockpit/kpis");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "kpi-founder");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "kpi-founder@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "KPI Founder");
++        return client;
++    }
++
++    private async Task<KpiSeed> SeedKpiCompanyAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var operationsAgentId = Guid.NewGuid();
++        var salesAgentId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var salesWorkflowDefinitionId = Guid.NewGuid();
++        var now = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "kpi-founder@example.com", "KPI Founder", "dev-header", "kpi-founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "KPI Company"), new Company(otherCompanyId, "Other KPI Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                new Agent(operationsAgentId, companyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active),
++                new Agent(salesAgentId, companyId, "sales", "Sasha Sales", "Sales Lead", "Sales", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            dbContext.WorkflowDefinitions.AddRange(
++                new WorkflowDefinition(workflowDefinitionId, companyId, "ops-kpi", "Operations KPI workflow", "Operations", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))),
++                new WorkflowDefinition(salesWorkflowDefinitionId, companyId, "sales-kpi", "Sales KPI workflow", "Sales", WorkflowTriggerType.Manual, 1, Payload(("steps", new JsonArray()))));
++
++            for (var index = 0; index < 3; index++)
++            {
++                var blockedTask = new WorkTask(Guid.NewGuid(), companyId, "ops", $"Blocked operation {index}", null, WorkTaskPriority.High, operationsAgentId, null, "user", userId);
++                blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
++                SetTaskTimestamps(blockedTask, now.AddDays(-2), now.AddDays(-2), null);
++                dbContext.WorkTasks.Add(blockedTask);
++            }
++
++            var completedCurrent = new WorkTask(Guid.NewGuid(), companyId, "ops", "Close current operation", null, WorkTaskPriority.Normal, operationsAgentId, null, "user", userId);
++            completedCurrent.UpdateStatus(WorkTaskStatus.Completed);
++            SetTaskTimestamps(completedCurrent, now.AddDays(-1), now.AddDays(-1), now.AddDays(-1));
++
++            var completedBaseline = new WorkTask(Guid.NewGuid(), companyId, "ops", "Close baseline operation", null, WorkTaskPriority.Normal, operationsAgentId, null, "user", userId);
++            completedBaseline.UpdateStatus(WorkTaskStatus.Completed);
++            SetTaskTimestamps(completedBaseline, now.AddDays(-10), now.AddDays(-10), now.AddDays(-10));
++
++            var salesTask = new WorkTask(Guid.NewGuid(), companyId, "sales", "Follow up lead", null, WorkTaskPriority.Normal, salesAgentId, null, "user", userId);
++            salesTask.UpdateStatus(WorkTaskStatus.InProgress);
++            SetTaskTimestamps(salesTask, now.AddDays(-2), now.AddDays(-2), null);
++
++            var otherCompanyTask = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Other company blocked", null, WorkTaskPriority.High, Guid.NewGuid(), null, "user", userId);
++            otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
++            SetTaskTimestamps(otherCompanyTask, now.AddDays(-2), now.AddDays(-2), null);
++
++            dbContext.WorkTasks.AddRange(completedCurrent, completedBaseline, salesTask, otherCompanyTask);
++            return Task.CompletedTask;
++        });
++
++        return new KpiSeed(companyId, otherCompanyId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties) =>
++        properties.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private static void SetTaskTimestamps(WorkTask task, DateTime createdUtc, DateTime updatedUtc, DateTime? completedUtc)
++    {
++        typeof(WorkTask).GetProperty(nameof(WorkTask.CreatedUtc))!.SetValue(task, createdUtc);
++        typeof(WorkTask).GetProperty(nameof(WorkTask.UpdatedUtc))!.SetValue(task, updatedUtc);
++        typeof(WorkTask).GetProperty(nameof(WorkTask.CompletedUtc))!.SetValue(task, completedUtc);
++    }
++
++    private sealed record KpiSeed(Guid CompanyId, Guid OtherCompanyId);
++
++    private sealed class KpiDashboardResponse
++    {
++        public Guid CompanyId { get; set; }
++        public DateTime GeneratedAtUtc { get; set; }
++        public DateTime StartUtc { get; set; }
++        public DateTime EndUtc { get; set; }
++        public string? Department { get; set; }
++        public List<string> Departments { get; set; } = [];
++        public List<KpiTileResponse> Kpis { get; set; } = [];
++        public List<KpiAnomalyResponse> Anomalies { get; set; } = [];
++    }
++
++    private sealed class KpiTileResponse
++    {
++        public string Key { get; set; } = string.Empty;
++        public string Label { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public decimal CurrentValue { get; set; }
++        public decimal? BaselineValue { get; set; }
++        public decimal? DeltaValue { get; set; }
++        public decimal? DeltaPercentage { get; set; }
++        public string TrendDirection { get; set; } = string.Empty;
++        public string ComparisonLabel { get; set; } = string.Empty;
++        public DateTime AsOfUtc { get; set; }
++        public string? Unit { get; set; }
++        public string? Route { get; set; }
++    }
++
++    private sealed class KpiAnomalyResponse
++    {
++        public string KpiKey { get; set; } = string.Empty;
++        public string Label { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public string Severity { get; set; } = string.Empty;
++        public DateTime OccurredUtc { get; set; }
++        public string Reason { get; set; } = string.Empty;
++        public decimal CurrentValue { get; set; }
++        public decimal? BaselineValue { get; set; }
++        public decimal? ThresholdValue { get; set; }
++        public decimal? DeviationPercentage { get; set; }
++        public string Summary { get; set; } = string.Empty;
++        public string? Route { get; set; }
++    }
++}
+END_OF_PATCH

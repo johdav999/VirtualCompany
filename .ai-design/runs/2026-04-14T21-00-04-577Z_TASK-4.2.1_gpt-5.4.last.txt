@@ -1,0 +1,979 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 4ce6c9a..f7fd4e3 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -31,7 +31,14 @@ public sealed record BriefingAggregateItemDto(
+     DateTime OccurredUtc,
+     Dictionary<string, JsonNode?> Metadata,
+     IReadOnlyList<BriefingSourceReferenceDto> References);
+-
++{
++    public Guid? AgentId { get; init; }
++    public Guid? CompanyEntityId { get; init; }
++    public Guid? WorkflowInstanceId { get; init; }
++    public Guid? TaskId { get; init; }
++    public string? EventCorrelationId { get; init; }
++    public string? Assessment { get; init; }
++}
+ public sealed record BriefingAggregateResultDto(
+     Guid CompanyId,
+     string BriefingType,
+@@ -42,6 +49,11 @@ public sealed record BriefingAggregateResultDto(
+     IReadOnlyList<BriefingAggregateItemDto> KpiHighlights,
+     IReadOnlyList<BriefingAggregateItemDto> Anomalies,
+     IReadOnlyList<BriefingAggregateItemDto> NotableAgentUpdates)
+ {
++    public string NarrativeText { get; init; } = string.Empty;
++    public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
++
+     public bool HasItems =>
+         Alerts.Count > 0 ||
+         PendingApprovals.Count > 0 ||
+@@ -49,6 +61,84 @@ public sealed record BriefingAggregateResultDto(
+         Anomalies.Count > 0 ||
+         NotableAgentUpdates.Count > 0;
+ }
++
++public static class BriefingInsightGroupingTypes
++{
++    public const string CompanyEntity = "company_entity";
++    public const string Workflow = "workflow";
++    public const string Task = "task";
++    public const string EventCorrelation = "event_correlation";
++    public const string Topic = "topic";
++}
++
++public sealed record BriefingInsightContributionDto(
++    Guid CompanyId,
++    Guid? TenantId,
++    Guid AgentId,
++    BriefingSourceReferenceDto SourceReference,
++    DateTime TimestampUtc,
++    decimal? Confidence,
++    Guid? CompanyEntityId,
++    Guid? WorkflowInstanceId,
++    Guid? TaskId,
++    string? EventCorrelationId,
++    string Topic,
++    string Narrative,
++    string? Assessment,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record BriefingInsightAggregationRequest(
++    Guid CompanyId,
++    Guid? TenantId,
++    IReadOnlyList<BriefingInsightContributionDto> Contributions);
++
++public sealed record BriefingConflictViewpointDto(
++    string Assessment,
++    IReadOnlyList<Guid> AgentIds,
++    IReadOnlyList<string> Narratives,
++    IReadOnlyList<BriefingSourceReferenceDto> SourceReferences);
++
++public sealed record AggregatedBriefingSectionDto(
++    string SectionKey,
++    string Title,
++    string GroupingType,
++    string GroupingKey,
++    string Narrative,
++    bool IsConflicting,
++    IReadOnlyList<BriefingInsightContributionDto> Contributions,
++    IReadOnlyList<BriefingConflictViewpointDto> ConflictViewpoints,
++    IReadOnlyList<BriefingSourceReferenceDto> RelatedReferences);
++
++public sealed record AggregatedBriefingPayloadDto(
++    Guid CompanyId,
++    Guid? TenantId,
++    string NarrativeText,
++    IReadOnlyList<AggregatedBriefingSectionDto> Sections);
++
++public interface IBriefingInsightAggregationService
++{
++    AggregatedBriefingPayloadDto Aggregate(BriefingInsightAggregationRequest request);
++}
+ 
+ public sealed record CachedExecutiveDashboardAggregateDto(
+     Guid CompanyId,
+@@ -73,7 +163,11 @@ public sealed record CompanyBriefingDto(
+     Dictionary<string, JsonNode?> StructuredPayload,
+     IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
+     Guid? MessageId,
+-    DateTime GeneratedUtc);
++    DateTime GeneratedUtc)
++{
++    public string NarrativeText { get; init; } = SummaryBody;
++    public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
++}
+ 
+ public sealed record DashboardBriefingCardDto(
+     CompanyBriefingDto? Daily,
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs b/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs
+new file mode 100644
+index 0000000..1f70a5f
+--- /dev/null
++++ b/src/VirtualCompany.Application/Briefings/BriefingInsightAggregationService.cs
+@@ -0,0 +1,208 @@
++using System.Globalization;
++using System.Text;
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Briefings;
++
++public sealed class BriefingInsightAggregationService : IBriefingInsightAggregationService
++{
++    public AggregatedBriefingPayloadDto Aggregate(BriefingInsightAggregationRequest request)
++    {
++        if (request.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(request));
++        }
++
++        var scopedContributions = request.Contributions
++            .Where(contribution => IsInScope(contribution, request.CompanyId, request.TenantId))
++            .Select(NormalizeContribution)
++            .Where(contribution => !string.IsNullOrWhiteSpace(contribution.Topic) || !string.IsNullOrWhiteSpace(contribution.Narrative))
++            .ToList();
++
++        var sections = scopedContributions
++            .GroupBy(contribution => ResolveGroupingKey(contribution), StringComparer.OrdinalIgnoreCase)
++            .OrderBy(group => SortRank(group.First().GroupingType))
++            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
++            .Select(group => BuildSection(group.Key, group.ToList()))
++            .ToList();
++
++        return new AggregatedBriefingPayloadDto(
++            request.CompanyId,
++            request.TenantId,
++            BuildNarrative(sections),
++            sections);
++    }
++
++    private static bool IsInScope(BriefingInsightContributionDto contribution, Guid companyId, Guid? tenantId)
++    {
++        if (contribution.CompanyId != companyId)
++        {
++            return false;
++        }
++
++        return !tenantId.HasValue ||
++               !contribution.TenantId.HasValue ||
++               contribution.TenantId == tenantId;
++    }
++
++    private static BriefingInsightContributionDto NormalizeContribution(BriefingInsightContributionDto contribution) =>
++        contribution with
++        {
++            TimestampUtc = NormalizeUtc(contribution.TimestampUtc),
++            Topic = NormalizeWhitespace(contribution.Topic),
++            Narrative = NormalizeWhitespace(contribution.Narrative),
++            Assessment = NormalizeOptional(contribution.Assessment),
++            EventCorrelationId = NormalizeOptional(contribution.EventCorrelationId),
++            Metadata = CloneNodes(contribution.Metadata)
++        };
++
++    private static GroupingKey ResolveGroupingKey(BriefingInsightContributionDto contribution)
++    {
++        if (contribution.CompanyEntityId is { } companyEntityId && companyEntityId != Guid.Empty)
++        {
++            return new GroupingKey(BriefingInsightGroupingTypes.CompanyEntity, companyEntityId.ToString("N"));
++        }
++
++        if (contribution.WorkflowInstanceId is { } workflowInstanceId && workflowInstanceId != Guid.Empty)
++        {
++            return new GroupingKey(BriefingInsightGroupingTypes.Workflow, workflowInstanceId.ToString("N"));
++        }
++
++        if (contribution.TaskId is { } taskId && taskId != Guid.Empty)
++        {
++            return new GroupingKey(BriefingInsightGroupingTypes.Task, taskId.ToString("N"));
++        }
++
++        if (!string.IsNullOrWhiteSpace(contribution.EventCorrelationId))
++        {
++            return new GroupingKey(BriefingInsightGroupingTypes.EventCorrelation, contribution.EventCorrelationId.Trim().ToLowerInvariant());
++        }
++
++        var topicKey = NormalizeKey(contribution.Topic);
++        return new GroupingKey(BriefingInsightGroupingTypes.Topic, string.IsNullOrWhiteSpace(topicKey) ? "untitled" : topicKey);
++    }
++
++    private static AggregatedBriefingSectionDto BuildSection(string groupingKey, IReadOnlyList<BriefingInsightContributionDto> contributions)
++    {
++        var groupingType = ResolveGroupingKey(contributions[0]).GroupingType;
++        var orderedContributions = contributions
++            .OrderByDescending(contribution => contribution.TimestampUtc)
++            .ThenBy(contribution => contribution.AgentId)
++            .ThenBy(contribution => contribution.SourceReference.EntityType, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(contribution => contribution.SourceReference.EntityId)
++            .ToList();
++        var viewpoints = BuildConflictViewpoints(orderedContributions);
++        var isConflicting = viewpoints.Count > 1;
++        var title = ResolveTitle(orderedContributions);
++
++        return new AggregatedBriefingSectionDto(
++            $"{groupingType}:{groupingKey}",
++            title,
++            groupingType,
++            groupingKey,
++            BuildSectionNarrative(title, orderedContributions, viewpoints),
++            isConflicting,
++            orderedContributions,
++            isConflicting ? viewpoints : [],
++            DeduplicateReferences(orderedContributions.Select(x => x.SourceReference)));
++    }
++
++    private static IReadOnlyList<BriefingConflictViewpointDto> BuildConflictViewpoints(IReadOnlyList<BriefingInsightContributionDto> contributions) =>
++        contributions
++            .Where(contribution => !string.IsNullOrWhiteSpace(contribution.Assessment))
++            .GroupBy(contribution => NormalizeKey(contribution.Assessment!), StringComparer.OrdinalIgnoreCase)
++            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
++            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
++            .Select(group => new BriefingConflictViewpointDto(
++                group.First().Assessment!,
++                group.Select(contribution => contribution.AgentId).Where(agentId => agentId != Guid.Empty).Distinct().OrderBy(agentId => agentId).ToList(),
++                group.Select(contribution => contribution.Narrative).Where(narrative => !string.IsNullOrWhiteSpace(narrative)).Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList(),
++                DeduplicateReferences(group.Select(contribution => contribution.SourceReference))))
++            .ToList();
++
++    private static string BuildSectionNarrative(
++        string title,
++        IReadOnlyList<BriefingInsightContributionDto> contributions,
++        IReadOnlyList<BriefingConflictViewpointDto> viewpoints)
++    {
++        if (viewpoints.Count > 1)
++        {
++            var labels = string.Join("; ", viewpoints.Select(viewpoint => $"{viewpoint.Assessment}: {string.Join(", ", viewpoint.Narratives.Take(2))}"));
++            return $"Agents disagree on {title}. Viewpoints: {labels}.";
++        }
++
++        var summaries = contributions
++            .Select(contribution => contribution.Narrative)
++            .Where(narrative => !string.IsNullOrWhiteSpace(narrative))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .Take(3)
++            .ToList();
++
++        return summaries.Count == 0
++            ? title
++            : string.Join(" ", summaries);
++    }
++
++    private static string BuildNarrative(IReadOnlyList<AggregatedBriefingSectionDto> sections)
++    {
++        if (sections.Count == 0)
++        {
++            return "No cross-agent briefing insights were available for this scope.";
++        }
++
++        var builder = new StringBuilder();
++        builder.AppendLine($"Aggregated {sections.Count.ToString(CultureInfo.InvariantCulture)} briefing section(s).");
++        foreach (var section in sections.Take(8))
++        {
++            var marker = section.IsConflicting ? "Conflict detected" : "Aligned";
++            builder.AppendLine($"- {section.Title}: {marker}. {section.Narrative}");
++        }
++
++        return builder.ToString().Trim();
++    }
++
++    private static string ResolveTitle(IReadOnlyList<BriefingInsightContributionDto> contributions)
++    {
++        var topic = contributions
++            .Select(contribution => contribution.Topic)
++            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
++
++        if (!string.IsNullOrWhiteSpace(topic))
++        {
++            return topic;
++        }
++
++        var reference = contributions[0].SourceReference;
++        return string.IsNullOrWhiteSpace(reference.Label)
++            ? $"{reference.EntityType} {reference.EntityId:N}"
++            : reference.Label;
++    }
++
++    private static IReadOnlyList<BriefingSourceReferenceDto> DeduplicateReferences(IEnumerable<BriefingSourceReferenceDto> references) =>
++        references
++            .Where(reference => reference.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(reference.EntityType))
++            .GroupBy(reference => new { EntityType = reference.EntityType.Trim().ToLowerInvariant(), reference.EntityId })
++            .Select(group => group.First())
++            .OrderBy(reference => reference.EntityType, StringComparer.OrdinalIgnoreCase)
++            .ThenBy(reference => reference.EntityId)
++            .ToList();
++
++    private static int SortRank(string groupingType) =>
++        groupingType switch
++        {
++            BriefingInsightGroupingTypes.CompanyEntity => 0,
++            BriefingInsightGroupingTypes.Workflow => 1,
++            BriefingInsightGroupingTypes.Task => 2,
++            BriefingInsightGroupingTypes.EventCorrelation => 3,
++            _ => 4
++        };
++
++    private static string NormalizeWhitespace(string value) =>
++        string.Join(' ', (value ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
++
++    private static string? NormalizeOptional(string? value)
++    {
++        var normalized = NormalizeWhitespace(value ?? string.Empty);
++        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
++    }
++
++    private static string NormalizeKey(string value) =>
++        NormalizeWhitespace(value).ToLowerInvariant();
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++
++    private sealed record GroupingKey(string GroupingType, string GroupingValue)
++    {
++        public override string ToString() => GroupingValue;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 2ef3d7b..cb98f31 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -25,6 +25,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private readonly ILogger<CompanyBriefingService> _logger;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
++    private readonly IBriefingInsightAggregationService _insightAggregationService;
+ 
+     public CompanyBriefingService(
+         VirtualCompanyDbContext dbContext,
+@@ -33,6 +34,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         IExecutiveDashboardAggregateCache aggregateCache,
+         ICompanyOutboxEnqueuer outboxEnqueuer,
+         IBriefingUpdateJobProducer briefingUpdateJobProducer,
++        IBriefingInsightAggregationService insightAggregationService,
+         ILogger<CompanyBriefingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -41,6 +43,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         _aggregateCache = aggregateCache;
+         _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
++        _insightAggregationService = insightAggregationService;
+         _briefingUpdateJobProducer = briefingUpdateJobProducer;
+     }
+ 
+@@ -372,7 +375,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 x.Status == ApprovalRequestStatus.Pending)
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(10)
+-            .Select(x => new { x.Id, x.ApprovalType, x.TargetEntityType, x.TargetEntityId, x.Status, x.CreatedUtc })
++            .Select(x => new { x.Id, x.AgentId, x.ApprovalType, x.TargetEntityType, x.TargetEntityId, x.Status, x.CreatedUtc, x.ToolExecutionAttemptId })
+             .ToListAsync(cancellationToken);
+         var pendingApprovals = approvalRows
+             .Select(x => new BriefingAggregateItemDto(
+@@ -386,7 +389,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 x.CreatedUtc,
+                 [],
+                 [CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue())]))
++            {
++                AgentId = x.AgentId == Guid.Empty ? null : x.AgentId,
++                CompanyEntityId = x.TargetEntityId,
++                Assessment = x.Status.ToStorageValue()
++            })
+             .ToList();
+ 
+         var taskRows = await _dbContext.WorkTasks
+@@ -397,7 +404,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && x.UpdatedUtc >= window.StartUtc && x.UpdatedUtc < window.EndUtc)
+             .OrderByDescending(x => x.UpdatedUtc)
+             .Take(25)
+-            .Select(x => new { x.Id, x.Title, x.Status, x.Priority, x.UpdatedUtc })
++            .Select(x => new { x.Id, x.Title, x.Status, x.Priority, x.AssignedAgentId, x.WorkflowInstanceId, x.CorrelationId, x.RationaleSummary, x.ConfidenceScore, x.UpdatedUtc })
+             .ToListAsync(cancellationToken);
+         var kpiHighlights = taskRows
+             .Where(x => x.Status == WorkTaskStatus.Completed)
+@@ -416,7 +423,14 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+                 [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++            {
++                AgentId = x.AssignedAgentId,
++                CompanyEntityId = x.Id,
++                WorkflowInstanceId = x.WorkflowInstanceId,
++                TaskId = x.Id,
++                EventCorrelationId = x.CorrelationId,
++                Assessment = x.Status.ToStorageValue()
++            })
+             .ToList();
+         var anomalies = taskRows
+             .Where(x => x.Status is WorkTaskStatus.Blocked or WorkTaskStatus.Failed or WorkTaskStatus.AwaitingApproval)
+@@ -436,7 +450,14 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+                 [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++            {
++                AgentId = x.AssignedAgentId,
++                CompanyEntityId = x.Id,
++                WorkflowInstanceId = x.WorkflowInstanceId,
++                TaskId = x.Id,
++                EventCorrelationId = x.CorrelationId,
++                Assessment = x.Status.ToStorageValue()
++            })
+             .ToList();
+ 
+         var workflowExceptionRows = await _dbContext.WorkflowExceptions
+@@ -445,7 +466,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && x.Status == WorkflowExceptionStatus.Open)
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(10)
+-            .Select(x => new { x.Id, x.Title, x.Details, x.Status, x.ExceptionType, x.OccurredUtc })
++            .Select(x => new { x.Id, x.WorkflowInstanceId, x.Title, x.Details, x.Status, x.ExceptionType, x.OccurredUtc })
+             .ToListAsync(cancellationToken);
+         var alerts = workflowExceptionRows
+             .Select(x => new BriefingAggregateItemDto(
+@@ -462,6 +483,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 },
+                 [new BriefingSourceReferenceDto("workflow_exception", x.Id, x.Title, x.Status.ToStorageValue(), $"/workflows?companyId={companyId}")]))
++            {
++                CompanyEntityId = x.Id,
++                WorkflowInstanceId = x.WorkflowInstanceId,
++                Assessment = x.Status.ToStorageValue()
++            })
+             .ToList();
+ 
+         var agentRows = await _dbContext.ToolExecutionAttempts
+@@ -470,7 +496,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && x.StartedUtc >= window.StartUtc && x.StartedUtc < window.EndUtc)
+             .OrderByDescending(x => x.StartedUtc)
+             .Take(25)
+-            .Select(x => new { x.AgentId, x.Status, x.ToolName, x.StartedUtc })
++            .Select(x => new { x.AgentId, x.Status, x.ToolName, x.TaskId, x.WorkflowInstanceId, x.CorrelationId, x.StartedUtc })
+             .ToListAsync(cancellationToken);
+         var notableAgentUpdates = agentRows
+             .GroupBy(x => new { x.AgentId, x.Status })
+@@ -488,13 +514,25 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 },
+                 []))
++            {
++                AgentId = x.Key.AgentId,
++                CompanyEntityId = x.Key.AgentId,
++                WorkflowInstanceId = x.Select(item => item.WorkflowInstanceId).FirstOrDefault(id => id.HasValue),
++                TaskId = x.Select(item => item.TaskId).FirstOrDefault(id => id.HasValue),
++                EventCorrelationId = x.Select(item => item.CorrelationId).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
++                Assessment = x.Key.Status.ToStorageValue()
++            })
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(10)
+             .ToList();
+ 
+-        return new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates);
++        var result = new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates);
++        var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
++        return result with
++        {
++            NarrativeText = insightPayload.NarrativeText,
++            StructuredSections = insightPayload.Sections
++        };
+     }
+ 
+     private Task CacheAggregateAsync(BriefingAggregateResultDto aggregate, CancellationToken cancellationToken) =>
+@@ -531,7 +569,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 .Concat(anomalies.SelectMany(x => x.References))
+                 .Concat(agentHighlights.SelectMany(x => x.References)));
+ 
+-        return new BriefingAggregate(approvals, kpiHighlights, alerts, anomalies, agentHighlights, sourceReferences);
++        return new BriefingAggregate(
++            approvals, kpiHighlights, alerts, anomalies, agentHighlights, sourceReferences,
++            aggregate.NarrativeText, aggregate.StructuredSections);
+     }
+ 
+     private static BriefingItem ToBriefingItem(BriefingAggregateItemDto item)
+@@ -552,6 +592,28 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 : CreateSourceReference(item));
+     }
+ 
++    private static IReadOnlyList<BriefingInsightContributionDto> BuildInsightContributions(Guid companyId, BriefingAggregateResultDto aggregate) =>
++        aggregate.Alerts
++            .Concat(aggregate.PendingApprovals)
++            .Concat(aggregate.KpiHighlights)
++            .Concat(aggregate.Anomalies)
++            .Concat(aggregate.NotableAgentUpdates)
++            .Select(item => new BriefingInsightContributionDto(
++                companyId,
++                null,
++                item.AgentId ?? Guid.Empty,
++                item.References.FirstOrDefault() ?? CreateSourceReference(item).FirstOrDefault() ?? new BriefingSourceReferenceDto(item.SourceEntityType ?? "briefing_item", item.SourceEntityId ?? Guid.Empty, item.Title, item.Status, null),
++                item.OccurredUtc,
++                TryReadDecimal(item.Metadata, "confidence"),
++                item.CompanyEntityId ?? item.SourceEntityId,
++                item.WorkflowInstanceId,
++                item.TaskId,
++                item.EventCorrelationId,
++                item.Title,
++                string.IsNullOrWhiteSpace(item.Summary) ? item.Title : item.Summary,
++                item.Assessment ?? item.Status ?? item.Severity,
++                item.Metadata))
++            .ToList();
++
+     private static string RenderBody(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate)
+     {
+         var builder = new StringBuilder();
+@@ -564,6 +626,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         AppendSection(builder, "Alerts", aggregate.Alerts);
+         AppendSection(builder, "Anomalies", aggregate.Anomalies);
+         AppendSection(builder, "Agent and workflow updates", aggregate.AgentHighlights);
++        if (!string.IsNullOrWhiteSpace(aggregate.NarrativeText))
++        {
++            builder.AppendLine();
++            builder.AppendLine(aggregate.NarrativeText);
++        }
+         return builder.ToString().Trim();
+     }
+ 
+@@ -594,7 +661,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["anomalies"] = JsonSerializer.SerializeToNode(aggregate.Anomalies.Select(x => x.Text), SerializerOptions),
+             ["notableAgentUpdates"] = JsonSerializer.SerializeToNode(aggregate.AgentHighlights.Select(x => x.Text), SerializerOptions),
+             ["summaryItems"] = JsonSerializer.SerializeToNode(BuildSummaryItems(aggregate), SerializerOptions),
+-            ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions)
++            ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions),
++            ["narrativeText"] = JsonValue.Create(aggregate.NarrativeText),
++            ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
+@@ -630,6 +699,27 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return [new BriefingSourceReferenceDto(item.SourceEntityType, item.SourceEntityId.Value, item.Title, item.Status, null)];
+     }
+ 
++    private static decimal? TryReadDecimal(Dictionary<string, JsonNode?> metadata, string key)
++    {
++        if (!metadata.TryGetValue(key, out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        try
++        {
++            if (value.TryGetValue<decimal>(out var decimalValue))
++            {
++                return decimalValue;
++            }
++        }
++        catch (InvalidOperationException)
++        {
++        }
++
++        return null;
++    }
++
+     private static IReadOnlyList<BriefingSourceReferenceDto> DeduplicateReferences(IEnumerable<BriefingSourceReferenceDto> references) =>
+         references
+             .Where(x => x.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(x.EntityType))
+@@ -674,16 +764,29 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             : [];
++        var narrativeText = briefing.StructuredPayload.TryGetValue("narrativeText", out var narrativeNode) && narrativeNode is JsonValue narrativeValue && narrativeValue.TryGetValue<string>(out var narrative)
++            ? narrative
++            : briefing.SummaryBody;
++        var structuredSections = briefing.StructuredPayload.TryGetValue("structuredSections", out var sectionsNode) && sectionsNode is not null
++            ? JsonSerializer.Deserialize<List<AggregatedBriefingSectionDto>>(sectionsNode.ToJsonString(), SerializerOptions) ?? []
++            : [];
++
+         return new CompanyBriefingDto(
+             briefing.Id,
+             briefing.CompanyId,
+             briefing.BriefingType.ToStorageValue(),
+             briefing.PeriodStartUtc,
+             briefing.PeriodEndUtc,
+             briefing.Title,
+             briefing.SummaryBody,
+             briefing.StructuredPayload.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
+             references,
+             briefing.MessageId,
+-            briefing.GeneratedUtc);
++            briefing.GeneratedUtc)
++        {
++            NarrativeText = narrativeText,
++            StructuredSections = structuredSections
++        };
+     }
+ 
+     private static CompanyBriefingDeliveryPreferenceDto ToDto(CompanyBriefingDeliveryPreference preference) =>
+@@ -740,5 +843,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         IReadOnlyList<BriefingItem> Alerts,
+         IReadOnlyList<BriefingItem> Anomalies,
+         IReadOnlyList<BriefingItem> AgentHighlights,
+-        IReadOnlyList<BriefingSourceReferenceDto> SourceReferences);
++        IReadOnlyList<BriefingSourceReferenceDto> SourceReferences,
++        string NarrativeText,
++        IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections);
+     private sealed record BriefingSummaryPayloadItem(string Section, string Title, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 027d581..16f55b8 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -281,6 +281,7 @@ public static class DependencyInjection
+         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
+         services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
+         services.AddScoped<IBriefingUpdateJobProducer, BriefingUpdateJobProducer>();
++        services.AddScoped<IBriefingInsightAggregationService, BriefingInsightAggregationService>();
+         services.AddScoped<IBriefingGenerationPipeline, CompanyBriefingGenerationPipeline>();
+         services.AddScoped<IBriefingUpdateJobRunner, CompanyBriefingUpdateJobRunner>();
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+index e1a47a2..64f471e 100644
+--- a/src/VirtualCompany.Shared/BriefingContracts.cs
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -7,6 +7,39 @@ public sealed record SharedBriefingSourceReference(
+     string? Status = null,
+     string? Route = null);
+ 
++public sealed record SharedBriefingInsightContribution(
++    Guid CompanyId,
++    Guid? TenantId,
++    Guid AgentId,
++    SharedBriefingSourceReference SourceReference,
++    DateTime TimestampUtc,
++    decimal? Confidence,
++    Guid? CompanyEntityId,
++    Guid? WorkflowInstanceId,
++    Guid? TaskId,
++    string? EventCorrelationId,
++    string Topic,
++    string Narrative,
++    string? Assessment);
++
++public sealed record SharedBriefingConflictViewpoint(
++    string Assessment,
++    IReadOnlyList<Guid> AgentIds,
++    IReadOnlyList<string> Narratives,
++    IReadOnlyList<SharedBriefingSourceReference> SourceReferences);
++
++public sealed record SharedAggregatedBriefingSection(
++    string SectionKey,
++    string Title,
++    string GroupingType,
++    string GroupingKey,
++    string Narrative,
++    bool IsConflicting,
++    IReadOnlyList<SharedBriefingInsightContribution> Contributions,
++    IReadOnlyList<SharedBriefingConflictViewpoint> ConflictViewpoints,
++    IReadOnlyList<SharedBriefingSourceReference> RelatedReferences);
++
+ public sealed record SharedCompanyBriefing(
+     Guid Id,
+     Guid CompanyId,
+@@ -17,7 +50,11 @@ public sealed record SharedCompanyBriefing(
+     string SummaryBody,
+     IReadOnlyList<SharedBriefingSourceReference> SourceReferences,
+     Guid? MessageId,
+-    DateTime GeneratedUtc);
++    DateTime GeneratedUtc)
++{
++    public string NarrativeText { get; init; } = SummaryBody;
++    public IReadOnlyList<SharedAggregatedBriefingSection> StructuredSections { get; init; } = [];
++}
+ 
+ public sealed record SharedCompanyBriefingDeliveryPreference(
+     bool InAppEnabled,
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs b/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs
+new file mode 100644
+index 0000000..a2e80da
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs
+@@ -0,0 +1,232 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Briefings;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class BriefingInsightAggregationServiceTests
++{
++    private readonly BriefingInsightAggregationService _service = new();
++
++    [Fact]
++    public void Aggregate_groups_by_company_entity_id_before_other_keys()
++    {
++        var companyId = Guid.NewGuid();
++        var entityId = Guid.NewGuid();
++        var workflowId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, topic: "Customer renewal", companyEntityId: entityId, workflowInstanceId: workflowId),
++                Contribution(companyId, topic: "Renewal risk", companyEntityId: entityId, workflowInstanceId: Guid.NewGuid())
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        Assert.Equal(BriefingInsightGroupingTypes.CompanyEntity, section.GroupingType);
++        Assert.Equal(entityId.ToString("N"), section.GroupingKey);
++        Assert.Equal(2, section.Contributions.Count);
++    }
++
++    [Fact]
++    public void Aggregate_groups_by_workflow_id_when_company_entity_is_absent()
++    {
++        var companyId = Guid.NewGuid();
++        var workflowId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, topic: "Workflow handoff", workflowInstanceId: workflowId),
++                Contribution(companyId, topic: "Workflow status", workflowInstanceId: workflowId)
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        Assert.Equal(BriefingInsightGroupingTypes.Workflow, section.GroupingType);
++        Assert.Equal(workflowId.ToString("N"), section.GroupingKey);
++        Assert.Equal(2, section.Contributions.Count);
++    }
++
++    [Fact]
++    public void Aggregate_groups_by_task_id_when_higher_precedence_keys_are_absent()
++    {
++        var companyId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, topic: "Task progress", taskId: taskId),
++                Contribution(companyId, topic: "Task blocker", taskId: taskId)
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        Assert.Equal(BriefingInsightGroupingTypes.Task, section.GroupingType);
++        Assert.Equal(taskId.ToString("N"), section.GroupingKey);
++        Assert.Equal(2, section.Contributions.Count);
++    }
++
++    [Fact]
++    public void Aggregate_groups_by_event_correlation_id_when_entity_keys_are_absent()
++    {
++        var companyId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, topic: "Event update", eventCorrelationId: " EVT-123 "),
++                Contribution(companyId, topic: "Event outcome", eventCorrelationId: "evt-123")
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        Assert.Equal(BriefingInsightGroupingTypes.EventCorrelation, section.GroupingType);
++        Assert.Equal("evt-123", section.GroupingKey);
++        Assert.Equal(2, section.Contributions.Count);
++    }
++
++    [Fact]
++    public void Aggregate_excludes_out_of_scope_company_and_tenant_contributions()
++    {
++        var companyId = Guid.NewGuid();
++        var tenantId = Guid.NewGuid();
++        var includedTaskId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            tenantId,
++            [
++                Contribution(companyId, tenantId: tenantId, topic: "Included", taskId: includedTaskId),
++                Contribution(Guid.NewGuid(), tenantId: tenantId, topic: "Wrong company", taskId: Guid.NewGuid()),
++                Contribution(companyId, tenantId: Guid.NewGuid(), topic: "Wrong tenant", taskId: Guid.NewGuid())
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        var contribution = Assert.Single(section.Contributions);
++        Assert.Equal(includedTaskId, contribution.TaskId);
++        Assert.DoesNotContain(section.Contributions, item => item.Topic == "Wrong company");
++        Assert.DoesNotContain(section.Contributions, item => item.Topic == "Wrong tenant");
++    }
++
++    [Fact]
++    public void Aggregate_preserves_contribution_metadata()
++    {
++        var companyId = Guid.NewGuid();
++        var tenantId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var timestamp = DateTime.SpecifyKind(DateTime.UtcNow.AddMinutes(-15), DateTimeKind.Utc);
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            tenantId,
++            [
++                Contribution(
++                    companyId,
++                    tenantId: tenantId,
++                    agentId: agentId,
++                    taskId: taskId,
++                    timestampUtc: timestamp,
++                    confidence: 0.82m,
++                    metadata: new Dictionary<string, JsonNode?> { ["sourceSystem"] = JsonValue.Create("ops") })
++            ]));
++
++        var contribution = Assert.Single(Assert.Single(result.Sections).Contributions);
++        Assert.Equal(companyId, contribution.CompanyId);
++        Assert.Equal(tenantId, contribution.TenantId);
++        Assert.Equal(agentId, contribution.AgentId);
++        Assert.Equal(taskId, contribution.TaskId);
++        Assert.Equal(timestamp, contribution.TimestampUtc);
++        Assert.Equal(0.82m, contribution.Confidence);
++        Assert.Equal("ops", contribution.Metadata["sourceSystem"]!.GetValue<string>());
++        Assert.Equal("task", contribution.SourceReference.EntityType);
++    }
++
++    [Fact]
++    public void Aggregate_marks_conflicts_and_includes_both_viewpoints()
++    {
++        var companyId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var firstAgentId = Guid.NewGuid();
++        var secondAgentId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, agentId: firstAgentId, topic: "Vendor renewal", narrative: "Renewal should proceed.", taskId: taskId, assessment: "approve"),
++                Contribution(companyId, agentId: secondAgentId, topic: "Vendor renewal", narrative: "Renewal should pause.", taskId: taskId, assessment: "reject")
++            ]));
++
++        var section = Assert.Single(result.Sections);
++        Assert.True(section.IsConflicting);
++        Assert.Equal(2, section.ConflictViewpoints.Count);
++        Assert.Contains(section.ConflictViewpoints, viewpoint => viewpoint.Assessment == "approve" && viewpoint.AgentIds.Contains(firstAgentId));
++        Assert.Contains(section.ConflictViewpoints, viewpoint => viewpoint.Assessment == "reject" && viewpoint.AgentIds.Contains(secondAgentId));
++        Assert.Contains("disagree", section.Narrative, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public void Aggregate_returns_narrative_and_structured_sections()
++    {
++        var companyId = Guid.NewGuid();
++
++        var result = _service.Aggregate(new BriefingInsightAggregationRequest(
++            companyId,
++            null,
++            [
++                Contribution(companyId, topic: "Pipeline", taskId: Guid.NewGuid(), assessment: "on_track")
++            ]));
++
++        Assert.Equal(companyId, result.CompanyId);
++        Assert.False(string.IsNullOrWhiteSpace(result.NarrativeText));
++        Assert.Single(result.Sections);
++        Assert.Contains("Pipeline", result.NarrativeText);
++    }
++
++    private static BriefingInsightContributionDto Contribution(
++        Guid companyId,
++        Guid? tenantId = null,
++        Guid? agentId = null,
++        Guid? companyEntityId = null,
++        Guid? workflowInstanceId = null,
++        Guid? taskId = null,
++        string? eventCorrelationId = null,
++        string topic = "Insight",
++        string narrative = "The agent reported a briefing insight.",
++        string? assessment = "aligned",
++        DateTime? timestampUtc = null,
++        decimal? confidence = null,
++        Dictionary<string, JsonNode?>? metadata = null)
++    {
++        var sourceReference = new BriefingSourceReferenceDto(
++            taskId.HasValue ? "task" : "insight",
++            taskId ?? companyEntityId ?? workflowInstanceId ?? Guid.NewGuid(),
++            topic,
++            assessment,
++            null);
++
++        return new BriefingInsightContributionDto(
++            companyId,
++            tenantId,
++            agentId ?? Guid.NewGuid(),
++            sourceReference,
++            timestampUtc ?? DateTime.UtcNow,
++            confidence,
++            companyEntityId,
++            workflowInstanceId,
++            taskId,
++            eventCorrelationId,
++            topic,
++            narrative,
++            assessment,
++            metadata ?? []);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index 4d06cc0..1328f78 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -61,6 +61,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.Contains(aggregate.Anomalies, x => x.SourceEntityId == seed.BlockedTaskId && x.SourceEntityType == "task");
+         Assert.Contains(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.AgentId && x.SourceEntityType == "agent");
++        Assert.False(string.IsNullOrWhiteSpace(aggregate.NarrativeText));
++        Assert.Contains(aggregate.StructuredSections, section => section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId));
+         Assert.DoesNotContain(aggregate.PendingApprovals, x => x.SourceEntityId == seed.OtherCompanyApprovalId);
+         Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
+     }
+@@ -92,6 +94,9 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("notableAgentUpdates"));
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryItems"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("narrativeText"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("structuredSections"));
++        Assert.NotEmpty(result.Briefing.StructuredSections);
+         Assert.Contains(result.Briefing.SourceReferences, reference =>
+             reference.EntityType == "approval" &&
+             reference.EntityId == seed.ApprovalId &&
+@@ -617,6 +622,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         public List<BriefingAggregateItemResponse> KpiHighlights { get; set; } = [];
+         public List<BriefingAggregateItemResponse> Anomalies { get; set; } = [];
+         public List<BriefingAggregateItemResponse> NotableAgentUpdates { get; set; } = [];
++        public string NarrativeText { get; set; } = string.Empty;
++        public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
+     }
+ 
+     private sealed class BriefingAggregateItemResponse
+@@ -654,6 +661,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         public Guid? MessageId { get; set; }
+         public string SummaryBody { get; set; } = string.Empty;
+         public Dictionary<string, JsonElement> StructuredPayload { get; set; } = [];
++        public string NarrativeText { get; set; } = string.Empty;
++        public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
+         public List<BriefingSourceReferenceResponse> SourceReferences { get; set; } = [];
+     }
+ 
+@@ -666,5 +675,23 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         public string? Status { get; set; }
+         public string? Route { get; set; }
+     }
++
++    private sealed class AggregatedBriefingSectionResponse
++    {
++        public string SectionKey { get; set; } = string.Empty;
++        public string Title { get; set; } = string.Empty;
++        public string GroupingType { get; set; } = string.Empty;
++        public string GroupingKey { get; set; } = string.Empty;
++        public string Narrative { get; set; } = string.Empty;
++        public bool IsConflicting { get; set; }
++        public List<BriefingInsightContributionResponse> Contributions { get; set; } = [];
++    }
++
++    private sealed class BriefingInsightContributionResponse
++    {
++        public Guid AgentId { get; set; }
++        public Guid? TaskId { get; set; }
++        public string Topic { get; set; } = string.Empty;
++        public decimal? Confidence { get; set; }
++    }
+ }
+END_OF_PATCH

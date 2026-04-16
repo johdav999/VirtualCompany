@@ -48,6 +48,77 @@ public sealed class EscalationPolicyEvaluatorTests
     }
 
     [Fact]
+    public async Task Evaluate_writes_evaluation_and_action_audit_events_with_same_correlation_id()
+    {
+        var repository = new InMemoryEscalationRepository();
+        var audit = new CapturingAuditEventWriter();
+        var service = CreateService(repository, audit);
+
+        var summary = await service.EvaluateAsync(
+            new EvaluateEscalationPoliciesCommand(
+                TaskInput(new Dictionary<string, JsonNode?>
+                {
+                    ["priority"] = JsonValue.Create(4)
+                }),
+                [
+                    Policy(Level(
+                        1,
+                        "Critical task priority.",
+                        new EscalationConditionDefinition(EscalationConditionType.Threshold, "priority", "gte", 4)))
+                ]),
+            CancellationToken.None);
+
+        var result = Assert.Single(summary.Results);
+        var escalation = Assert.Single(repository.Escalations);
+
+        Assert.True(result.EscalationCreated);
+        Assert.Equal("correlation-1", escalation.CorrelationId);
+        Assert.Contains(
+            audit.Events,
+            x => x.Action == AuditEventActions.EscalationPolicyEvaluationResult &&
+                 x.CorrelationId == "correlation-1" &&
+                 x.Metadata["policyId"] == PolicyId.ToString() &&
+                 x.Metadata["sourceEntityId"] == SourceEntityId.ToString());
+        Assert.Contains(
+            audit.Events,
+            x => x.Action == AuditEventActions.EscalationCreated &&
+                 x.CorrelationId == "correlation-1" &&
+                 x.Metadata["escalationId"] == escalation.Id.ToString() &&
+                 x.Metadata["escalationLevel"] == "1");
+    }
+
+    [Fact]
+    public async Task Evaluate_supports_ordinal_thresholds_for_priority_and_severity_labels()
+    {
+        var repository = new InMemoryEscalationRepository();
+        var service = CreateService(repository, new CapturingAuditEventWriter());
+
+        var summary = await service.EvaluateAsync(
+            new EvaluateEscalationPoliciesCommand(
+                AlertInput(new Dictionary<string, JsonNode?>
+                {
+                    ["severity"] = JsonValue.Create("critical"),
+                    ["priority"] = JsonValue.Create("high")
+                }),
+                [
+                    Policy(
+                        Level(
+                            1,
+                            "High or higher priority.",
+                            new EscalationConditionDefinition(EscalationConditionType.Threshold, "priority", "gte", "high")),
+                        Level(
+                            2,
+                            "Critical severity.",
+                            new EscalationConditionDefinition(EscalationConditionType.Threshold, "severity", "gt", "high")))
+                ]),
+            CancellationToken.None);
+
+        Assert.Equal(2, summary.Results.Count);
+        Assert.All(summary.Results, result => Assert.True(result.EscalationCreated));
+        Assert.Equal(2, repository.Escalations.Count);
+    }
+
+    [Fact]
     public async Task Evaluate_does_not_create_escalation_when_threshold_condition_is_not_met()
     {
         var repository = new InMemoryEscalationRepository();
@@ -135,6 +206,40 @@ public sealed class EscalationPolicyEvaluatorTests
     }
 
     [Fact]
+    public async Task Evaluate_uses_case_insensitive_string_matching_for_rules()
+    {
+        var repository = new InMemoryEscalationRepository();
+        var service = CreateService(repository, new CapturingAuditEventWriter());
+
+        var summary = await service.EvaluateAsync(
+            new EvaluateEscalationPoliciesCommand(
+                TaskInput(
+                    new Dictionary<string, JsonNode?>
+                    {
+                        ["severity"] = JsonValue.Create("Critical")
+                    },
+                    new Dictionary<string, JsonNode?>
+                    {
+                        ["tags"] = new JsonArray("Customer", "SLA")
+                    }),
+                [
+                    Policy(new EscalationLevelDefinition(
+                        1,
+                        "Critical SLA task needs review.",
+                        [
+                            new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical"),
+                            new EscalationConditionDefinition(EscalationConditionType.Rule, "tags", "contains", "sla")
+                        ]))
+                ]),
+            CancellationToken.None);
+
+        var result = Assert.Single(summary.Results);
+        Assert.True(result.ConditionsMet);
+        Assert.True(result.EscalationCreated);
+        Assert.Single(repository.Escalations);
+    }
+
+    [Fact]
     public async Task Evaluate_skips_duplicate_escalation_for_same_policy_level_and_lifecycle()
     {
         var repository = new InMemoryEscalationRepository();
@@ -161,6 +266,49 @@ public sealed class EscalationPolicyEvaluatorTests
         Assert.False(result.EscalationCreated);
         Assert.True(result.SkippedDueToIdempotency);
         Assert.Contains(audit.Events, x => x.Action == AuditEventActions.EscalationDuplicateSkipped && x.CorrelationId == "correlation-1");
+    }
+
+    [Fact]
+    public async Task Evaluate_allows_different_escalation_levels_for_same_policy_source_and_lifecycle()
+    {
+        var repository = new InMemoryEscalationRepository();
+        var service = CreateService(repository, new CapturingAuditEventWriter());
+        var policy = Policy(
+            Level(
+                1,
+                "High severity.",
+                new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical")),
+            Level(
+                2,
+                "High severity and stuck.",
+                [
+                    new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical"),
+                    new EscalationConditionDefinition(EscalationConditionType.Threshold, "blockedMinutes", "gte", 30)
+                ]));
+
+        var first = await service.EvaluateAsync(
+            new EvaluateEscalationPoliciesCommand(
+                TaskInput(new Dictionary<string, JsonNode?>
+                {
+                    ["severity"] = JsonValue.Create("critical"),
+                    ["blockedMinutes"] = JsonValue.Create(15)
+                }),
+                [policy]),
+            CancellationToken.None);
+        var second = await service.EvaluateAsync(
+            new EvaluateEscalationPoliciesCommand(
+                TaskInput(new Dictionary<string, JsonNode?>
+                {
+                    ["severity"] = JsonValue.Create("critical"),
+                    ["blockedMinutes"] = JsonValue.Create(45)
+                }),
+                [policy]),
+            CancellationToken.None);
+
+        Assert.Equal(2, repository.Escalations.Count);
+        Assert.True(first.Results.Single(x => x.EscalationLevel == 1).EscalationCreated);
+        Assert.False(second.Results.Single(x => x.EscalationLevel == 1).EscalationCreated);
+        Assert.True(second.Results.Single(x => x.EscalationLevel == 2).EscalationCreated);
     }
 
     [Fact]

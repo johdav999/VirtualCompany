@@ -39,6 +39,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
+                [$"{TriggerWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{BriefingUpdateJobWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",

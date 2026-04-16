@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -16,6 +17,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+    private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
     private readonly IExecutiveCockpitDashboardCache _cache;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
@@ -23,12 +25,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
     public CompanyExecutiveCockpitDashboardService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver membershipContextResolver,
+        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
         IExecutiveCockpitDashboardCache cache,
         TimeProvider timeProvider,
         ILogger<CompanyExecutiveCockpitDashboardService> logger)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
+        _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
         _cache = cache;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -43,16 +47,19 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
             throw new ArgumentException("Company id is required.", nameof(query));
         }
 
-        await RequireMembershipAsync(query.CompanyId, cancellationToken);
+        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
+        var scope = ExecutiveCockpitCacheKeyBuilder.DashboardScope(query.CompanyId, membership.MembershipRole.ToStorageValue());
 
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
-        var cached = await _cache.TryGetAsync(query.CompanyId, cancellationToken);
+        var cached = await _cache.TryGetDashboardAsync(scope, cancellationToken);
         if (cached is not null)
         {
             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+            var cachedVisibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
             return cached.Dashboard with
             {
-                CacheTimestampUtc = cached.CachedAtUtc
+                CacheTimestampUtc = cached.CachedAtUtc,
+                DepartmentSections = cachedVisibleSections
             };
         }
 
@@ -61,9 +68,71 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
             query.CompanyId);
         var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
         var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
-        var cacheableDashboard = dashboard with { CacheTimestampUtc = null };
-        await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
-        return cacheableDashboard;
+        var visibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
+        var cacheableDashboard = dashboard with { CacheTimestampUtc = null, DepartmentSections = [] };
+        await _cache.SetDashboardAsync(scope, new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
+        return cacheableDashboard with { DepartmentSections = visibleSections };
+    }
+
+    public async Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
+        GetExecutiveCockpitWidgetPayloadQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (query.CompanyId == Guid.Empty)
+        {
+            throw new ArgumentException("Company id is required.", nameof(query));
+        }
+
+        if (!ExecutiveCockpitWidgetKeys.All.Contains(query.WidgetKey))
+        {
+            throw new KeyNotFoundException("Dashboard widget not found.");
+        }
+
+        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
+        var scope = ExecutiveCockpitCacheKeyBuilder.WidgetScope(
+            query.CompanyId,
+            membership.MembershipRole.ToStorageValue(),
+            query.WidgetKey,
+            string.IsNullOrWhiteSpace(query.Department) ? [] : [query.Department],
+            query.StartUtc,
+            query.EndUtc);
+
+        _logger.LogDebug(
+            "Refreshing executive cockpit widget {WidgetKey} for company {CompanyId}.",
+            query.WidgetKey,
+            query.CompanyId);
+        var cached = await _cache.TryGetWidgetAsync<object>(scope, cancellationToken);
+        if (cached is not null)
+        {
+            return new ExecutiveCockpitWidgetPayloadDto(
+                query.CompanyId,
+                query.WidgetKey,
+                _timeProvider.GetUtcNow().UtcDateTime,
+                cached.CachedAtUtc,
+                cached.Payload);
+        }
+
+        var dashboard = await GetAsync(new GetExecutiveCockpitDashboardQuery(query.CompanyId), cancellationToken);
+        object payload = query.WidgetKey.Trim().ToLowerInvariant() switch
+        {
+            ExecutiveCockpitWidgetKeys.SummaryKpis => dashboard.SummaryKpis,
+            ExecutiveCockpitWidgetKeys.DailyBriefing => dashboard.DailyBriefing,
+            ExecutiveCockpitWidgetKeys.PendingApprovals => dashboard.PendingApprovals,
+            ExecutiveCockpitWidgetKeys.Alerts => dashboard.Alerts,
+            ExecutiveCockpitWidgetKeys.DepartmentKpis => dashboard.DepartmentKpis,
+            ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
+            ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
+            ExecutiveCockpitWidgetKeys.Kpis => dashboard.DepartmentKpis,
+            _ => throw new KeyNotFoundException("Dashboard widget not found.")
+        };
+
+        var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        await _cache.SetWidgetAsync(
+            scope,
+            new CachedExecutiveCockpitWidgetDto<object>(query.CompanyId, query.WidgetKey, cachedAtUtc, payload),
+            cancellationToken);
+
+        return new ExecutiveCockpitWidgetPayloadDto(query.CompanyId, query.WidgetKey, cachedAtUtc, null, payload);
     }
 
     private async Task<ExecutiveCockpitDashboardDto> BuildAsync(
@@ -298,10 +367,18 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
             pendingApprovals,
             alerts,
             departmentKpis,
+            [],
             recentActivity,
             setupState,
             emptyStates);
     }
+
+    private async Task<IReadOnlyList<DepartmentDashboardSectionDto>> GetVisibleDepartmentSectionsAsync(
+        Guid companyId,
+        CancellationToken cancellationToken) =>
+        (await _departmentDashboardConfigurationService.GetAsync(
+            new GetDepartmentDashboardConfigurationQuery(companyId),
+            cancellationToken)).Sections;
 
     private async Task<IReadOnlyList<ExecutiveCockpitSummaryKpiDto>> BuildSummaryKpisAsync(
         Guid companyId,
@@ -476,15 +553,6 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
     private static string NormalizeDepartment(string? department) =>
         string.IsNullOrWhiteSpace(department) ? "Unassigned" : department.Trim();
 
-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
-    {
-        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
-        if (membership is null)
-        {
-            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
-        }
-    }
-
     private static string FirstParagraph(string value, int maxLength)
     {
         var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
@@ -509,7 +577,20 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitD
         };
     }
 
-    private sealed record AgentDashboardRow(Guid Id, string? Department, AgentStatus Status);
-    private sealed record AgentTaskDashboardAggregate(Guid AgentId, int OpenTasks, int CompletedTasksLast7Days);
-    private sealed record AgentApprovalDashboardAggregate(Guid AgentId, int PendingApprovals);
+    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
+        if (membership is null)
+        {
+            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+        }
+
+        return membership;
+    }
 }
+
+internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus Status);
+
+internal sealed record AgentTaskDashboardAggregate(Guid AgentId, int OpenTasks, int CompletedTasksLast7Days);
+
+internal sealed record AgentApprovalDashboardAggregate(Guid? AgentId, int PendingApprovals);

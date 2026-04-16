@@ -1,0 +1,202 @@
+diff --git a/src/VirtualCompany.Domain/Entities/Alert.cs b/src/VirtualCompany.Domain/Entities/Alert.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/Alert.cs
++++ b/src/VirtualCompany.Domain/Entities/Alert.cs
+@@ -45,7 +45,7 @@ public sealed class Alert : ICompanyOwnedEntity
+         Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
+         Evidence = CloneRequiredEvidence(evidence);
+         CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
+-        Fingerprint = NormalizeRequired(fingerprint, nameof(fingerprint), FingerprintMaxLength);
++        Fingerprint = NormalizeFingerprint(fingerprint);
+         SourceAgentId = sourceAgentId;
+         OccurrenceCount = 1;
+         Metadata = CloneNodes(metadata);
+@@ -128,6 +128,9 @@ public sealed class Alert : ICompanyOwnedEntity
+         LastDetectedUtc = UpdatedUtc;
+     }
+ 
++    public static string NormalizeFingerprint(string value) =>
++        NormalizeRequired(value, nameof(Fingerprint), FingerprintMaxLength).ToLowerInvariant();
++
+     private static string NormalizeRequired(string value, string name, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -28,6 +28,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         await RequireMembershipAsync(companyId, cancellationToken);
+         ValidateTenant(companyId, command.CompanyId);
+         Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++        await ValidateSourceAgentScopeAsync(companyId, command.SourceAgentId, nameof(CreateAlertCommand.SourceAgentId), cancellationToken);
+ 
+         var type = AlertTypeValues.Parse(command.Type);
+         var severity = AlertSeverityValues.Parse(command.Severity);
+@@ -64,6 +65,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         await RequireMembershipAsync(companyId, cancellationToken);
+         ValidateTenant(companyId, command.CompanyId);
+         Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++        await ValidateSourceAgentScopeAsync(companyId, command.SourceAgentId, nameof(CreateDetectionAlertCommand.SourceAgentId), cancellationToken);
+ 
+         var type = AlertTypeValues.Parse(command.Type);
+         var status = AlertStatusValues.Parse(command.Status);
+@@ -161,6 +163,14 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         {
+             throw new KeyNotFoundException("Alert not found.");
+         }
++        var nextStatus = AlertStatusValues.Parse(command.Status);
++        if (nextStatus.IsOpenForDeduplication())
++        {
++            var existingOpen = await FindOpenByFingerprintAsync(companyId, alert.Fingerprint, cancellationToken);
++            if (existingOpen is not null && existingOpen.Id != alert.Id)
++            {
++                throw BuildValidationException(nameof(UpdateAlertCommand.Status), "Another open alert already exists for this fingerprint in the requested company.");
++            }
++        }
+ 
+         alert.UpdateDetails(AlertSeverityValues.Parse(command.Severity), command.Title, command.Summary, command.Evidence!, command.Metadata);
+-        alert.UpdateStatus(AlertStatusValues.Parse(command.Status));
++        alert.UpdateStatus(nextStatus);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return ToDto(alert);
+     }
+@@ -181,7 +191,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+ 
+     private async Task<Alert?> FindOpenByFingerprintAsync(Guid companyId, string fingerprint, CancellationToken cancellationToken)
+     {
+-        var normalizedFingerprint = fingerprint.Trim();
++        var normalizedFingerprint = Alert.NormalizeFingerprint(fingerprint);
+         return await _dbContext.Alerts
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.Fingerprint == normalizedFingerprint)
+@@ -229,6 +239,21 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         }
+     }
+ 
++    private async Task ValidateSourceAgentScopeAsync(Guid companyId, Guid? sourceAgentId, string fieldName, CancellationToken cancellationToken)
++    {
++        if (!sourceAgentId.HasValue)
++        {
++            return;
++        }
++
++        var belongsToCompany = await _dbContext.Agents
++            .IgnoreQueryFilters()
++            .AnyAsync(agent => agent.Id == sourceAgentId.Value && agent.CompanyId == companyId, cancellationToken);
++        if (!belongsToCompany)
++        {
++            throw BuildValidationException(fieldName, "SourceAgentId must reference an agent in the requested company.");
++        }
++    }
++
+     private static AlertDto ToDto(Alert alert) =>
+         new(
+             alert.Id,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1987,9 +1987,9 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
+         builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+-        builder.HasIndex(x => new { x.CompanyId, x.Type });
+-        builder.HasIndex(x => new { x.CompanyId, x.Severity });
+-        builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Type, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Severity, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.Fingerprint });
+         builder.HasIndex(x => new { x.CompanyId, x.Fingerprint })
+             .HasFilter("\"status\" IN ('open', 'acknowledged')")
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414120000_AddAlerts.cs
+@@ -65,10 +65,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                 });
+ 
+             migrationBuilder.CreateIndex(name: "IX_alerts_company_id_created_at", table: "alerts", columns: new[] { "company_id", "created_at" });
+-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_type", table: "alerts", columns: new[] { "company_id", "type" });
+-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_severity", table: "alerts", columns: new[] { "company_id", "severity" });
+-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_status", table: "alerts", columns: new[] { "company_id", "status" });
+-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_fingerprint", table: "alerts", columns: new[] { "company_id", "fingerprint" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_type_created_at", table: "alerts", columns: new[] { "company_id", "type", "created_at" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_severity_created_at", table: "alerts", columns: new[] { "company_id", "severity", "created_at" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_status_created_at", table: "alerts", columns: new[] { "company_id", "status", "created_at" });
++            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_fingerprint", table: "alerts", columns: new[] { "company_id", "fingerprint" });
+             migrationBuilder.CreateIndex(name: "IX_alerts_source_agent_id", table: "alerts", column: "source_agent_id");
+             migrationBuilder.CreateIndex(
+                 name: "IX_alerts_company_id_fingerprint_open",
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@ -53,6 +53,33 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         Assert.Single(list!.Items);
+     }
+ 
++    [Fact]
++    public async Task Detection_deduplicates_normalized_fingerprint()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var first = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/alerts/detections",
++            CreatePayload(seed.CompanyId, "risk", "high", "open", "  FP-Normalized  ", seed.AgentId));
++        var second = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/alerts/detections",
++            CreatePayload(seed.CompanyId, "risk", "high", "open", "fp-normalized", seed.AgentId));
++
++        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
++        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
++
++        var deduplicated = await second.Content.ReadFromJsonAsync<AlertMutationResponse>();
++        Assert.NotNull(deduplicated);
++        Assert.True(deduplicated!.Deduplicated);
++        Assert.Equal("fp-normalized", deduplicated.Alert.Fingerprint);
++
++        var list = await client.GetFromJsonAsync<AlertListResponse>(
++            $"/api/companies/{seed.CompanyId}/alerts?status=open&page=1&pageSize=10");
++
++        Assert.NotNull(list);
++        Assert.Single(list!.Items.Where(alert => alert.Fingerprint == "fp-normalized"));
++    }
++
+     [Fact]
+     public async Task Alert_creation_accepts_required_classifications()
+     {
+@@ -279,6 +306,22 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         Assert.NotEqual(created.Alert.Id, reopened.Alert.Id);
+     }
+ 
++    [Fact]
++    public async Task Create_rejects_source_agent_from_another_company()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.OtherCompanyId}/alerts/detections",
++            CreatePayload(seed.OtherCompanyId, "risk", "high", "open", "fp-wrong-agent-company", seed.AgentId));
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains("SourceAgentId", problem!.Errors.Keys);
++    }
++
+     private HttpClient CreateAuthenticatedClient()
+     {
+         var client = _factory.CreateClient();
+@@ -365,6 +408,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         public string Summary { get; set; } = string.Empty;
+         public string Status { get; set; } = string.Empty;
+         public string CorrelationId { get; set; } = string.Empty;
++        public string Fingerprint { get; set; } = string.Empty;
+         public int OccurrenceCount { get; set; }
+         public Dictionary<string, JsonElement> Evidence { get; set; } = [];
+         public DateTime CreatedAt { get; set; }
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.1.2",
+  "promptPath": ".ai-design/prompts/TASK-13.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T17:56:40.738Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T17-56-40-738Z_TASK-13.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T17-56-40-738Z_TASK-13.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T17:58:29.708Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "        var agentCompanyId = Guid.NewGuid();\n+        var agentId = Guid.NewGuid();\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        dbContext.Companies.Add(new Company(triggerCompanyId, \"Trigger Company\"));\n+        await SeedCompanyAndAgentAsync(dbContext, agentCompanyId, agentId);\n+\n+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(\n+            triggerCompanyId,\n+            agentId,\n+            new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)));\n+\n+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());\n+    }\n+\n+    [Fact]\n+    public async Task Enqueue_window_persistence_rejects_trigger_from_different_company()\n+    {\n+        await using var connection = CreateOpenConnection();\n+        var triggerCompanyId = Guid.NewGuid();\n+        var windowCompanyId = Guid.NewGuid();\n+        var agentId = Guid.NewGuid();\n+        var triggerId = Guid.NewGuid();\n+        var windowStart = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        await SeedCompanyAndAgentAsync(dbContext, triggerCompanyId, agentId);\n+        dbContext.Companies.Add(new Company(windowCompanyId, \"Window Company\"));\n+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(triggerCompanyId, agentId, windowStart, triggerId));\n+        await dbContext.SaveChangesAsync();\n+\n+        dbContext.AgentScheduledTriggerEnqueueWindows.Add(new AgentScheduledTriggerEnqueueWindow(\n+            Guid.NewGuid(),\n+            windowCompanyId,\n+            triggerId,\n+            windowStart,\n+            windowStart.AddMinutes(1),\n+            windowStart,\n+            \"exec-tenant-mismatch\"));\n+\n+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());\n+    }\n+\n     private static SqliteConnection CreateOpenConnection()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\n",
+  "stderrTail": "mpanyId = Guid.NewGuid();\n+        var agentId = Guid.NewGuid();\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        dbContext.Companies.Add(new Company(triggerCompanyId, \"Trigger Company\"));\n+        await SeedCompanyAndAgentAsync(dbContext, agentCompanyId, agentId);\n+\n+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(\n+            triggerCompanyId,\n+            agentId,\n+            new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc)));\n+\n+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());\n+    }\n+\n+    [Fact]\n+    public async Task Enqueue_window_persistence_rejects_trigger_from_different_company()\n+    {\n+        await using var connection = CreateOpenConnection();\n+        var triggerCompanyId = Guid.NewGuid();\n+        var windowCompanyId = Guid.NewGuid();\n+        var agentId = Guid.NewGuid();\n+        var triggerId = Guid.NewGuid();\n+        var windowStart = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);\n+        await using var dbContext = await CreateDbContextAsync(connection);\n+        await SeedCompanyAndAgentAsync(dbContext, triggerCompanyId, agentId);\n+        dbContext.Companies.Add(new Company(windowCompanyId, \"Window Company\"));\n+        dbContext.AgentScheduledTriggers.Add(CreateTrigger(triggerCompanyId, agentId, windowStart, triggerId));\n+        await dbContext.SaveChangesAsync();\n+\n+        dbContext.AgentScheduledTriggerEnqueueWindows.Add(new AgentScheduledTriggerEnqueueWindow(\n+            Guid.NewGuid(),\n+            windowCompanyId,\n+            triggerId,\n+            windowStart,\n+            windowStart.AddMinutes(1),\n+            windowStart,\n+            \"exec-tenant-mismatch\"));\n+\n+        await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());\n+    }\n+\n     private static SqliteConnection CreateOpenConnection()\n     {\n         var connection = new SqliteConnection(\"Data Source=:memory:\");\nEND_OF_PATCH\ntokens used\n60,952\n",
+  "verbosityMode": "summary"
+}

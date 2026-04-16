@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Controllers;
@@ -13,10 +14,12 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class AuditController : ControllerBase
 {
     private readonly IAuditQueryService _auditQueryService;
+    private readonly ICompanyContextAccessor _companyContextAccessor;
 
-    public AuditController(IAuditQueryService auditQueryService)
+    public AuditController(IAuditQueryService auditQueryService, ICompanyContextAccessor companyContextAccessor)
     {
         _auditQueryService = auditQueryService;
+        _companyContextAccessor = companyContextAccessor;
     }
 
     [HttpGet]
@@ -36,6 +39,58 @@ public sealed class AuditController : ControllerBase
             return Ok(await _auditQueryService.ListAsync(
                 companyId,
                 new AuditHistoryFilter(agentId, taskId, workflowInstanceId, fromUtc, toUtc, skip, take),
+                cancellationToken));
+        }
+        catch (ArgumentException ex) when (ex.ParamName == "filter")
+        {
+            ModelState.AddModelError("dateRange", ex.Message);
+            return ValidationProblem(ModelState);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("/internal/audit-events")]
+    public async Task<ActionResult<AuditHistoryResult>> ListInternalAsync(
+        CancellationToken cancellationToken,
+        [FromQuery] Guid agentId,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] int? skip = null,
+        [FromQuery] int? take = null)
+    {
+        if (agentId == Guid.Empty)
+        {
+            ModelState.AddModelError("agentId", "Agent id is required.");
+        }
+
+        if (!from.HasValue)
+        {
+            ModelState.AddModelError("from", "Start time is required.");
+        }
+
+        if (!to.HasValue)
+        {
+            ModelState.AddModelError("to", "End time is required.");
+        }
+
+        if (!ModelState.IsValid)
+        {
+            return ValidationProblem(ModelState);
+        }
+
+        if (!_companyContextAccessor.IsResolved || _companyContextAccessor.CompanyId is not Guid companyId)
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            return Ok(await _auditQueryService.ListAsync(
+                companyId,
+                new AuditHistoryFilter(agentId, FromUtc: from.Value, ToUtc: to.Value, Skip: skip, Take: take),
                 cancellationToken));
         }
         catch (ArgumentException ex) when (ex.ParamName == "filter")

@@ -1,0 +1,284 @@
+diff --git a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
++++ b/src/VirtualCompany.Application/Agents/TriggerExecutionContracts.cs
+@@ -100,14 +100,17 @@ public interface ITriggerEvaluationWorker
+         CancellationToken cancellationToken,
+         int retryBackoffSeconds = 0);
+ }
+ 
+-public interface ITriggerExecutionService
++public interface ITriggerInitiatedOrchestrationService
+ {
+     Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
+         TriggerExecutionWorkItem workItem,
+         int maxRetryAttempts,
+         CancellationToken cancellationToken,
+         int retryBackoffSeconds = 0);
++}
+ 
++public interface ITriggerExecutionService : ITriggerInitiatedOrchestrationService
++{
+     Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
+         AgentScheduledTriggerExecutionRequestMessage message,
+         int maxRetryAttempts,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+@@ -251,8 +251,12 @@ public sealed class TriggerAuditEventWriter : ITriggerAuditEventWriter
+             attempt,
+             AuditEventActions.TriggerExecutionAttemptDuplicateSkipped,
+             AuditEventOutcomes.Succeeded,
+             "Duplicate trigger execution attempt skipped by persisted idempotency key.",
+-            null,
++            new Dictionary<string, string?>
++            {
++                ["executionStatus"] = TriggerExecutionAttemptStatus.DuplicateSkipped.ToStorageValue(),
++                ["previousExecutionStatus"] = attempt.Status.ToStorageValue()
++            },
+             cancellationToken);
+ 
+     public Task WritePolicyDeniedAsync(
+         TriggerExecutionAttempt attempt,
+@@ -677,18 +681,28 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+             var idempotencyKey = TriggerExecutionIdempotency.ForScheduledAgentTrigger(trigger.CompanyId, trigger.Id, scheduledAtUtc);
+             var correlationId = TriggerExecutionIdempotency.CorrelationFromIdempotencyKey(idempotencyKey);
+             await WriteEvaluationStartedAsync(trigger.CompanyId, trigger.Id, TriggerExecutionTypes.AgentScheduled, trigger.AgentId, scheduledAtUtc, correlationId, idempotencyKey, cancellationToken);
+ 
+-            var outcome = await _executionService.ProcessScheduledTriggerAsync(
+-                new AgentScheduledTriggerExecutionRequestMessage(
+-                    trigger.CompanyId,
+-                    trigger.AgentId,
+-                    trigger.Id,
+-                    trigger.Code,
+-                    scheduledAtUtc,
+-                    trigger.CronExpression,
+-                    trigger.TimeZoneId,
+-                    trigger.Metadata,
+-                    correlationId,
+-                    idempotencyKey),
+-                maxRetryAttempts,
+-                cancellationToken,
+-                retryBackoffSeconds);
++            TriggerExecutionAttemptStatus outcome;
++            try
++            {
++                outcome = await _executionService.ProcessScheduledTriggerAsync(
++                    new AgentScheduledTriggerExecutionRequestMessage(
++                        trigger.CompanyId,
++                        trigger.AgentId,
++                        trigger.Id,
++                        trigger.Code,
++                        scheduledAtUtc,
++                        trigger.CronExpression,
++                        trigger.TimeZoneId,
++                        trigger.Metadata,
++                        correlationId,
++                        idempotencyKey),
++                    maxRetryAttempts,
++                    cancellationToken,
++                    retryBackoffSeconds);
++            }
++            catch (Exception ex) when (ex is not OperationCanceledException)
++            {
++                _logger.LogWarning(ex, "Scheduled trigger {TriggerId} failed during evaluation and remains eligible for retry.", trigger.Id);
++                outcome = TriggerExecutionAttemptStatus.RetryScheduled;
++            }
+ 
+             if (outcome != TriggerExecutionAttemptStatus.RetryScheduled)
+             {
+                 await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, normalizedDueAtUtc, nextRunUtc, cancellationToken);
+@@ -755,28 +769,38 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+                     await _dbContext.SaveChangesAsync(cancellationToken);
+                     continue;
+                 }
+ 
+-                var outcome = await _executionService.EvaluateAndDispatchAsync(
+-                    new TriggerExecutionWorkItem(
+-                        trigger.CompanyId,
+-                        trigger.Id,
+-                        TriggerExecutionTypes.WorkflowCondition,
+-                        null,
+-                        evaluation.EvaluatedUtc,
+-                        correlationId,
+-                        idempotencyKey,
+-                        new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-                        {
+-                            ["workflowTriggerId"] = JsonValue.Create(trigger.Id.ToString("N")),
+-                            ["workflowDefinitionId"] = JsonValue.Create(trigger.DefinitionId.ToString("N")),
+-                            ["conditionDefinitionId"] = JsonValue.Create(trigger.Id.ToString("N")),
+-                            ["evaluatedAtUtc"] = JsonValue.Create(evaluation.EvaluatedUtc),
+-                            ["conditionOutcome"] = JsonValue.Create(evaluation.Outcome),
+-                            ["correlationId"] = JsonValue.Create(correlationId),
+-                            ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
+-                        }),
+-                    maxRetryAttempts,
+-                    cancellationToken,
+-                    retryBackoffSeconds);
++                TriggerExecutionAttemptStatus outcome;
++                try
++                {
++                    outcome = await _executionService.EvaluateAndDispatchAsync(
++                        new TriggerExecutionWorkItem(
++                            trigger.CompanyId,
++                            trigger.Id,
++                            TriggerExecutionTypes.WorkflowCondition,
++                            null,
++                            evaluation.EvaluatedUtc,
++                            correlationId,
++                            idempotencyKey,
++                            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                            {
++                                ["workflowTriggerId"] = JsonValue.Create(trigger.Id.ToString("N")),
++                                ["workflowDefinitionId"] = JsonValue.Create(trigger.DefinitionId.ToString("N")),
++                                ["conditionDefinitionId"] = JsonValue.Create(trigger.Id.ToString("N")),
++                                ["evaluatedAtUtc"] = JsonValue.Create(evaluation.EvaluatedUtc),
++                                ["conditionOutcome"] = JsonValue.Create(evaluation.Outcome),
++                                ["correlationId"] = JsonValue.Create(correlationId),
++                                ["idempotencyKey"] = JsonValue.Create(idempotencyKey)
++                            }),
++                        maxRetryAttempts,
++                        cancellationToken,
++                        retryBackoffSeconds);
++                }
++                catch (Exception ex) when (ex is not OperationCanceledException)
++                {
++                    _logger.LogWarning(ex, "Condition trigger {TriggerId} failed during dispatch and remains eligible for retry.", trigger.Id);
++                    outcome = TriggerExecutionAttemptStatus.RetryScheduled;
++                }
+ 
+                 Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
+             }
+         }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -222,6 +222,7 @@ public static class DependencyInjection
+         services.AddScoped<ITriggerOrchestrationDispatcher, SingleAgentTriggerOrchestrationDispatcher>();
+         services.AddScoped<ITriggerAuditEventWriter, TriggerAuditEventWriter>();
+         services.AddScoped<ITriggerExecutionService, TriggerExecutionService>();
++        services.AddScoped<ITriggerInitiatedOrchestrationService>(provider => provider.GetRequiredService<ITriggerExecutionService>());
+         services.AddScoped<ITriggerEvaluationWorker, TriggerEvaluationWorker>();
+         services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
+         services.AddSingleton<IConditionTriggerEvaluator, ConditionTriggerEvaluator>();
+diff --git a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/TriggerExecutionServiceTests.cs
+@@ -1,6 +1,7 @@
+ using Microsoft.Data.Sqlite;
+ using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -82,9 +83,9 @@ public sealed class TriggerExecutionServiceTests
+             .IgnoreQueryFilters()
+             .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptDuplicateSkipped);
+         Assert.Equal(companyId, duplicateAudit.CompanyId);
+         Assert.Equal(workItem.CorrelationId, duplicateAudit.CorrelationId);
+         Assert.Equal(workItem.IdempotencyKey, duplicateAudit.Metadata["idempotencyKey"]);
+-        Assert.Equal(TriggerExecutionAttemptStatus.Dispatched.ToStorageValue(), duplicateAudit.Metadata["executionStatus"]);
++        Assert.Equal(TriggerExecutionAttemptStatus.DuplicateSkipped.ToStorageValue(), duplicateAudit.Metadata["executionStatus"]);
+ 
+         var auditActions = await dbContext.AuditEvents
+             .IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId)
+@@ -180,8 +181,45 @@ public sealed class TriggerExecutionServiceTests
+         Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered.ToStorageValue(), audit.Metadata["executionStatus"]);
+         Assert.Equal("true", audit.Metadata["deadLettered"]);
+     }
+ 
++    [Fact]
++    public async Task Worker_keeps_due_scheduled_trigger_retryable_when_execution_service_throws()
++    {
++        await using var connection = CreateOpenConnection();
++        await using var dbContext = await CreateDbContextAsync(connection);
++        var companyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var triggerId = Guid.NewGuid();
++        var dueAtUtc = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
++        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
++        dbContext.AgentScheduledTriggers.Add(new AgentScheduledTrigger(
++            triggerId,
++            companyId,
++            agentId,
++            "Retryable daily operations",
++            "retryable-daily-operations",
++            "* * * * *",
++            "UTC",
++            dueAtUtc));
++        await dbContext.SaveChangesAsync();
++        var executionService = new ThrowingTriggerExecutionService();
++        var worker = new TriggerEvaluationWorker(
++            dbContext,
++            executionService,
++            new NoOpConditionTriggerEvaluationService(),
++            new FixedNextRunCalculator(dueAtUtc.AddHours(1)),
++            new TriggerAuditEventWriter(new AuditEventWriter(dbContext)),
++            NullLogger<TriggerEvaluationWorker>.Instance);
++
++        var result = await worker.RunOnceAsync(dueAtUtc, batchSize: 5, maxRetryAttempts: 3, CancellationToken.None, retryBackoffSeconds: 1);
++
++        Assert.Equal(1, result.ScheduledTriggersEvaluated);
++        Assert.Equal(1, result.Retried);
++        Assert.Equal(1, executionService.ScheduledCalls);
++        var trigger = await dbContext.AgentScheduledTriggers.IgnoreQueryFilters().SingleAsync(x => x.Id == triggerId);
++        Assert.Equal(dueAtUtc, trigger.NextRunUtc);
++        Assert.Null(trigger.LastEvaluatedUtc);
++    }
++
+     private static TriggerExecutionService CreateService(
+         VirtualCompanyDbContext dbContext,
+         ITriggerExecutionPolicyChecker policyChecker,
+         ITriggerOrchestrationDispatcher dispatcher) =>
+@@ -274,5 +312,39 @@ public sealed class TriggerExecutionServiceTests
+             return Task.FromResult(new TriggerExecutionDispatchResult(
+                 AuditTargetTypes.WorkTask,
+                 Guid.NewGuid().ToString("N")));
+         }
+     }
++
++    private sealed class ThrowingTriggerExecutionService : ITriggerExecutionService
++    {
++        public int ScheduledCalls { get; private set; }
++
++        public Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
++            TriggerExecutionWorkItem workItem,
++            int maxRetryAttempts,
++            CancellationToken cancellationToken,
++            int retryBackoffSeconds = 0) =>
++            throw new InvalidOperationException("Worker execution outage.");
++
++        public Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
++            AgentScheduledTriggerExecutionRequestMessage message,
++            int maxRetryAttempts,
++            CancellationToken cancellationToken,
++            int retryBackoffSeconds = 0)
++        {
++            ScheduledCalls++;
++            throw new InvalidOperationException("Worker execution outage.");
++        }
++    }
++
++    private sealed class NoOpConditionTriggerEvaluationService : IConditionTriggerEvaluationService
++    {
++        public Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(
++            EvaluateConditionTriggerCommand command,
++            CancellationToken cancellationToken) =>
++            throw new InvalidOperationException("Condition evaluation should not run for this test.");
++    }
++
++    private sealed class FixedNextRunCalculator : IScheduledTriggerNextRunCalculator
++    {
++        private readonly DateTime? _nextRunUtc;
++
++        public FixedNextRunCalculator(DateTime? nextRunUtc) => _nextRunUtc = nextRunUtc;
++
++        public DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc) => _nextRunUtc;
++    }
+ }
+END_OF_PATCH

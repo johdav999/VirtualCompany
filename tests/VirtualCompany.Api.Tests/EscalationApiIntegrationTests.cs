@@ -92,6 +92,28 @@ public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplica
     }
 
     [Fact]
+    public async Task Policy_evaluation_history_source_filter_includes_lifecycle_audit_events()
+    {
+        var seed = await SeedEscalationHistoryAsync("source-history");
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Reviewer");
+
+        var result = await client.GetFromJsonAsync<PolicyEvaluationHistoryResult>(
+            $"/api/companies/{seed.CompanyId}/escalations/history?correlationId=corr-escalation-source-history&sourceEntityId={seed.SourceEntityId}&sourceEntityType=work_task");
+
+        Assert.NotNull(result);
+        Assert.Equal(4, result!.TotalCount);
+        Assert.All(result.Items, item =>
+        {
+            Assert.Equal(seed.CompanyId, item.CompanyId);
+            Assert.Equal(seed.SourceEntityId, item.SourceEntityId);
+            Assert.Equal("work_task", item.SourceEntityType);
+            Assert.Equal("corr-escalation-source-history", item.CorrelationId);
+        });
+        Assert.Contains(result.Items, item => item.Action == AuditEventActions.EscalationPolicyEvaluationStarted);
+        Assert.Contains(result.Items, item => item.Action == AuditEventActions.EscalationPolicyEvaluationCompleted);
+    }
+
+    [Fact]
     public async Task Escalation_history_forbids_members_without_audit_review_role()
     {
         var seed = await SeedEscalationHistoryAsync("forbidden", CompanyMembershipRole.Employee);
@@ -161,6 +183,45 @@ public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplica
                     0));
 
             dbContext.AuditEvents.AddRange(
+                new AuditEvent(
+                    Guid.NewGuid(),
+                    companyId,
+                    AuditActorTypes.System,
+                    null,
+                    AuditEventActions.EscalationPolicyEvaluationStarted,
+                    AuditTargetTypes.EscalationPolicy,
+                    sourceEntityId.ToString(),
+                    AuditEventOutcomes.Requested,
+                    "Escalation policy evaluation started.",
+                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
+                    new Dictionary<string, string?>
+                    {
+                        ["policyCount"] = "1",
+                        ["eventType"] = "task.updated",
+                        ["sourceStatus"] = "open",
+                        ["lifecycleVersion"] = "0"
+                    },
+                    correlationId,
+                    triggeredAt.AddSeconds(-1)),
+                new AuditEvent(
+                    Guid.NewGuid(),
+                    companyId,
+                    AuditActorTypes.System,
+                    null,
+                    AuditEventActions.EscalationPolicyEvaluationCompleted,
+                    AuditTargetTypes.EscalationPolicy,
+                    sourceEntityId.ToString(),
+                    AuditEventOutcomes.Succeeded,
+                    "Escalation policy evaluation completed.",
+                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
+                    new Dictionary<string, string?>
+                    {
+                        ["resultCount"] = "1",
+                        ["createdCount"] = "1",
+                        ["skippedDuplicateCount"] = "0"
+                    },
+                    correlationId,
+                    triggeredAt.AddSeconds(2)),
                 new AuditEvent(
                     Guid.NewGuid(),
                     companyId,

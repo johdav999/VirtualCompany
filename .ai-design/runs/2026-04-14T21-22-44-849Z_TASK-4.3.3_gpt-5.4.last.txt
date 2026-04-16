@@ -1,0 +1,544 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -78,6 +78,11 @@ public sealed record AggregatedBriefingSectionDto(
+     public int PriorityScore { get; init; }
+     public string? PriorityRuleCode { get; init; }
+     public IReadOnlyList<BriefingLinkedEntityReferenceDto> LinkedEntities { get; init; } = [];
++    public string Priority => PriorityCategory;
++    public int PriorityRank => PriorityScore;
++    public string? SeverityRuleId => PriorityRuleCode;
++    public string Summary => Narrative;
++    public IReadOnlyList<BriefingLinkedEntityReferenceDto> References => LinkedEntities;
+ }
+ 
+ public sealed record AggregatedBriefingPayloadDto(
+@@ -102,7 +107,7 @@ public sealed record BriefingInsightContributionDto(
+     string? Assessment,
+     Dictionary<string, JsonNode?> Metadata,
+     Guid? ContributionId = null);
+-{
++ 
++public sealed partial record BriefingInsightContributionDto
++{
+     public Dictionary<string, JsonNode?> ConfidenceMetadata { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+ }
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Shared/BriefingContracts.cs
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -54,12 +54,17 @@ public sealed record SharedAggregatedBriefingSection(
+     IReadOnlyList<SharedBriefingInsightContribution> Contributions,
+     IReadOnlyList<SharedBriefingConflictViewpoint> ConflictViewpoints,
+     IReadOnlyList<SharedBriefingSourceReference> RelatedReferences);
+-{
++
++public sealed partial record SharedAggregatedBriefingSection
++{
+     public string SectionType { get; init; } = GroupingType;
+     public string PriorityCategory { get; init; } = "informational";
+     public int PriorityScore { get; init; }
+     public string? PriorityRuleCode { get; init; }
+     public IReadOnlyList<SharedBriefingLinkedEntityReference> LinkedEntities { get; init; } = [];
++    public string Priority => PriorityCategory;
++    public int PriorityRank => PriorityScore;
++    public string? SeverityRuleId => PriorityRuleCode;
++    public IReadOnlyList<SharedBriefingLinkedEntityReference> References => LinkedEntities;
+ }
+ 
+ public sealed record SharedCompanyBriefing(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -464,6 +464,17 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var severityRules = await LoadSeverityRulesAsync(companyId, cancellationToken);
+         var briefingType = type.ToStorageValue();
+ 
++        var openApprovalsCount = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending, cancellationToken);
++        var blockedWorkflowCount = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId && x.State == WorkflowInstanceStatus.Blocked, cancellationToken);
++        var criticalAlertsCount = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId &&
++                             x.Severity == AlertSeverity.Critical &&
++                             x.Status != AlertStatus.Resolved &&
++                             x.Status != AlertStatus.Closed, cancellationToken);
+         var approvalRows = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -476,7 +487,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 x.Id,
+                 x.CreatedUtc,
+                 [],
+-                [CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue())]))
++                [CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue())])
+             .ApplyPriority(ResolvePriority(severityRules, "pending_approvals", "approval", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AgentId == Guid.Empty ? null : x.AgentId,
+@@ -493,7 +504,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId &&
+                         x.DueUtc.HasValue &&
+                         x.DueUtc.Value < window.EndUtc &&
+-                        x.Status != WorkTaskStatus.Completed &&
++                        x.Status is not WorkTaskStatus.Completed and
+                         x.Status != WorkTaskStatus.Failed)
+             .Select(x => new { x.Id })
+             .ToListAsync(cancellationToken);
+@@ -520,7 +531,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+-                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId)))
++                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId))
+             .ApplyPriority(ResolvePriority(severityRules, "kpi_highlights", "task", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AssignedAgentId,
+@@ -550,7 +561,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+-                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId)))
++                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId))
+             .ApplyPriority(overdueTaskIds.Contains(x.Id) ? ResolvePriority(severityRules, "anomalies", "task", "due", "overdue")
+                 : ResolvePriority(severityRules, "anomalies", "task", "status", x.Status.ToStorageValue()))
+             {
+@@ -568,6 +579,35 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
++        var persistedAlertRows = await _dbContext.Alerts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId &&
++                        x.Status != AlertStatus.Resolved &&
++                        x.Status != AlertStatus.Closed)
++            .OrderByDescending(x => x.Severity)
++            .ThenByDescending(x => x.UpdatedUtc)
++            .Take(10)
++            .Select(x => new { x.Id, x.Title, x.Summary, x.Type, x.Severity, x.Status, x.SourceAgentId, x.CorrelationId, x.UpdatedUtc })
++            .ToListAsync(cancellationToken);
++        var persistedAlerts = persistedAlertRows
++            .Select(x => new BriefingAggregateItemDto(
++                "alerts",
++                x.Title,
++                x.Summary,
++                x.Severity.ToStorageValue(),
++                x.Status.ToStorageValue(),
++                "alert",
++                x.Id,
++                x.UpdatedUtc,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["alertType"] = JsonValue.Create(x.Type.ToStorageValue()),
++                    ["correlationId"] = JsonValue.Create(x.CorrelationId)
++                },
++                [])
++            .ApplyPriority(ResolvePriority(severityRules, "alerts", "alert", "severity", x.Severity.ToStorageValue()))
++            {
++                AgentId = x.SourceAgentId,
++                CompanyEntityId = x.Id,
++                EventCorrelationId = x.CorrelationId,
++                Assessment = x.Status.ToStorageValue()
++            })
++            .ToList();
+         var workflowExceptionRows = await _dbContext.WorkflowExceptions
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -592,7 +632,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["exceptionType"] = JsonValue.Create(x.ExceptionType.ToStorageValue())
+                 },
+-                [new BriefingSourceReferenceDto("workflow_instance", x.WorkflowInstanceId, x.Title, x.State.ToStorageValue(), $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}")]))
++                [CreateWorkflowReference(companyId, x.WorkflowInstanceId, x.Title, x.State.ToStorageValue())])
+             .ApplyPriority(ResolvePriority(severityRules, "alerts", "workflow_instance", "status", x.State.ToStorageValue()))
+             {
+                 CompanyEntityId = x.Id,
+@@ -600,6 +640,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 Assessment = x.Status.ToStorageValue()
+             })
+             .ToList();
++        alerts.AddRange(persistedAlerts);
+ 
+         var agentRows = await _dbContext.ToolExecutionAttempts
+             .IgnoreQueryFilters()
+@@ -625,7 +666,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["toolNames"] = JsonSerializer.SerializeToNode(x.Select(item => item.ToolName).Distinct().Take(5), SerializerOptions)
+                 },
+-                []))
++                [])
+             .ApplyPriority(ResolvePriority(severityRules, "notable_agent_updates", "agent", "status", x.Key.Status.ToStorageValue()))
+             {
+                 AgentId = x.Key.AgentId,
+@@ -646,13 +687,12 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         kpiHighlights = OrderAggregateItems(kpiHighlights);
+         notableAgentUpdates = OrderAggregateItems(notableAgentUpdates);
+ 
+-        var blockedWorkflowCount = workflowExceptionRows.Count(x => x.ExceptionType == WorkflowExceptionType.Blocked);
+         var result = new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates)
+         {
+             SummaryCounts = new BriefingSummaryCountsDto(
+-                alerts.Count(x => x.PriorityCategory == BriefingSectionPriorityCategory.Critical),
+-                pendingApprovals.Count,
++                criticalAlertsCount,
++                openApprovalsCount,
+                 blockedWorkflowCount,
+-                overdueTaskIds.Count)
++                overdueTaskRows.Count)
+         };
+         var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
+         var structuredSections = await EnrichStructuredSectionsAsync(companyId, OrderStructuredSections(insightPayload.Sections, result), result, cancellationToken);
+@@ -668,6 +708,13 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .ThenBy(x => x.Title, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+ 
++    private static BriefingAggregateItemDto ApplyPriority(this BriefingAggregateItemDto item, BriefingPriorityResolution priority) =>
++        item with
++        {
++            PriorityCategory = priority.Category,
++            PriorityScore = priority.Score,
++            PriorityRuleCode = priority.RuleCode
++        };
++
+     private Task CacheAggregateAsync(BriefingAggregateResultDto aggregate, CancellationToken cancellationToken) =>
+         _aggregateCache.SetAsync(
+             new CachedExecutiveDashboardAggregateDto(
+@@ -905,7 +952,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     {
+         var references = new List<BriefingSourceReferenceDto>
+         {
+-            new("task", taskId, title, status, null)
++            new("task", taskId, title, status, $"/tasks?companyId={companyId}&taskId={taskId}")
+         };
+         if (workflowInstanceId is { } id && id != Guid.Empty)
+         {
+@@ -918,9 +965,6 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private static BriefingSourceReferenceDto CreateWorkflowReference(Guid companyId, Guid workflowInstanceId, string label, string? status) =>
+         new("workflow_instance", workflowInstanceId, label, status, $"/workflows?companyId={companyId}&workflowInstanceId={workflowInstanceId}");
+ 
+-    private static BriefingSourceReferenceDto CreateApprovalReference(Guid companyId, Guid approvalId, string approvalType, string status) =>
+-        new("approval", approvalId, $"{approvalType} approval", status, $"/approvals?companyId={companyId}&approvalId={approvalId}");
+-
+     private static IReadOnlyList<BriefingSourceReferenceDto> CreateSourceReference(BriefingAggregateItemDto item)
+     {
+         if (item.SourceEntityId is null || item.SourceEntityId == Guid.Empty || string.IsNullOrWhiteSpace(item.SourceEntityType))
+@@ -1208,8 +1252,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             {
+                 var priority = priorityByKey.TryGetValue(section.SectionKey, out var resolved)
+                     ? resolved
+-                    : ResolveSectionPriorityFromContributions(section, aggregate);
+-                var links = ResolveSectionLinks(companyId, section, linkedReferences);
++                    : ResolveSectionPriorityFromContributions(section, aggregate);
++                var links = ResolveSectionLinks(companyId, section, linkedReferences);
+ 
+                 return section with
+                 {
+@@ -1288,11 +1332,12 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Concat(aggregate.KpiHighlights)
+             .Concat(aggregate.Anomalies)
+             .Concat(aggregate.NotableAgentUpdates)
+-            .GroupBy(item => item.Title.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
++            .Where(item => item.SourceEntityId.HasValue)
++            .GroupBy(item => $"{NormalizeLinkedEntityType(item.SourceEntityType ?? string.Empty)}:{item.SourceEntityId!.Value:N}", StringComparer.OrdinalIgnoreCase)
+             .ToDictionary(
+                 group => group.Key,
+                 group => group.OrderByDescending(item => item.PriorityScore).Select(item => new BriefingPriorityResolution(item.PriorityCategory, item.PriorityScore, item.PriorityRuleCode)).First(),
+                 StringComparer.OrdinalIgnoreCase);
+@@ -1338,18 +1383,18 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Select(x => new BriefingLinkedEntityReferenceDto("task", x.Id, x.Title, BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.Status.ToStorageValue(), true, null, null))
+             .ToListAsync(cancellationToken);
+         var workflows = await _dbContext.WorkflowInstances
+@@ -1352,7 +1397,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
+             .Select(x => new BriefingLinkedEntityReferenceDto("workflow_instance", x.Id, x.Definition.Name, BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.State.ToStorageValue(), true, null, $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}"))
+@@ -1361,8 +1406,59 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Where(x => x.CompanyId == companyId && approvalIds.Contains(x.Id))
+             .Select(x => new BriefingLinkedEntityReferenceDto("approval", x.Id, $"{x.ApprovalType} approval", BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.Status.ToStorageValue(), true, null, $"/approvals?companyId={companyId}&approvalId={x.Id}"))
+             .ToListAsync(cancellationToken);
+ 
+-        return tasks.Concat(workflows).Concat(approvals)
+-            .ToDictionary(x => $"{x.EntityType}:{x.EntityId:N}", StringComparer.OrdinalIgnoreCase);
++        var resolved = tasks.Concat(workflows).Concat(approvals)
++            .ToDictionary(x => $"{x.EntityType}:{x.EntityId:N}", StringComparer.OrdinalIgnoreCase);
++
++        var missingTasks = taskIds.Where(id => !resolved.ContainsKey($"task:{id:N}")).ToList();
++        var inaccessibleTasks = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId != companyId && missingTasks.Contains(x.Id))
++            .Select(x => x.Id)
++            .ToListAsync(cancellationToken);
++        foreach (var id in missingTasks)
++        {
++            resolved[$"task:{id:N}"] = CreateUnavailableReference(
++                "task",
++                id,
++                "Unavailable task",
++                inaccessibleTasks.Contains(id));
++        }
++
++        var missingWorkflows = workflowIds.Where(id => !resolved.ContainsKey($"workflow_instance:{id:N}")).ToList();
++        var inaccessibleWorkflows = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId != companyId && missingWorkflows.Contains(x.Id))
++            .Select(x => x.Id)
++            .ToListAsync(cancellationToken);
++        foreach (var id in missingWorkflows)
++        {
++            resolved[$"workflow_instance:{id:N}"] = CreateUnavailableReference(
++                "workflow_instance",
++                id,
++                "Unavailable workflow",
++                inaccessibleWorkflows.Contains(id));
++        }
++
++        var missingApprovals = approvalIds.Where(id => !resolved.ContainsKey($"approval:{id:N}")).ToList();
++        var inaccessibleApprovals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId != companyId && missingApprovals.Contains(x.Id))
++            .Select(x => x.Id)
++            .ToListAsync(cancellationToken);
++        foreach (var id in missingApprovals)
++        {
++            resolved[$"approval:{id:N}"] = CreateUnavailableReference(
++                "approval",
++                id,
++                "Unavailable approval",
++                inaccessibleApprovals.Contains(id));
++        }
++
++        return resolved;
+     }
++
++    private static BriefingLinkedEntityReferenceDto CreateUnavailableReference(string entityType, Guid entityId, string label, bool inaccessible) =>
++        new(
++            entityType,
++            entityId,
++            label,
++            inaccessible ? BriefingLinkedEntityResolutionState.Inaccessible.ToStorageValue() : BriefingLinkedEntityResolutionState.Deleted.ToStorageValue(),
++            null,
++            false,
++            BriefingLinkedEntityPlaceholderReason.DeletedOrInaccessible.ToStorageValue(),
++            null);
+@@ -1375,7 +1471,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .ToList();
+ 
+     private static IReadOnlyList<BriefingSourceReferenceDto> BuildLinkedEntityCandidates(Guid companyId, AggregatedBriefingSectionDto section)
+@@ -1401,6 +1497,14 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 candidates.Add(CreateWorkflowReference(companyId, workflowInstanceId, "Related workflow", null));
+             }
+         }
++        if (Guid.TryParse(section.GroupingKey, out var groupingId) && groupingId != Guid.Empty)
++        {
++            if (string.Equals(section.GroupingType, BriefingInsightGroupingTypes.Task, StringComparison.OrdinalIgnoreCase))
++            {
++                candidates.Add(new BriefingSourceReferenceDto("task", groupingId, section.Title, null, null));
++            }
++            else if (string.Equals(section.GroupingType, BriefingInsightGroupingTypes.Workflow, StringComparison.OrdinalIgnoreCase))
++            {
++                candidates.Add(CreateWorkflowReference(companyId, groupingId, section.Title, null));
++            }
++        }
+ 
+         return candidates
+             .Where(reference => reference.EntityId != Guid.Empty)
+@@ -1424,21 +1528,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         if (availableReferences.TryGetValue(key, out var resolved))
+         {
+             return resolved;
+         }
+-
+-        var label = entityType switch
+-        {
+-            "task" => "Unavailable task",
+-            "workflow_instance" => "Unavailable workflow",
+-            "approval" => "Unavailable approval",
+-            _ => $"Unavailable {entityType}"
+-        };
+-
+-        return new BriefingLinkedEntityReferenceDto(
+-            entityType,
+-            reference.EntityId,
+-            label,
+-            BriefingLinkedEntityResolutionState.Unknown.ToStorageValue(),
+-            null,
+-            false,
+-            BriefingLinkedEntityPlaceholderReason.DeletedOrInaccessible.ToStorageValue(),
+-            null);
++        return null;
+     }
+ 
+     private static string NormalizeLinkedEntityType(string entityType) =>
+@@ -1468,6 +1558,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         new("medium_approval_pending", "pending_approvals", "approval", "status", "pending", BriefingSectionPriorityCategory.Medium, 60),
+         new("medium_task_awaiting_approval", "anomalies", "task", "status", "awaiting_approval", BriefingSectionPriorityCategory.Medium, 55),
+         new("informational_task_completed", "kpi_highlights", "task", "status", "completed", BriefingSectionPriorityCategory.Informational, 20)
++        new("critical_alert", "alerts", "alert", "severity", "critical", BriefingSectionPriorityCategory.Critical, 100),
++        new("high_alert", "alerts", "alert", "severity", "high", BriefingSectionPriorityCategory.High, 90),
++        new("medium_alert", "alerts", "alert", "severity", "medium", BriefingSectionPriorityCategory.Medium, 50)
+     ];
+ }
+-
+-internal static class BriefingAggregateItemPriorityExtensions
+-{
+-    public static BriefingAggregateItemDto ApplyPriority(
+-        this BriefingAggregateItemDto item,
+-        object priority)
+-    {
+-        var category = (BriefingSectionPriorityCategory)priority.GetType().GetProperty("Category")!.GetValue(priority)!;
+-        var score = (int)priority.GetType().GetProperty("Score")!.GetValue(priority)!;
+-        var ruleCode = (string?)priority.GetType().GetProperty("RuleCode")!.GetValue(priority);
+-        return item with
+-        {
+-            PriorityCategory = category,
+-            PriorityScore = score,
+-            PriorityRuleCode = ruleCode
+-        };
+-    }
+-}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -69,6 +69,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.Contains(aggregate.StructuredSections, section => section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId));
+         Assert.True(aggregate.SummaryCounts.OpenApprovalsCount > 0);
+         Assert.True(aggregate.SummaryCounts.BlockedWorkflowsCount > 0);
++        Assert.True(aggregate.SummaryCounts.CriticalAlertsCount > 0);
++        Assert.True(aggregate.SummaryCounts.OverdueTasksCount > 0);
+         Assert.All(aggregate.StructuredSections, section =>
+         {
+             Assert.False(string.IsNullOrWhiteSpace(section.PriorityCategory));
+@@ -295,7 +297,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.NotNull(latest?.Daily);
+         var link = Assert.Single(latest!.Daily!.StructuredSections.SelectMany(section => section.LinkedEntities));
+         Assert.Equal("task", link.EntityType);
+         Assert.Equal(seed.MissingTaskId, link.EntityId);
+-        Assert.Equal("unknown", link.State);
++        Assert.Equal("deleted", link.State);
+         Assert.Null(link.EntityStatus);
+         Assert.False(link.IsAccessible);
+         Assert.Equal("deleted_or_inaccessible", link.PlaceholderReason);
+@@ -394,6 +396,48 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Latest_returns_inaccessible_placeholder_for_cross_tenant_link_without_leaking_details()
++    {
++        var seed = await SeedBriefingWithCrossTenantTaskLinkAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/briefings/latest");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var latest = await response.Content.ReadFromJsonAsync<DashboardBriefingCardResponse>();
++
++        Assert.NotNull(latest?.Daily);
++        var link = Assert.Single(latest!.Daily!.StructuredSections.SelectMany(section => section.LinkedEntities));
++        Assert.Equal("task", link.EntityType);
++        Assert.Equal(seed.OtherCompanyTaskId, link.EntityId);
++        Assert.Equal("inaccessible", link.State);
++        Assert.Null(link.EntityStatus);
++        Assert.False(link.IsAccessible);
++        Assert.Equal("deleted_or_inaccessible", link.PlaceholderReason);
++        Assert.Equal("Unavailable task", link.DisplayLabel);
++    }
++
+     [Fact]
+     public async Task Aggregate_is_tenant_scoped()
+     {
+@@ -525,6 +569,48 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         return new MissingLinkBriefingSeed(companyId, missingTaskId);
+     }
+ 
++    private async Task<CrossTenantLinkBriefingSeed> SeedBriefingWithCrossTenantTaskLinkAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var briefingId = Guid.NewGuid();
++        var otherCompanyTaskId = Guid.NewGuid();
++        var now = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.AddRange(new Company(companyId, "Briefing Inaccessible Link Company"), new Company(otherCompanyId, "Other Link Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.WorkTasks.Add(new WorkTask(otherCompanyTaskId, otherCompanyId, "briefing", "Other tenant task", null, WorkTaskPriority.High, null, null, "user", userId));
++            var sourceReferences = Payload(("items", JsonSerializer.SerializeToNode(new[]
++            {
++                new BriefingSourceReferenceDto("task", otherCompanyTaskId, "Other tenant task", "blocked", null)
++            })));
++            var briefing = new CompanyBriefing(
++                briefingId,
++                companyId,
++                CompanyBriefingType.Daily,
++                now.AddDays(-1),
++                now,
++                "Daily briefing",
++                "A linked task is outside the current tenant.",
++                Payload(
++                    ("narrativeText", JsonValue.Create("A linked task is outside the current tenant.")),
++                    ("summaryCounts", JsonSerializer.SerializeToNode(new BriefingSummaryCountsDto(0, 0, 0, 0)))),
++                Payload(("items", JsonSerializer.SerializeToNode(Array.Empty<BriefingSourceReferenceDto>()))));
++            dbContext.CompanyBriefings.Add(briefing);
++            dbContext.CompanyBriefingSections.Add(new CompanyBriefingSection(
++                Guid.NewGuid(), companyId, briefingId, "task:" + otherCompanyTaskId.ToString("N"), "Other tenant task",
++                BriefingInsightGroupingTypes.Task, otherCompanyTaskId.ToString("N"), "The task is referenced but inaccessible.",
++                false, null, otherCompanyTaskId, "task", BriefingSectionPriorityCategory.High, 80, "high_task_blocked",
++                null, otherCompanyTaskId, null, sourceReferences));
++            return Task.CompletedTask;
++        });
++
++        return new CrossTenantLinkBriefingSeed(companyId, otherCompanyTaskId);
++    }
++
+     private async Task<Guid> AddCompletedTaskAsync(BriefingSeed seed, string title)
+     {
+         var taskId = Guid.NewGuid();
+@@ -580,6 +666,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+             var blockedTask = new WorkTask(blockedTaskId, companyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", userId, workflowInstanceId: workflowInstanceId);
+             blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
++            blockedTask.SetDueDate(now.AddDays(-2));
+             var otherCompanyTask = new WorkTask(otherCompanyTaskId, otherCompanyId, "briefing", "Other company task", null, WorkTaskPriority.High, otherCompanyAgentId, null, "user", userId, workflowInstanceId: otherCompanyWorkflowInstanceId);
+             otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
+             dbContext.WorkTasks.AddRange(completedTask, blockedTask, otherCompanyTask);
+@@ -603,6 +690,16 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+ 
+             dbContext.ToolExecutionAttempts.AddRange(toolExecution, otherCompanyToolExecution);
+             dbContext.ApprovalRequests.AddRange(approval, otherCompanyApproval);
++            dbContext.Alerts.Add(new Alert(
++                Guid.NewGuid(),
++                companyId,
++                AlertType.Risk,
++                AlertSeverity.Critical,
++                "Critical margin risk",
++                "Margin risk needs executive attention.",
++                Payload(("signal", JsonValue.Create("margin"))),
++                "briefing-critical-alert",
++                $"briefing-critical-alert:{companyId:N}",
++                AlertStatus.Open));
+             return Task.CompletedTask;
+         });
+ 
+@@ -642,6 +739,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+ 
+     private sealed record MissingLinkBriefingSeed(Guid CompanyId, Guid MissingTaskId);
+ 
++    private sealed record CrossTenantLinkBriefingSeed(Guid CompanyId, Guid OtherCompanyTaskId);
++
+     private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);
+ 
+     private sealed record BriefingSeed(
+END_OF_PATCH

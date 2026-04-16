@@ -1,0 +1,314 @@
+diff --git a/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs b/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs
+index 9c7f0c1..e9869a4 100644
+--- a/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs
+@@ -1,4 +1,5 @@
+ using System.Text.Json.Nodes;
++using VirtualCompany.Application.Tasks;
+ 
+ namespace VirtualCompany.Application.Orchestration;
+ 
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+index ec2c96e..651f8ff 100644
+--- a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -349,6 +349,14 @@ public sealed record OrchestrationResult(
+     public OrchestrationAction? Action { get; init; }
+ }
+ 
++public sealed record OrchestrationAction(
++    string ActionType,
++    string? TargetAgentRole,
++    Guid? TargetAgentId,
++    string Reason,
++    string RequestedDomain,
++    string MatchedRule);
++
+ public sealed record OrchestrationAuditWriteRequest(
+     SingleAgentRuntimeContext RuntimeContext,
+     PromptBuildResult Prompt,
+diff --git a/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs b/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs
+index 05b1d7e..11c9f2d 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs
+@@ -38,9 +38,9 @@ public sealed record ResponsibilityDomainRule(
+ 
+ public sealed record DelegationTarget(
+     string Target,
+-    string ActionType = "delegate")
++    string ActionType = "delegation")
+ {
+-    public static DelegationTarget EscalateTo(string target) => new(target, "escalate");
++    public static DelegationTarget EscalateTo(string target) => new(target, "escalation");
+ }
+ 
+ public static class ResponsibilityDomainRules
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs b/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs
+index bfa34d1..42f8a66 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs
+@@ -128,7 +128,8 @@ public sealed class ResponsibilityPolicyEvaluator : IResponsibilityPolicyEvaluat
+ 
+             var actionType = ReadString(objectValue["actionType"]);
+             targets[domain.Trim()] = new DelegationTarget(
+-                objectTarget,
++                objectTarget,
++                string.Equals(actionType, "escalate", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(actionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
+                     ? ResponsibilityPolicyDecisionTypes.Escalation
+                     : ResponsibilityPolicyDecisionTypes.Delegation);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 49ce4a5..e0b0ff7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -27,6 +27,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     private readonly IResponsibilityPolicyEvaluator _responsibilityPolicyEvaluator;
+     private readonly IRequestedDomainClassifier _requestedDomainClassifier;
+     private readonly IAuditEventWriter _auditEventWriter;
++    private readonly ICommunicationStyleRuleChecker _styleRuleChecker;
++    private readonly ILogger<SingleAgentOrchestrationService> _logger;
+ 
+     public SingleAgentOrchestrationService(
+         VirtualCompanyDbContext dbContext,
+@@ -37,7 +39,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IOrchestrationAuditWriter auditWriter,
+         IResponsibilityPolicyEvaluator responsibilityPolicyEvaluator,
+         IRequestedDomainClassifier requestedDomainClassifier,
+-        IAuditEventWriter auditEventWriter)
++        IAuditEventWriter auditEventWriter,
++        ICommunicationStyleRuleChecker styleRuleChecker,
++        ILogger<SingleAgentOrchestrationService> logger)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+@@ -48,6 +52,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         _responsibilityPolicyEvaluator = responsibilityPolicyEvaluator;
+         _requestedDomainClassifier = requestedDomainClassifier;
+         _auditEventWriter = auditEventWriter;
++        _styleRuleChecker = styleRuleChecker;
++        _logger = logger;
+     }
+ 
+     public async Task<OrchestrationResult> ExecuteAsync(
+@@ -928,133 +934,6 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 ["communicationStylePassed"] = styleCheck.Passed.ToString()
+             });
+     }
+-
+-    private static OrchestrationResult BuildOutOfScopeResult(
+-        OrchestrationRequest request,
+-        AgentRuntimeProfileDto agent,
+-        CompanyRuntimeContext company,
+-        TaskDetailDto task,
+-        ResponsibilityPolicyDecision decision,
+-        DateTime startedAtUtc,
+-        string correlationId)
+-    {
+-        var completedAtUtc = DateTime.UtcNow;
+-        var orchestrationId = Guid.NewGuid();
+-        var output = $"This request is outside {agent.DisplayName}'s responsibility boundary. {BuildDelegationSentence(decision)}";
+-        var structuredOutput = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-        {
+-            ["schemaVersion"] = JsonValue.Create("2026-04-14"),
+-            ["orchestrationId"] = JsonValue.Create(orchestrationId.ToString("N")),
+-            ["correlationId"] = JsonValue.Create(correlationId),
+-            ["agentId"] = JsonValue.Create(agent.Id.ToString("N")),
+-            ["agentDisplayName"] = JsonValue.Create(agent.DisplayName),
+-            ["agent_role_name"] = JsonValue.Create(agent.RoleName),
+-            ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
+-            ["intent"] = JsonValue.Create(NormalizeIntent(request.IntentHint, request.ConversationId)),
+-            ["action"] = JsonValue.Create(decision.DecisionType),
+-            ["requestedDomain"] = JsonValue.Create(decision.RequestedDomain),
+-            ["matchedRule"] = JsonValue.Create(decision.MatchedRule),
+-            ["delegationTarget"] = JsonValue.Create(decision.DelegationTarget),
+-            ["userFacingOutput"] = JsonValue.Create(output),
+-            ["rationaleSummary"] = JsonValue.Create(decision.Reason),
+-            ["confidenceScore"] = JsonValue.Create(1m)
+-        };
+-        var metadata = new OrchestrationMetadata(
+-            orchestrationId,
+-            Guid.Empty,
+-            company.CompanyId,
+-            task.Id,
+-            agent.Id,
+-            correlationId,
+-            NormalizeIntent(request.IntentHint, request.ConversationId),
+-            startedAtUtc,
+-            completedAtUtc,
+-            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+-            {
+-                ["policyInterceptionPoint"] = "responsibility_policy",
+-                ["requestedDomain"] = decision.RequestedDomain,
+-                ["matchedRule"] = decision.MatchedRule,
+-                ["delegationTarget"] = decision.DelegationTarget,
+-                ["delegationAction"] = decision.DecisionType,
+-                ["agentRoleName"] = agent.RoleName
+-            });
+-        var taskArtifact = new OrchestrationTaskArtifact(task.Id, WorkTaskStatus.Completed.ToStorageValue(), CloneNodes(structuredOutput), decision.Reason, 1m, [], [], correlationId);
+-        var auditArtifact = new OrchestrationAuditArtifact(
+-            company.CompanyId,
+-            AuditActorTypes.Agent,
+-            agent.Id,
+-            AuditEventActions.AgentResponsibilityOutOfScopeHandled,
+-            AuditTargetTypes.AgentResponsibilityPolicy,
+-            agent.Id.ToString("N"),
+-            AuditEventOutcomes.Denied,
+-            decision.Reason,
+-            ["single_agent_orchestration", "responsibility_policy"],
+-            metadata.AuditMetadata,
+-            correlationId,
+-            completedAtUtc);
+-        var finalResult = new OrchestrationCompositeFinalResult(new OrchestrationUserOutput(output), taskArtifact, [auditArtifact], decision.Reason, [], [], correlationId);
+-
+-        return new OrchestrationResult(
+-            orchestrationId,
+-            company.CompanyId,
+-            task.Id,
+-            agent.Id,
+-            OrchestrationStatusValues.Completed,
+-            output,
+-            structuredOutput,
+-            decision.Reason,
+-            1m,
+-            [],
+-            [new OrchestrationArtifact(OrchestrationArtifactTypes.AuditEvent, "responsibility_policy_out_of_scope", structuredOutput)],
+-            metadata,
+-            correlationId)
+-        {
+-            UserOutput = new OrchestrationUserOutput(output),
+-            TaskArtifact = taskArtifact,
+-            AuditArtifacts = [auditArtifact],
+-            FinalResult = finalResult
+-        };
+-    }
+-
+-    private static string BuildDelegationSentence(ResponsibilityPolicyDecision decision) =>
+-        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
+-            ? $"Escalating to {decision.DelegationTarget}."
+-            : $"Delegating to {decision.DelegationTarget}.";
+-
+-    private async Task PersistOutOfScopeAuditAsync(
+-        OrchestrationResult result,
+-        ResponsibilityPolicyDecision decision,
+-        CancellationToken cancellationToken)
+-    {
+-        var artifact = result.AuditArtifacts.Single();
+-        await _auditEventWriter.WriteAsync(
+-            new AuditEventWriteRequest(
+-                artifact.CompanyId,
+-                artifact.ActorType,
+-                artifact.ActorId,
+-                artifact.Action,
+-                artifact.TargetType,
+-                artifact.TargetId,
+-                artifact.Outcome,
+-                artifact.RationaleSummary,
+-                artifact.DataSources,
+-                artifact.Metadata,
+-                artifact.CorrelationId,
+-                artifact.OccurredUtc,
+-                PayloadDiffJson: JsonSerializer.Serialize(new
+-                {
+-                    agentId = result.AgentId,
+-                    requestedDomain = decision.RequestedDomain,
+-                    matchedRule = decision.MatchedRule,
+-                    delegationTarget = decision.DelegationTarget
+-                })),
+-            cancellationToken);
+-    }
+ 
+     private static OrchestrationResult BuildOutOfScopeResult(
+         OrchestrationRequest request,
+@@ -1149,7 +1028,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     }
+ 
+     private static string BuildDelegationSentence(ResponsibilityPolicyDecision decision) =>
+-        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalate, StringComparison.OrdinalIgnoreCase)
++        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
+             ? $"Escalating to {decision.DelegationTarget}."
+             : $"Delegating to {decision.DelegationTarget}.";
+ 
+@@ -1173,7 +1052,14 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 artifact.Metadata,
+                 artifact.CorrelationId,
+                 artifact.OccurredUtc),
++                PayloadDiffJson: JsonSerializer.Serialize(new
++                {
++                    agentId = result.AgentId,
++                    requestedDomain = decision.RequestedDomain,
++                    matchedRule = decision.MatchedRule,
++                    delegationTarget = decision.DelegationTarget
++                })),
+             cancellationToken);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index bf7d05b..2da0572 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -237,17 +237,45 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         var outOfScopePayload = await outOfScopeResponse.Content.ReadFromJsonAsync<OrchestrationResponse>();
+         Assert.NotNull(outOfScopePayload);
+         Assert.Contains($"outside {displayName}'s responsibility boundary", outOfScopePayload!.UserFacingOutput);
+-        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegate, outOfScopePayload.Action!.ActionType);
++        Assert.DoesNotContain("completed task", outOfScopePayload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
++        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegation, outOfScopePayload.Action!.ActionType);
+         Assert.Equal(delegationTarget, outOfScopePayload.Action.TargetAgentRole);
+         Assert.Equal(outOfScopeDomain, outOfScopePayload.Action.RequestedDomain);
++        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, outOfScopePayload.Action.MatchedRule);
+ 
+         using var scope = _factory.Services.CreateScope();
+         var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+         companyContextAccessor.SetCompanyId(outOfScopeSeed.CompanyId);
+         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+ 
+-        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x => x.CompanyId == inScopeSeed.CompanyId && x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled));
+-        Assert.True(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x => x.CompanyId == outOfScopeSeed.CompanyId && x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled && x.ActorId == outOfScopeSeed.AgentId));
++        Assert.False(await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .AnyAsync(x =>
++                x.CompanyId == inScopeSeed.CompanyId &&
++                x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
++                x.ActorId == inScopeSeed.AgentId));
++
++        var outOfScopeAudit = await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x =>
++                x.CompanyId == outOfScopeSeed.CompanyId &&
++                x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
++                x.ActorId == outOfScopeSeed.AgentId);
++
++        Assert.Equal(outOfScopeSeed.AgentId, outOfScopeAudit.ActorId);
++        Assert.Equal(outOfScopeDomain, outOfScopeAudit.Metadata["requestedDomain"]);
++        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, outOfScopeAudit.Metadata["matchedRule"]);
++        Assert.Equal(delegationTarget, outOfScopeAudit.Metadata["delegationTarget"]);
++        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegation, outOfScopeAudit.Metadata["delegationAction"]);
++        Assert.NotNull(outOfScopeAudit.PayloadDiffJson);
++
++        using var payloadDiff = JsonDocument.Parse(outOfScopeAudit.PayloadDiffJson!);
++        var payloadRoot = payloadDiff.RootElement;
++        Assert.Equal(outOfScopeSeed.AgentId.ToString(), payloadRoot.GetProperty("agentId").GetString());
++        Assert.Equal(outOfScopeDomain, payloadRoot.GetProperty("requestedDomain").GetString());
++        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, payloadRoot.GetProperty("matchedRule").GetString());
++        Assert.Equal(delegationTarget, payloadRoot.GetProperty("delegationTarget").GetString());
+     }
+ 
+     [Fact]
+@@ -346,8 +374,6 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+             return Task.CompletedTask;
+         });
+ 
+-        public OrchestrationActionResponse? Action { get; set; }
+         return new SeededTask(companyId, userId, agentId, taskId);
+     }
+ 
+@@ -386,6 +412,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         public OrchestrationFinalResultResponse? FinalResult { get; set; }
+         public List<ToolInvocationResponse> ToolExecutions { get; set; } = [];
++        public OrchestrationActionResponse? Action { get; set; }
+     }
+ 
+     private sealed class OrchestrationUserOutputResponse
+END_OF_PATCH

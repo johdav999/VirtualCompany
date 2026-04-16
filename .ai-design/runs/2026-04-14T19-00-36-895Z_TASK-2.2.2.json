@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-2.2.2",
+  "promptPath": ".ai-design/prompts/TASK-2.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T19:00:36.895Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T19-00-36-895Z_TASK-2.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T19-00-36-895Z_TASK-2.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T19:03:17.017Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "escalation()\n     {\n         var decision = _evaluator.Evaluate(new ResponsibilityPolicyEvaluationRequest(\n             Guid.NewGuid(),\n@@ -50,10 +50,12 @@ public sealed class ResponsibilityPolicyEvaluatorTests\n             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),\n             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),\n             \"corr-policy\"));\n \n-        Assert.True(decision.IsInScope);\n+        Assert.False(decision.IsInScope);\n+        Assert.True(decision.RequiresDelegation);\n         Assert.Equal(ResponsibilityPolicyRuleKinds.NotConfigured, decision.MatchedRule);\n+        Assert.Equal(ResponsibilityPolicyDecisionTypes.Escalation, decision.DecisionType);\n+        Assert.Equal(\"manager\", decision.DelegationTarget);\n     }\n \n     private static ResponsibilityPolicyEvaluationRequest Request(string requestedDomain) =>\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 0b102f5..7ad42cd 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -101,6 +101,11 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"orch-test-correlation\", auditEvent.CorrelationId);\n         Assert.Equal(payload.OrchestrationId.ToString(\"N\"), auditEvent.Metadata[\"orchestrationId\"]);\n         Assert.Equal(seed.AgentId, auditEvent.ActorId);\n+        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>\n+            x.CompanyId == seed.CompanyId &&\n+            x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&\n+            x.ActorId == seed.AgentId));\n \n         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);\n         Assert.Equal(seed.CompanyId, attempt.CompanyId);\nEND_OF_PATCH\n",
+  "stderrTail": "\n         var decision = _evaluator.Evaluate(new ResponsibilityPolicyEvaluationRequest(\n             Guid.NewGuid(),\n@@ -50,10 +50,12 @@ public sealed class ResponsibilityPolicyEvaluatorTests\n             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),\n             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),\n             \"corr-policy\"));\n \n-        Assert.True(decision.IsInScope);\n+        Assert.False(decision.IsInScope);\n+        Assert.True(decision.RequiresDelegation);\n         Assert.Equal(ResponsibilityPolicyRuleKinds.NotConfigured, decision.MatchedRule);\n+        Assert.Equal(ResponsibilityPolicyDecisionTypes.Escalation, decision.DecisionType);\n+        Assert.Equal(\"manager\", decision.DelegationTarget);\n     }\n \n     private static ResponsibilityPolicyEvaluationRequest Request(string requestedDomain) =>\ndiff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\nindex 0b102f5..7ad42cd 100644\n--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs\n@@ -101,6 +101,11 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica\n         Assert.Equal(\"orch-test-correlation\", auditEvent.CorrelationId);\n         Assert.Equal(payload.OrchestrationId.ToString(\"N\"), auditEvent.Metadata[\"orchestrationId\"]);\n         Assert.Equal(seed.AgentId, auditEvent.ActorId);\n+        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>\n+            x.CompanyId == seed.CompanyId &&\n+            x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&\n+            x.ActorId == seed.AgentId));\n \n         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);\n         Assert.Equal(seed.CompanyId, attempt.CompanyId);\nEND_OF_PATCH\ntokens used\n61,552\n",
+  "verbosityMode": "summary"
+}

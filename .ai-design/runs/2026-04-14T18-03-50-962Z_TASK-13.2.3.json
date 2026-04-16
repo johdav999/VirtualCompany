@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.2.3",
+  "promptPath": ".ai-design/prompts/TASK-13.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:03:50.962Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-03-50-962Z_TASK-13.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-03-50-962Z_TASK-13.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:05:17.557Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ce are persisted in one transaction by callers\n+    // so retries cannot leave a committed idempotency marker without its execution request.\n     private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(\n+        bool useAmbientTransaction,\n         Guid companyId,\n         Guid triggerId,\n         string eventId,\n         CancellationToken cancellationToken)\n     {\n         try\n         {\n@@ -1457,8 +1462,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS\n                 eventId,\n                 DateTime.UtcNow);\n             await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);\n-\n-            await _dbContext.SaveChangesAsync(cancellationToken);\n+            if (!useAmbientTransaction)\n+            {\n+                await _dbContext.SaveChangesAsync(cancellationToken);\n+            }\n             return processedEvent;\n         }\n         catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))\ndiff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\nindex 31ba820..b6f279e 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -26,7 +26,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);\n-        Assert.True(registry.IsSupported(\"TASK.CREATED\"));\n+        Assert.True(registry.IsSupported(\"TASK_CREATED\"));\n         Assert.False(registry.IsSupported(\"task.deleted\"));\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": " one transaction by callers\n+    // so retries cannot leave a committed idempotency marker without its execution request.\n     private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(\n+        bool useAmbientTransaction,\n         Guid companyId,\n         Guid triggerId,\n         string eventId,\n         CancellationToken cancellationToken)\n     {\n         try\n         {\n@@ -1457,8 +1462,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS\n                 eventId,\n                 DateTime.UtcNow);\n             await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);\n-\n-            await _dbContext.SaveChangesAsync(cancellationToken);\n+            if (!useAmbientTransaction)\n+            {\n+                await _dbContext.SaveChangesAsync(cancellationToken);\n+            }\n             return processedEvent;\n         }\n         catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))\ndiff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\nindex 31ba820..b6f279e 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -26,7 +26,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);\n-        Assert.True(registry.IsSupported(\"TASK.CREATED\"));\n+        Assert.True(registry.IsSupported(\"TASK_CREATED\"));\n         Assert.False(registry.IsSupported(\"task.deleted\"));\n     }\n \nEND_OF_PATCH\ntokens used\n66,723\n",
+  "verbosityMode": "summary"
+}

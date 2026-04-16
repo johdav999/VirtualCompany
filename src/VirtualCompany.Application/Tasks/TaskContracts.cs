@@ -169,6 +169,7 @@ public sealed record MappedTaskCreationRequest(
     string Title,
     string? Description,
     string Priority,
+    string Status,
     DateTime? DueAt,
     Guid? AssignedAgentId,
     Dictionary<string, JsonNode?> InputPayload);

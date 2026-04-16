@@ -6,8 +6,11 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -40,17 +43,20 @@ public sealed class CompanyAgentService : ICompanyAgentService
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
 
     public CompanyAgentService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAuditEventWriter auditEventWriter,
-        ICorrelationContextAccessor correlationContextAccessor)
+        ICorrelationContextAccessor correlationContextAccessor,
+        ICompanyOutboxEnqueuer outboxEnqueuer)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
         _correlationContextAccessor = correlationContextAccessor;
+        _outboxEnqueuer = outboxEnqueuer;
     }
 
     public async Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken)
@@ -333,11 +339,13 @@ public sealed class CompanyAgentService : ICompanyAgentService
             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.ApprovalThresholds) : CloneNodes(agent.Thresholds),
             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules) : CloneNodes(agent.EscalationRules),
             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic) : CloneNodes(agent.TriggerLogic),
-            visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours));
+            visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours),
+            visibility.CanEditAgent ? AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile) : CloneNodes(agent.CommunicationProfile));
 
         if (changed)
         {
             await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
+            EnqueueAgentStatusUpdatedEvent(companyId, agent, beforeSnapshot.Status);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -383,6 +391,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
             companyId, membership, agent, template.TemplateId,
             cancellationToken);
 
+        EnqueueAgentStatusUpdatedEvent(companyId, agent, null);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new CreateAgentFromTemplateResultDto(ToSummaryDto(agent));
@@ -527,7 +536,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
 
     private string CreateCorrelationId() =>
         string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
-            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+            ? System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : _correlationContextAccessor.CorrelationId!;
 
     private static AgentOperatingProfileAuditSnapshot CreateOperatingProfileAuditSnapshot(Agent agent) =>
@@ -542,7 +551,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
             SerializeJsonDictionary(agent.Thresholds),
             SerializeJsonDictionary(agent.EscalationRules),
             SerializeJsonDictionary(agent.TriggerLogic),
-            SerializeJsonDictionary(agent.WorkingHours));
+            SerializeJsonDictionary(agent.WorkingHours),
+            SerializeJsonDictionary(agent.CommunicationProfile));
 
     private static List<AgentOperatingProfileAuditChange> BuildOperatingProfileChanges(
         AgentOperatingProfileAuditSnapshot before,
@@ -559,6 +569,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
         AddOperatingProfileChange(changes, "escalationRules", before.EscalationRulesJson, after.EscalationRulesJson);
         AddOperatingProfileChange(changes, "triggerLogic", before.TriggerLogicJson, after.TriggerLogicJson);
         AddOperatingProfileChange(changes, "workingHours", before.WorkingHoursJson, after.WorkingHoursJson);
+        AddOperatingProfileChange(changes, "communicationProfile", before.CommunicationProfileJson, after.CommunicationProfileJson);
         AddOperatingProfileChange(changes, "status", before.Status, after.Status);
         AddOperatingProfileChange(changes, "autonomyLevel", before.AutonomyLevel, after.AutonomyLevel);
 
@@ -601,10 +612,50 @@ public sealed class CompanyAgentService : ICompanyAgentService
         "escalationRules" => "escalation rules",
         "triggerLogic" => "trigger logic",
         "workingHours" => "working hours",
+        "communicationProfile" => "communication profile",
         "status" => "status",
         "autonomyLevel" => "autonomy level",
         _ => field
     };
+
+    private void EnqueueAgentStatusUpdatedEvent(Guid companyId, Agent agent, string? previousStatus)
+    {
+        var currentStatus = agent.Status.ToStorageValue();
+        if (!string.IsNullOrWhiteSpace(previousStatus) &&
+            string.Equals(previousStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var eventType = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
+        var occurredAtUtc = agent.UpdatedUtc.Kind == DateTimeKind.Utc
+            ? agent.UpdatedUtc
+            : agent.UpdatedUtc.ToUniversalTime();
+        var eventId = $"{eventType}:{agent.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
+        var correlationId = CreateCorrelationId();
+
+        _outboxEnqueuer.Enqueue(
+            companyId,
+            eventType,
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                occurredAtUtc,
+                companyId,
+                correlationId,
+                "agent",
+                agent.Id.ToString("N"),
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["agentId"] = JsonValue.Create(agent.Id.ToString("N")),
+                    ["department"] = JsonValue.Create(agent.Department),
+                    ["previousStatus"] = JsonValue.Create(previousStatus),
+                    ["status"] = JsonValue.Create(currentStatus)
+                }),
+            correlationId,
+            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
+            causationId: agent.Id.ToString("N"));
+    }
 
     private static CompanyAgentSummaryDto ToSummaryDto(Agent agent) =>
         new(
@@ -640,6 +691,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
             visibility.CanViewThresholds ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
             visibility.CanEditSensitiveGovernance ? CloneNodes(agent.TriggerLogic) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
             visibility.CanViewWorkingHours ? CloneNodes(agent.WorkingHours) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+            visibility.CanEditAgent ? CloneNodes(agent.CommunicationProfile) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
             visibility,
             agent.UpdatedUtc,
             agent.CanReceiveAssignments,
@@ -1005,6 +1057,12 @@ public sealed class CompanyAgentService : ICompanyAgentService
     private static void Validate(UpdateAgentOperatingProfileCommand command)
     {
         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        AgentCommunicationProfileJsonMapper.Validate(errors, nameof(command.CommunicationProfile), AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile));
+        if (errors.Count > 0)
+        {
+            throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
+        }
     }
 
     private static void ValidateJsonObject(
@@ -1484,7 +1542,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
         string ApprovalThresholdsJson,
         string EscalationRulesJson,
         string TriggerLogicJson,
-        string WorkingHoursJson);
+        string WorkingHoursJson,
+        string CommunicationProfileJson);
 
     private sealed record AgentExecutionAggregate(Guid AgentId, int AwaitingApprovalCount, int ExecutedCount, int RecentExecutionCount, int FailedCount, DateTime? LastActivityUtc);
     private sealed record AgentApprovalAggregate(Guid AgentId, int PendingApprovalCount, DateTime? LastActivityUtc);

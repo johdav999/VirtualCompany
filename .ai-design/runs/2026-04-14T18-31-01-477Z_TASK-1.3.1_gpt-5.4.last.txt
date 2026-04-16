@@ -1,0 +1,188 @@
+diff --git a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+index 7b2b3c1..c24c2d5 100644
+--- a/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
++++ b/src/VirtualCompany.Application/Escalations/EscalationPolicyEvaluator.cs
+@@ -256,7 +256,7 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+         }
+ 
+         var comparison = ToJsonNode(condition.Value);
+-        return Compare(current, comparison, condition.Operator);
++        return Compare(current, comparison, condition.Operator);
+     }
+ 
+     private static JsonNode? ResolveField(EscalationEvaluationInput input, string fieldPath)
+@@ -304,16 +304,16 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+         var op = comparisonOperator.Trim().ToLowerInvariant();
+         return op switch
+         {
+-            "eq" => (JsonNode.DeepEquals(current, comparison), null),
+-            "neq" => (!JsonNode.DeepEquals(current, comparison), null),
++            "eq" => (ValuesEqual(current, comparison), null),
++            "neq" => (!ValuesEqual(current, comparison), null),
+             "gt" => CompareOrdered(current, comparison, (left, right) => left > right),
+             "gte" => CompareOrdered(current, comparison, (left, right) => left >= right),
+             "lt" => CompareOrdered(current, comparison, (left, right) => left < right),
+             "lte" => CompareOrdered(current, comparison, (left, right) => left <= right),
+             "in" => comparison is JsonArray values
+-                ? (values.Any(value => JsonNode.DeepEquals(current, value)), null)
++                ? (values.Any(value => value is not null && ValuesEqual(current, value)), null)
+                 : (false, "The in operator requires an array comparison value."),
+             "contains" => EvaluateContains(current, comparison),
+             _ => (false, $"Escalation condition operator '{comparisonOperator}' is not supported.")
+@@ -325,6 +325,11 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+         if (TryGetDecimal(current, out var currentNumber) && TryGetDecimal(comparison, out var comparisonNumber))
+         {
+             return (numericComparison(currentNumber, comparisonNumber), null);
+         }
+ 
++        if (TryGetBusinessOrdinal(current, out var currentOrdinal) && TryGetBusinessOrdinal(comparison, out var comparisonOrdinal))
++        {
++            return (numericComparison(currentOrdinal, comparisonOrdinal), null);
++        }
++
+         if (TryGetDateTimeOffset(current, out var currentDate) && TryGetDateTimeOffset(comparison, out var comparisonDate))
+         {
+             return (numericComparison(currentDate.UtcDateTime.Ticks, comparisonDate.UtcDateTime.Ticks), null);
+@@ -336,15 +341,34 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+     private static (bool Met, string? Diagnostic) EvaluateContains(JsonNode current, JsonNode comparison)
+     {
+         if (current is JsonArray array)
+         {
+-            return (array.Any(value => JsonNode.DeepEquals(value, comparison)), null);
++            return (array.Any(value => value is not null && ValuesEqual(value, comparison)), null);
+         }
+ 
+         if (TryGetString(current, out var currentText) && TryGetString(comparison, out var comparisonText))
+         {
+             return (currentText.Contains(comparisonText, StringComparison.OrdinalIgnoreCase), null);
+         }
+ 
+         return (false, "The contains operator requires a string or array current value.");
+     }
+ 
++    private static bool ValuesEqual(JsonNode current, JsonNode comparison)
++    {
++        if (TryGetString(current, out var currentText) && TryGetString(comparison, out var comparisonText))
++        {
++            return string.Equals(currentText, comparisonText, StringComparison.OrdinalIgnoreCase);
++        }
++
++        return JsonNode.DeepEquals(current, comparison);
++    }
++
++    private static bool TryGetBusinessOrdinal(JsonNode? node, out decimal value)
++    {
++        value = 0;
++        if (!TryGetString(node, out var text))
++        {
++            return false;
++        }
++
++        return KnownBusinessOrdinals.TryGetValue(text.Trim(), out value);
++    }
++
+     private static JsonNode? ToJsonNode(object value) =>
+         value switch
+         {
+@@ -405,6 +429,15 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
+         output = input;
+         return true;
+     }
+ 
++    private static readonly IReadOnlyDictionary<string, decimal> KnownBusinessOrdinals =
++        new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["low"] = 1,
++            ["normal"] = 2,
++            ["medium"] = 2,
++            ["high"] = 3,
++            ["critical"] = 4
++        };
++
+     private static void ValidateInput(EscalationEvaluationInput input)
+     {
+         if (input.CompanyId == Guid.Empty)
+diff --git a/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+index 93c57b1..b6cf971 100644
+--- a/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/EscalationPolicyEvaluatorTests.cs
+@@ -57,6 +57,34 @@ public sealed class EscalationPolicyEvaluatorTests
+         Assert.Contains(audit.Events, x => x.Action == AuditEventActions.EscalationCreated && x.CorrelationId == "correlation-1");
+     }
+ 
++    [Fact]
++    public async Task Evaluate_supports_ordinal_thresholds_for_priority_and_severity_labels()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                AlertInput(new Dictionary<string, JsonNode?>
++                {
++                    ["severity"] = JsonValue.Create("critical"),
++                    ["priority"] = JsonValue.Create("high")
++                }),
++                [
++                    Policy(
++                        Level(
++                            1,
++                            "High or higher priority.",
++                            new EscalationConditionDefinition(EscalationConditionType.Threshold, "priority", "gte", "high")),
++                        Level(
++                            2,
++                            "Critical severity.",
++                            new EscalationConditionDefinition(EscalationConditionType.Threshold, "severity", "gt", "high")))
++                ]),
++            CancellationToken.None);
++
++        Assert.Equal(2, summary.Results.Count);
++        Assert.All(summary.Results, result => Assert.True(result.EscalationCreated));
++        Assert.Equal(2, repository.Escalations.Count);
++    }
++
+     [Fact]
+     public async Task Evaluate_does_not_create_escalation_when_threshold_condition_is_not_met()
+     {
+@@ -130,6 +158,37 @@ public sealed class EscalationPolicyEvaluatorTests
+         Assert.True(result.EscalationCreated);
+     }
+ 
++    [Fact]
++    public async Task Evaluate_uses_case_insensitive_string_matching_for_rules()
++    {
++        var repository = new InMemoryEscalationRepository();
++        var service = CreateService(repository, new CapturingAuditEventWriter());
++
++        var summary = await service.EvaluateAsync(
++            new EvaluateEscalationPoliciesCommand(
++                TaskInput(
++                    new Dictionary<string, JsonNode?>
++                    {
++                        ["severity"] = JsonValue.Create("Critical")
++                    },
++                    new Dictionary<string, JsonNode?>
++                    {
++                        ["tags"] = new JsonArray("Customer", "SLA")
++                    }),
++                [
++                    Policy(new EscalationLevelDefinition(
++                        1,
++                        "Critical SLA task needs review.",
++                        [
++                            new EscalationConditionDefinition(EscalationConditionType.Rule, "severity", "eq", "critical"),
++                            new EscalationConditionDefinition(EscalationConditionType.Rule, "tags", "contains", "sla")
++                        ]))
++                ]),
++            CancellationToken.None);
++
++        var result = Assert.Single(summary.Results);
++        Assert.True(result.ConditionsMet);
++        Assert.True(result.EscalationCreated);
++        Assert.Single(repository.Escalations);
++    }
++
+     [Fact]
+     public async Task Evaluate_skips_duplicate_escalation_for_same_policy_level_and_lifecycle()
+     {
+END_OF_PATCH

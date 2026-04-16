@@ -1,0 +1,454 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 4a8c1c1..a7f1d8c 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -134,9 +134,11 @@ public sealed record DepartmentDashboardSectionDto(
+     string DepartmentKey,
+     string DisplayName,
+     int DisplayOrder,
++    bool IsVisible,
+     string? Icon,
+     bool HasData,
+     IReadOnlyDictionary<string, int> SummaryCounts,
++    bool IsEmpty,
+     DepartmentDashboardNavigationDto Navigation,
+     DepartmentDashboardEmptyStateDto EmptyState,
+     IReadOnlyList<DepartmentDashboardWidgetDto> Widgets);
+@@ -148,9 +150,11 @@ public sealed record DepartmentDashboardWidgetDto(
+     string Title,
+     string WidgetType,
+     int DisplayOrder,
++    bool IsVisible,
+     string SummaryBinding,
+     int SummaryValue,
+     bool HasData,
++    bool IsEmpty,
+     DepartmentDashboardNavigationDto Navigation,
+     DepartmentDashboardEmptyStateDto EmptyState);
+ 
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 3d2f4c9..7e8c1f5 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -42,13 +42,21 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("composition")]
++    public Task<ActionResult<DepartmentDashboardConfigurationDto>> GetCompositionAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        GetDepartmentSectionsCoreAsync(companyId, cancellationToken);
++
+     [HttpGet("department-sections")]
+     public async Task<ActionResult<DepartmentDashboardConfigurationDto>> GetDepartmentSectionsAsync(
+         Guid companyId,
++        CancellationToken cancellationToken) =>
++        await GetDepartmentSectionsCoreAsync(companyId, cancellationToken);
++
++    private async Task<ActionResult<DepartmentDashboardConfigurationDto>> GetDepartmentSectionsCoreAsync(
++        Guid companyId,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+             return Ok(await _departmentDashboardConfigurationService.GetAsync(new GetDepartmentDashboardConfigurationQuery(companyId), cancellationToken));
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+index 7cc3d2a..e76d6b1 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+@@ -87,9 +87,11 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartmentD
+                             widget.Title,
+                             widget.WidgetType,
+                             widget.DisplayOrder,
++                            true,
+                             widget.SummaryBinding,
+                             summaryValue,
+                             summaryValue > 0,
++                            summaryValue == 0,
+                             ReadNavigation(widget.Navigation, widget.Title, $"/dashboard?companyId={query.CompanyId}&department={Uri.EscapeDataString(config.Department)}"),
+                             ReadEmptyState(widget.EmptyState, widget.Title, config.DisplayName, query.CompanyId, config.Department));
+                     })
+@@ -101,9 +103,11 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartmentD
+                     config.Department,
+                     config.DisplayName,
+                     config.DisplayOrder,
++                    true,
+                     config.Icon,
+                     departmentMetrics.HasData,
+                     departmentMetrics.ToSummaryCounts(),
++                    !departmentMetrics.HasData,
+                     ReadNavigation(config.Navigation, config.DisplayName, $"/dashboard?companyId={query.CompanyId}&department={Uri.EscapeDataString(config.Department)}"),
+                     ReadEmptyState(config.EmptyState, config.DisplayName, config.DisplayName, query.CompanyId, config.Department),
+                     widgets);
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 0d76a68..0a0d9ff 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -23,6 +23,17 @@ public sealed class ExecutiveCockpitApiClient
+         return GetCoreAsync(companyId, cancellationToken);
+     }
+ 
++    public Task<DepartmentDashboardCompositionViewModel?> GetDepartmentCompositionAsync(Guid companyId, CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult<DepartmentDashboardCompositionViewModel?>(OfflineDepartmentComposition(companyId));
++        }
++
++        return GetDepartmentCompositionCoreAsync(companyId, cancellationToken);
++    }
++
+     private async Task<ExecutiveCockpitDashboardViewModel?> GetCoreAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         try
+@@ -48,6 +59,27 @@ public sealed class ExecutiveCockpitApiClient
+         }
+     }
+ 
++    private async Task<DepartmentDashboardCompositionViewModel?> GetDepartmentCompositionCoreAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        try
++        {
++            using var response = await _httpClient.GetAsync($"api/companies/{companyId}/executive-cockpit/composition", cancellationToken);
++            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
++            {
++                return null;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<DepartmentDashboardCompositionViewModel>(SerializerOptions, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException ex)
++        {
++            throw CreateNetworkException(ex);
++        }
++    }
++
+     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+     {
+         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+@@ -130,6 +162,117 @@ public sealed class ExecutiveCockpitApiClient
+             }
+         };
+ 
++    private static DepartmentDashboardCompositionViewModel OfflineDepartmentComposition(Guid companyId) =>
++        new()
++        {
++            CompanyId = companyId,
++            GeneratedAtUtc = DateTime.UtcNow,
++            Sections =
++            [
++                OfflineDepartmentSection(companyId, "finance", "Finance", 10),
++                OfflineDepartmentSection(companyId, "sales", "Sales", 20),
++                OfflineDepartmentSection(companyId, "support", "Support", 30),
++                OfflineDepartmentSection(companyId, "operations", "Operations", 40)
++            ]
++        };
++
++    private static DepartmentDashboardSectionViewModel OfflineDepartmentSection(
++        Guid companyId,
++        string key,
++        string displayName,
++        int displayOrder) =>
++        new()
++        {
++            Id = Guid.NewGuid(),
++            DepartmentKey = key,
++            DisplayName = displayName,
++            DisplayOrder = displayOrder,
++            IsVisible = true,
++            HasData = false,
++            IsEmpty = true,
++            SummaryCounts =
++            {
++                ["active_agents"] = 0,
++                ["open_tasks"] = 0,
++                ["completed_tasks_7d"] = 0,
++                ["pending_approvals"] = 0,
++                ["active_workflows"] = 0,
++                ["workflow_exceptions"] = 0
++            },
++            Navigation = new DepartmentDashboardNavigationViewModel
++            {
++                Label = $"Open {displayName}",
++                Route = $"/dashboard?companyId={companyId}&department={key}"
++            },
++            EmptyState = new DepartmentDashboardEmptyStateViewModel
++            {
++                Title = $"{displayName} is ready",
++                Message = $"Add agents, workflows, or tasks to start filling the {displayName.ToLowerInvariant()} dashboard.",
++                ActionLabel = "Open agents",
++                ActionRoute = $"/agents?companyId={companyId}&department={key}"
++            },
++            Widgets =
++            [
++                OfflineDepartmentWidget(companyId, key, "open_tasks", "Open tasks", 10),
++                OfflineDepartmentWidget(companyId, key, "active_workflows", "Active workflows", 20),
++                OfflineDepartmentWidget(companyId, key, "pending_approvals", "Pending approvals", 30)
++            ]
++        };
++
++    private static DepartmentDashboardWidgetViewModel OfflineDepartmentWidget(
++        Guid companyId,
++        string departmentKey,
++        string binding,
++        string title,
++        int displayOrder) =>
++        new()
++        {
++            Id = Guid.NewGuid(),
++            WidgetKey = $"{departmentKey}_{binding}",
++            Title = title,
++            WidgetType = "summary_count",
++            DisplayOrder = displayOrder,
++            IsVisible = true,
++            SummaryBinding = binding,
++            SummaryValue = 0,
++            HasData = false,
++            IsEmpty = true,
++            Navigation = new DepartmentDashboardNavigationViewModel
++            {
++                Label = $"Open {title}",
++                Route = $"/dashboard?companyId={companyId}&department={departmentKey}&widget={departmentKey}_{binding}"
++            },
++            EmptyState = new DepartmentDashboardEmptyStateViewModel
++            {
++                Title = title,
++                Message = $"{title} will appear when {departmentKey} work starts.",
++                ActionLabel = "Open tasks",
++                ActionRoute = $"/tasks?companyId={companyId}"
++            }
++        };
++
+     private sealed class ApiProblemResponse
+     {
+         public string? Title { get; set; }
+@@ -268,3 +411,62 @@ public sealed class ExecutiveCockpitEmptyStateFlagsViewModel
+     public bool NoPendingApprovals { get; set; }
+     public bool NoAlerts { get; set; }
+ }
++
++public sealed class DepartmentDashboardCompositionViewModel
++{
++    public Guid CompanyId { get; set; }
++    public DateTime GeneratedAtUtc { get; set; }
++    public List<DepartmentDashboardSectionViewModel> Sections { get; set; } = [];
++}
++
++public sealed class DepartmentDashboardSectionViewModel
++{
++    public Guid Id { get; set; }
++    public string DepartmentKey { get; set; } = string.Empty;
++    public string DisplayName { get; set; } = string.Empty;
++    public int DisplayOrder { get; set; }
++    public bool IsVisible { get; set; }
++    public string? Icon { get; set; }
++    public bool HasData { get; set; }
++    public Dictionary<string, int> SummaryCounts { get; set; } = [];
++    public bool IsEmpty { get; set; }
++    public DepartmentDashboardNavigationViewModel Navigation { get; set; } = new();
++    public DepartmentDashboardEmptyStateViewModel EmptyState { get; set; } = new();
++    public List<DepartmentDashboardWidgetViewModel> Widgets { get; set; } = [];
++}
++
++public sealed class DepartmentDashboardWidgetViewModel
++{
++    public Guid Id { get; set; }
++    public string WidgetKey { get; set; } = string.Empty;
++    public string Title { get; set; } = string.Empty;
++    public string WidgetType { get; set; } = string.Empty;
++    public int DisplayOrder { get; set; }
++    public bool IsVisible { get; set; }
++    public string SummaryBinding { get; set; } = string.Empty;
++    public int SummaryValue { get; set; }
++    public bool HasData { get; set; }
++    public bool IsEmpty { get; set; }
++    public DepartmentDashboardNavigationViewModel Navigation { get; set; } = new();
++    public DepartmentDashboardEmptyStateViewModel EmptyState { get; set; } = new();
++}
++
++public sealed class DepartmentDashboardNavigationViewModel
++{
++    public string Label { get; set; } = string.Empty;
++    public string Route { get; set; } = string.Empty;
++}
++
++public sealed class DepartmentDashboardEmptyStateViewModel
++{
++    public string Title { get; set; } = string.Empty;
++    public string Message { get; set; } = string.Empty;
++    public string? ActionLabel { get; set; }
++    public string? ActionRoute { get; set; }
++}
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 7ef4631..2c4d2b1 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -166,26 +166,53 @@
+             </article>
+         }
+ 
+-        @if (!IsInitialSetupEmpty)
++        @if (departmentSections.Count > 0)
+         {
+             <article class="wizard-card wizard-card--compact cockpit-card cockpit-card--wide">
+-                <h3 class="h5">Department KPIs</h3>
++                <div class="cockpit-card__header">
++                    <div>
++                        <h3 class="h5 mb-1">Department sections</h3>
++                        <p class="text-body-secondary mb-0">Department dashboards are configured by the backend for this company and role.</p>
++                    </div>
++                </div>
+                 <div class="cockpit-kpi-grid">
+-                    @foreach (var kpi in dashboard.DepartmentKpis)
++                    @foreach (var section in departmentSections)
+                     {
+-                        <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, AgentsPath)" aria-label="@($"Open {kpi.Department} agent roster")">
+-                            <strong>@kpi.Department</strong>
++                        <section class="summary-pill" aria-label="@section.DisplayName">
++                            <div class="cockpit-card__header">
++                                <strong>@section.DisplayName</strong>
++                                <a href="@SafeDrillRoute(section.Navigation.Route, AgentsPath)">@section.Navigation.Label</a>
++                            </div>
+                             <dl class="cockpit-kpi-list mb-0 mt-3">
+-                                <div><dt>Active agents</dt><dd>@kpi.ActiveAgents</dd></div>
+-                                <div><dt>Open tasks</dt><dd>@kpi.OpenTasks</dd></div>
+-                                <div><dt>Done 7d</dt><dd>@kpi.CompletedTasksLast7Days</dd></div>
+-                                <div><dt>Approvals</dt><dd>@kpi.PendingApprovals</dd></div>
+-                                <div><dt>Workflows</dt><dd>@kpi.ActiveWorkflows</dd></div>
++                                <div><dt>Active agents</dt><dd>@SummaryCount(section, "active_agents")</dd></div>
++                                <div><dt>Open tasks</dt><dd>@SummaryCount(section, "open_tasks")</dd></div>
++                                <div><dt>Done 7d</dt><dd>@SummaryCount(section, "completed_tasks_7d")</dd></div>
++                                <div><dt>Approvals</dt><dd>@SummaryCount(section, "pending_approvals")</dd></div>
++                                <div><dt>Workflows</dt><dd>@SummaryCount(section, "active_workflows")</dd></div>
+                             </dl>
+-                        </a>
++                            @if (section.IsEmpty)
++                            {
++                                <div class="text-body-secondary mt-3">
++                                    <strong class="d-block">@section.EmptyState.Title</strong>
++                                    <span>@section.EmptyState.Message</span>
++                                </div>
++                            }
++                            @if (section.Widgets.Count > 0)
++                            {
++                                <div class="cockpit-empty-grid mt-3">
++                                    @foreach (var widget in section.Widgets)
++                                    {
++                                        <a class="agent-analytics-placeholder-card text-decoration-none text-reset" href="@SafeDrillRoute(widget.Navigation.Route, section.Navigation.Route)">
++                                            <strong>@widget.Title</strong>
++                                            <div class="h4 mt-2 mb-1">@widget.SummaryValue</div>
++                                            <p class="text-body-secondary mb-0">@(widget.IsEmpty ? widget.EmptyState.Message : widget.Navigation.Label)</p>
++                                        </a>
++                                    }
++                                </div>
++                            }
++                        </section>
+                     }
+                 </div>
+             </article>
+         }
+ 
+@@ -233,6 +260,7 @@
+     private bool isLoading = true;
+     private string? errorMessage;
+     private ExecutiveCockpitDashboardViewModel? dashboard;
++    private List<DepartmentDashboardSectionViewModel> departmentSections = [];
+ 
+     private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+     private string AgentsPath => $"/agents?companyId={CompanyId}";
+@@ -253,10 +281,14 @@
+         errorMessage = null;
+         dashboard = null;
++        departmentSections = [];
+ 
+         try
+         {
+-            dashboard = await ApiClient.GetAsync(CompanyId);
++            var dashboardTask = ApiClient.GetAsync(CompanyId);
++            var compositionTask = ApiClient.GetDepartmentCompositionAsync(CompanyId);
++            await Task.WhenAll(dashboardTask, compositionTask);
++            dashboard = await dashboardTask;
++            departmentSections = (await compositionTask)?.Sections.OrderBy(x => x.DisplayOrder).ToList() ?? [];
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -283,6 +315,9 @@
+         string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+ 
++    private static int SummaryCount(DepartmentDashboardSectionViewModel section, string key) =>
++        section.SummaryCounts.TryGetValue(key, out var value) ? value : 0;
++
+     private static string TrendGlyph(string? direction) =>
+         string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
+         string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
+diff --git a/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+index 56a2b6e..28fc6c1 100644
+--- a/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+@@ -22,7 +22,7 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         var companyId = await SeedCompanyAsync("dashboard-owner-order", "dashboard-owner-order@example.com", CompanyMembershipRole.Owner);
+ 
+         using var client = CreateAuthenticatedClient("dashboard-owner-order", "dashboard-owner-order@example.com");
+-        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit/department-sections");
++        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit/composition");
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var dashboard = await response.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
+@@ -32,11 +32,14 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         Assert.All(dashboard.Sections, section =>
+         {
+             Assert.NotEmpty(section.Widgets);
++            Assert.True(section.IsVisible);
+             Assert.Equal(section.Widgets.OrderBy(x => x.DisplayOrder).ThenBy(x => x.WidgetKey).Select(x => x.WidgetKey), section.Widgets.Select(x => x.WidgetKey));
+             Assert.NotEmpty(section.Navigation.Route);
+             Assert.NotNull(section.EmptyState);
++            Assert.All(section.Widgets, widget => Assert.True(widget.IsVisible));
+         });
+     }
+@@ -134,6 +137,7 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+         var finance = Assert.Single(dashboard!.Sections, x => x.DepartmentKey == "finance");
+         Assert.False(finance.HasData);
++        Assert.True(finance.IsEmpty);
+         Assert.All(finance.SummaryCounts.Values, value => Assert.Equal(0, value));
+         Assert.NotEmpty(finance.EmptyState.Title);
+         Assert.NotEmpty(finance.EmptyState.Message);
+@@ -142,6 +146,7 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         {
+             Assert.Equal(0, widget.SummaryValue);
+             Assert.False(widget.HasData);
++            Assert.True(widget.IsEmpty);
+             Assert.NotEmpty(widget.EmptyState.Message);
+         });
+     }
+@@ -178,9 +183,11 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         public string DepartmentKey { get; set; } = string.Empty;
+         public string DisplayName { get; set; } = string.Empty;
+         public int DisplayOrder { get; set; }
++        public bool IsVisible { get; set; }
+         public string? Icon { get; set; }
+         public bool HasData { get; set; }
+         public Dictionary<string, int> SummaryCounts { get; set; } = [];
++        public bool IsEmpty { get; set; }
+         public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
+         public DepartmentDashboardEmptyStateResponse EmptyState { get; set; } = new();
+         public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];
+@@ -193,9 +200,11 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixt
+         public string Title { get; set; } = string.Empty;
+         public string WidgetType { get; set; } = string.Empty;
+         public int DisplayOrder { get; set; }
++        public bool IsVisible { get; set; }
+         public string SummaryBinding { get; set; } = string.Empty;
+         public int SummaryValue { get; set; }
+         public bool HasData { get; set; }
++        public bool IsEmpty { get; set; }
+         public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
+         public DepartmentDashboardEmptyStateResponse EmptyState { get; set; } = new();
+     }
+END_OF_PATCH

@@ -1,0 +1,254 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 1b8f5d2..0d61c46 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -93,6 +93,10 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             query.StartUtc,
+             query.EndUtc);
+ 
++        _logger.LogDebug(
++            "Refreshing executive cockpit widget {WidgetKey} for company {CompanyId}.",
++            query.WidgetKey,
++            query.CompanyId);
+         var cached = await _cache.TryGetWidgetAsync<object>(scope, cancellationToken);
+         if (cached is not null)
+         {
+@@ -115,7 +119,8 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             ExecutiveCockpitWidgetKeys.Alerts => dashboard.Alerts,
+             ExecutiveCockpitWidgetKeys.DepartmentKpis => dashboard.DepartmentKpis,
+             ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
+-            ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
++            ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
++            ExecutiveCockpitWidgetKeys.Kpis => dashboard.DepartmentKpis,
+             _ => throw new KeyNotFoundException("Dashboard widget not found.")
+         };
+ 
+@@ -552,13 +557,12 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+     private static string FirstParagraph(string value, int maxLength)
+     {
+         var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+-}
+-
+-internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus Status);
+         return paragraph.Length <= maxLength ? paragraph : paragraph[..maxLength].TrimEnd() + "...";
+     }
+ 
+     private static string? BuildAuditRoute(Guid companyId, string targetType, string targetId)
+@@ -590,3 +594,11 @@ internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus
+ 
+         return membership;
+     }
++}
++
++internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus Status);
++
++internal sealed record AgentTaskDashboardAggregate(Guid AgentId, int OpenTasks, int CompletedTasksLast7Days);
++
++internal sealed record AgentApprovalDashboardAggregate(Guid? AgentId, int PendingApprovals);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 93d8a64..1ff03a9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -94,7 +94,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is TriggerExecutionAttempt ||
+                 entry.Entity is WorkflowDefinition ||
+                 entry.Entity is WorkflowInstance ||
+-                entry.Entity is WorkflowException)
++                entry.Entity is WorkflowException ||
++                entry.Entity is CompanyBriefing ||
++                entry.Entity is Alert)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 41bf3ed..da9cd2e 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -1,5 +1,6 @@
+ @using System.Diagnostics
++@using System.Diagnostics.Metrics
+ @inject ExecutiveCockpitApiClient ApiClient
+ @inject ILogger<ExecutiveCockpitDashboard> Logger
+ 
+@@ -36,6 +37,7 @@
+                 </div>
+                 <div class="dashboard-actions">
++                    <button class="btn btn-outline-secondary" @onclick="RefreshDashboardWidgetsAsync" disabled="@IsAnyWidgetLoading">Refresh cockpit</button>
+                     <a class="btn btn-outline-primary" href="@AgentsPath">Agents</a>
+                     <a class="btn btn-outline-primary" href="@TasksPath">Tasks</a>
+                     <a class="btn btn-outline-primary" href="@WorkflowsPath">Workflows</a>
+@@ -52,6 +54,7 @@
+                     </div>
+                     <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis")' disabled="@IsWidgetLoading("summary-kpis")">Refresh</button>
+                 </div>
++                @WidgetStatus("summary-kpis")
+                 <div class="cockpit-summary-kpi-grid mt-3">
+                     @foreach (var kpi in dashboard.SummaryKpis)
+                     {
+@@ -327,6 +330,8 @@
+     private readonly HashSet<string> loadingWidgets = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
++    private readonly Dictionary<string, DateTime> widgetSuccessUtc = new(StringComparer.OrdinalIgnoreCase);
++    private static readonly Histogram<double> WidgetRenderTiming = new Meter("VirtualCompany.ExecutiveCockpit.Web").CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
+ 
+     private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+     private string AgentsPath => $"/agents?companyId={CompanyId}";
+@@ -350,6 +355,8 @@
+         errorMessage = null;
+         dashboard = null;
+         kpiDashboard = null;
++        widgetErrors.Clear();
++        widgetSuccessUtc.Clear();
+ 
+         try
+         {
+@@ -417,7 +424,12 @@
+     }
+ 
+     private bool IsWidgetLoading(string widgetKey) => loadingWidgets.Contains(widgetKey);
++    private bool IsAnyWidgetLoading => loadingWidgets.Count > 0 || isKpiLoading;
+ 
+     private RenderFragment WidgetStatus(string widgetKey) => builder =>
+     {
++        var sequence = 0;
+         if (loadingWidgets.Contains(widgetKey))
+         {
+-            builder.OpenElement(0, "p");
+-            builder.AddAttribute(1, "class", "text-body-secondary mt-2 mb-0");
+-            builder.AddContent(2, "Refreshing...");
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mt-2 mb-0");
++            builder.AddAttribute(sequence++, "role", "status");
++            builder.AddAttribute(sequence++, "aria-live", "polite");
++            builder.AddContent(sequence++, "Refreshing this widget...");
+             builder.CloseElement();
+         }
+         else if (widgetErrors.TryGetValue(widgetKey, out var message))
+         {
+-            builder.OpenElement(3, "div");
+-            builder.AddAttribute(4, "class", "alert alert-warning mt-2 mb-0");
+-            builder.AddContent(5, message);
++            builder.OpenElement(sequence++, "div");
++            builder.AddAttribute(sequence++, "class", "alert alert-warning mt-2 mb-0");
++            builder.AddAttribute(sequence++, "role", "alert");
++            builder.AddContent(sequence++, message);
++            builder.CloseElement();
++        }
++        else if (widgetSuccessUtc.TryGetValue(widgetKey, out var refreshedUtc))
++        {
++            builder.OpenElement(sequence++, "p");
++            builder.AddAttribute(sequence++, "class", "text-body-secondary mt-2 mb-0");
++            builder.AddAttribute(sequence++, "aria-live", "polite");
++            builder.AddContent(sequence++, $"Updated {refreshedUtc.ToLocalTime():g}");
+             builder.CloseElement();
+         }
+     };
+ 
++    private async Task RefreshDashboardWidgetsAsync()
++    {
++        if (dashboard is null)
++        {
++            return;
++        }
++
++        await Task.WhenAll(
++            RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis"),
++            RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing"),
++            RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals"),
++            RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts"),
++            ReloadKpisCoreAsync());
++    }
++
+     private async Task RefreshWidgetAsync<TPayload>(string widgetKey)
+     {
+         if (dashboard is null)
+@@ -428,6 +450,7 @@
+ 
+         loadingWidgets.Add(widgetKey);
+         widgetErrors.Remove(widgetKey);
++        widgetSuccessUtc.Remove(widgetKey);
+         var stopwatch = Stopwatch.StartNew();
+ 
+         try
+@@ -438,10 +461,13 @@
+             Logger.LogInformation(
+                 "Executive cockpit widget {WidgetKey} rendered in {ElapsedMilliseconds} ms.",
+                 widgetKey,
+                 stopwatch.Elapsed.TotalMilliseconds);
++            WidgetRenderTiming.Record(stopwatch.Elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("widget", widgetKey));
++            widgetSuccessUtc[widgetKey] = result?.GeneratedAtUtc ?? DateTime.UtcNow;
+         }
+         catch (OnboardingApiException ex)
+         {
+             widgetErrors[widgetKey] = ex.Message;
++            Logger.LogWarning(ex, "Executive cockpit widget {WidgetKey} refresh failed.", widgetKey);
+         }
+         finally
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 79fc33b..eb1ee1c 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -102,6 +102,29 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Widget_endpoint_returns_scoped_payload_without_full_dashboard_fetch_contract()
++    {
++        var seed = await SeedCockpitCompanyAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/widgets/pending-approvals");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var widget = await response.Content.ReadFromJsonAsync<ExecutiveCockpitWidgetResponse>();
++
++        Assert.NotNull(widget);
++        Assert.Equal(seed.CompanyId, widget!.CompanyId);
++        Assert.Equal("pending-approvals", widget.WidgetKey);
++        Assert.NotNull(widget.Payload);
++        Assert.Contains(seed.ApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain(seed.OtherCompanyApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);
++    }
++
+     [Fact]
+     public void Dashboard_cache_keys_are_tenant_scoped()
+     {
+@@ -362,5 +385,12 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         public bool NoPendingApprovals { get; set; }
+         public bool NoAlerts { get; set; }
+     }
++
++    private sealed class ExecutiveCockpitWidgetResponse
++    {
++        public Guid CompanyId { get; set; }
++        public string WidgetKey { get; set; } = string.Empty;
++        public JsonNode? Payload { get; set; }
++    }
+ }
+diff --git a/README.md b/README.md
+index 7f06c4b..1b90442 100644
+--- a/README.md
++++ b/README.md
+@@ -126,6 +126,17 @@ seed data and local secrets are intentionally lightweight.
+ 
+ Use `dotnet test` from the solution root for the API and infrastructure regression suite.
+ 
++### Executive cockpit performance validation
++
++The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under
++`/api/companies/{companyId}/executive-cockpit/widgets/{widgetKey}`. Redis cache keys are scoped by company,
++effective membership role, normalized department filters, time range, and widget/query identity. Dashboard
++cache invalidation is version-token based, so task, workflow, approval, briefing, alert, and agent status
++updates move the company cache namespace without requiring wildcard Redis deletes.
++
++For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,
++`executive_cockpit_cache_hits`, `executive_cockpit_cache_misses`, and
++`executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.
++Cached dashboard and widget requests should remain below the 2.5 second p95 target.
++
+ ## Architecture notes
+ 
+ The solution follows a modular monolith shape:
+END_OF_PATCH

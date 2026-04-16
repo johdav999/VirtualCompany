@@ -1,0 +1,160 @@
+@using VirtualCompany.Web.Services
+
+<aside class="activity-correlation-panel" aria-live="polite">
+    <div class="activity-correlation-panel__header">
+        <div>
+            <span class="dashboard-kicker">Correlation</span>
+            <h2 class="h5 mb-1">Drill-down</h2>
+            <p class="text-body-secondary mb-0">Select an activity item to inspect linked work.</p>
+        </div>
+    </div>
+
+    @if (IsLoading)
+    {
+        <div class="activity-correlation-state">
+            <strong>Loading correlation...</strong>
+            <span class="text-body-secondary">Resolving linked tasks, workflows, approvals, and tool executions.</span>
+        </div>
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="alert alert-danger mb-0">@ErrorMessage</div>
+    }
+    else if (Timeline is null)
+    {
+        <div class="activity-correlation-state">
+            <strong>No activity selected</strong>
+            <span class="text-body-secondary">Choose an event from the timeline.</span>
+        </div>
+    }
+    else
+    {
+        var selected = Timeline.Items.FirstOrDefault(x => x.Activity.EventId == SelectedActivityEventId);
+
+        <section class="activity-correlation-section">
+            <h3 class="h6">Selected event</h3>
+            @if (selected is null)
+            {
+                <p class="text-body-secondary mb-0">The selected item is no longer available in this correlation.</p>
+            }
+            else
+            {
+                <div class="activity-correlation-selected">
+                    <span class="activity-feed-type">@FormatToken(selected.Activity.EventType)</span>
+                    <span class="activity-feed-status activity-feed-status--@StatusClass(selected.Activity.Status)">@FormatToken(selected.Activity.Status)</span>
+                    <strong>@selected.Activity.Summary</strong>
+                    <small>@selected.Activity.OccurredAt.ToLocalTime():g</small>
+                </div>
+            }
+        </section>
+
+        <section class="activity-correlation-section">
+            <div class="activity-correlation-section__title">
+                <h3 class="h6 mb-0">Linked entities</h3>
+                <span>@(Timeline.SelectedActivityLinks?.LinkedEntities.Count ?? 0)</span>
+            </div>
+
+            @if (Timeline.SelectedActivityLinks?.LinkedEntities.Count > 0)
+            {
+                <div class="activity-linked-entities">
+                    @foreach (var link in Timeline.SelectedActivityLinks.LinkedEntities)
+                    {
+                        <article class="activity-linked-entity @(link.IsAvailable ? string.Empty : "activity-linked-entity--unavailable")" @key="ActivityLinkKey(link)">
+                            <div>
+                                <span class="activity-linked-entity__type">@FormatEntityType(link.EntityType)</span>
+                                <h4 class="h6 mb-1">@link.DisplayText</h4>
+                                <p class="text-body-secondary mb-0">@link.EntityId</p>
+                            </div>
+                            <div class="activity-linked-entity__status">
+                                @if (link.IsAvailable)
+                                {
+                                    <span class="activity-feed-status activity-feed-status--@StatusClass(link.CurrentStatus ?? string.Empty)">
+                                        @FormatToken(link.CurrentStatus ?? "available")
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span class="activity-feed-status activity-feed-status--failed">
+                                        @FormatUnavailable(link)
+                                    </span>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+            else
+            {
+                <p class="text-body-secondary mb-0">No linked entities were recorded for this activity item.</p>
+            }
+        </section>
+
+        <section class="activity-correlation-section">
+            <div class="activity-correlation-section__title">
+                <h3 class="h6 mb-0">Event sequence</h3>
+                <span>@Timeline.Items.Count</span>
+            </div>
+            <div class="activity-correlation-events">
+                @foreach (var item in Timeline.Items)
+                {
+                    var isSelected = item.Activity.EventId == SelectedActivityEventId;
+                    <button class="activity-correlation-event @(isSelected ? "activity-correlation-event--selected" : string.Empty)"
+                            type="button"
+                            @key="item.Activity.EventId"
+                            @onclick="() => SelectAsync(item.Activity.EventId)">
+                        <span>@item.Activity.OccurredAt.ToLocalTime():g</span>
+                        <strong>@item.Activity.Summary</strong>
+                        <small>@FormatToken(item.Activity.EventType)</small>
+                    </button>
+                }
+            </div>
+        </section>
+    }
+</aside>
+
+@code {
+    [Parameter]
+    public ActivityCorrelationTimelineViewModel? Timeline { get; set; }
+
+    [Parameter]
+    public Guid? SelectedActivityEventId { get; set; }
+
+    [Parameter]
+    public bool IsLoading { get; set; }
+
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    [Parameter]
+    public EventCallback<Guid> OnSelectActivity { get; set; }
+
+    private Task SelectAsync(Guid activityEventId) =>
+        OnSelectActivity.HasDelegate ? OnSelectActivity.InvokeAsync(activityEventId) : Task.CompletedTask;
+
+    private static string ActivityLinkKey(ActivityLinkedEntityViewModel link) =>
+        $"{link.EntityType}:{link.EntityId:N}";
+
+    private static string FormatEntityType(string value) =>
+        value.Equals("workflowInstance", StringComparison.OrdinalIgnoreCase)
+            ? "Workflow"
+            : value.Equals("toolExecution", StringComparison.OrdinalIgnoreCase)
+                ? "Tool execution"
+                : FormatToken(value);
+
+    private static string FormatUnavailable(ActivityLinkedEntityViewModel link) =>
+        link.Availability.Equals("unavailable_forbidden", StringComparison.OrdinalIgnoreCase)
+            ? "Unavailable"
+            : link.Availability.Equals("unavailable_deleted", StringComparison.OrdinalIgnoreCase)
+                ? "Deleted"
+                : "Missing";
+
+    private static string FormatToken(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "unknown" : value.Replace("_", " ", StringComparison.Ordinal);
+
+    private static string StatusClass(string status) =>
+        status.Equals("completed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) ? "completed" :
+        status.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("error", StringComparison.OrdinalIgnoreCase) ? "failed" :
+        status.Equals("pending", StringComparison.OrdinalIgnoreCase) ? "pending" : "running";
+}

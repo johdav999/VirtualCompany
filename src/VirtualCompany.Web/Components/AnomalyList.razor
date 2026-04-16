@@ -1,0 +1,82 @@
+@using VirtualCompany.Web.Services
+
+@if (Items.Count == 0)
+{
+    <p class="text-body-secondary mb-0">@EmptyText</p>
+}
+else
+{
+    <div class="activity-list">
+        @foreach (var anomaly in Items)
+        {
+            <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(anomaly.Route, FallbackRoute)">
+                <span class="@SeverityBadgeClass(anomaly.Severity)">@anomaly.Severity</span>
+                <strong class="d-block mt-2">@anomaly.Label</strong>
+                <div class="text-body-secondary">@anomaly.Department | @FormatReason(anomaly.Reason)</div>
+                <p class="mb-1">@anomaly.Summary</p>
+                <dl class="cockpit-kpi-list anomaly-list__details mb-1 mt-2">
+                    <div>
+                        <dt>Current</dt>
+                        <dd>@FormatMetric(anomaly.CurrentValue)</dd>
+                    </div>
+                    @if (anomaly.BaselineValue is not null)
+                    {
+                        <div>
+                            <dt>Baseline</dt>
+                            <dd>@FormatMetric(anomaly.BaselineValue.Value)</dd>
+                        </div>
+                    }
+                    @if (anomaly.ThresholdValue is not null)
+                    {
+                        <div>
+                            <dt>Threshold</dt>
+                            <dd>@FormatMetric(anomaly.ThresholdValue.Value)</dd>
+                        </div>
+                    }
+                    @if (anomaly.DeviationPercentage is not null)
+                    {
+                        <div>
+                            <dt>Deviation</dt>
+                            <dd>@anomaly.DeviationPercentage.Value.ToString("+0.#;-0.#;0")%</dd>
+                        </div>
+                    }
+                </dl>
+                <small>@anomaly.OccurredUtc.ToLocalTime():g</small>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<ExecutiveCockpitAnomalyViewModel> Items { get; set; } = [];
+
+    [Parameter]
+    public string EmptyText { get; set; } = "No anomalies match the current filters.";
+
+    [Parameter]
+    public string FallbackRoute { get; set; } = "/dashboard";
+
+    private static bool HasDrillRoute(string? route) =>
+        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+
+    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
+        HasDrillRoute(route) ? route! : fallbackRoute;
+
+    private static string FormatReason(string reason) =>
+        string.Join(
+            ", ",
+            reason.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(x => x.Replace("_", " ")));
+
+    private static string FormatMetric(decimal value) =>
+        value % 1 == 0 ? value.ToString("0") : value.ToString("0.##");
+
+    private static string SeverityBadgeClass(string severity) =>
+        severity.Trim().ToLowerInvariant() switch
+        {
+            "critical" => "badge text-bg-danger",
+            "warning" => "badge text-bg-warning",
+            _ => "badge text-bg-secondary"
+        };
+}

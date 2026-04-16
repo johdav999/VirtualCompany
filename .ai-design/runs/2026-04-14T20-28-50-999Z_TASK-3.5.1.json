@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.5.1",
+  "promptPath": ".ai-design/prompts/TASK-3.5.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:28:50.999Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-28-50-999Z_TASK-3.5.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-28-50-999Z_TASK-3.5.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:34:52.649Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "      Assert.NotNull(await cache.TryGetAsync(companyB, CancellationToken.None));\n     }\n \n+    [Fact]\n+    public void Cache_key_generation_normalizes_role_filters_time_range_and_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var keyA = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"Owner\",\n+            [\"Sales\", \" finance \", \"sales\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"owner\",\n+            [\"finance\", \"SALES\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+        var keyC = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"manager\",\n+            [\"finance\", \"SALES\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+\n+        Assert.Equal(keyA, keyB);\n+        Assert.NotEqual(keyA, keyC);\n+    }\n+\n     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>\n         new(\n             distributedCache,\n+            new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions\n+            {\n+                Enabled = true,\n+                KeyPrefix = \"vc:executive-cockpit\",\n+                KeyVersion = \"tests-v1\",\n+                TtlSeconds = 60\n+            })),\n             Options.Create(new ExecutiveCockpitDashboardCacheOptions\n             {\n                 Enabled = true,\n                 KeyPrefix = \"vc:executive-cockpit\",\nEND_OF_PATCH\n",
+  "stderrTail": "l(await cache.TryGetAsync(companyB, CancellationToken.None));\n     }\n \n+    [Fact]\n+    public void Cache_key_generation_normalizes_role_filters_time_range_and_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var keyA = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"Owner\",\n+            [\"Sales\", \" finance \", \"sales\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"owner\",\n+            [\"finance\", \"SALES\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+        var keyC = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(\n+            companyId,\n+            \"manager\",\n+            [\"finance\", \"SALES\"],\n+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),\n+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),\n+            \"widget:kpis\"));\n+\n+        Assert.Equal(keyA, keyB);\n+        Assert.NotEqual(keyA, keyC);\n+    }\n+\n     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>\n         new(\n             distributedCache,\n+            new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions\n+            {\n+                Enabled = true,\n+                KeyPrefix = \"vc:executive-cockpit\",\n+                KeyVersion = \"tests-v1\",\n+                TtlSeconds = 60\n+            })),\n             Options.Create(new ExecutiveCockpitDashboardCacheOptions\n             {\n                 Enabled = true,\n                 KeyPrefix = \"vc:executive-cockpit\",\nEND_OF_PATCH\ntokens used\n87,155\n",
+  "verbosityMode": "summary"
+}

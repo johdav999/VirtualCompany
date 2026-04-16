@@ -49,6 +49,14 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
         Assert.True(dashboard.EmptyStateFlags.NoRecentActivity);
         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);
         Assert.True(dashboard.EmptyStateFlags.NoAlerts);
+        Assert.Equal(["finance", "sales", "support", "operations"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());
+        Assert.Equal([10, 20, 30, 40], dashboard.DepartmentSections.Select(x => x.DisplayOrder).ToArray());
+        Assert.All(dashboard.DepartmentSections, section => Assert.All(section.Widgets, widget => Assert.True(widget.IsVisible)));
+        Assert.All(dashboard.DepartmentSections, section =>
+        {
+            Assert.False(section.HasData);
+            Assert.All(section.SummaryCounts.Values, value => Assert.Equal(0, value));
+        });
     }
 
     [Fact]
@@ -77,6 +85,10 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
         Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId);
         Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId && x.Route?.Contains($"workflowInstanceId={seed.WorkflowInstanceId}", StringComparison.OrdinalIgnoreCase) == true);
         Assert.Contains(dashboard.DepartmentKpis, x => x.Department == "Operations" && x.ActiveAgents == 1);
+        Assert.Equal(["finance", "sales", "support", "operations"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());
+        var operationsSection = Assert.Single(dashboard.DepartmentSections, x => x.DepartmentKey == "operations");
+        Assert.True(operationsSection.HasData);
+        Assert.Contains(operationsSection.Widgets, x => x.WidgetType == "summary_count" && !string.IsNullOrWhiteSpace(x.Navigation.Route));
         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId);
         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId && x.Route?.Contains($"taskId={seed.TaskId}", StringComparison.OrdinalIgnoreCase) == true);
         Assert.True(dashboard.SetupState.HasAgents);
@@ -90,6 +102,25 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
 
         var otherCompanyResponse = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/executive-cockpit");
         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Widget_endpoint_returns_scoped_payload_without_full_dashboard_fetch_contract()
+    {
+        var seed = await SeedCockpitCompanyAsync();
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/widgets/pending-approvals");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var widget = await response.Content.ReadFromJsonAsync<ExecutiveCockpitWidgetResponse>();
+
+        Assert.NotNull(widget);
+        Assert.Equal(seed.CompanyId, widget!.CompanyId);
+        Assert.Equal("pending-approvals", widget.WidgetKey);
+        Assert.NotNull(widget.Payload);
+        Assert.Contains(seed.ApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(seed.OtherCompanyApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -260,6 +291,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
         public ExecutiveCockpitPendingApprovalsResponse PendingApprovals { get; set; } = new();
         public List<ExecutiveCockpitAlertResponse> Alerts { get; set; } = [];
         public List<ExecutiveCockpitDepartmentKpiResponse> DepartmentKpis { get; set; } = [];
+        public List<DepartmentDashboardSectionResponse> DepartmentSections { get; set; } = [];
         public List<ExecutiveCockpitActivityResponse> RecentActivity { get; set; } = [];
         public ExecutiveCockpitSetupStateResponse SetupState { get; set; } = new();
         public ExecutiveCockpitEmptyStateFlagsResponse EmptyStateFlags { get; set; } = new();
@@ -283,6 +315,21 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
     private sealed class ExecutiveCockpitApprovalResponse { public Guid Id { get; set; } public string Route { get; set; } = string.Empty; }
     private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } public string? Route { get; set; } }
     private sealed class ExecutiveCockpitDepartmentKpiResponse { public string Department { get; set; } = string.Empty; public int ActiveAgents { get; set; } }
+    private sealed class DepartmentDashboardSectionResponse
+    {
+        public string DepartmentKey { get; set; } = string.Empty;
+        public int DisplayOrder { get; set; }
+        public bool HasData { get; set; }
+        public Dictionary<string, int> SummaryCounts { get; set; } = [];
+        public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];
+    }
+    private sealed class DepartmentDashboardWidgetResponse
+    {
+        public string WidgetType { get; set; } = string.Empty;
+        public bool IsVisible { get; set; }
+        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
+    }
+    private sealed class DepartmentDashboardNavigationResponse { public string Route { get; set; } = string.Empty; }
     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }
     private sealed class ExecutiveCockpitSetupStateResponse
     {
@@ -303,5 +350,12 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
         public bool NoRecentActivity { get; set; }
         public bool NoPendingApprovals { get; set; }
         public bool NoAlerts { get; set; }
+    }
+
+    private sealed class ExecutiveCockpitWidgetResponse
+    {
+        public Guid CompanyId { get; set; }
+        public string WidgetKey { get; set; } = string.Empty;
+        public JsonNode? Payload { get; set; }
     }
 }

@@ -1,0 +1,43 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+index 4c8db21..3a5f41e 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyNotificationService.cs
+@@ -289,6 +289,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
+             "escalation" => CompanyNotificationType.Escalation,
+             "workflow_failure" => CompanyNotificationType.WorkflowFailure,
+             "briefing_available" => CompanyNotificationType.BriefingAvailable,
++            "proactive_message" => CompanyNotificationType.ProactiveMessage,
+             _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
+             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported notification type value.")
+         };
+diff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+index 66b3d8f..f1bbd5c 100644
+--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
++++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs
+@@ -39,6 +39,16 @@ public sealed class NotificationInboxTests
+         Assert.Throws<InvalidOperationException>(notification.MarkUnread);
+     }
+ 
++    [Fact]
++    public void Proactive_message_notification_uses_supported_storage_value()
++    {
++        var notification = CreateNotification(CompanyNotificationType.ProactiveMessage, CompanyNotificationPriority.Normal);
++
++        Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);
++        Assert.Equal("proactive_message", notification.Type.ToStorageValue());
++        Assert.Equal("proactive_message", notification.RelatedEntityType);
++    }
++
+     [Fact]
+     public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()
+     {
+@@ -168,7 +178,7 @@ public sealed class NotificationInboxTests
+             type,
+             type.ToStorageValue(),
+             "Notification body.",
+-            type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : "approval_request",
++            type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : type.ToStorageValue(),
+             Guid.NewGuid(),
+             "/inbox",
+             "{}",
+END_OF_PATCH

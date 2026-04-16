@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.4.2",
+  "promptPath": ".ai-design/prompts/TASK-13.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:12:57.684Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-12-57-684Z_TASK-13.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-12-57-684Z_TASK-13.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:15:21.612Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ",\n         ITriggerOrchestrationDispatcher dispatcher) =>\n@@ -274,5 +312,39 @@ public sealed class TriggerExecutionServiceTests\n             return Task.FromResult(new TriggerExecutionDispatchResult(\n                 AuditTargetTypes.WorkTask,\n                 Guid.NewGuid().ToString(\"N\")));\n         }\n     }\n+\n+    private sealed class ThrowingTriggerExecutionService : ITriggerExecutionService\n+    {\n+        public int ScheduledCalls { get; private set; }\n+\n+        public Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(\n+            TriggerExecutionWorkItem workItem,\n+            int maxRetryAttempts,\n+            CancellationToken cancellationToken,\n+            int retryBackoffSeconds = 0) =>\n+            throw new InvalidOperationException(\"Worker execution outage.\");\n+\n+        public Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(\n+            AgentScheduledTriggerExecutionRequestMessage message,\n+            int maxRetryAttempts,\n+            CancellationToken cancellationToken,\n+            int retryBackoffSeconds = 0)\n+        {\n+            ScheduledCalls++;\n+            throw new InvalidOperationException(\"Worker execution outage.\");\n+        }\n+    }\n+\n+    private sealed class NoOpConditionTriggerEvaluationService : IConditionTriggerEvaluationService\n+    {\n+        public Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(\n+            EvaluateConditionTriggerCommand command,\n+            CancellationToken cancellationToken) =>\n+            throw new InvalidOperationException(\"Condition evaluation should not run for this test.\");\n+    }\n+\n+    private sealed class FixedNextRunCalculator : IScheduledTriggerNextRunCalculator\n+    {\n+        private readonly DateTime? _nextRunUtc;\n+\n+        public FixedNextRunCalculator(DateTime? nextRunUtc) => _nextRunUtc = nextRunUtc;\n+\n+        public DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc) => _nextRunUtc;\n+    }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "OrchestrationDispatcher dispatcher) =>\n@@ -274,5 +312,39 @@ public sealed class TriggerExecutionServiceTests\n             return Task.FromResult(new TriggerExecutionDispatchResult(\n                 AuditTargetTypes.WorkTask,\n                 Guid.NewGuid().ToString(\"N\")));\n         }\n     }\n+\n+    private sealed class ThrowingTriggerExecutionService : ITriggerExecutionService\n+    {\n+        public int ScheduledCalls { get; private set; }\n+\n+        public Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(\n+            TriggerExecutionWorkItem workItem,\n+            int maxRetryAttempts,\n+            CancellationToken cancellationToken,\n+            int retryBackoffSeconds = 0) =>\n+            throw new InvalidOperationException(\"Worker execution outage.\");\n+\n+        public Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(\n+            AgentScheduledTriggerExecutionRequestMessage message,\n+            int maxRetryAttempts,\n+            CancellationToken cancellationToken,\n+            int retryBackoffSeconds = 0)\n+        {\n+            ScheduledCalls++;\n+            throw new InvalidOperationException(\"Worker execution outage.\");\n+        }\n+    }\n+\n+    private sealed class NoOpConditionTriggerEvaluationService : IConditionTriggerEvaluationService\n+    {\n+        public Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(\n+            EvaluateConditionTriggerCommand command,\n+            CancellationToken cancellationToken) =>\n+            throw new InvalidOperationException(\"Condition evaluation should not run for this test.\");\n+    }\n+\n+    private sealed class FixedNextRunCalculator : IScheduledTriggerNextRunCalculator\n+    {\n+        private readonly DateTime? _nextRunUtc;\n+\n+        public FixedNextRunCalculator(DateTime? nextRunUtc) => _nextRunUtc = nextRunUtc;\n+\n+        public DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc) => _nextRunUtc;\n+    }\n }\nEND_OF_PATCH\ntokens used\n81,538\n",
+  "verbosityMode": "summary"
+}

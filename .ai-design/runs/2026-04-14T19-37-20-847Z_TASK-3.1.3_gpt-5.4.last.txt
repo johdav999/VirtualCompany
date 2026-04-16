@@ -1,0 +1,250 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -15,6 +15,7 @@ public sealed record ExecutiveCockpitDashboardDto(
+     ExecutiveCockpitPendingApprovalsDto PendingApprovals,
+     IReadOnlyList<ExecutiveCockpitAlertDto> Alerts,
+     IReadOnlyList<ExecutiveCockpitDepartmentKpiDto> DepartmentKpis,
++    IReadOnlyList<DepartmentDashboardSectionDto> DepartmentSections,
+     IReadOnlyList<ExecutiveCockpitActivityItemDto> RecentActivity,
+     ExecutiveCockpitSetupStateDto SetupState,
+     ExecutiveCockpitEmptyStateFlagsDto EmptyStateFlags);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+@@ -128,21 +128,25 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartmentD
+ 
+     private async Task EnsureDefaultConfigurationAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+-        var hasAnyConfig = await _dbContext.DashboardDepartmentConfigs
++        var existingDepartments = await _dbContext.DashboardDepartmentConfigs
+             .IgnoreQueryFilters()
+-            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
++            .Where(x => x.CompanyId == companyId)
++            .Select(x => x.Department)
++            .ToListAsync(cancellationToken);
+ 
+-        if (hasAnyConfig)
++        var existingDepartmentSet = existingDepartments.ToHashSet(StringComparer.OrdinalIgnoreCase);
++        var missingSeeds = DefaultDepartmentDashboardConfigSeeds.Create(companyId)
++            .Where(x => !existingDepartmentSet.Contains(x.Department))
++            .ToList();
++
++        if (missingSeeds.Count == 0)
+         {
+             return;
+         }
+ 
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        foreach (var seed in DefaultDepartmentDashboardConfigSeeds.Create(companyId))
++        foreach (var seed in missingSeeds)
+         {
+             SetTimestamp(seed, nowUtc);
+-            foreach (var widget in seed.Widgets)
+-            {
+-                SetTimestamp(widget, nowUtc);
+-            }
++            foreach (var widget in seed.Widgets) SetTimestamp(widget, nowUtc);
+ 
+             _dbContext.DashboardDepartmentConfigs.Add(seed);
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -17,6 +17,7 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+     private readonly IExecutiveCockpitDashboardCache _cache;
+     private readonly TimeProvider _timeProvider;
+     private readonly ILogger<CompanyExecutiveCockpitDashboardService> _logger;
+@@ -24,12 +25,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+     public CompanyExecutiveCockpitDashboardService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
++        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+         IExecutiveCockpitDashboardCache cache,
+         TimeProvider timeProvider,
+         ILogger<CompanyExecutiveCockpitDashboardService> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
++        _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+         _cache = cache;
+         _timeProvider = timeProvider;
+         _logger = logger;
+@@ -49,10 +52,15 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         if (cached is not null)
+         {
+             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+-            return cached.Dashboard with
++            var visibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
++            return cached.Dashboard with
+             {
+-                CacheTimestampUtc = cached.CachedAtUtc
++                CacheTimestampUtc = cached.CachedAtUtc,
++                DepartmentSections = visibleSections
+             };
+         }
+ 
+         _logger.LogDebug(
+@@ -60,10 +68,11 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             query.CompanyId);
+         var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
+         var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var cacheableDashboard = dashboard with { CacheTimestampUtc = null };
++        var visibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
++        var cacheableDashboard = dashboard with { CacheTimestampUtc = null, DepartmentSections = [] };
+         await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
+-        return cacheableDashboard;
++        return cacheableDashboard with { DepartmentSections = visibleSections };
+     }
+ 
+     private async Task<ExecutiveCockpitDashboardDto> BuildAsync(
+@@ -301,9 +310,17 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             pendingApprovals,
+             alerts,
+             departmentKpis,
++            [],
+             recentActivity,
+             setupState,
+             emptyStates);
+     }
+ 
++    private async Task<IReadOnlyList<DepartmentDashboardSectionDto>> GetVisibleDepartmentSectionsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        (await _departmentDashboardConfigurationService.GetAsync(
++            new GetDepartmentDashboardConfigurationQuery(companyId),
++            cancellationToken)).Sections;
++
+     private async Task<IReadOnlyList<ExecutiveCockpitSummaryKpiDto>> BuildSummaryKpisAsync(
+         Guid companyId,
+         DateTime nowUtc,
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -232,16 +232,9 @@
+                                 </div>
+                             }
+                         </section>
+-                        else
+-                        {
+-                            <div class="activity-item">
+-                                @ActivityContent(item)
+-                            </div>
+-                        }
+                     }
+                 </div>
+-            }
+-        </article>
++            </article>
++        }
+     }
+ </section>
+ 
+@@ -278,10 +271,8 @@
+ 
+         try
+         {
+-            var dashboardTask = ApiClient.GetAsync(CompanyId);
+-            var compositionTask = ApiClient.GetDepartmentCompositionAsync(CompanyId);
+-            await Task.WhenAll(dashboardTask, compositionTask);
+-            dashboard = await dashboardTask;
+-            departmentSections = (await compositionTask)?.Sections.OrderBy(x => x.DisplayOrder).ToList() ?? [];
++            dashboard = await ApiClient.GetAsync(CompanyId);
++            departmentSections = dashboard?.DepartmentSections.OrderBy(x => x.DisplayOrder).ToList() ?? [];
+         }
+         catch (OnboardingApiException ex)
+         {
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -125,6 +125,7 @@ public sealed class ExecutiveCockpitApiClient
+                     IsEmpty = true
+                 }
+             ],
++            DepartmentSections = OfflineDepartmentComposition(companyId).Sections,
+             PendingApprovals = new ExecutiveCockpitPendingApprovalsViewModel
+             {
+                 TotalCount = 0,
+@@ -275,6 +276,7 @@ public sealed class ExecutiveCockpitDashboardViewModel
+     public ExecutiveCockpitPendingApprovalsViewModel PendingApprovals { get; set; } = new();
+     public List<ExecutiveCockpitAlertViewModel> Alerts { get; set; } = [];
+     public List<ExecutiveCockpitDepartmentKpiViewModel> DepartmentKpis { get; set; } = [];
++    public List<DepartmentDashboardSectionViewModel> DepartmentSections { get; set; } = [];
+     public List<ExecutiveCockpitActivityItemViewModel> RecentActivity { get; set; } = [];
+     public ExecutiveCockpitSetupStateViewModel SetupState { get; set; } = new();
+     public ExecutiveCockpitEmptyStateFlagsViewModel EmptyStateFlags { get; set; } = new();
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+@@ -119,6 +119,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+             [],
+             [],
+             [],
++            [],
+             new ExecutiveCockpitSetupStateDto(false, false, false, 0, 0, 0, true),
+             new ExecutiveCockpitEmptyStateFlagsDto(true, true, true, true, true, true));
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -38,6 +38,11 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Equal(0, dashboard.SetupState.KnowledgeDocumentCount);
+         Assert.True(dashboard.SetupState.IsInitialSetupEmpty);
+         Assert.True(dashboard.EmptyStateFlags.NoRecentActivity);
+         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);
+         Assert.True(dashboard.EmptyStateFlags.NoAlerts);
++        Assert.Equal(["finance", "sales", "support", "operations"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());
++        Assert.All(dashboard.DepartmentSections, section =>
++        {
++            Assert.False(section.HasData);
++            Assert.All(section.SummaryCounts.Values, value => Assert.Equal(0, value));
++        });
+     }
+ 
+     [Fact]
+@@ -77,6 +82,10 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId);
+         Assert.Contains(dashboard.Alerts, x => x.SourceId == seed.WorkflowExceptionId && x.Route?.Contains($"workflowInstanceId={seed.WorkflowInstanceId}", StringComparison.OrdinalIgnoreCase) == true);
+         Assert.Contains(dashboard.DepartmentKpis, x => x.Department == "Operations" && x.ActiveAgents == 1);
++        Assert.Equal(["finance", "sales", "support", "operations"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());
++        var operationsSection = Assert.Single(dashboard.DepartmentSections, x => x.DepartmentKey == "operations");
++        Assert.True(operationsSection.HasData);
++        Assert.Contains(operationsSection.Widgets, x => x.WidgetType == "summary_count" && !string.IsNullOrWhiteSpace(x.Navigation.Route));
+         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId);
+         Assert.Contains(dashboard.RecentActivity, x => x.Id == seed.TaskId && x.Route?.Contains($"taskId={seed.TaskId}", StringComparison.OrdinalIgnoreCase) == true);
+         Assert.True(dashboard.SetupState.HasAgents);
+@@ -290,6 +299,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+         public ExecutiveCockpitPendingApprovalsResponse PendingApprovals { get; set; } = new();
+         public List<ExecutiveCockpitAlertResponse> Alerts { get; set; } = [];
+         public List<ExecutiveCockpitDepartmentKpiResponse> DepartmentKpis { get; set; } = [];
++        public List<DepartmentDashboardSectionResponse> DepartmentSections { get; set; } = [];
+         public List<ExecutiveCockpitActivityResponse> RecentActivity { get; set; } = [];
+         public ExecutiveCockpitSetupStateResponse SetupState { get; set; } = new();
+         public ExecutiveCockpitEmptyStateFlagsResponse EmptyStateFlags { get; set; } = new();
+@@ -311,6 +321,12 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes
+     private sealed class ExecutiveCockpitAlertResponse { public Guid? SourceId { get; set; } public string? Route { get; set; } }
+     private sealed class ExecutiveCockpitDepartmentKpiResponse { public string Department { get; set; } = string.Empty; public int ActiveAgents { get; set; } }
++    private sealed class DepartmentDashboardSectionResponse
++    {
++        public string DepartmentKey { get; set; } = string.Empty;
++        public bool HasData { get; set; }
++        public Dictionary<string, int> SummaryCounts { get; set; } = [];
++        public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];
++    }
++    private sealed class DepartmentDashboardWidgetResponse { public string WidgetType { get; set; } = string.Empty; public DepartmentDashboardNavigationResponse Navigation { get; set; } = new(); }
++    private sealed class DepartmentDashboardNavigationResponse { public string Route { get; set; } = string.Empty; }
+     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }
+     private sealed class ExecutiveCockpitSetupStateResponse
+     {
+END_OF_PATCH

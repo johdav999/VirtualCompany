@@ -56,11 +56,44 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
     }
 
     [Fact]
+    public async Task Trigger_creation_rejects_invalid_condition_criteria_with_field_errors()
+    {
+        var seed = await SeedMembershipAsync("condition-trigger-invalid", "condition-trigger-invalid@example.com", "Condition Trigger Invalid");
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+
+        var definition = await CreateEventDefinitionAsync(client, seed.CompanyId, "invalid-condition-definition");
+
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{definition.Id}/triggers", new
+        {
+            eventName = SupportedPlatformEventTypeRegistry.TaskUpdated,
+            criteriaJson = new Dictionary<string, JsonNode?>
+            {
+                ["condition"] = new JsonObject
+                {
+                    ["target"] = new JsonObject
+                    {
+                        ["sourceType"] = "metric"
+                    },
+                    ["operator"] = "greaterThan",
+                    ["valueType"] = "number"
+                }
+            },
+            isEnabled = true
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var content = await response.Content.ReadAsStringAsync();
+        Assert.Contains("CriteriaJson.condition.target.metricName", content);
+        Assert.Contains("CriteriaJson.condition.comparisonValue", content);
+    }
+
+    [Fact]
     public async Task Event_envelope_matches_enabled_same_tenant_triggers_only()
     {
         var seed = await SeedTwoMembershipsAsync();
         var enabledDefinitionId = Guid.NewGuid();
         var disabledDefinitionId = Guid.NewGuid();
+        var filteredDefinitionId = Guid.NewGuid();
         var otherDefinitionId = Guid.NewGuid();
 
         await _factory.SeedAsync(dbContext =>
@@ -84,6 +117,15 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
                 1,
                 ValidDefinition("disabled-step")));
             dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                filteredDefinitionId,
+                seed.CompanyId,
+                "task-created-filtered",
+                "Task created filtered",
+                "Operations",
+                WorkflowTriggerType.Event,
+                1,
+                ValidDefinition("filtered-step")));
+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
                 otherDefinitionId,
                 seed.OtherCompanyId,
                 "task-created-other",
@@ -106,6 +148,19 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
                 isEnabled: false));
             dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
                 Guid.NewGuid(),
+                seed.CompanyId,
+                filteredDefinitionId,
+                SupportedPlatformEventTypeRegistry.TaskCreated,
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["sourceEntityType"] = JsonValue.Create("work_task"),
+                    ["metadata"] = new JsonObject
+                    {
+                        ["source"] = JsonValue.Create("does-not-match")
+                    }
+                }));
+            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
+                Guid.NewGuid(),
                 seed.OtherCompanyId,
                 otherDefinitionId,
                 SupportedPlatformEventTypeRegistry.TaskCreated));
@@ -124,7 +179,8 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
 
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var allStarted = await dbContext.WorkflowInstances.IgnoreQueryFilters().Where(x => x.TriggerRef == "evt-task-created-1").ToListAsync();
-        Assert.Single(allStarted);
+        var startedInstance = Assert.Single(allStarted);
+        Assert.Equal(enabledDefinitionId, startedInstance.DefinitionId);
     }
 
     [Fact]
@@ -288,6 +344,70 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
     }
 
     [Fact]
+    public async Task Event_trigger_criteria_filters_source_and_metadata_before_starting_workflow()
+    {
+        var seed = await SeedMembershipAsync("event-trigger-criteria", "event-trigger-criteria@example.com", "Event Trigger Criteria");
+        var matchingDefinitionId = Guid.NewGuid();
+        var nonMatchingDefinitionId = Guid.NewGuid();
+
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                matchingDefinitionId,
+                seed.CompanyId,
+                "task-updated-matching-criteria",
+                "Task updated matching criteria",
+                "Operations",
+                WorkflowTriggerType.Event,
+                1,
+                ValidDefinition("matching-criteria-step")));
+            dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
+                nonMatchingDefinitionId,
+                seed.CompanyId,
+                "task-updated-nonmatching-criteria",
+                "Task updated nonmatching criteria",
+                "Operations",
+                WorkflowTriggerType.Event,
+                1,
+                ValidDefinition("nonmatching-criteria-step")));
+            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
+                Guid.NewGuid(),
+                seed.CompanyId,
+                matchingDefinitionId,
+                SupportedPlatformEventTypeRegistry.TaskUpdated,
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["sourceEntityType"] = JsonValue.Create("work_task"),
+                    ["metadata.status"] = JsonValue.Create("done")
+                }));
+            dbContext.WorkflowTriggers.Add(new WorkflowTrigger(
+                Guid.NewGuid(),
+                seed.CompanyId,
+                nonMatchingDefinitionId,
+                SupportedPlatformEventTypeRegistry.TaskUpdated,
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["sourceEntityType"] = JsonValue.Create("work_task"),
+                    ["metadata.status"] = JsonValue.Create("blocked")
+                }));
+            return Task.CompletedTask;
+        });
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var eventTriggers = scope.ServiceProvider.GetRequiredService<IInternalWorkflowEventTriggerService>();
+        var envelope = BuildEnvelope(seed.CompanyId, "evt-task-updated-criteria-1", SupportedPlatformEventTypeRegistry.TaskUpdated, metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["source"] = JsonValue.Create("test"),
+            ["status"] = JsonValue.Create("done")
+        });
+
+        var result = await eventTriggers.HandleAsync(envelope, CancellationToken.None);
+
+        var instance = Assert.Single(result.StartedInstances);
+        Assert.Equal(matchingDefinitionId, instance.DefinitionId);
+    }
+
+    [Fact]
     public async Task Outbox_platform_event_consumer_matches_workflow_triggers()
     {
         var seed = await SeedMembershipAsync("event-trigger-outbox", "event-trigger-outbox@example.com", "Event Trigger Outbox");
@@ -359,7 +479,11 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
         Assert.True(envelope.Metadata.ContainsKey("source"));
     }
 
-    private static PlatformEventEnvelope BuildEnvelope(Guid companyId, string eventId, string eventType) =>
+    private static PlatformEventEnvelope BuildEnvelope(
+        Guid companyId,
+        string eventId,
+        string eventType,
+        Dictionary<string, JsonNode?>? metadata = null) =>
         new(
             eventId,
             eventType,
@@ -368,7 +492,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
             $"corr-{eventId}",
             "work_task",
             $"source-{eventId}",
-            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            metadata ?? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["source"] = JsonValue.Create("test")
             });

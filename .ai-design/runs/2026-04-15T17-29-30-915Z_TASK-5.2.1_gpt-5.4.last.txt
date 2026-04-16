@@ -1,0 +1,1010 @@
+diff --git a/src/VirtualCompany.Domain/Entities/ActivityEntityLink.cs b/src/VirtualCompany.Domain/Entities/ActivityEntityLink.cs
+new file mode 100644
+index 0000000..a9b54c2
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/ActivityEntityLink.cs
+@@ -0,0 +1,41 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed record ActivityEntityLinkReference(string EntityType, Guid EntityId)
++{
++    public ActivityEntityLinkReference Normalize() =>
++        new(ActivityEntityTypes.Normalize(EntityType), EntityId);
++}
++
++public static class ActivityEntityTypes
++{
++    public const string Task = "task";
++    public const string WorkflowInstance = "workflow_instance";
++    public const string Approval = "approval";
++    public const string ToolExecution = "tool_execution";
++
++    public static string Normalize(string entityType)
++    {
++        if (string.IsNullOrWhiteSpace(entityType))
++        {
++            throw new ArgumentException("EntityType is required.", nameof(entityType));
++        }
++
++        return entityType.Trim().ToLowerInvariant() switch
++        {
++            "task" or "work_task" or "worktask" => Task,
++            "workflow" or "workflow_instance" or "workflowinstance" => WorkflowInstance,
++            "approval" or "approval_request" or "approvalrequest" => Approval,
++            "tool" or "tool_execution" or "tool_execution_attempt" or "toolexecution" or "toolexecutionattempt" => ToolExecution,
++            var normalized => normalized
++        };
++    }
++
++    public static bool IsSupported(string entityType)
++    {
++        var normalized = Normalize(entityType);
++        return normalized is Task or WorkflowInstance or Approval or ToolExecution;
++    }
++
++    public static string ToKey(string entityType, Guid entityId) =>
++        $"{Normalize(entityType)}:{entityId:N}";
++
++    public static string ToKey(ActivityEntityLinkReference reference) =>
++        ToKey(reference.EntityType, reference.EntityId);
++}
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 62504d3..f9f5b27 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
+ using System.Text.Json.Serialization;
+ 
+ namespace VirtualCompany.Application.Activity;
+ 
+ public sealed record PersistActivityEventCommand(
+@@ -25,6 +26,42 @@ public sealed record ActivityEventDto(
+     string? CorrelationId,
+     [property: JsonPropertyName("source")] Dictionary<string, JsonNode?> Source);
+ 
++public sealed record ActivityEntityReferenceDto(
++    string EntityType,
++    Guid EntityId);
++
++public sealed record ActivityLinkedEntityDto(
++    string EntityType,
++    Guid EntityId,
++    string Availability,
++    string DisplayText,
++    string? CurrentStatus,
++    DateTime? LastUpdatedAt,
++    Dictionary<string, JsonNode?> Metadata);
++
++public sealed record ActivityTimelineItemDto(
++    ActivityEventDto Activity,
++    ActivityEntityReferenceDto? PrimaryTarget,
++    IReadOnlyList<ActivityLinkedEntityDto> LinkedEntities);
++
++public sealed record ActivityCorrelationTimelineQuery(
++    string CorrelationId,
++    Guid? SelectedActivityEventId = null);
++
++public sealed record ActivityCorrelationTimelineDto(
++    Guid TenantId,
++    string CorrelationId,
++    IReadOnlyList<ActivityTimelineItemDto> Items,
++    ActivityLinkedEntitiesDto? SelectedActivityLinks);
++
++public sealed record ActivityLinkedEntitiesDto(
++    Guid TenantId,
++    Guid ActivityEventId,
++    IReadOnlyList<ActivityLinkedEntityDto> LinkedEntities);
++
++public static class ActivityLinkedEntityAvailability
++{
++    public const string Available = "available";
++    public const string UnavailableMissing = "unavailable_missing";
++    public const string UnavailableDeleted = "unavailable_deleted";
++    public const string UnavailableForbidden = "unavailable_forbidden";
++}
++
+ public sealed record ActivityFeedPageDto(
+     IReadOnlyList<ActivityEventDto> Items,
+     string? NextCursor);
+@@ -33,6 +70,13 @@ public interface IActivityEventStore
+ {
+     Task<ActivityEventDto> PersistAsync(Guid tenantId, PersistActivityEventCommand command, CancellationToken cancellationToken);
+     Task<ActivityFeedPageDto> QueryFeedAsync(Guid tenantId, ActivityFeedQuery query, CancellationToken cancellationToken);
++    Task<ActivityCorrelationTimelineDto> QueryCorrelationTimelineAsync(Guid tenantId, ActivityCorrelationTimelineQuery query, CancellationToken cancellationToken);
++    Task<ActivityLinkedEntitiesDto> QueryLinkedEntitiesAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken);
++}
++
++public interface IEntityLinkResolutionService
++{
++    Task<IReadOnlyDictionary<string, ActivityLinkedEntityDto>> ResolveAsync(Guid tenantId, IEnumerable<ActivityEntityReferenceDto> references, CancellationToken cancellationToken);
+ }
+ 
+ public interface IActivityEventPublisher
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 079cbab..cd4e6ac 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Activity;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -14,22 +15,26 @@ namespace VirtualCompany.Infrastructure.Activity;
+ public sealed class EfActivityEventStore : IActivityEventStore
+ {
+     private const int DefaultPageSize = 50;
+     private const int MaxPageSize = 200;
++    private const int MaxCorrelationEvents = 10_000;
+     private static readonly JsonSerializerOptions CursorJsonOptions = new(JsonSerializerDefaults.Web);
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IEntityLinkResolutionService _entityLinkResolver;
+     private readonly IActivityEventPublisher _publisher;
+     private readonly ILogger<EfActivityEventStore> _logger;
+ 
+     public EfActivityEventStore(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
++        IEntityLinkResolutionService entityLinkResolver,
+         IActivityEventPublisher publisher,
+         ILogger<EfActivityEventStore> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
++        _entityLinkResolver = entityLinkResolver;
+         _publisher = publisher;
+         _logger = logger;
+     }
+ 
+@@ -108,6 +113,66 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         return new ActivityFeedPageDto(items, nextCursor);
+     }
+ 
++    public async Task<ActivityCorrelationTimelineDto> QueryCorrelationTimelineAsync(
++        Guid tenantId,
++        ActivityCorrelationTimelineQuery query,
++        CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(tenantId, cancellationToken);
++        ValidateCorrelationQuery(query);
++
++        var correlationId = query.CorrelationId.Trim();
++        var events = await _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == tenantId && x.CorrelationId == correlationId)
++            .OrderBy(x => x.OccurredUtc)
++            .ThenBy(x => x.Id)
++            .Take(MaxCorrelationEvents)
++            .ToListAsync(cancellationToken);
++
++        var referencesByEvent = events.ToDictionary(x => x.Id, x => ExtractReferences(x.SourceMetadata), x => x);
++        var resolved = await _entityLinkResolver.ResolveAsync(
++            tenantId,
++            referencesByEvent.Values.SelectMany(x => x),
++            cancellationToken);
++
++        var items = events.Select(activityEvent =>
++        {
++            var references = referencesByEvent[activityEvent.Id];
++            var links = references
++                .Select(reference => resolved[ActivityEntityTypes.ToKey(reference.EntityType, reference.EntityId)])
++                .ToList();
++
++            return new ActivityTimelineItemDto(
++                ToDto(activityEvent),
++                references.FirstOrDefault(),
++                links);
++        }).ToList();
++
++        ActivityLinkedEntitiesDto? selectedLinks = null;
++        if (query.SelectedActivityEventId is Guid selectedActivityEventId)
++        {
++            var selected = events.FirstOrDefault(x => x.Id == selectedActivityEventId);
++            if (selected is not null)
++            {
++                selectedLinks = new ActivityLinkedEntitiesDto(
++                    tenantId,
++                    selectedActivityEventId,
++                    referencesByEvent[selectedActivityEventId]
++                        .Select(reference => resolved[ActivityEntityTypes.ToKey(reference.EntityType, reference.EntityId)])
++                        .ToList());
++            }
++        }
++
++        return new ActivityCorrelationTimelineDto(tenantId, correlationId, items, selectedLinks);
++    }
++
++    public async Task<ActivityLinkedEntitiesDto> QueryLinkedEntitiesAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(tenantId, cancellationToken);
++
++        var activityEvent = await _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == tenantId && x.Id == activityEventId, cancellationToken)
++            ?? throw new KeyNotFoundException("Activity event was not found.");
++
++        var references = ExtractReferences(activityEvent.SourceMetadata);
++        var resolved = await _entityLinkResolver.ResolveAsync(tenantId, references, cancellationToken);
++        return new ActivityLinkedEntitiesDto(tenantId, activityEventId, references.Select(x => resolved[ActivityEntityTypes.ToKey(x.EntityType, x.EntityId)]).ToList());
++    }
++
+     private async Task RequireMembershipAsync(Guid tenantId, CancellationToken cancellationToken)
+     {
+         if (tenantId == Guid.Empty ||
+@@ -149,6 +214,20 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         }
+     }
+ 
++    private static void ValidateCorrelationQuery(ActivityCorrelationTimelineQuery query)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(query.CorrelationId), query.CorrelationId, 128);
++
++        if (query.SelectedActivityEventId == Guid.Empty)
++        {
++            errors[nameof(query.SelectedActivityEventId)] = ["SelectedActivityEventId cannot be empty."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new ActivityFeedValidationException(errors);
++        }
++    }
++
+     private static void AddRequired(IDictionary<string, string[]> errors, string name, string? value, int maxLength)
+     {
+         if (string.IsNullOrWhiteSpace(value))
+@@ -194,6 +273,86 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> source) =>
+         source.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
++    private static IReadOnlyList<ActivityEntityReferenceDto> ExtractReferences(IReadOnlyDictionary<string, JsonNode?> source)
++    {
++        var references = new List<ActivityEntityReferenceDto>();
++
++        AddTypedReference(references, ReadString(source, "targetEntityType", "entityType", "targetType"), ReadGuid(source, "targetEntityId", "entityId", "targetId"));
++        AddKnownReference(references, ActivityEntityTypes.Task, ReadGuid(source, "taskId", "workTaskId"));
++        AddKnownReference(references, ActivityEntityTypes.WorkflowInstance, ReadGuid(source, "workflowInstanceId", "workflowId"));
++        AddKnownReference(references, ActivityEntityTypes.Approval, ReadGuid(source, "approvalRequestId", "approvalId"));
++        AddKnownReference(references, ActivityEntityTypes.ToolExecution, ReadGuid(source, "toolExecutionAttemptId", "toolExecutionId"));
++
++        if (source.TryGetValue("linkedEntities", out var linkedEntitiesNode) && linkedEntitiesNode is JsonArray linkedEntities)
++        {
++            foreach (var node in linkedEntities.OfType<JsonObject>())
++            {
++                AddTypedReference(
++                    references,
++                    ReadString(node, "entityType", "type", "targetEntityType"),
++                    ReadGuid(node, "entityId", "id", "targetEntityId"));
++            }
++        }
++
++        return references
++            .Where(x => x.EntityId != Guid.Empty && ActivityEntityTypes.IsSupported(x.EntityType))
++            .GroupBy(x => ActivityEntityTypes.ToKey(x.EntityType, x.EntityId), StringComparer.OrdinalIgnoreCase)
++            .Select(x => new ActivityEntityReferenceDto(ActivityEntityTypes.Normalize(x.First().EntityType), x.First().EntityId))
++            .ToList();
++    }
++
++    private static void AddKnownReference(List<ActivityEntityReferenceDto> references, string entityType, Guid? entityId)
++    {
++        if (entityId is Guid value && value != Guid.Empty)
++        {
++            references.Add(new ActivityEntityReferenceDto(entityType, value));
++        }
++    }
++
++    private static void AddTypedReference(List<ActivityEntityReferenceDto> references, string? entityType, Guid? entityId)
++    {
++        if (!string.IsNullOrWhiteSpace(entityType) && entityId is Guid value && value != Guid.Empty)
++        {
++            references.Add(new ActivityEntityReferenceDto(ActivityEntityTypes.Normalize(entityType), value));
++        }
++    }
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?> source, params string[] keys)
++    {
++        foreach (var key in keys)
++        {
++            if (!source.TryGetValue(key, out var node) || node is null)
++            {
++                continue;
++            }
++
++            try
++            {
++                return node.GetValue<string>();
++            }
++            catch (InvalidOperationException)
++            {
++                return node.ToJsonString().Trim('"');
++            }
++        }
++
++        return null;
++    }
++
++    private static Guid? ReadGuid(IReadOnlyDictionary<string, JsonNode?> source, params string[] keys)
++    {
++        var value = ReadString(source, keys);
++        return Guid.TryParse(value, out var id) ? id : null;
++    }
++
++    private static string? ReadString(JsonObject source, params string[] keys)
++    {
++        foreach (var key in keys)
++        {
++            if (source.TryGetPropertyValue(key, out var node) && node is not null)
++            {
++                return ReadString(new Dictionary<string, JsonNode?> { [key] = node }, key);
++            }
++        }
++
++        return null;
++    }
++
++    private static Guid? ReadGuid(JsonObject source, params string[] keys) =>
++        Guid.TryParse(ReadString(source, keys), out var id) ? id : null;
++
+     private static string EncodeCursor(DateTime occurredAt, Guid eventId)
+     {
+         var json = JsonSerializer.Serialize(new ActivityFeedCursor(occurredAt, eventId), CursorJsonOptions);
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs b/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs
+new file mode 100644
+index 0000000..6737b8f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs
+@@ -0,0 +1,164 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Activity;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Activity;
++
++public sealed class EfEntityLinkResolutionService : IEntityLinkResolutionService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public EfEntityLinkResolutionService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<IReadOnlyDictionary<string, ActivityLinkedEntityDto>> ResolveAsync(
++        Guid tenantId,
++        IEnumerable<ActivityEntityReferenceDto> references,
++        CancellationToken cancellationToken)
++    {
++        var distinct = references
++            .Where(x => x.EntityId != Guid.Empty && ActivityEntityTypes.IsSupported(x.EntityType))
++            .GroupBy(x => ActivityEntityTypes.ToKey(x.EntityType, x.EntityId), StringComparer.OrdinalIgnoreCase)
++            .Select(x => new ActivityEntityReferenceDto(ActivityEntityTypes.Normalize(x.First().EntityType), x.First().EntityId))
++            .ToList();
++
++        var resolved = distinct.ToDictionary(
++            x => ActivityEntityTypes.ToKey(x.EntityType, x.EntityId),
++            x => Missing(x.EntityType, x.EntityId),
++            StringComparer.OrdinalIgnoreCase);
++
++        await ResolveTasksAsync(tenantId, distinct, resolved, cancellationToken);
++        await ResolveWorkflowInstancesAsync(tenantId, distinct, resolved, cancellationToken);
++        await ResolveApprovalsAsync(tenantId, distinct, resolved, cancellationToken);
++        await ResolveToolExecutionsAsync(tenantId, distinct, resolved, cancellationToken);
++
++        return resolved;
++    }
++
++    private async Task ResolveTasksAsync(
++        Guid tenantId,
++        IReadOnlyList<ActivityEntityReferenceDto> references,
++        IDictionary<string, ActivityLinkedEntityDto> resolved,
++        CancellationToken cancellationToken)
++    {
++        var ids = references.Where(x => x.EntityType == ActivityEntityTypes.Task).Select(x => x.EntityId).Distinct().ToList();
++        if (ids.Count == 0)
++        {
++            return;
++        }
++
++        var rows = await _dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == tenantId && ids.Contains(x.Id))
++            .Select(x => new { x.Id, x.Title, x.Status, x.UpdatedUtc })
++            .ToListAsync(cancellationToken);
++
++        foreach (var row in rows)
++        {
++            resolved[ActivityEntityTypes.ToKey(ActivityEntityTypes.Task, row.Id)] = Available(
++                ActivityEntityTypes.Task,
++                row.Id,
++                row.Title,
++                row.Status.ToStorageValue(),
++                row.UpdatedUtc);
++        }
++    }
++
++    private async Task ResolveWorkflowInstancesAsync(
++        Guid tenantId,
++        IReadOnlyList<ActivityEntityReferenceDto> references,
++        IDictionary<string, ActivityLinkedEntityDto> resolved,
++        CancellationToken cancellationToken)
++    {
++        var ids = references.Where(x => x.EntityType == ActivityEntityTypes.WorkflowInstance).Select(x => x.EntityId).Distinct().ToList();
++        if (ids.Count == 0)
++        {
++            return;
++        }
++
++        var rows = await (
++            from instance in _dbContext.WorkflowInstances.IgnoreQueryFilters().AsNoTracking()
++            join definition in _dbContext.WorkflowDefinitions.IgnoreQueryFilters().AsNoTracking()
++                on instance.DefinitionId equals definition.Id into definitions
++            from definition in definitions.DefaultIfEmpty()
++            where instance.CompanyId == tenantId && ids.Contains(instance.Id)
++            select new
++            {
++                instance.Id,
++                instance.State,
++                instance.CurrentStep,
++                instance.UpdatedUtc,
++                DefinitionName = definition == null ? null : definition.Name
++            })
++            .ToListAsync(cancellationToken);
++
++        foreach (var row in rows)
++        {
++            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++            if (!string.IsNullOrWhiteSpace(row.CurrentStep))
++            {
++                metadata["currentStep"] = JsonValue.Create(row.CurrentStep);
++            }
++
++            resolved[ActivityEntityTypes.ToKey(ActivityEntityTypes.WorkflowInstance, row.Id)] = Available(
++                ActivityEntityTypes.WorkflowInstance,
++                row.Id,
++                row.DefinitionName ?? $"Workflow {row.Id:N}",
++                row.State.ToStorageValue(),
++                row.UpdatedUtc,
++                metadata);
++        }
++    }
++
++    private async Task ResolveApprovalsAsync(
++        Guid tenantId,
++        IReadOnlyList<ActivityEntityReferenceDto> references,
++        IDictionary<string, ActivityLinkedEntityDto> resolved,
++        CancellationToken cancellationToken)
++    {
++        var ids = references.Where(x => x.EntityType == ActivityEntityTypes.Approval).Select(x => x.EntityId).Distinct().ToList();
++        if (ids.Count == 0)
++        {
++            return;
++        }
++
++        var rows = await _dbContext.ApprovalRequests.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == tenantId && ids.Contains(x.Id))
++            .Select(x => new { x.Id, x.ApprovalType, x.ToolName, x.TargetEntityType, x.TargetEntityId, x.Status, x.UpdatedUtc })
++            .ToListAsync(cancellationToken);
++
++        foreach (var row in rows)
++        {
++            resolved[ActivityEntityTypes.ToKey(ActivityEntityTypes.Approval, row.Id)] = Available(
++                ActivityEntityTypes.Approval,
++                row.Id,
++                string.IsNullOrWhiteSpace(row.ApprovalType) ? row.ToolName : row.ApprovalType,
++                row.Status.ToStorageValue(),
++                row.UpdatedUtc,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["targetEntityType"] = JsonValue.Create(row.TargetEntityType),
++                    ["targetEntityId"] = JsonValue.Create(row.TargetEntityId)
++                });
++        }
++    }
++
++    private async Task ResolveToolExecutionsAsync(
++        Guid tenantId,
++        IReadOnlyList<ActivityEntityReferenceDto> references,
++        IDictionary<string, ActivityLinkedEntityDto> resolved,
++        CancellationToken cancellationToken)
++    {
++        var ids = references.Where(x => x.EntityType == ActivityEntityTypes.ToolExecution).Select(x => x.EntityId).Distinct().ToList();
++        if (ids.Count == 0)
++        {
++            return;
++        }
++
++        var rows = await _dbContext.ToolExecutionAttempts.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == tenantId && ids.Contains(x.Id))
++            .Select(x => new { x.Id, x.ToolName, x.Status, x.UpdatedUtc, x.TaskId, x.WorkflowInstanceId, x.ApprovalRequestId })
++            .ToListAsync(cancellationToken);
++
++        foreach (var row in rows)
++        {
++            var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["taskId"] = row.TaskId,
++                ["workflowInstanceId"] = row.WorkflowInstanceId,
++                ["approvalRequestId"] = row.ApprovalRequestId
++            };
++
++            resolved[ActivityEntityTypes.ToKey(ActivityEntityTypes.ToolExecution, row.Id)] = Available(
++                ActivityEntityTypes.ToolExecution,
++                row.Id,
++                row.ToolName,
++                row.Status.ToStorageValue(),
++                row.UpdatedUtc,
++                metadata);
++        }
++    }
++
++    private static ActivityLinkedEntityDto Available(
++        string entityType,
++        Guid entityId,
++        string displayText,
++        string currentStatus,
++        DateTime lastUpdatedAt,
++        Dictionary<string, JsonNode?>? metadata = null) =>
++        new(entityType, entityId, ActivityLinkedEntityAvailability.Available, displayText, currentStatus, lastUpdatedAt, metadata ?? []);
++
++    private static ActivityLinkedEntityDto Missing(string entityType, Guid entityId) =>
++        new(entityType, entityId, ActivityLinkedEntityAvailability.UnavailableMissing, "Unavailable linked entity", null, null, []);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index b472cf5..cc8fa3d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -198,6 +198,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
+         services.AddScoped<IActivityEventStore, EfActivityEventStore>();
++        services.AddScoped<IEntityLinkResolutionService, EfEntityLinkResolutionService>();
+         services.AddScoped<IAuditEventWriter, AuditEventWriter>();
+         services.AddScoped<IAuditQueryService, CompanyAuditQueryService>();
+         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index d9b29dd..2b4bde8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2390,7 +2390,7 @@ internal sealed class ActivityEventConfiguration : IEntityTypeConfiguration<Acti
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc, x.Id }).IsDescending(false, true, true);
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+-        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId, x.OccurredUtc, x.Id });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415183000_AddActivityCorrelationLookupIndex.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415183000_AddActivityCorrelationLookupIndex.cs
+new file mode 100644
+index 0000000..c2d0ef6
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415183000_AddActivityCorrelationLookupIndex.cs
+@@ -0,0 +1,64 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260415183000_AddActivityCorrelationLookupIndex")]
++public partial class AddActivityCorrelationLookupIndex : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_correlation_id",
++            table: "activity_events");
++
++        if (isPostgres)
++        {
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_correlation_id_occurred_at_id"
++                ON "activity_events" ("company_id", "correlation_id", "occurred_at", "id");
++                """);
++        }
++        else
++        {
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_correlation_id_occurred_at_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "correlation_id", "occurred_at", "id" });
++        }
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_correlation_id_occurred_at_id",
++            table: "activity_events");
++
++        if (isPostgres)
++        {
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_correlation_id"
++                ON "activity_events" ("company_id", "correlation_id");
++                """);
++        }
++        else
++        {
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_correlation_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "correlation_id" });
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index bbb54a1..4d1584c 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -37,6 +37,36 @@ public sealed class ActivityFeedController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("correlations/{correlationId}")]
++    public async Task<ActionResult<ActivityCorrelationTimelineDto>> GetCorrelationTimelineAsync(
++        Guid companyId,
++        string correlationId,
++        [FromQuery] Guid? selectedActivityEventId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _activityEvents.QueryCorrelationTimelineAsync(companyId, new ActivityCorrelationTimelineQuery(correlationId, selectedActivityEventId), cancellationToken));
++        }
++        catch (ActivityFeedValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{activityEventId:guid}/links")]
++    public async Task<ActionResult<ActivityLinkedEntitiesDto>> GetLinkedEntitiesAsync(
++        Guid companyId,
++        Guid activityEventId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _activityEvents.QueryLinkedEntitiesAsync(companyId, activityEventId, cancellationToken));
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpPost("/internal/companies/{companyId:guid}/activity-events")]
+     public async Task<ActionResult<ActivityEventDto>> PersistAsync(
+         Guid companyId,
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+new file mode 100644
+index 0000000..d336e4f
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+@@ -0,0 +1,294 @@
++using System.Diagnostics;
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Activity;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Authentication;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ActivityCorrelationIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Correlation_timeline_returns_ordered_events_with_resolved_linked_entities()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateClient();
++
++        await PersistActivityAsync(client, seed.CompanyId, "task_started", seed.CorrelationId, seed.TaskId, occurredAt: DateTime.UtcNow.AddMinutes(-3));
++        var selected = await PersistActivityAsync(client, seed.CompanyId, "tool_executed", seed.CorrelationId, seed.TaskId, seed.WorkflowInstanceId, seed.ApprovalId, seed.ToolExecutionId, DateTime.UtcNow.AddMinutes(-2));
++        await PersistActivityAsync(client, seed.CompanyId, "task_completed", seed.CorrelationId, seed.TaskId, occurredAt: DateTime.UtcNow.AddMinutes(-1));
++        await PersistActivityAsync(client, seed.CompanyId, "other", "different-correlation", seed.TaskId, occurredAt: DateTime.UtcNow);
++
++        var timeline = await client.GetFromJsonAsync<ActivityCorrelationTimelineDto>(
++            $"/api/companies/{seed.CompanyId}/activity-feed/correlations/{seed.CorrelationId}?selectedActivityEventId={selected.EventId}");
++
++        Assert.NotNull(timeline);
++        Assert.Equal(seed.CorrelationId, timeline!.CorrelationId);
++        Assert.Equal(3, timeline.Items.Count);
++        Assert.Equal(["task_started", "tool_executed", "task_completed"], timeline.Items.Select(x => x.Activity.EventType).ToArray());
++
++        var selectedLinks = Assert.NotNull(timeline.SelectedActivityLinks);
++        Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Task && x.CurrentStatus == WorkTaskStatus.InProgress.ToStorageValue());
++        Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.WorkflowInstance && x.CurrentStatus == WorkflowInstanceStatus.Running.ToStorageValue());
++        Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Approval && x.CurrentStatus == ApprovalRequestStatus.Pending.ToStorageValue());
++        Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.ToolExecution && x.CurrentStatus == ToolExecutionStatus.Started.ToStorageValue());
++    }
++
++    [Fact]
++    public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateClient();
++        var missingTaskId = Guid.NewGuid();
++        var activity = await PersistActivityAsync(client, seed.CompanyId, "missing_task", seed.CorrelationId, missingTaskId, occurredAt: DateTime.UtcNow);
++
++        var links = await client.GetFromJsonAsync<ActivityLinkedEntitiesDto>(
++            $"/api/companies/{seed.CompanyId}/activity-feed/{activity.EventId}/links");
++
++        var missing = Assert.Single(links!.LinkedEntities);
++        Assert.Equal(ActivityEntityTypes.Task, missing.EntityType);
++        Assert.Equal(missingTaskId, missing.EntityId);
++        Assert.Equal(ActivityLinkedEntityAvailability.UnavailableMissing, missing.Availability);
++        Assert.Null(missing.CurrentStatus);
++    }
++
++    [Fact]
++    public async Task Correlation_timeline_is_tenant_scoped()
++    {
++        var seed = await SeedAsync(includeOtherMembership: false);
++        using var client = CreateClient();
++
++        await PersistActivityAsync(client, seed.OtherCompanyId, "other_tenant", seed.CorrelationId, seed.OtherTaskId, occurredAt: DateTime.UtcNow);
++
++        var response = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/activity-feed/correlations/{seed.CorrelationId}");
++
++        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Correlation_timeline_uses_bounded_query_shape_for_large_correlations()
++    {
++        var seed = await SeedAsync();
++        var started = DateTime.UtcNow.AddMinutes(-20);
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var events = Enumerable.Range(0, 10_000)
++                .Select(i => new ActivityEvent(
++                    Guid.NewGuid(),
++                    seed.CompanyId,
++                    seed.AgentId,
++                    "bulk_event",
++                    started.AddMilliseconds(i),
++                    "running",
++                    $"Bulk activity {i}",
++                    seed.CorrelationId,
++                    new Dictionary<string, JsonNode?>
++                    {
++                        ["taskId"] = JsonValue.Create(seed.TaskId)
++                    }))
++                .ToArray();
++
++            dbContext.ActivityEvents.AddRange(events);
++            await dbContext.SaveChangesAsync();
++        }
++
++        using var client = CreateClient();
++        var stopwatch = Stopwatch.StartNew();
++        var timeline = await client.GetFromJsonAsync<ActivityCorrelationTimelineDto>(
++            $"/api/companies/{seed.CompanyId}/activity-feed/correlations/{seed.CorrelationId}");
++        stopwatch.Stop();
++
++        Assert.Equal(10_000, timeline!.Items.Count);
++        Assert.All(timeline.Items, item => Assert.Single(item.LinkedEntities));
++        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"Correlation timeline took {stopwatch.Elapsed.TotalMilliseconds}ms.");
++    }
++
++    private async Task<SeedContext> SeedAsync(bool includeOtherMembership = true)
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var definitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
++        var otherTaskId = Guid.NewGuid();
++        var toolExecutionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        dbContext.Users.Add(new User(userId, "activity-correlation@example.com", "Activity Correlation", "dev-header", "activity-correlation"));
++        dbContext.Companies.AddRange(new Company(companyId, "Activity Correlation Tenant"), new Company(otherCompanyId, "Other Activity Correlation Tenant"));
++        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++        if (includeOtherMembership)
++        {
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++        }
++
++        dbContext.Agents.Add(new Agent(agentId, companyId, "Ops Agent", "Operations", "Operations", AgentSeniority.Mid));
++        dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
++            definitionId,
++            companyId,
++            "CORRELATION_TEST",
++            "Correlation workflow",
++            "Operations",
++            WorkflowTriggerType.Manual,
++            1,
++            new Dictionary<string, JsonNode?> { ["steps"] = new JsonArray() }));
++        var workflow = new WorkflowInstance(workflowInstanceId, companyId, definitionId, null);
++        workflow.UpdateState(WorkflowInstanceStatus.Running, "review");
++        dbContext.WorkflowInstances.Add(workflow);
++
++        var task = new WorkTask(
++            taskId,
++            companyId,
++            "correlation_test",
++            "Correlated task",
++            "Task used by correlation tests.",
++            WorkTaskPriority.Normal,
++            agentId,
++            null,
++            "user",
++            userId,
++            workflowInstanceId: workflowInstanceId,
++            correlationId: "corr-activity-correlation",
++            status: WorkTaskStatus.InProgress);
++        dbContext.WorkTasks.Add(task);
++
++        dbContext.WorkTasks.Add(new WorkTask(
++            otherTaskId,
++            otherCompanyId,
++            "correlation_test",
++            "Other correlated task",
++            null,
++            WorkTaskPriority.Normal,
++            null,
++            null,
++            "user",
++            userId,
++            correlationId: "corr-activity-correlation"));
++
++        var execution = new ToolExecutionAttempt(
++            toolExecutionId,
++            companyId,
++            agentId,
++            "send_invoice",
++            ToolActionType.Execute,
++            "finance",
++            taskId: taskId,
++            workflowInstanceId: workflowInstanceId,
++            correlationId: "corr-activity-correlation");
++        dbContext.ToolExecutionAttempts.Add(execution);
++
++        var approval = ApprovalRequest.CreateForTarget(
++            approvalId,
++            companyId,
++            ApprovalTargetEntityType.Action,
++            toolExecutionId,
++            "user",
++            userId,
++            "tool_execution",
++            new Dictionary<string, JsonNode?> { ["reason"] = JsonValue.Create("threshold") },
++            "owner",
++            null,
++            []);
++        dbContext.ApprovalRequests.Add(approval);
++
++        await dbContext.SaveChangesAsync();
++        return new SeedContext(companyId, otherCompanyId, userId, agentId, taskId, otherTaskId, workflowInstanceId, approvalId, toolExecutionId, "corr-activity-correlation");
++    }
++
++    private static async Task<ActivityEventDto> PersistActivityAsync(
++        HttpClient client,
++        Guid companyId,
++        string eventType,
++        string correlationId,
++        Guid taskId,
++        Guid? workflowInstanceId = null,
++        Guid? approvalRequestId = null,
++        Guid? toolExecutionAttemptId = null,
++        DateTime? occurredAt = null)
++    {
++        var source = new Dictionary<string, JsonNode?>
++        {
++            ["taskId"] = JsonValue.Create(taskId),
++            ["linkedEntities"] = new JsonArray()
++        };
++
++        var linkedEntities = (JsonArray)source["linkedEntities"]!;
++        linkedEntities.Add(new JsonObject
++        {
++            ["entityType"] = ActivityEntityTypes.Task,
++            ["entityId"] = taskId
++        });
++
++        if (workflowInstanceId is Guid workflowId)
++        {
++            source["workflowInstanceId"] = JsonValue.Create(workflowId);
++            linkedEntities.Add(new JsonObject
++            {
++                ["entityType"] = ActivityEntityTypes.WorkflowInstance,
++                ["entityId"] = workflowId
++            });
++        }
++
++        if (approvalRequestId is Guid approvalId)
++        {
++            source["approvalRequestId"] = JsonValue.Create(approvalId);
++            linkedEntities.Add(new JsonObject
++            {
++                ["entityType"] = ActivityEntityTypes.Approval,
++                ["entityId"] = approvalId
++            });
++        }
++
++        if (toolExecutionAttemptId is Guid toolExecutionId)
++        {
++            source["toolExecutionAttemptId"] = JsonValue.Create(toolExecutionId);
++            linkedEntities.Add(new JsonObject
++            {
++                ["entityType"] = ActivityEntityTypes.ToolExecution,
++                ["entityId"] = toolExecutionId
++            });
++        }
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{companyId}/activity-events",
++            new PersistActivityEventCommand(
++                companyId,
++                null,
++                eventType,
++                occurredAt ?? DateTime.UtcNow,
++                "running",
++                eventType,
++                correlationId,
++                source));
++        response.EnsureSuccessStatusCode();
++        return (await response.Content.ReadFromJsonAsync<ActivityEventDto>())!;
++    }
++
++    private HttpClient CreateClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "activity-correlation");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "activity-correlation@example.com");
++        return client;
++    }
++
++    private sealed record SeedContext(
++        Guid CompanyId,
++        Guid OtherCompanyId,
++        Guid UserId,
++        Guid AgentId,
++        Guid TaskId,
++        Guid OtherTaskId,
++        Guid WorkflowInstanceId,
++        Guid ApprovalId,
++        Guid ToolExecutionId,
++        string CorrelationId);
++}
+END_OF_PATCH

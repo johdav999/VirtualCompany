@@ -50,7 +50,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
         var sourceEntityType = ProactiveMessageSourceEntityTypeValues.Parse(command.SourceEntityType);
         var source = await LoadSourceAsync(companyId, sourceEntityType, command.SourceEntityId, cancellationToken);
         var recipient = await ResolveRecipientAsync(companyId, command.RecipientUserId ?? membership.UserId, cancellationToken);
-        var generated = GenerateMessage(source);
+        var generated = GenerateMessage(source, command);
         var decision = await EvaluatePolicyAsync(companyId, command, channel, sourceEntityType, cancellationToken);
 
         if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Allow, StringComparison.OrdinalIgnoreCase))
@@ -61,6 +61,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
                 command,
                 channel,
                 recipient,
+                generated,
                 sourceEntityType,
                 source.SourceEntityId,
                 decision,
@@ -146,6 +147,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
             command,
             channel,
             recipient,
+            generated,
             sourceEntityType,
             source.SourceEntityId,
             decision,
@@ -313,10 +315,19 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
         };
     }
 
-    private static ProactiveGeneratedMessage GenerateMessage(ProactiveMessageSource source)
+    private static ProactiveGeneratedMessage GenerateMessage(ProactiveMessageSource source, GenerateProactiveMessageCommand command)
     {
-        var subject = $"Proactive update: {source.Title}";
-        var body = $"A proactive update is ready for review.\n\n{source.Summary}";
+        var subject = NormalizeGeneratedMessagePart(
+            command.Subject,
+            $"Proactive update: {source.Title}",
+            nameof(command.Subject),
+            200);
+        var body = NormalizeGeneratedMessagePart(
+            command.Body,
+            $"A proactive update is ready for review.\n\n{source.Summary}",
+            nameof(command.Body),
+            16000);
+
         return new ProactiveGeneratedMessage(subject, body);
     }
 
@@ -345,6 +356,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
         GenerateProactiveMessageCommand command,
         ProactiveMessageChannel channel,
         User recipient,
+        ProactiveGeneratedMessage generated,
         ProactiveMessageSourceEntityType sourceEntityType,
         Guid sourceEntityId,
         ToolExecutionDecisionDto decision,
@@ -363,6 +375,8 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
             channel,
             recipient.Id,
             recipient.DisplayName,
+            generated.Subject,
+            generated.Body,
             sourceEntityType,
             sourceEntityId,
             command.AgentId,
@@ -400,4 +414,18 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
     private sealed record ProactiveMessageSource(Guid SourceEntityId, string Title, string Summary);
 
     private sealed record ProactiveGeneratedMessage(string Subject, string Body);
+
+    private static string NormalizeGeneratedMessagePart(string? requestedValue, string generatedValue, string name, int maxLength)
+    {
+        var value = string.IsNullOrWhiteSpace(requestedValue) ? generatedValue : requestedValue;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException($"{name} is required.", name);
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength
+            ? trimmed
+            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+    }
 }

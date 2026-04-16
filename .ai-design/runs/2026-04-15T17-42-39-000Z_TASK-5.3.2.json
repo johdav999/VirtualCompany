@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.3.2",
+  "promptPath": ".ai-design/prompts/TASK-5.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:42:39.000Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-42-39-000Z_TASK-5.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-42-39-000Z_TASK-5.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:44:38.684Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "fined\", summaryText, StringComparison.OrdinalIgnoreCase);\n+\n+        var payload = JsonSerializer.Deserialize<ActivityEventResponse>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));\n+        Assert.NotNull(payload);\n+        Assert.True(payload!.RawPayload.ContainsKey(\"taskTitle\"));\n+        Assert.Null(payload.NormalizedSummary.Actor);\n+        Assert.Equal(\"Invoice Review\", payload.NormalizedSummary.Target);\n+        Assert.Equal(\"completed task Invoice Review\", payload.NormalizedSummary.SummaryText);\n+    }\n+\n     [Fact]\n     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()\n     {\n         var seed = await SeedTenantAsync(includeOtherMembership: true);\n         using var tenantAConnection = CreateHubConnection(seed.CompanyId);\n@@ -325,6 +375,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         string? Actor,\n         string Action,\n         string? Target,\n         string? Outcome,\n+        string SummaryText,\n         string Text);\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n--- a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n@@ -65,10 +65,11 @@ public sealed class ActivitySummaryFormatterTests\n         Assert.Equal(eventType, result.FormatterKey);\n         Assert.Equal(\"Alice\", result.Actor);\n         Assert.Equal(expectedAction, result.Action);\n         Assert.Equal(expectedOutcome, result.Outcome);\n+        Assert.Equal(expectedText, result.SummaryText);\n         Assert.Equal(expectedText, result.Text);\n         Assert.DoesNotContain(\"null\", result.Text, StringComparison.OrdinalIgnoreCase);\n         Assert.DoesNotContain(\"undefined\", result.Text, StringComparison.OrdinalIgnoreCase);\n         Assert.DoesNotContain(\"  \", result.Text, StringComparison.Ordinal);\n     }\nEND_OF_PATCH\n",
+  "stderrTail": ", StringComparison.OrdinalIgnoreCase);\n+\n+        var payload = JsonSerializer.Deserialize<ActivityEventResponse>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));\n+        Assert.NotNull(payload);\n+        Assert.True(payload!.RawPayload.ContainsKey(\"taskTitle\"));\n+        Assert.Null(payload.NormalizedSummary.Actor);\n+        Assert.Equal(\"Invoice Review\", payload.NormalizedSummary.Target);\n+        Assert.Equal(\"completed task Invoice Review\", payload.NormalizedSummary.SummaryText);\n+    }\n+\n     [Fact]\n     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()\n     {\n         var seed = await SeedTenantAsync(includeOtherMembership: true);\n         using var tenantAConnection = CreateHubConnection(seed.CompanyId);\n@@ -325,6 +375,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         string? Actor,\n         string Action,\n         string? Target,\n         string? Outcome,\n+        string SummaryText,\n         string Text);\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n--- a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs\n@@ -65,10 +65,11 @@ public sealed class ActivitySummaryFormatterTests\n         Assert.Equal(eventType, result.FormatterKey);\n         Assert.Equal(\"Alice\", result.Actor);\n         Assert.Equal(expectedAction, result.Action);\n         Assert.Equal(expectedOutcome, result.Outcome);\n+        Assert.Equal(expectedText, result.SummaryText);\n         Assert.Equal(expectedText, result.Text);\n         Assert.DoesNotContain(\"null\", result.Text, StringComparison.OrdinalIgnoreCase);\n         Assert.DoesNotContain(\"undefined\", result.Text, StringComparison.OrdinalIgnoreCase);\n         Assert.DoesNotContain(\"  \", result.Text, StringComparison.Ordinal);\n     }\nEND_OF_PATCH\ntokens used\n53,067\n",
+  "verbosityMode": "summary"
+}

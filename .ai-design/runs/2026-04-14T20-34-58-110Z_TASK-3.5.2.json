@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.5.2",
+  "promptPath": ".ai-design/prompts/TASK-3.5.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:34:58.110Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-34-58-110Z_TASK-3.5.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-34-58-110Z_TASK-3.5.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:38:53.294Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "nance\", \"sales\"], new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), \"widget:alerts\")));\n+    }\n+\n+    [Fact]\n+    public async Task Versioned_invalidation_forces_miss_without_wildcard_key_deletes()\n+    {\n+        var distributedCache = new RecordingDistributedCache();\n+        var cache = CreateCache(distributedCache);\n+        var companyId = Guid.NewGuid();\n+\n+        await cache.SetAsync(CreateSnapshot(companyId, \"Tenant A\"), CancellationToken.None);\n+        Assert.NotNull(await cache.TryGetAsync(companyId, CancellationToken.None));\n+\n+        await cache.InvalidateAsync(companyId, CancellationToken.None);\n+\n+        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));\n+        Assert.Empty(distributedCache.RemovedKeys);\n+    }\n+\n     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>\n         new(\n             distributedCache,\n@@ -187,6 +218,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n         private readonly ConcurrentDictionary<string, byte[]> _entries = new(StringComparer.Ordinal);\n         private readonly ConcurrentQueue<string> _setKeys = new();\n+        private readonly ConcurrentQueue<string> _removedKeys = new();\n \n         public bool ThrowOnGet { get; init; }\n         public bool ThrowOnSet { get; init; }\n@@ -194,6 +226,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n         public bool ThrowOnRemove { get; init; }\n         public IReadOnlyList<string> SetKeys => _setKeys.ToArray();\n+        public IReadOnlyList<string> RemovedKeys => _removedKeys.ToArray();\n \n         public byte[]? Get(string key)\n         {\n@@ -250,6 +283,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n             }\n \n             _entries.TryRemove(key, out _);\n+            _removedKeys.Enqueue(key);\n         }\n \n         public Task RemoveAsync(string key, CancellationToken token = default)\nEND_OF_PATCH\n",
+  "stderrTail": "ew DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), \"widget:alerts\")));\n+    }\n+\n+    [Fact]\n+    public async Task Versioned_invalidation_forces_miss_without_wildcard_key_deletes()\n+    {\n+        var distributedCache = new RecordingDistributedCache();\n+        var cache = CreateCache(distributedCache);\n+        var companyId = Guid.NewGuid();\n+\n+        await cache.SetAsync(CreateSnapshot(companyId, \"Tenant A\"), CancellationToken.None);\n+        Assert.NotNull(await cache.TryGetAsync(companyId, CancellationToken.None));\n+\n+        await cache.InvalidateAsync(companyId, CancellationToken.None);\n+\n+        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));\n+        Assert.Empty(distributedCache.RemovedKeys);\n+    }\n+\n     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>\n         new(\n             distributedCache,\n@@ -187,6 +218,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n         private readonly ConcurrentDictionary<string, byte[]> _entries = new(StringComparer.Ordinal);\n         private readonly ConcurrentQueue<string> _setKeys = new();\n+        private readonly ConcurrentQueue<string> _removedKeys = new();\n \n         public bool ThrowOnGet { get; init; }\n         public bool ThrowOnSet { get; init; }\n@@ -194,6 +226,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n         public bool ThrowOnRemove { get; init; }\n         public IReadOnlyList<string> SetKeys => _setKeys.ToArray();\n+        public IReadOnlyList<string> RemovedKeys => _removedKeys.ToArray();\n \n         public byte[]? Get(string key)\n         {\n@@ -250,6 +283,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests\n             }\n \n             _entries.TryRemove(key, out _);\n+            _removedKeys.Enqueue(key);\n         }\n \n         public Task RemoveAsync(string key, CancellationToken token = default)\nEND_OF_PATCH\ntokens used\n97,080\n",
+  "verbosityMode": "summary"
+}

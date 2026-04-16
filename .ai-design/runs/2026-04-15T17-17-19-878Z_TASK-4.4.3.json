@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-4.4.3",
+  "promptPath": ".ai-design/prompts/TASK-4.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:17:19.878Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-17-19-878Z_TASK-4.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-17-19-878Z_TASK-4.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:19:28.631Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "m_style_delivery_frequency_returns_descriptive_4xx_error()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"DailyAndWeekly\",\n+            includedFocusAreas = new[] { \"alerts\" },\n+            priorityThreshold = \"medium\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.invalid_delivery_frequency\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"daily_and_weekly\", StringComparison.OrdinalIgnoreCase));\n+    }\n+\n+    [Fact]\n+    public async Task Mixed_valid_and_invalid_focus_areas_fail_cleanly()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"daily\",\n+            includedFocusAreas = new[] { \"alerts\", \"ops_rumors\", \"anomalies\" },\n+            priorityThreshold = \"medium\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.unsupported_focus_area\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"ops_rumors\", StringComparison.OrdinalIgnoreCase));\n+    }\n \n     [Fact]\n     public async Task Invalid_priority_threshold_returns_descriptive_4xx_error()\nEND_OF_PATCH\n",
+  "stderrTail": "equency_returns_descriptive_4xx_error()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"DailyAndWeekly\",\n+            includedFocusAreas = new[] { \"alerts\" },\n+            priorityThreshold = \"medium\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.invalid_delivery_frequency\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"daily_and_weekly\", StringComparison.OrdinalIgnoreCase));\n+    }\n+\n+    [Fact]\n+    public async Task Mixed_valid_and_invalid_focus_areas_fail_cleanly()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"daily\",\n+            includedFocusAreas = new[] { \"alerts\", \"ops_rumors\", \"anomalies\" },\n+            priorityThreshold = \"medium\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.unsupported_focus_area\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"ops_rumors\", StringComparison.OrdinalIgnoreCase));\n+    }\n \n     [Fact]\n     public async Task Invalid_priority_threshold_returns_descriptive_4xx_error()\nEND_OF_PATCH\ntokens used\n44,613\n",
+  "verbosityMode": "summary"
+}

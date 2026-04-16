@@ -58,6 +58,16 @@ public sealed class AgentApiClient
         return GetAsync<AgentRosterResponseViewModel>(uri, cancellationToken);
     }
 
+    public Task<AgentStatusCardsResponseViewModel> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(OfflineStore.GetStatusCards(companyId))
+            : GetAsync<AgentStatusCardsResponseViewModel>($"api/companies/{companyId}/agents/status-cards", cancellationToken);
+
+    public Task<AgentStatusDetailViewModel> GetStatusDetailAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(OfflineStore.GetStatusDetail(companyId, agentId))
+            : GetAsync<AgentStatusDetailViewModel>($"api/companies/{companyId}/agents/{agentId}/status-detail", cancellationToken);
+
     public Task<CreateAgentFromTemplateResultViewModel> CreateAgentFromTemplateAsync(Guid companyId, CreateAgentFromTemplateRequest request, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? OfflineStore.CreateFromTemplateAsync(companyId, request, _httpClient, cancellationToken)
@@ -242,6 +252,78 @@ public sealed class AgentApiClient
                     Statuses = SupportedStatusOptions.ToList()
                 };
             }
+        }
+
+        public AgentStatusCardsResponseViewModel GetStatusCards(Guid companyId)
+        {
+            lock (_sync)
+            {
+                var generatedUtc = DateTime.UtcNow;
+                var cards = GetRoster(companyId)
+                    .Select(agent => new AgentStatusCardViewModel
+                    {
+                        AgentId = agent.Id,
+                        CompanyId = agent.CompanyId,
+                        DisplayName = agent.DisplayName,
+                        RoleName = agent.RoleName,
+                        Department = agent.Department,
+                        Workload = new AgentStatusWorkloadViewModel
+                        {
+                            ActiveTaskCount = 0,
+                            BlockedTaskCount = 0,
+                            AwaitingApprovalCount = 0,
+                            ActiveWorkflowCount = 0,
+                            WorkloadLevel = "Idle"
+                        },
+                        HealthStatus = "Healthy",
+                        HealthReasons = ["Offline mode cannot inspect live task, workflow, or alert state."],
+                        ActiveAlertsCount = 0,
+                        RecentActions = [],
+                        LastUpdatedUtc = _profilesByAgentId.TryGetValue(agent.Id, out var profile) ? profile.UpdatedUtc : generatedUtc,
+                        DetailLink = new AgentStatusDetailLinkViewModel
+                        {
+                            Path = $"/agents/{agent.Id}",
+                            ActiveTab = "work",
+                            Query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["companyId"] = companyId.ToString("D"),
+                                ["show"] = "active",
+                                ["include"] = "tasks,workflows,alerts"
+                            }
+                        }
+                    })
+                    .ToList();
+
+                return new AgentStatusCardsResponseViewModel
+                {
+                    Items = cards,
+                    GeneratedUtc = generatedUtc
+                };
+            }
+        }
+
+        public AgentStatusDetailViewModel GetStatusDetail(Guid companyId, Guid agentId)
+        {
+            var card = GetStatusCards(companyId).Items.SingleOrDefault(x => x.AgentId == agentId);
+            if (card is null)
+            {
+                throw new OnboardingApiException("The selected agent status could not be loaded.");
+            }
+
+            return new AgentStatusDetailViewModel
+            {
+                AgentId = card.AgentId,
+                CompanyId = card.CompanyId,
+                DisplayName = card.DisplayName,
+                RoleName = card.RoleName,
+                Department = card.Department,
+                Workload = card.Workload,
+                Health = new AgentStatusHealthBreakdownViewModel { Status = card.HealthStatus, Reasons = card.HealthReasons, Metrics = new AgentStatusHealthMetricsViewModel() },
+                ActiveAlertsCount = card.ActiveAlertsCount,
+                RecentActions = card.RecentActions,
+                LastUpdatedUtc = card.LastUpdatedUtc,
+                GeneratedUtc = DateTime.UtcNow
+            };
         }
 
         public Task<AgentOperatingProfileViewModel> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken)
@@ -675,6 +757,118 @@ public sealed class AgentWorkloadSummaryViewModel
     public AgentHealthSummaryViewModel HealthSummary { get; set; } = new();
     public string HealthStatus { get; set; } = string.Empty;
     public string Summary { get; set; } = string.Empty;
+}
+
+public sealed class AgentStatusCardsResponseViewModel
+{
+    public List<AgentStatusCardViewModel> Items { get; set; } = [];
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class AgentStatusCardViewModel
+{
+    public Guid AgentId { get; set; }
+    public Guid CompanyId { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public AgentStatusWorkloadViewModel Workload { get; set; } = new();
+    public string HealthStatus { get; set; } = string.Empty;
+    public List<string> HealthReasons { get; set; } = [];
+    public int ActiveAlertsCount { get; set; }
+    public List<AgentStatusRecentActionViewModel> RecentActions { get; set; } = [];
+    public DateTime LastUpdatedUtc { get; set; }
+    public AgentStatusDetailLinkViewModel DetailLink { get; set; } = new();
+}
+
+public sealed class AgentStatusWorkloadViewModel
+{
+    public int ActiveTaskCount { get; set; }
+    public int BlockedTaskCount { get; set; }
+    public int AwaitingApprovalCount { get; set; }
+    public int ActiveWorkflowCount { get; set; }
+    public string WorkloadLevel { get; set; } = string.Empty;
+}
+
+public sealed class AgentStatusRecentActionViewModel
+{
+    public DateTime OccurredUtc { get; set; }
+    public string ActionType { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string RelatedEntityType { get; set; } = string.Empty;
+    public Guid? RelatedEntityId { get; set; }
+}
+
+public sealed class AgentStatusDetailLinkViewModel
+{
+    public string Path { get; set; } = string.Empty;
+    public string ActiveTab { get; set; } = string.Empty;
+    public Dictionary<string, string> Query { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class AgentStatusDetailViewModel
+{
+    public Guid AgentId { get; set; }
+    public Guid CompanyId { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public AgentStatusWorkloadViewModel Workload { get; set; } = new();
+    public AgentStatusHealthBreakdownViewModel Health { get; set; } = new();
+    public int ActiveAlertsCount { get; set; }
+    public List<AgentStatusDetailTaskViewModel> ActiveTasks { get; set; } = [];
+    public List<AgentStatusDetailWorkflowViewModel> ActiveWorkflows { get; set; } = [];
+    public List<AgentStatusDetailAlertViewModel> ActiveAlerts { get; set; } = [];
+    public List<AgentStatusRecentActionViewModel> RecentActions { get; set; } = [];
+    public DateTime LastUpdatedUtc { get; set; }
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class AgentStatusHealthBreakdownViewModel
+{
+    public string Status { get; set; } = string.Empty;
+    public List<string> Reasons { get; set; } = [];
+    public AgentStatusHealthMetricsViewModel Metrics { get; set; } = new();
+}
+
+public sealed class AgentStatusHealthMetricsViewModel
+{
+    public int FailedRunCount { get; set; }
+    public int StalledWorkCount { get; set; }
+    public int PolicyViolationCount { get; set; }
+}
+
+public sealed class AgentStatusDetailTaskViewModel
+{
+    public Guid Id { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Priority { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime? DueUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class AgentStatusDetailWorkflowViewModel
+{
+    public Guid Id { get; set; }
+    public string DefinitionName { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string? CurrentStep { get; set; }
+    public DateTime StartedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class AgentStatusDetailAlertViewModel
+{
+    public Guid Id { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public string Severity { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public sealed class AgentHealthSummaryViewModel

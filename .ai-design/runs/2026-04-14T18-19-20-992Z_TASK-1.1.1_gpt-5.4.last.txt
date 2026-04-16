@@ -1,0 +1,80 @@
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 8a8a3b4..c6e2f0a 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -10,6 +10,9 @@
+       "BaseUri": ""
+     }
+   },
++  "ProactiveTaskCreation": {
++    "DeduplicationWindowSeconds": 900
++  },
+   "KnowledgeChunking": {
+     "TargetChunkLength": 1200,
+     "OverlapLength": 200,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 63a8d12..ef8157f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -583,8 +583,9 @@ internal sealed class AgentTaskCreationDedupeRecordConfiguration : IEntityTypeCon
+             .HasForeignKey(x => x.TaskId)
+             .OnDelete(DeleteBehavior.NoAction);
+         builder.HasOne(x => x.Agent)
+             .WithMany()
+-            .HasForeignKey(x => x.AgentId)
++            .HasForeignKey(x => new { x.CompanyId, x.AgentId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+             .OnDelete(DeleteBehavior.NoAction);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+index a293e8c..9e279db 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414110000_AddAgentInitiatedTaskCreation.cs
+@@ -98,7 +98,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             {
+                 migrationBuilder.Sql(
+                     """
+-                    IF COL_LENGTH(N'[tasks]', N'correlation_id') IS NULL
++                    IF COL_LENGTH(N'tasks', N'correlation_id') IS NULL
+                     BEGIN
+                         ALTER TABLE [tasks] ADD [correlation_id] nvarchar(128) NULL;
+                     END;
+@@ -140,9 +140,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     table.PrimaryKey("PK_agent_task_creation_dedupe", x => x.id);
+                     table.ForeignKey(
+                         name: "FK_agent_task_creation_dedupe_agents_agent_id",
+-                        column: x => x.agent_id,
++                        columns: x => new { x.company_id, x.agent_id },
+                         principalTable: "agents",
+-                        principalColumn: "id",
++                        principalColumns: new[] { "company_id", "id" },
+                         onDelete: ReferentialAction.NoAction);
+                     table.ForeignKey(
+                         name: "FK_agent_task_creation_dedupe_companies_company_id",
+@@ -174,10 +174,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                 table: "agent_task_creation_dedupe",
+                 columns: new[] { "company_id", "trigger_source", "trigger_event_id", "correlation_id" });
+ 
+-            migrationBuilder.CreateIndex(
+-                name: "IX_agent_task_creation_dedupe_agent_id",
+-                table: "agent_task_creation_dedupe",
+-                column: "agent_id");
+-
+             migrationBuilder.CreateIndex(
+                 name: "IX_agent_task_creation_dedupe_task_id",
+                 table: "agent_task_creation_dedupe",
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+index 88c9422..d5a3ac0 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -38,7 +38,7 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Equal("correlation-1", mapped.CorrelationId);
+         Assert.Equal("Review inventory drift", mapped.Title);
+         Assert.Equal("high", mapped.Priority);
+-        Assert.Equal("agent", mapped.InputPayload["originatingAgentId"] is null ? null : "agent");
++        Assert.Equal(agentId.ToString("N"), mapped.InputPayload["originatingAgentId"]!.GetValue<string>());
+     }
+ 
+     [Fact]
+END_OF_PATCH

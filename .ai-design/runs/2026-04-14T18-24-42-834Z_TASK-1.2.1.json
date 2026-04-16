@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.2.1",
+  "promptPath": ".ai-design/prompts/TASK-1.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:24:42.834Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-24-42-834Z_TASK-1.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-24-42-834Z_TASK-1.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:26:50.776Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "grationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\nindex b633bb6..4e4e92a 100644\n--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n@@ -111,6 +111,35 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.Equal(\"corr-fp-risk\", list.Items[0].CorrelationId);\n     }\n \n+    [Fact]\n+    public async Task Create_alert_persists_requested_non_open_status_without_deduplicating()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var open = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.CompanyId}/alerts\",\n+            CreatePayload(seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-status-create\", seed.AgentId));\n+        var resolved = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.CompanyId}/alerts\",\n+            CreatePayload(seed.CompanyId, \"risk\", \"high\", \"resolved\", \"fp-status-create\", seed.AgentId));\n+\n+        Assert.Equal(HttpStatusCode.Created, open.StatusCode);\n+        Assert.Equal(HttpStatusCode.Created, resolved.StatusCode);\n+\n+        var openAlert = await open.Content.ReadFromJsonAsync<AlertMutationResponse>();\n+        var resolvedAlert = await resolved.Content.ReadFromJsonAsync<AlertMutationResponse>();\n+\n+        Assert.NotNull(openAlert);\n+        Assert.NotNull(resolvedAlert);\n+        Assert.NotEqual(openAlert!.Alert.Id, resolvedAlert!.Alert.Id);\n+        Assert.Equal(\"resolved\", resolvedAlert.Alert.Status);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?status=resolved&page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        var item = Assert.Single(list!.Items);\n+        Assert.Equal(resolvedAlert.Alert.Id, item.Id);\n+    }\n+\n     [Theory]\n     [InlineData(\"type\", \"risk\", 1)]\n     [InlineData(\"severity\", \"high\", 1)]\nEND_OF_PATCH\n",
+  "stderrTail": "ests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\nindex b633bb6..4e4e92a 100644\n--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n@@ -111,6 +111,35 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.Equal(\"corr-fp-risk\", list.Items[0].CorrelationId);\n     }\n \n+    [Fact]\n+    public async Task Create_alert_persists_requested_non_open_status_without_deduplicating()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var open = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.CompanyId}/alerts\",\n+            CreatePayload(seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-status-create\", seed.AgentId));\n+        var resolved = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.CompanyId}/alerts\",\n+            CreatePayload(seed.CompanyId, \"risk\", \"high\", \"resolved\", \"fp-status-create\", seed.AgentId));\n+\n+        Assert.Equal(HttpStatusCode.Created, open.StatusCode);\n+        Assert.Equal(HttpStatusCode.Created, resolved.StatusCode);\n+\n+        var openAlert = await open.Content.ReadFromJsonAsync<AlertMutationResponse>();\n+        var resolvedAlert = await resolved.Content.ReadFromJsonAsync<AlertMutationResponse>();\n+\n+        Assert.NotNull(openAlert);\n+        Assert.NotNull(resolvedAlert);\n+        Assert.NotEqual(openAlert!.Alert.Id, resolvedAlert!.Alert.Id);\n+        Assert.Equal(\"resolved\", resolvedAlert.Alert.Status);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?status=resolved&page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        var item = Assert.Single(list!.Items);\n+        Assert.Equal(resolvedAlert.Alert.Id, item.Id);\n+    }\n+\n     [Theory]\n     [InlineData(\"type\", \"risk\", 1)]\n     [InlineData(\"severity\", \"high\", 1)]\nEND_OF_PATCH\ntokens used\n62,680\n",
+  "verbosityMode": "summary"
+}

@@ -1,0 +1,189 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/EscalationPolicyEvaluationInfrastructure.cs
+@@ -246,9 +246,9 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+     }
+ 
+     private static bool MatchesPolicyEvaluationFilter(AuditEvent auditEvent, PolicyEvaluationHistoryFilter filter) =>
+         MatchesMetadataGuid(auditEvent, "policyId", filter.PolicyId) &&
+-        MatchesMetadataGuid(auditEvent, "sourceEntityId", filter.SourceEntityId) &&
+-        MatchesMetadataText(auditEvent, "sourceEntityType", filter.SourceEntityType);
++        MatchesMetadataOrTargetGuid(auditEvent, "sourceEntityId", filter.SourceEntityId) &&
++        MatchesMetadataOrDataSourceText(auditEvent, "sourceEntityType", filter.SourceEntityType);
+ 
+     private static bool MatchesMetadataGuid(AuditEvent auditEvent, string key, Guid? expected)
+     {
+         if (!expected.HasValue)
+@@ -261,6 +261,23 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+             Guid.TryParse(value, out var parsed) &&
+             parsed == expected.Value;
+     }
+ 
++    private static bool MatchesMetadataOrTargetGuid(AuditEvent auditEvent, string key, Guid? expected)
++    {
++        if (!expected.HasValue)
++        {
++            return true;
++        }
++
++        if (auditEvent.Metadata.TryGetValue(key, out var value) &&
++            Guid.TryParse(value, out var parsed) &&
++            parsed == expected.Value)
++        {
++            return true;
++        }
++
++        return Guid.TryParse(auditEvent.TargetId, out var targetId) && targetId == expected.Value;
++    }
++
+     private static bool MatchesMetadataText(AuditEvent auditEvent, string key, string? expected)
+     {
+         if (string.IsNullOrWhiteSpace(expected))
+         {
+@@ -272,6 +289,23 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+             auditEvent.Metadata.TryGetValue(key, out var value) &&
+             string.Equals(value, expected.Trim(), StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    private static bool MatchesMetadataOrDataSourceText(AuditEvent auditEvent, string key, string? expected)
++    {
++        if (string.IsNullOrWhiteSpace(expected))
++        {
++            return true;
++        }
++
++        if (auditEvent.Metadata.TryGetValue(key, out var value) &&
++            string.Equals(value, expected.Trim(), StringComparison.OrdinalIgnoreCase))
++        {
++            return true;
++        }
++
++        var expectedValue = expected.Trim();
++        return auditEvent.DataSources.Any(value => string.Equals(value, expectedValue, StringComparison.OrdinalIgnoreCase));
++    }
++
+     private static EscalationRecordDto MapEscalationRecord(Escalation escalation) =>
+         new(
+             escalation.Id,
+@@ -293,8 +327,8 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+     private static PolicyEvaluationHistoryItemDto MapPolicyEvaluationHistoryItem(AuditEvent auditEvent)
+     {
+         var policyId = TryGetGuid(auditEvent.Metadata, "policyId");
+-        var sourceEntityId = TryGetGuid(auditEvent.Metadata, "sourceEntityId");
+-        var sourceEntityType = TryGetValue(auditEvent.Metadata, "sourceEntityType");
++        var sourceEntityId = TryGetGuid(auditEvent.Metadata, "sourceEntityId") ?? TryParseGuid(auditEvent.TargetId);
++        var sourceEntityType = TryGetValue(auditEvent.Metadata, "sourceEntityType") ?? TryGetSourceEntityType(auditEvent);
+         var escalationLevel = TryGetInt(auditEvent.Metadata, "escalationLevel");
+         var conditionsMet = TryGetBool(auditEvent.Metadata, "conditionsMet");
+         var escalationRecordId = TryGetGuid(auditEvent.Metadata, "escalationId");
+@@ -336,6 +370,10 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+             ? parsed
+             : null;
+ 
++    private static Guid? TryParseGuid(string? value) =>
++        Guid.TryParse(value, out var parsed)
++            ? parsed
++            : null;
++
+     private static int? TryGetInt(IReadOnlyDictionary<string, string?> metadata, string key) =>
+         metadata.TryGetValue(key, out var value) && int.TryParse(value, out var parsed)
+             ? parsed
+@@ -350,4 +388,13 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
+     private static string? TryGetValue(IReadOnlyDictionary<string, string?> metadata, string key) =>
+         metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+             ? value
+             : null;
++
++    private static string? TryGetSourceEntityType(AuditEvent auditEvent) =>
++        auditEvent.DataSources
++            .FirstOrDefault(value =>
++                !string.Equals(value, "escalation_policy", StringComparison.OrdinalIgnoreCase) &&
++                (string.Equals(value, EscalationSourceEntityTypes.WorkTask, StringComparison.OrdinalIgnoreCase) ||
++                 string.Equals(value, EscalationSourceEntityTypes.Alert, StringComparison.OrdinalIgnoreCase) ||
++                 value.EndsWith("_task", StringComparison.OrdinalIgnoreCase)));
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/EscalationApiIntegrationTests.cs
+@@ -91,6 +91,27 @@ public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplica
+             item.Action == AuditEventActions.EscalationCreated &&
+             item.EscalationRecordId == seed.EscalationId);
+     }
+ 
++    [Fact]
++    public async Task Policy_evaluation_history_source_filter_includes_lifecycle_audit_events()
++    {
++        var seed = await SeedEscalationHistoryAsync("source-history");
++        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, "Escalation Reviewer");
++
++        var result = await client.GetFromJsonAsync<PolicyEvaluationHistoryResult>(
++            $"/api/companies/{seed.CompanyId}/escalations/history?correlationId=corr-escalation-source-history&sourceEntityId={seed.SourceEntityId}&sourceEntityType=work_task");
++
++        Assert.NotNull(result);
++        Assert.Equal(4, result!.TotalCount);
++        Assert.All(result.Items, item =>
++        {
++            Assert.Equal(seed.CompanyId, item.CompanyId);
++            Assert.Equal(seed.SourceEntityId, item.SourceEntityId);
++            Assert.Equal("work_task", item.SourceEntityType);
++            Assert.Equal("corr-escalation-source-history", item.CorrelationId);
++        });
++        Assert.Contains(result.Items, item => item.Action == AuditEventActions.EscalationPolicyEvaluationStarted);
++        Assert.Contains(result.Items, item => item.Action == AuditEventActions.EscalationPolicyEvaluationCompleted);
++    }
++
+     [Fact]
+     public async Task Escalation_history_forbids_members_without_audit_review_role()
+     {
+         var seed = await SeedEscalationHistoryAsync("forbidden", CompanyMembershipRole.Employee);
+@@ -156,6 +177,42 @@ public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplica
+                     otherCorrelationId,
+                     0));
+ 
+             dbContext.AuditEvents.AddRange(
++                new AuditEvent(
++                    Guid.NewGuid(),
++                    companyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.EscalationPolicyEvaluationStarted,
++                    AuditTargetTypes.EscalationPolicy,
++                    sourceEntityId.ToString(),
++                    AuditEventOutcomes.Requested,
++                    "Escalation policy evaluation started.",
++                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
++                    new Dictionary<string, string?>
++                    {
++                        ["policyCount"] = "1",
++                        ["eventType"] = "task.updated",
++                        ["sourceStatus"] = "open",
++                        ["lifecycleVersion"] = "0"
++                    },
++                    correlationId,
++                    triggeredAt.AddSeconds(-1)),
++                new AuditEvent(
++                    Guid.NewGuid(),
++                    companyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.EscalationPolicyEvaluationCompleted,
++                    AuditTargetTypes.EscalationPolicy,
++                    sourceEntityId.ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Escalation policy evaluation completed.",
++                    ["escalation_policy", EscalationSourceEntityTypes.WorkTask],
++                    new Dictionary<string, string?>
++                    {
++                        ["resultCount"] = "1",
++                        ["createdCount"] = "1",
++                        ["skippedDuplicateCount"] = "0"
++                    },
++                    correlationId,
++                    triggeredAt.AddSeconds(2)),
+                 new AuditEvent(
+                     Guid.NewGuid(),
+                     companyId,
+                     AuditActorTypes.System,
+END_OF_PATCH

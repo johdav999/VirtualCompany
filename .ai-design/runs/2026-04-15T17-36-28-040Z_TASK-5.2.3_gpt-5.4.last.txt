@@ -1,0 +1,815 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index 1f2c1f6..2f1b6d7 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -76,6 +76,10 @@ public sealed class ActivityFeedController : ControllerBase
+         {
+             return ValidationProblem(ex.Errors);
+         }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+diff --git a/src/VirtualCompany.Web/Components/ActivityCorrelationPanel.razor b/src/VirtualCompany.Web/Components/ActivityCorrelationPanel.razor
+new file mode 100644
+index 0000000..5c0d5d1
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/ActivityCorrelationPanel.razor
+@@ -0,0 +1,151 @@
++@using VirtualCompany.Web.Services
++
++<aside class="activity-correlation-panel" aria-live="polite">
++    <div class="activity-correlation-panel__header">
++        <div>
++            <span class="dashboard-kicker">Correlation</span>
++            <h2 class="h5 mb-1">Drill-down</h2>
++            <p class="text-body-secondary mb-0">Select an activity item to inspect linked work.</p>
++        </div>
++    </div>
++
++    @if (IsLoading)
++    {
++        <div class="activity-correlation-state">
++            <strong>Loading correlation...</strong>
++            <span class="text-body-secondary">Resolving linked tasks, workflows, approvals, and tool executions.</span>
++        </div>
++    }
++    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
++    {
++        <div class="alert alert-danger mb-0">@ErrorMessage</div>
++    }
++    else if (Timeline is null)
++    {
++        <div class="activity-correlation-state">
++            <strong>No activity selected</strong>
++            <span class="text-body-secondary">Choose an event from the timeline.</span>
++        </div>
++    }
++    else
++    {
++        var selected = Timeline.Items.FirstOrDefault(x => x.Activity.EventId == SelectedActivityEventId);
++
++        <section class="activity-correlation-section">
++            <h3 class="h6">Selected event</h3>
++            @if (selected is null)
++            {
++                <p class="text-body-secondary mb-0">The selected item is no longer available in this correlation.</p>
++            }
++            else
++            {
++                <div class="activity-correlation-selected">
++                    <span class="activity-feed-type">@FormatToken(selected.Activity.EventType)</span>
++                    <span class="activity-feed-status activity-feed-status--@StatusClass(selected.Activity.Status)">@FormatToken(selected.Activity.Status)</span>
++                    <strong>@selected.Activity.Summary</strong>
++                    <small>@selected.Activity.OccurredAt.ToLocalTime():g</small>
++                </div>
++            }
++        </section>
++
++        <section class="activity-correlation-section">
++            <div class="activity-correlation-section__title">
++                <h3 class="h6 mb-0">Linked entities</h3>
++                <span>@(Timeline.SelectedActivityLinks?.LinkedEntities.Count ?? 0)</span>
++            </div>
++
++            @if (Timeline.SelectedActivityLinks?.LinkedEntities.Count > 0)
++            {
++                <div class="activity-linked-entities">
++                    @foreach (var link in Timeline.SelectedActivityLinks.LinkedEntities)
++                    {
++                        <article class="activity-linked-entity @(link.IsAvailable ? string.Empty : "activity-linked-entity--unavailable")" @key="ActivityLinkKey(link)">
++                            <div>
++                                <span class="activity-linked-entity__type">@FormatEntityType(link.EntityType)</span>
++                                <h4 class="h6 mb-1">@link.DisplayText</h4>
++                                <p class="text-body-secondary mb-0">@link.EntityId</p>
++                            </div>
++                            <div class="activity-linked-entity__status">
++                                @if (link.IsAvailable)
++                                {
++                                    <span class="activity-feed-status activity-feed-status--@StatusClass(link.CurrentStatus ?? string.Empty)">
++                                        @FormatToken(link.CurrentStatus ?? "available")
++                                    </span>
++                                }
++                                else
++                                {
++                                    <span class="activity-feed-status activity-feed-status--failed">
++                                        @FormatUnavailable(link)
++                                    </span>
++                                }
++                            </div>
++                        </article>
++                    }
++                </div>
++            }
++            else
++            {
++                <p class="text-body-secondary mb-0">No linked entities were recorded for this activity item.</p>
++            }
++        </section>
++
++        <section class="activity-correlation-section">
++            <div class="activity-correlation-section__title">
++                <h3 class="h6 mb-0">Event sequence</h3>
++                <span>@Timeline.Items.Count</span>
++            </div>
++            <div class="activity-correlation-events">
++                @foreach (var item in Timeline.Items)
++                {
++                    var isSelected = item.Activity.EventId == SelectedActivityEventId;
++                    <button class="activity-correlation-event @(isSelected ? "activity-correlation-event--selected" : string.Empty)"
++                            type="button"
++                            @key="item.Activity.EventId"
++                            @onclick="() => SelectAsync(item.Activity.EventId)">
++                        <span>@item.Activity.OccurredAt.ToLocalTime():g</span>
++                        <strong>@item.Activity.Summary</strong>
++                        <small>@FormatToken(item.Activity.EventType)</small>
++                    </button>
++                }
++            </div>
++        </section>
++    }
++</aside>
++
++@code {
++    [Parameter]
++    public ActivityCorrelationTimelineViewModel? Timeline { get; set; }
++
++    [Parameter]
++    public Guid? SelectedActivityEventId { get; set; }
++
++    [Parameter]
++    public bool IsLoading { get; set; }
++
++    [Parameter]
++    public string? ErrorMessage { get; set; }
++
++    [Parameter]
++    public EventCallback<Guid> OnSelectActivity { get; set; }
++
++    private Task SelectAsync(Guid activityEventId) =>
++        OnSelectActivity.HasDelegate ? OnSelectActivity.InvokeAsync(activityEventId) : Task.CompletedTask;
++
++    private static string ActivityLinkKey(ActivityLinkedEntityViewModel link) =>
++        $"{link.EntityType}:{link.EntityId:N}";
++
++    private static string FormatEntityType(string value) =>
++        value.Equals("workflowInstance", StringComparison.OrdinalIgnoreCase)
++            ? "Workflow"
++            : value.Equals("toolExecution", StringComparison.OrdinalIgnoreCase)
++                ? "Tool execution"
++                : FormatToken(value);
++
++    private static string FormatUnavailable(ActivityLinkedEntityViewModel link) =>
++        link.Availability.Equals("unavailable_forbidden", StringComparison.OrdinalIgnoreCase)
++            ? "Unavailable"
++            : link.Availability.Equals("unavailable_deleted", StringComparison.OrdinalIgnoreCase)
++                ? "Deleted"
++                : "Missing";
++
++    private static string FormatToken(string value) =>
++        string.IsNullOrWhiteSpace(value) ? "unknown" : value.Replace("_", " ", StringComparison.Ordinal);
++
++    private static string StatusClass(string status) =>
++        status.Equals("completed", StringComparison.OrdinalIgnoreCase) ||
++        status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) ? "completed" :
++        status.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
++        status.Equals("error", StringComparison.OrdinalIgnoreCase) ? "failed" :
++        status.Equals("pending", StringComparison.OrdinalIgnoreCase) ? "pending" : "running";
++}
+diff --git a/src/VirtualCompany.Web/Pages/ActivityFeed.razor b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+index 5b76c37..0ee3b01 100644
+--- a/src/VirtualCompany.Web/Pages/ActivityFeed.razor
++++ b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+@@ -44,48 +44,75 @@ else
+ 
+         <div class="activity-feed-list mt-4">
+             @if (items.Count == 0 && string.IsNullOrWhiteSpace(errorMessage))
+             {
+                 <article class="activity-feed-empty">
+                     <h2 class="h5">No activity yet</h2>
+                     <p class="text-body-secondary mb-0">Persisted agent events for this workspace will appear here as they happen.</p>
+                 </article>
+             }
+             else
+             {
+-                @foreach (var item in items)
++                <div class="activity-feed-layout">
++                    <div class="activity-feed-groups">
++                        @foreach (var group in CorrelationGroups)
++                        {
++                            <section class="activity-correlation-group" @key="group.Key">
++                                <div class="activity-correlation-group__header">
++                                    <div>
++                                        <h2 class="h6 mb-1">@group.Title</h2>
++                                        <p class="text-body-secondary mb-0">@group.Items.Count event(s)</p>
++                                    </div>
++                                    @if (!string.IsNullOrWhiteSpace(group.CorrelationId))
++                                    {
++                                        <span class="activity-correlation-id">@group.CorrelationId</span>
++                                    }
++                                </div>
++
++                                @foreach (var item in group.Items)
++                                {
++                                    var isSelected = selectedActivityEventId == item.EventId;
++                                    <article class="activity-feed-row @(isSelected ? "activity-feed-row--selected" : string.Empty)" @key="item.EventId">
++                                        <div class="activity-feed-row__time">
++                                            <strong>@item.OccurredAt.ToLocalTime():g</strong>
++                                            <span>@RelativeTime(item.OccurredAt)</span>
++                                        </div>
++                                        <div class="activity-feed-row__body">
++                                            <div class="activity-feed-row__topline">
++                                                <span class="activity-feed-type">@FormatToken(item.EventType)</span>
++                                                <span class="activity-feed-status activity-feed-status--@StatusClass(item.Status)">@FormatToken(item.Status)</span>
++                                            </div>
++                                            <h3 class="h6 mb-1">@item.Summary</h3>
++                                            <div class="activity-feed-meta">
++                                                <span>Agent: @(item.AgentId?.ToString("N") ?? "system")</span>
++                                                @if (!string.IsNullOrWhiteSpace(item.CorrelationId))
++                                                {
++                                                    <span>Correlation: @item.CorrelationId</span>
++                                                }
++                                            </div>
++                                            @if (!string.IsNullOrWhiteSpace(FormatMetadata(item)))
++                                            {
++                                                <p class="activity-feed-source mb-0">@FormatMetadata(item)</p>
++                                            }
++                                            <button class="btn btn-sm btn-outline-primary mt-2"
++                                                    type="button"
++                                                    disabled="@correlationIsLoading"
++                                                    @onclick="() => SelectActivityAsync(item)">
++                                                @(isSelected && correlationIsLoading ? "Loading..." : "Inspect correlation")
++                                            </button>
++                                        </div>
++                                    </article>
++                                }
++                            </section>
++                        }
++                    </div>
++
++                    <ActivityCorrelationPanel Timeline="selectedCorrelation"
++                                              SelectedActivityEventId="selectedActivityEventId"
++                                              IsLoading="correlationIsLoading"
++                                              ErrorMessage="correlationErrorMessage"
++                                              OnSelectActivity="SelectActivityByIdAsync" />
++                </div>
+-                {
+-                    <article class="activity-feed-row" @key="item.EventId">
+-                        <div class="activity-feed-row__time">
+-                            <strong>@item.OccurredAt.ToLocalTime():g</strong>
+-                            <span>@RelativeTime(item.OccurredAt)</span>
+-                        </div>
+-                        <div class="activity-feed-row__body">
+-                            <div class="activity-feed-row__topline">
+-                                <span class="activity-feed-type">@FormatToken(item.EventType)</span>
+-                                <span class="activity-feed-status activity-feed-status--@StatusClass(item.Status)">@FormatToken(item.Status)</span>
+-                            </div>
+-                            <h2 class="h6 mb-1">@item.Summary</h2>
+-                            <div class="activity-feed-meta">
+-                                <span>Agent: @(item.AgentId?.ToString("N") ?? "system")</span>
+-                                @if (!string.IsNullOrWhiteSpace(item.CorrelationId))
+-                                {
+-                                    <span>Correlation: @item.CorrelationId</span>
+-                                }
+-                            </div>
+-                            @if (!string.IsNullOrWhiteSpace(FormatMetadata(item)))
+-                            {
+-                                <p class="activity-feed-source mb-0">@FormatMetadata(item)</p>
+-                            }
+-                        </div>
+-                    </article>
+-                }
+             }
+         </div>
+ 
+         <div class="activity-feed-pagination mt-4">
+@@ -124,6 +151,10 @@ else
+     private string? errorMessage;
+     private bool isLoading = true;
+     private bool isLoadingMore;
+     private bool isLive;
++    private ActivityCorrelationTimelineViewModel? selectedCorrelation;
++    private Guid? selectedActivityEventId;
++    private string? correlationErrorMessage;
++    private bool correlationIsLoading;
++    private int correlationRequestVersion;
+     private bool hasMore => !string.IsNullOrWhiteSpace(nextCursor);
+     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
++    private IReadOnlyList<ActivityCorrelationGroupViewModel> CorrelationGroups => BuildCorrelationGroups();
+ 
+     protected override async Task OnParametersSetAsync()
+     {
+@@ -143,6 +174,8 @@ else
+         nextCursor = null;
+         errorMessage = null;
+         isLive = false;
++        selectedCorrelation = null;
++        selectedActivityEventId = null;
++        correlationErrorMessage = null;
+         isLoading = true;
+ 
+         try
+@@ -187,6 +220,43 @@ else
+         }
+     }
+ 
++    private async Task SelectActivityAsync(ActivityFeedItemViewModel item)
++    {
++        if (CompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        var requestVersion = ++correlationRequestVersion;
++        selectedActivityEventId = item.EventId;
++        correlationErrorMessage = null;
++        correlationIsLoading = true;
++
++        try
++        {
++            var timeline = await ActivityFeedClient.GetCorrelationForActivityAsync(companyId, item.EventId);
++            if (requestVersion == correlationRequestVersion)
++            {
++                selectedCorrelation = timeline;
++                selectedActivityEventId = item.EventId;
++            }
++        }
++        catch (OnboardingApiException ex) when (requestVersion == correlationRequestVersion)
++        {
++            selectedCorrelation = null;
++            correlationErrorMessage = ex.Message;
++        }
++        finally
++        {
++            if (requestVersion == correlationRequestVersion)
++            {
++                correlationIsLoading = false;
++            }
++        }
++    }
++
++    private async Task SelectActivityByIdAsync(Guid activityEventId)
++    {
++        var item = items.FirstOrDefault(x => x.EventId == activityEventId);
++        if (item is not null)
++        {
++            await SelectActivityAsync(item);
++        }
++    }
++
+     private async Task LoadPageAsync(string? cursor, bool replace)
+     {
+         var page = await ActivityFeedClient.ListAsync(CompanyId!.Value, cursor, PageSize);
+@@ -307,6 +377,45 @@ else
+         return string.Join(" | ", values);
+     }
+ 
++    private IReadOnlyList<ActivityCorrelationGroupViewModel> BuildCorrelationGroups()
++    {
++        return items
++            .GroupBy(item => string.IsNullOrWhiteSpace(item.CorrelationId) ? item.EventId.ToString("N") : item.CorrelationId, StringComparer.OrdinalIgnoreCase)
++            .Select(group =>
++            {
++                var orderedItems = group
++                    .OrderByDescending(item => item.OccurredAt)
++                    .ThenByDescending(item => item.EventId)
++                    .ToList();
++                var correlationId = orderedItems.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.CorrelationId))?.CorrelationId;
++
++                return new ActivityCorrelationGroupViewModel(
++                    group.Key,
++                    correlationId,
++                    string.IsNullOrWhiteSpace(correlationId) ? "Uncorrelated event" : "Correlated activity",
++                    orderedItems);
++            })
++            .OrderByDescending(group => group.Items.Max(item => item.OccurredAt))
++            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++    }
++
+     private static string FormatJsonValue(JsonElement value) =>
+         value.ValueKind switch
+         {
+@@ -319,4 +428,10 @@ else
+ 
+     public async ValueTask DisposeAsync() =>
+         await ActivityFeedClient.DisposeAsync();
++
++    private sealed record ActivityCorrelationGroupViewModel(
++        string Key,
++        string? CorrelationId,
++        string Title,
++        IReadOnlyList<ActivityFeedItemViewModel> Items);
+ }
+diff --git a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+index 8eafc6a..fe70c31 100644
+--- a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+@@ -36,6 +36,42 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+             cancellationToken);
+     }
+ 
++    public Task<ActivityCorrelationTimelineViewModel> GetCorrelationForActivityAsync(
++        Guid companyId,
++        Guid activityEventId,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineCorrelation(companyId, activityEventId));
++        }
++
++        return GetAsync<ActivityCorrelationTimelineViewModel>(
++            $"api/companies/{companyId}/activity-feed/{activityEventId}/correlation",
++            cancellationToken);
++    }
++
++    public Task<ActivityCorrelationTimelineViewModel> GetCorrelationAsync(
++        Guid companyId,
++        string correlationId,
++        Guid? selectedActivityEventId = null,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return Task.FromResult(OfflineCorrelation(companyId, selectedActivityEventId));
++        }
++
++        var query = HttpUtility.ParseQueryString(string.Empty);
++        if (selectedActivityEventId is Guid selected)
++        {
++            query["selectedActivityEventId"] = selected.ToString();
++        }
++
++        var suffix = query.Count > 0 ? $"?{query}" : string.Empty;
++        return GetAsync<ActivityCorrelationTimelineViewModel>(
++            $"api/companies/{companyId}/activity-feed/correlations/{Uri.EscapeDataString(correlationId)}{suffix}",
++            cancellationToken);
++    }
++
+     public async Task ConnectAsync(
+         Guid companyId,
+         Func<ActivityFeedItemViewModel, Task> onActivityReceived,
+@@ -188,6 +224,86 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+             NextCursor = null
+         };
+     }
++
++    private static ActivityCorrelationTimelineViewModel OfflineCorrelation(Guid companyId, Guid? selectedActivityEventId)
++    {
++        var page = OfflinePage(companyId);
++        var selected = selectedActivityEventId is Guid id
++            ? page.Items.FirstOrDefault(x => x.EventId == id) ?? page.Items[0]
++            : page.Items[0];
++
++        return new ActivityCorrelationTimelineViewModel
++        {
++            TenantId = companyId,
++            CorrelationId = selected.CorrelationId ?? "offline-activity-demo",
++            Items = page.Items
++                .OrderBy(x => x.OccurredAt)
++                .Select(item => new ActivityTimelineItemViewModel
++                {
++                    Activity = item,
++                    PrimaryTarget = new ActivityEntityReferenceViewModel
++                    {
++                        EntityType = item.EventType.Contains("tool", StringComparison.OrdinalIgnoreCase) ? "toolExecution" : "task",
++                        EntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39")
++                    },
++                    LinkedEntities =
++                    [
++                        new()
++                        {
++                            EntityType = "task",
++                            EntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
++                            Availability = "available",
++                            DisplayText = "Invoice review",
++                            CurrentStatus = "completed",
++                            LastUpdatedAt = DateTime.UtcNow.AddMinutes(-3),
++                            IsAvailable = true
++                        },
++                        new()
++                        {
++                            EntityType = "toolExecution",
++                            EntityId = Guid.Parse("70a2d4e1-29df-4ad2-b4af-3c7b1d5661a7"),
++                            Availability = "unavailable_missing",
++                            DisplayText = "Unavailable linked entity",
++                            IsAvailable = false,
++                            UnavailableReason = "missing"
++                        }
++                    ]
++                })
++                .ToList(),
++            SelectedActivityLinks = new ActivityLinkedEntitiesViewModel
++            {
++                TenantId = companyId,
++                ActivityEventId = selected.EventId,
++                LinkedEntities =
++                [
++                    new()
++                    {
++                        EntityType = "task",
++                        EntityId = Guid.Parse("9bc83a53-7716-48cd-8150-f9b4b4926e39"),
++                        Availability = "available",
++                        DisplayText = "Invoice review",
++                        CurrentStatus = "completed",
++                        LastUpdatedAt = DateTime.UtcNow.AddMinutes(-3),
++                        IsAvailable = true
++                    },
++                    new()
++                    {
++                        EntityType = "toolExecution",
++                        EntityId = Guid.Parse("70a2d4e1-29df-4ad2-b4af-3c7b1d5661a7"),
++                        Availability = "unavailable_missing",
++                        DisplayText = "Unavailable linked entity",
++                        IsAvailable = false,
++                        UnavailableReason = "missing"
++                    }
++                ]
++            }
++        };
++    }
+ 
+     private sealed class ApiProblemResponse
+     {
+@@ -216,3 +332,46 @@ public sealed class ActivityFeedItemViewModel
+     public Dictionary<string, JsonElement> Source { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonElement> SourceMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+ }
++
++public sealed class ActivityCorrelationTimelineViewModel
++{
++    public Guid TenantId { get; set; }
++    public string CorrelationId { get; set; } = string.Empty;
++    public List<ActivityTimelineItemViewModel> Items { get; set; } = [];
++    public ActivityLinkedEntitiesViewModel? SelectedActivityLinks { get; set; }
++}
++
++public sealed class ActivityTimelineItemViewModel
++{
++    public ActivityFeedItemViewModel Activity { get; set; } = new();
++    public ActivityEntityReferenceViewModel? PrimaryTarget { get; set; }
++    public List<ActivityLinkedEntityViewModel> LinkedEntities { get; set; } = [];
++}
++
++public sealed class ActivityEntityReferenceViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public Guid EntityId { get; set; }
++}
++
++public sealed class ActivityLinkedEntitiesViewModel
++{
++    public Guid TenantId { get; set; }
++    public Guid ActivityEventId { get; set; }
++    public List<ActivityLinkedEntityViewModel> LinkedEntities { get; set; } = [];
++}
++
++public sealed class ActivityLinkedEntityViewModel
++{
++    public string EntityType { get; set; } = string.Empty;
++    public Guid EntityId { get; set; }
++    public string Availability { get; set; } = string.Empty;
++    public string DisplayText { get; set; } = string.Empty;
++    public string? CurrentStatus { get; set; }
++    public DateTime? LastUpdatedAt { get; set; }
++    public bool IsAvailable { get; set; }
++    public string? UnavailableReason { get; set; }
++    public Dictionary<string, JsonElement> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index ebd3073..bb0dc2b 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -633,6 +633,22 @@
+     color: #475569;
+ }
+ 
++.activity-feed-layout {
++    align-items: start;
++    display: grid;
++    gap: 1rem;
++    grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
++}
++
++.activity-feed-groups {
++    display: grid;
++    gap: 1rem;
++    min-width: 0;
++}
++
+ .activity-feed-list {
+     display: grid;
+     gap: 0.75rem;
+@@ -655,6 +671,47 @@
+     grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+ }
+ 
++.activity-feed-row--selected {
++    border-color: rgba(29, 78, 216, 0.45);
++    box-shadow: 0 16px 28px rgba(29, 78, 216, 0.12);
++}
++
++.activity-correlation-group {
++    display: grid;
++    gap: 0.75rem;
++}
++
++.activity-correlation-group__header {
++    align-items: flex-start;
++    display: flex;
++    gap: 1rem;
++    justify-content: space-between;
++    min-width: 0;
++}
++
++.activity-correlation-id {
++    background: #f8fafc;
++    border: 1px solid var(--bs-border-color);
++    border-radius: 6px;
++    color: #475569;
++    display: inline-flex;
++    font-size: 0.8rem;
++    font-weight: 700;
++    letter-spacing: 0;
++    max-width: 100%;
++    overflow-wrap: anywhere;
++    padding: 0.25rem 0.5rem;
++}
++
+ .activity-feed-row__time {
+     color: #475569;
+     display: grid;
+@@ -724,9 +781,154 @@
+     margin-top: 0.5rem;
+ }
+ 
++.activity-correlation-panel {
++    background: #fff;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 8px;
++    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
++    display: grid;
++    gap: 1rem;
++    min-width: 0;
++    padding: 1rem;
++    position: sticky;
++    top: 1rem;
++}
++
++.activity-correlation-panel__header,
++.activity-correlation-section__title {
++    align-items: flex-start;
++    display: flex;
++    gap: 1rem;
++    justify-content: space-between;
++}
++
++.activity-correlation-section {
++    border-top: 1px solid rgba(15, 23, 42, 0.08);
++    display: grid;
++    gap: 0.75rem;
++    min-width: 0;
++    padding-top: 1rem;
++}
++
++.activity-correlation-state {
++    background: #f8fafc;
++    border: 1px solid var(--bs-border-color);
++    border-radius: 8px;
++    display: grid;
++    gap: 0.35rem;
++    padding: 1rem;
++}
++
++.activity-correlation-selected {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 0.5rem;
++    min-width: 0;
++}
++
++.activity-correlation-selected strong,
++.activity-linked-entity h4,
++.activity-correlation-event strong {
++    overflow-wrap: anywhere;
++}
++
++.activity-linked-entities,
++.activity-correlation-events {
++    display: grid;
++    gap: 0.6rem;
++}
++
++.activity-linked-entity {
++    align-items: flex-start;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 8px;
++    display: grid;
++    gap: 0.75rem;
++    grid-template-columns: minmax(0, 1fr) auto;
++    min-width: 0;
++    padding: 0.75rem;
++}
++
++.activity-linked-entity--unavailable {
++    background: #fff1f2;
++    border-color: rgba(159, 18, 57, 0.2);
++}
++
++.activity-linked-entity__type {
++    color: #475569;
++    display: inline-flex;
++    font-size: 0.78rem;
++    font-weight: 700;
++    letter-spacing: 0;
++    text-transform: uppercase;
++}
++
++.activity-linked-entity__status {
++    display: flex;
++    justify-content: flex-end;
++}
++
++.activity-correlation-event {
++    background: #fff;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 8px;
++    color: inherit;
++    display: grid;
++    gap: 0.2rem;
++    min-width: 0;
++    padding: 0.65rem;
++    text-align: left;
++}
++
++.activity-correlation-event:hover,
++.activity-correlation-event:focus {
++    border-color: rgba(29, 78, 216, 0.45);
++}
++
++.activity-correlation-event--selected {
++    background: #eff6ff;
++    border-color: rgba(29, 78, 216, 0.45);
++}
++
++.activity-correlation-event span,
++.activity-correlation-event small {
++    color: #475569;
++}
++
+ @media (max-width: 575.98px) {
+     .activity-feed-header,
+-    .activity-feed-row {
++    .activity-feed-row,
++    .activity-correlation-group__header,
++    .activity-linked-entity {
+         grid-template-columns: 1fr;
+     }
++
++    .activity-correlation-group__header {
++        display: grid;
++    }
++
++    .activity-linked-entity__status {
++        justify-content: flex-start;
++    }
++}
++
++@media (max-width: 991.98px) {
++    .activity-feed-layout {
++        grid-template-columns: 1fr;
++    }
++
++    .activity-correlation-panel {
++        position: static;
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+index 1f1e0d9..598e0e9 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+@@ -74,6 +74,18 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebAp
+                  x.IsAvailable &&
+                  x.UnavailableReason is null);
+     }
+ 
++    [Fact]
++    public async Task Selecting_missing_activity_item_returns_not_found()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateClient();
++
++        var response = await client.GetAsync(
++            $"/api/companies/{seed.CompanyId}/activity-feed/{Guid.NewGuid()}/correlation");
++
++        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()
+     {
+END_OF_PATCH

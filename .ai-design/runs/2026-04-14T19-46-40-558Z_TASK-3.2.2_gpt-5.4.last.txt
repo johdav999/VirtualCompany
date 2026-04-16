@@ -1,0 +1,337 @@
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -64,7 +64,9 @@ public sealed class AgentsController : ControllerBase
+     }
+ 
+     [HttpGet("status")]
++    [HttpGet("status-cards")]
+     [Authorize(Policy = CompanyPolicies.CompanyMember)]
++    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+     public async Task<ActionResult<AgentStatusCardsResponseDto>> GetStatusCardsAsync(
+         Guid companyId,
+         CancellationToken cancellationToken)
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -105,6 +105,7 @@ public sealed record AgentStatusCardDto(
+     IReadOnlyList<string> HealthReasons,
+     int ActiveAlertsCount,
+     IReadOnlyList<AgentStatusRecentActionDto> RecentActions,
++    DateTime LastUpdatedUtc,
+     AgentStatusDetailLinkDto DetailLink);
+ 
+ public sealed record AgentStatusCardsResponseDto(
+@@ -126,12 +127,14 @@ public sealed class AgentStatusHealthThresholds
+     public const int DefaultCriticalFailedRuns = 3;
+     public const int DefaultWarningStalledWork = 1;
+     public const int DefaultCriticalStalledWork = 3;
+-    public const int DefaultCriticalPolicyViolations = 1;
++    public const int DefaultWarningPolicyViolations = 1;
++    public const int DefaultCriticalPolicyViolations = 2;
+ 
+     public int WarningFailedRuns { get; init; } = DefaultWarningFailedRuns;
+     public int CriticalFailedRuns { get; init; } = DefaultCriticalFailedRuns;
+     public int WarningStalledWork { get; init; } = DefaultWarningStalledWork;
+     public int CriticalStalledWork { get; init; } = DefaultCriticalStalledWork;
++    public int WarningPolicyViolations { get; init; } = DefaultWarningPolicyViolations;
+     public int CriticalPolicyViolations { get; init; } = DefaultCriticalPolicyViolations;
+ }
+ 
+diff --git a/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs b/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs
++++ b/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs
+@@ -35,6 +35,12 @@ public static class AgentStatusHealthCalculator
+             reasons.Add(metrics.StalledWorkCount == 1 ? "1 stalled work item needs attention." : $"{metrics.StalledWorkCount} stalled work items need attention.");
+         }
+ 
++        if (metrics.PolicyViolationCount >= resolvedThresholds.WarningPolicyViolations)
++        {
++            reasons.Add(metrics.PolicyViolationCount == 1
++                ? "1 policy violation needs review."
++                : $"{metrics.PolicyViolationCount} policy violations need review.");
++        }
++
+         return reasons.Count > 0
+             ? new AgentStatusHealthResult(Warning, reasons)
+             : new AgentStatusHealthResult(Healthy, ["No failed runs, stalled work, or policy violations are active."]);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+@@ -9,7 +9,8 @@ namespace VirtualCompany.Infrastructure.Companies;
+ 
+ public sealed class AgentStatusAggregationService : IAgentStatusAggregationService
+ {
+-    private static readonly TimeSpan StalledWorkThreshold = TimeSpan.FromHours(24);
++    private static readonly TimeSpan RecentSignalWindow = TimeSpan.FromHours(24);
++    private static readonly TimeSpan StalledWorkThreshold = TimeSpan.FromMinutes(60);
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly TimeProvider _timeProvider;
+@@ -30,6 +31,7 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+ 
+         var generatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
+         var stalledCutoffUtc = generatedUtc - StalledWorkThreshold;
++        var recentSignalCutoffUtc = generatedUtc - RecentSignalWindow;
+ 
+         var agents = await _dbContext.Agents
+             .AsNoTracking()
+@@ -42,7 +44,8 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 x.CompanyId,
+                 x.DisplayName,
+                 x.RoleName,
+-                x.Department))
++                x.Department,
++                x.UpdatedUtc))
+             .ToListAsync(cancellationToken);
+ 
+         if (agents.Count == 0)
+@@ -63,12 +66,13 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                                  x.Status == WorkTaskStatus.AwaitingApproval),
+                 group.Count(x => x.Status == WorkTaskStatus.Blocked),
+                 group.Count(x => x.Status == WorkTaskStatus.AwaitingApproval),
+-                group.Count(x => x.Status == WorkTaskStatus.Failed),
++                group.Count(x => x.Status == WorkTaskStatus.Failed && x.UpdatedUtc >= recentSignalCutoffUtc),
+                 group.Count(x =>
+                     (x.Status == WorkTaskStatus.InProgress ||
+                      x.Status == WorkTaskStatus.Blocked ||
+                      x.Status == WorkTaskStatus.AwaitingApproval) &&
+-                    x.UpdatedUtc <= stalledCutoffUtc)))
++                    x.UpdatedUtc <= stalledCutoffUtc),
++                group.Max(x => x.UpdatedUtc)))
+             .ToListAsync(cancellationToken);
+ 
+         var taskByAgentId = taskAggregates.ToDictionary(x => x.AgentId);
+@@ -105,22 +109,35 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 agentIds.Contains(x.AssignedAgentId.Value) &&
+                 x.WorkflowInstanceId.HasValue &&
+                 x.WorkflowInstance != null &&
+-                x.WorkflowInstance.State == WorkflowInstanceStatus.Failed)
++                x.WorkflowInstance.State == WorkflowInstanceStatus.Failed &&
++                x.WorkflowInstance.UpdatedUtc >= recentSignalCutoffUtc)
+             .Select(x => new
+             {
+                 AgentId = x.AssignedAgentId!.Value,
+-                WorkflowInstanceId = x.WorkflowInstanceId!.Value
++                WorkflowInstanceId = x.WorkflowInstanceId!.Value,
++                x.WorkflowInstance.UpdatedUtc
+             })
+-            .Distinct()
+             .ToListAsync(cancellationToken);
+ 
+         var workflowFailuresByAgentId = workflowFailureRows
++            .GroupBy(x => new { x.AgentId, x.WorkflowInstanceId })
++            .Select(group => new
++            {
++                group.Key.AgentId,
++                LastUpdatedUtc = group.Max(x => x.UpdatedUtc)
++            })
+             .GroupBy(x => x.AgentId)
+-            .ToDictionary(x => x.Key, x => x.Count());
++            .ToDictionary(
++                x => x.Key,
++                x => new AgentWorkflowFailureAggregate(
++                    x.Count(),
++                    x.Max(row => row.LastUpdatedUtc)));
+ 
+         var executionAggregates = await _dbContext.ToolExecutionAttempts
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
+             .GroupBy(x => x.AgentId)
+             .Select(group => new AgentExecutionStatusAggregate(
+                 group.Key,
+-                group.Count(x => x.Status == ToolExecutionStatus.Failed),
+-                group.Count(x => x.Status == ToolExecutionStatus.Denied),
+-                group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval)))
++                group.Count(x => x.Status == ToolExecutionStatus.Failed && x.UpdatedUtc >= recentSignalCutoffUtc),
++                group.Count(x => x.Status == ToolExecutionStatus.Denied && x.UpdatedUtc >= recentSignalCutoffUtc),
++                group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval),
++                group.Max(x => x.UpdatedUtc)))
+             .ToListAsync(cancellationToken);
+ 
+         var executionByAgentId = executionAggregates.ToDictionary(x => x.AgentId);
+@@ -134,7 +151,8 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+             .GroupBy(x => x.AgentId)
+             .Select(group => new AgentApprovalStatusAggregate(
+                 group.Key,
+-                group.Count(x => x.Status == ApprovalRequestStatus.Pending)))
++                group.Count(x => x.Status == ApprovalRequestStatus.Pending),
++                group.Max(x => x.UpdatedUtc)))
+             .ToListAsync(cancellationToken);
+ 
+         var approvalByAgentId = approvalAggregates.ToDictionary(x => x.AgentId);
+@@ -151,7 +169,10 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 agentIds.Contains(x.SourceAgentId.Value) &&
+                 (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged))
+             .GroupBy(x => x.SourceAgentId!.Value)
+-            .Select(group => new AgentAlertAggregate(group.Key, group.Count()))
++            .Select(group => new AgentAlertAggregate(
++                group.Key,
++                group.Count(),
++                group.Max(x => x.UpdatedUtc)))
+             .ToListAsync(cancellationToken);
+ 
+         var alertByAgentId = alertAggregates.ToDictionary(x => x.AgentId);
+@@ -176,7 +197,7 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+             approvalByAgentId.TryGetValue(agent.AgentId, out var approval);
+             alertByAgentId.TryGetValue(agent.AgentId, out var alert);
+             workflowCountByAgentId.TryGetValue(agent.AgentId, out var activeWorkflowCount);
+-            workflowFailuresByAgentId.TryGetValue(agent.AgentId, out var failedWorkflowCount);
++            workflowFailuresByAgentId.TryGetValue(agent.AgentId, out var failedWorkflow);
+             recentActionsByAgentId.TryGetValue(agent.AgentId, out var actions);
+ 
+             var awaitingApprovalCount = Math.Max(approval?.PendingApprovalCount ?? 0, task?.AwaitingApprovalTaskCount ?? 0) +
+@@ -184,7 +205,8 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+             var activeTaskCount = task?.ActiveTaskCount ?? 0;
+             var blockedTaskCount = task?.BlockedTaskCount ?? 0;
+-            var failedRunCount = (task?.FailedTaskCount ?? 0) + (execution?.FailedExecutionCount ?? 0) + failedWorkflowCount;
++            var failedWorkflowCount = failedWorkflow?.FailedWorkflowCount ?? 0;
++            var failedRunCount = (task?.FailedTaskCount ?? 0) + (execution?.FailedExecutionCount ?? 0) + failedWorkflowCount;
+             var stalledWorkCount = task?.StalledWorkCount ?? 0;
+             var policyViolationCount = execution?.DeniedExecutionCount ?? 0;
+             var health = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(
+@@ -198,6 +220,14 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 blockedTaskCount +
+                 failedRunCount +
+                 policyViolationCount;
++            var lastUpdatedUtc = MaxUtc(
++                agent.LastUpdatedUtc,
++                task?.LastUpdatedUtc,
++                execution?.LastUpdatedUtc,
++                approval?.LastUpdatedUtc,
++                alert?.LastUpdatedUtc,
++                failedWorkflow?.LastUpdatedUtc,
++                actions?.FirstOrDefault()?.OccurredUtc);
+ 
+             return new AgentStatusCardDto(
+                 agent.AgentId,
+@@ -213,6 +243,7 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 health.Reasons,
+                 activeAlertsCount,
+                 actions ?? [],
++                lastUpdatedUtc,
+                 BuildDetailLink(agent.CompanyId, agent.AgentId));
+         }).ToList();
+ 
+@@ -320,11 +351,32 @@ public sealed class AgentStatusAggregationService : IAgentStatusAggregationServi
+                 ["include"] = "tasks,workflows,alerts"
+             });
+ 
+-    private sealed record AgentCardAgentProjection(Guid AgentId, Guid CompanyId, string DisplayName, string RoleName, string Department);
+-    private sealed record AgentTaskAggregate(Guid AgentId, int ActiveTaskCount, int BlockedTaskCount, int AwaitingApprovalTaskCount, int FailedTaskCount, int StalledWorkCount);
+-    private sealed record AgentExecutionStatusAggregate(Guid AgentId, int FailedExecutionCount, int DeniedExecutionCount, int AwaitingApprovalExecutionCount);
+-    private sealed record AgentApprovalStatusAggregate(Guid AgentId, int PendingApprovalCount);
+-    private sealed record AgentAlertAggregate(Guid AgentId, int ActiveAlertCount);
++    private static DateTime MaxUtc(params DateTime?[] values)
++    {
++        var max = DateTime.MinValue;
++
++        foreach (var value in values)
++        {
++            if (value.HasValue && value.Value > max)
++            {
++                max = value.Value;
++            }
++        }
++
++        return max;
++    }
++
++    private sealed record AgentCardAgentProjection(Guid AgentId, Guid CompanyId, string DisplayName, string RoleName, string Department, DateTime LastUpdatedUtc);
++    private sealed record AgentTaskAggregate(Guid AgentId, int ActiveTaskCount, int BlockedTaskCount, int AwaitingApprovalTaskCount, int FailedTaskCount, int StalledWorkCount, DateTime LastUpdatedUtc);
++    private sealed record AgentWorkflowFailureAggregate(int FailedWorkflowCount, DateTime LastUpdatedUtc);
++    private sealed record AgentExecutionStatusAggregate(
++        Guid AgentId,
++        int FailedExecutionCount,
++        int DeniedExecutionCount,
++        int AwaitingApprovalExecutionCount,
++        DateTime LastUpdatedUtc);
++
++    private sealed record AgentApprovalStatusAggregate(Guid AgentId, int PendingApprovalCount, DateTime LastUpdatedUtc);
++    private sealed record AgentAlertAggregate(Guid AgentId, int ActiveAlertCount, DateTime LastUpdatedUtc);
+ 
+     private sealed record RecentActionProjection(
+         Guid AgentId,
+diff --git a/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+@@ -33,14 +33,18 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         var criticalFromFailures = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(3, 0, 0));
+         Assert.Equal(AgentStatusHealthCalculator.Critical, criticalFromFailures.Status);
+ 
+-        var criticalFromPolicy = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(0, 0, 1));
++        var warningFromPolicy = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(0, 0, 1));
++        Assert.Equal(AgentStatusHealthCalculator.Warning, warningFromPolicy.Status);
++        Assert.Contains(warningFromPolicy.Reasons, x => x.Contains("policy violation", StringComparison.OrdinalIgnoreCase));
++
++        var criticalFromPolicy = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(0, 0, 2));
+         Assert.Equal(AgentStatusHealthCalculator.Critical, criticalFromPolicy.Status);
+         Assert.Contains(criticalFromPolicy.Reasons, x => x.Contains("policy violation", StringComparison.OrdinalIgnoreCase));
+     }
+ 
+     [Fact]
+-    public async Task Status_endpoint_returns_workload_health_alerts_recent_actions_and_deep_link()
++    public async Task Status_cards_endpoint_returns_workload_health_alerts_recent_actions_and_deep_link()
+     {
+         var seed = await SeedStatusScenarioAsync();
+ 
+         using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
+-        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/status");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/status-cards");
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+ 
+@@ -62,6 +66,7 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         Assert.Equal(AgentStatusHealthCalculator.Critical, agent.HealthStatus);
+         Assert.True(agent.ActiveAlertsCount >= 4);
++        Assert.True(agent.LastUpdatedUtc <= payload.GeneratedUtc);
+         Assert.Equal($"/agents/{seed.AgentId}", agent.DetailLink.Path);
+         Assert.Equal("work", agent.DetailLink.ActiveTab);
+         Assert.Equal(seed.CompanyId.ToString("D"), agent.DetailLink.Query["companyId"]);
+@@ -174,6 +179,7 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         var newestTaskId = Guid.NewGuid();
+         var failedTaskId = Guid.NewGuid();
+         var executionId = Guid.NewGuid();
++        var secondDeniedExecutionId = Guid.NewGuid();
+         var approvalId = Guid.NewGuid();
+ 
+         await _factory.SeedAsync(dbContext =>
+@@ -235,6 +241,13 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+                 "finance");
+             execution.MarkDenied(Payload(("reason", JsonValue.Create("policy_violation"))));
+ 
++            var secondDeniedExecution = new ToolExecutionAttempt(
++                secondDeniedExecutionId,
++                companyId,
++                agentId,
++                "ledger",
++                ToolActionType.Execute,
++                "finance");
++            secondDeniedExecution.MarkDenied(Payload(("reason", JsonValue.Create("policy_violation"))));
++
+             var approval = new ApprovalRequest(
+                 approvalId,
+                 companyId,
+@@ -251,7 +264,7 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+             dbContext.WorkflowDefinitions.Add(definition);
+             dbContext.WorkflowInstances.Add(workflow);
+             dbContext.WorkTasks.AddRange(blockedTask, newestTask, failedTask);
+-            dbContext.ToolExecutionAttempts.Add(execution);
++            dbContext.ToolExecutionAttempts.AddRange(execution, secondDeniedExecution);
+             dbContext.ApprovalRequests.Add(approval);
+             dbContext.Alerts.Add(new Alert(
+                 Guid.NewGuid(),
+@@ -303,6 +316,7 @@ public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicati
+         public string HealthStatus { get; set; } = string.Empty;
+         public List<string> HealthReasons { get; set; } = [];
+         public int ActiveAlertsCount { get; set; }
++        public DateTime LastUpdatedUtc { get; set; }
+         public List<AgentStatusRecentAction> RecentActions { get; set; } = [];
+         public AgentStatusDetailLink DetailLink { get; set; } = new();
+     }
+END_OF_PATCH

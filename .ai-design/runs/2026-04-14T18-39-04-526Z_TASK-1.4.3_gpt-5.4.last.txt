@@ -1,0 +1,216 @@
+diff --git a/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs b/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs
+index 4fb6b1a..0cb2a5a 100644
+--- a/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs
++++ b/src/VirtualCompany.Application/ProactiveMessaging/ProactiveMessageContracts.cs
+@@ -7,7 +7,9 @@ public sealed record GenerateProactiveMessageCommand(
+     Guid AgentId,
+     string SourceEntityType,
+     Guid SourceEntityId,
+     string Channel,
+-    Guid? RecipientUserId = null);
++    Guid? RecipientUserId = null,
++    string? Subject = null,
++    string? Body = null);
+ 
+ public sealed record ProactiveMessageDto(
+     Guid Id,
+diff --git a/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs b/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs
+index 2a58b2a..84f5fdd 100644
+--- a/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs
++++ b/src/VirtualCompany.Domain/Entities/ProactiveMessagePolicyDecision.cs
+@@ -8,6 +8,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
+ {
+     private const int RecipientMaxLength = 200;
+     private const int ReasonCodeMaxLength = 200;
++    private const int SubjectMaxLength = 200;
++    private const int BodyMaxLength = 16000;
+     private const int ReasonSummaryMaxLength = 2000;
+     private const int EvaluatedAutonomyLevelMaxLength = 64;
+ 
+@@ -22,6 +24,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
+         ProactiveMessageChannel channel,
+         Guid recipientUserId,
+         string recipient,
++        string subject,
++        string body,
+         ProactiveMessageSourceEntityType sourceEntityType,
+         Guid sourceEntityId,
+         Guid originatingAgentId,
+@@ -58,6 +62,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
+         Channel = channel;
+         RecipientUserId = recipientUserId;
+         Recipient = NormalizeRequired(recipient, nameof(recipient), RecipientMaxLength);
++        Subject = NormalizeRequired(subject, nameof(subject), SubjectMaxLength);
++        Body = NormalizeRequired(body, nameof(body), BodyMaxLength);
+         SourceEntityType = sourceEntityType;
+         SourceEntityId = sourceEntityId;
+         OriginatingAgentId = originatingAgentId;
+@@ -76,6 +82,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
+     public ProactiveMessageChannel Channel { get; private set; }
+     public Guid RecipientUserId { get; private set; }
+     public string Recipient { get; private set; } = null!;
++    public string Subject { get; private set; } = null!;
++    public string Body { get; private set; } = null!;
+     public ProactiveMessageSourceEntityType SourceEntityType { get; private set; }
+     public Guid SourceEntityId { get; private set; }
+     public Guid OriginatingAgentId { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+index 5693241..7af13d2 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyProactiveMessageService.cs
+@@ -40,10 +40,10 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+         var channel = ProactiveMessageChannelValues.Parse(command.Channel);
+         var sourceEntityType = ProactiveMessageSourceEntityTypeValues.Parse(command.SourceEntityType);
+         var source = await LoadSourceAsync(companyId, sourceEntityType, command.SourceEntityId, cancellationToken);
+         var recipient = await ResolveRecipientAsync(companyId, command.RecipientUserId ?? membership.UserId, cancellationToken);
+-        var generated = GenerateMessage(source);
++        var generated = GenerateMessage(source, command);
+         var decision = await EvaluatePolicyAsync(companyId, command, channel, sourceEntityType, cancellationToken);
+ 
+         if (!string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Allow, StringComparison.OrdinalIgnoreCase))
+         {
+             var blockedDecision = CreatePolicyDecisionRecord(
+@@ -52,6 +52,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+                 command,
+                 channel,
+                 recipient,
++                generated,
+                 sourceEntityType,
+                 source.SourceEntityId,
+                 decision,
+@@ -139,6 +140,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+             command,
+             channel,
+             recipient,
++            generated,
+             sourceEntityType,
+             source.SourceEntityId,
+             decision,
+@@ -266,11 +268,20 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+             _ => throw new ArgumentOutOfRangeException(nameof(sourceEntityType), sourceEntityType, "Unsupported proactive source entity type.")
+         };
+     }
+ 
+-    private static ProactiveGeneratedMessage GenerateMessage(ProactiveMessageSource source)
++    private static ProactiveGeneratedMessage GenerateMessage(ProactiveMessageSource source, GenerateProactiveMessageCommand command)
+     {
+-        var subject = $"Proactive update: {source.Title}";
+-        var body = $"A proactive update is ready for review.\n\n{source.Summary}";
++        var subject = NormalizeGeneratedMessagePart(
++            command.Subject,
++            $"Proactive update: {source.Title}",
++            nameof(command.Subject),
++            200);
++        var body = NormalizeGeneratedMessagePart(
++            command.Body,
++            $"A proactive update is ready for review.\n\n{source.Summary}",
++            nameof(command.Body),
++            16000);
++
+         return new ProactiveGeneratedMessage(subject, body);
+     }
+ 
+     private static ProactiveMessagePolicyBlockDto CreatePolicyBlock(ToolExecutionDecisionDto decision)
+@@ -303,6 +314,7 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+         GenerateProactiveMessageCommand command,
+         ProactiveMessageChannel channel,
+         User recipient,
++        ProactiveGeneratedMessage generated,
+         ProactiveMessageSourceEntityType sourceEntityType,
+         Guid sourceEntityId,
+         ToolExecutionDecisionDto decision,
+         ProactiveMessagePolicyDecisionOutcome outcome,
+@@ -322,6 +334,8 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+             channel,
+             recipient.Id,
+             recipient.DisplayName,
++            generated.Subject,
++            generated.Body,
+             sourceEntityType,
+             sourceEntityId,
+             command.AgentId,
+@@ -360,6 +374,19 @@ public sealed class CompanyProactiveMessageService : IProactiveMessageService
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ 
+     private sealed record ProactiveMessageSource(Guid SourceEntityId, string Title, string Summary);
+ 
+     private sealed record ProactiveGeneratedMessage(string Subject, string Body);
++
++    private static string NormalizeGeneratedMessagePart(string? requestedValue, string generatedValue, string name, int maxLength)
++    {
++        var value = string.IsNullOrWhiteSpace(requestedValue) ? generatedValue : requestedValue;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 97d3159..4d7d2bf 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1680,6 +1680,8 @@ internal sealed class ProactiveMessagePolicyDecisionConfiguration : IEntityTypeC
+             .IsRequired();
+         builder.Property(x => x.RecipientUserId).HasColumnName("recipient_user_id").IsRequired();
+         builder.Property(x => x.Recipient).HasColumnName("recipient").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Body).HasColumnName("body").IsRequired();
+         builder.Property(x => x.SourceEntityType)
+             .HasColumnName("source_entity_type")
+             .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageSourceEntityTypeValues.Parse(value))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs
+index 8f67df0..bc824c9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414173000_AddProactiveMessagePolicyDecisions.cs
+@@ -18,6 +18,8 @@ public partial class AddProactiveMessagePolicyDecisions : Migration
+                 channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                 recipient_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                 recipient = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                subject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                body = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                 source_entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                 source_entity_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                 originating_agent_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+index 225f709..4b96074 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveMessagingIntegrationTests.cs
+@@ -95,7 +95,9 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
+             agentId = seed.AgentId,
+             sourceEntityType = "proactive_task",
+             sourceEntityId = seed.TaskId,
+             channel = "inbox",
+-            recipientUserId = seed.UserId
++            recipientUserId = seed.UserId,
++            subject = "Blocked proactive cash briefing",
++            body = "This content must be captured in the policy decision record without being delivered."
+         });
+ 
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+@@ -124,6 +126,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
+         Assert.Null(policyDecision.ProactiveMessageId);
+         Assert.Equal(ProactiveMessagePolicyDecisionOutcome.Blocked, policyDecision.Outcome);
+         Assert.Equal(seed.TaskId, policyDecision.SourceEntityId);
++        Assert.Equal("Blocked proactive cash briefing", policyDecision.Subject);
++        Assert.Equal("This content must be captured in the policy decision record without being delivered.", policyDecision.Body);
+         Assert.Equal("proactive_task", policyDecision.SourceEntityType.ToStorageValue());
+         Assert.Equal(ProactiveMessageChannel.Inbox, policyDecision.Channel);
+         Assert.Equal(seed.UserId, policyDecision.RecipientUserId);
+@@ -201,6 +205,8 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
+         var stored = await dbContext.ProactiveMessages.AsNoTracking().SingleAsync(x => x.Id == result.Message.Id);
+         Assert.Equal(ProactiveMessageChannel.Inbox, stored.Channel);
+         Assert.Null(stored.NotificationId);
+         Assert.Equal("escalation", stored.SourceEntityType.ToStorageValue());
++
++        var policyDecision = await dbContext.ProactiveMessagePolicyDecisions.AsNoTracking().SingleAsync(x => x.ProactiveMessageId == stored.Id);
++        Assert.Equal(stored.Subject, policyDecision.Subject);
++        Assert.Equal(stored.Body, policyDecision.Body);
+     }
+ 
+     private async Task<SeededProactiveMessaging> SeedAsync(AgentAutonomyLevel autonomyLevel)
+END_OF_PATCH

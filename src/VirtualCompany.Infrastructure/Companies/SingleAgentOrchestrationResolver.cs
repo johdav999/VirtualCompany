@@ -346,7 +346,7 @@ public sealed class SingleAgentOrchestrationResolver : ISingleAgentOrchestration
             return requestedCorrelationId.Trim();
         }
 
-        return Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+        return System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
     }
 
     private static string NormalizeToken(string value) =>

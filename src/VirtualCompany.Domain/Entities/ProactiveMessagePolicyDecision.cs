@@ -7,6 +7,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
 {
     private const int RecipientMaxLength = 200;
     private const int ReasonCodeMaxLength = 200;
+    private const int SubjectMaxLength = 200;
+    private const int BodyMaxLength = 16000;
     private const int ReasonSummaryMaxLength = 2000;
     private const int EvaluatedAutonomyLevelMaxLength = 64;
 
@@ -21,6 +23,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
         ProactiveMessageChannel channel,
         Guid recipientUserId,
         string recipient,
+        string subject,
+        string body,
         ProactiveMessageSourceEntityType sourceEntityType,
         Guid sourceEntityId,
         Guid originatingAgentId,
@@ -57,6 +61,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
         Channel = channel;
         RecipientUserId = recipientUserId;
         Recipient = NormalizeRequired(recipient, nameof(recipient), RecipientMaxLength);
+        Subject = NormalizeRequired(subject, nameof(subject), SubjectMaxLength);
+        Body = NormalizeRequired(body, nameof(body), BodyMaxLength);
         SourceEntityType = sourceEntityType;
         SourceEntityId = sourceEntityId;
         OriginatingAgentId = originatingAgentId;
@@ -74,6 +80,8 @@ public sealed class ProactiveMessagePolicyDecision : ICompanyOwnedEntity
     public ProactiveMessageChannel Channel { get; private set; }
     public Guid RecipientUserId { get; private set; }
     public string Recipient { get; private set; } = null!;
+    public string Subject { get; private set; } = null!;
+    public string Body { get; private set; } = null!;
     public ProactiveMessageSourceEntityType SourceEntityType { get; private set; }
     public Guid SourceEntityId { get; private set; }
     public Guid OriginatingAgentId { get; private set; }

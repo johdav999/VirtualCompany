@@ -1,0 +1,1118 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentCommunicationProfileModels.cs b/src/VirtualCompany.Application/Agents/AgentCommunicationProfileModels.cs
+new file mode 100644
+index 0000000..2f0f1ac
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentCommunicationProfileModels.cs
+@@ -0,0 +1,200 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Agents;
++
++public sealed record AgentCommunicationProfileDto(
++    string Tone,
++    string Persona,
++    IReadOnlyList<string> StyleDirectives,
++    IReadOnlyList<string> CommunicationRules,
++    IReadOnlyList<string> ForbiddenToneRules,
++    string ProfileSource,
++    bool IsFallback)
++{
++    public static AgentCommunicationProfileDto Empty { get; } = new(
++        string.Empty,
++        string.Empty,
++        [],
++        [],
++        [],
++        AgentCommunicationProfileSources.Explicit,
++        false);
++}
++
++public static class AgentCommunicationProfileSources
++{
++    public const string Explicit = "explicit";
++    public const string Fallback = "fallback";
++}
++
++public sealed record CommunicationProfileResolutionContext(
++    Guid CompanyId,
++    Guid AgentId,
++    string? GenerationPath,
++    string? CorrelationId);
++
++public interface IDefaultAgentCommunicationProfileProvider
++{
++    AgentCommunicationProfileDto GetDefaultProfile();
++}
++
++public interface IAgentCommunicationProfileResolver
++{
++    AgentCommunicationProfileDto Resolve(
++        IReadOnlyDictionary<string, JsonNode?>? persistedProfile,
++        CommunicationProfileResolutionContext context);
++}
++
++public static class AgentCommunicationProfileJsonMapper
++{
++    private const int MaxTextLength = 500;
++    private const int MaxListItems = 50;
++
++    public static Dictionary<string, JsonNode?> ToJsonDictionary(AgentCommunicationProfileInput? input)
++    {
++        if (input is null)
++        {
++            return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        var values = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        AddString(values, "tone", input.Tone);
++        AddString(values, "persona", input.Persona);
++        AddStringArray(values, "styleDirectives", input.StyleDirectives);
++        AddStringArray(values, "communicationRules", input.CommunicationRules);
++        AddStringArray(values, "forbiddenToneRules", input.ForbiddenToneRules);
++        AddStringArray(values, "forbiddenPhrases", input.ForbiddenPhrases);
++
++        if (input.AdditionalProperties is not null)
++        {
++            foreach (var property in input.AdditionalProperties)
++            {
++                if (!values.ContainsKey(property.Key))
++                {
++                    values[property.Key] = JsonNode.Parse(property.Value.GetRawText());
++                }
++            }
++        }
++
++        return values;
++    }
++
++    public static AgentCommunicationProfileDto ToDto(
++        IReadOnlyDictionary<string, JsonNode?>? values,
++        string source,
++        bool isFallback)
++    {
++        if (values is null || values.Count == 0)
++        {
++            return AgentCommunicationProfileDto.Empty with
++            {
++                ProfileSource = source,
++                IsFallback = isFallback
++            };
++        }
++
++        return new AgentCommunicationProfileDto(
++            GetString(values, "tone"),
++            GetString(values, "persona"),
++            GetStringList(values, "styleDirectives", "styleConstraints"),
++            GetStringList(values, "communicationRules"),
++            GetStringList(values, "forbiddenToneRules", "forbiddenPhrases"),
++            source,
++            isFallback);
++    }
++
++    public static bool HasExplicitProfile(IReadOnlyDictionary<string, JsonNode?>? values)
++    {
++        if (values is null || values.Count == 0)
++        {
++            return false;
++        }
++
++        var profile = ToDto(values, AgentCommunicationProfileSources.Explicit, false);
++        return !string.IsNullOrWhiteSpace(profile.Tone) ||
++               !string.IsNullOrWhiteSpace(profile.Persona) ||
++               profile.StyleDirectives.Count > 0 ||
++               profile.CommunicationRules.Count > 0 ||
++               profile.ForbiddenToneRules.Count > 0;
++    }
++
++    public static Dictionary<string, JsonNode?> ToJsonDictionary(AgentCommunicationProfileDto profile)
++    {
++        var values = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = JsonValue.Create(profile.Tone),
++            ["persona"] = JsonValue.Create(profile.Persona),
++            ["styleDirectives"] = ToJsonArray(profile.StyleDirectives),
++            ["communicationRules"] = ToJsonArray(profile.CommunicationRules),
++            ["forbiddenToneRules"] = ToJsonArray(profile.ForbiddenToneRules),
++            ["profileSource"] = JsonValue.Create(profile.ProfileSource),
++            ["isFallback"] = JsonValue.Create(profile.IsFallback)
++        };
++
++        return values;
++    }
++
++    public static void Validate(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IReadOnlyDictionary<string, JsonNode?>? values)
++    {
++        if (values is null || values.Count == 0)
++        {
++            return;
++        }
++
++        ValidateOptionalString(errors, key, values, "tone");
++        ValidateOptionalString(errors, key, values, "persona");
++        ValidateStringArray(errors, key, values, "styleDirectives");
++        ValidateStringArray(errors, key, values, "styleConstraints");
++        ValidateStringArray(errors, key, values, "communicationRules");
++        ValidateStringArray(errors, key, values, "forbiddenToneRules");
++        ValidateStringArray(errors, key, values, "forbiddenPhrases");
++    }
++
++    private static void AddString(IDictionary<string, JsonNode?> values, string key, string? value)
++    {
++        if (!string.IsNullOrWhiteSpace(value))
++        {
++            values[key] = JsonValue.Create(value.Trim());
++        }
++    }
++
++    private static void AddStringArray(IDictionary<string, JsonNode?> values, string key, IReadOnlyCollection<string>? items)
++    {
++        if (items is null || items.Count == 0)
++        {
++            return;
++        }
++
++        values[key] = ToJsonArray(items);
++    }
++
++    private static JsonArray ToJsonArray(IEnumerable<string> items)
++    {
++        var array = new JsonArray();
++        foreach (var item in items.Where(static x => !string.IsNullOrWhiteSpace(x)).Select(static x => x.Trim()))
++        {
++            array.Add(JsonValue.Create(item));
++        }
++
++        return array;
++    }
++
++    private static string GetString(IReadOnlyDictionary<string, JsonNode?> values, string key) =>
++        values.TryGetValue(key, out var node) &&
++        node is JsonValue value &&
++        value.TryGetValue<string>(out var text) &&
++        !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : string.Empty;
++
++    private static IReadOnlyList<string> GetStringList(IReadOnlyDictionary<string, JsonNode?> values, params string[] keys)
++    {
++        foreach (var key in keys)
++        {
++            if (!values.TryGetValue(key, out var node) || node is not JsonArray array)
++            {
++                continue;
++            }
++
++            return array
++                .OfType<JsonValue>()
++                .Select(static x => x.TryGetValue<string>(out var text) ? text.Trim() : string.Empty)
++                .Where(static x => !string.IsNullOrWhiteSpace(x))
++                .ToArray();
++        }
++
++        return [];
++    }
++
++    private static void ValidateOptionalString(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IReadOnlyDictionary<string, JsonNode?> values,
++        string propertyName)
++    {
++        if (!values.TryGetValue(propertyName, out var node) || node is null)
++        {
++            return;
++        }
++
++        if (node is not JsonValue value || !value.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
++        {
++            AddError(errors, key, $"{key}.{propertyName} must be a non-empty string.");
++            return;
++        }
++
++        if (text.Trim().Length > MaxTextLength)
++        {
++            AddError(errors, key, $"{key}.{propertyName} must be {MaxTextLength} characters or fewer.");
++        }
++    }
++
++    private static void ValidateStringArray(
++        IDictionary<string, List<string>> errors,
++        string key,
++        IReadOnlyDictionary<string, JsonNode?> values,
++        string propertyName)
++    {
++        if (!values.TryGetValue(propertyName, out var node) || node is null)
++        {
++            return;
++        }
++
++        if (node is not JsonArray array)
++        {
++            AddError(errors, key, $"{key}.{propertyName} must be an array of strings.");
++            return;
++        }
++
++        if (array.Count > MaxListItems)
++        {
++            AddError(errors, key, $"{key}.{propertyName} must contain {MaxListItems} items or fewer.");
++            return;
++        }
++
++        foreach (var item in array)
++        {
++            if (item is not JsonValue value ||
++                !value.TryGetValue<string>(out var text) ||
++                string.IsNullOrWhiteSpace(text))
++            {
++                AddError(errors, key, $"{key}.{propertyName} must contain non-empty string values.");
++                return;
++            }
++
++            if (text.Trim().Length > MaxTextLength)
++            {
++                AddError(errors, key, $"{key}.{propertyName} entries must be {MaxTextLength} characters or fewer.");
++                return;
++            }
++        }
++    }
++
++    private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
++    {
++        if (!errors.TryGetValue(key, out var messages))
++        {
++            messages = [];
++            errors[key] = messages;
++        }
++
++        messages.Add(message);
++    }
++}
++
++public sealed class AgentCommunicationProfileInput
++{
++    public string? Tone { get; set; }
++    public string? Persona { get; set; }
++    public List<string> StyleDirectives { get; set; } = [];
++    public List<string> CommunicationRules { get; set; } = [];
++    public List<string> ForbiddenToneRules { get; set; } = [];
++    public List<string> ForbiddenPhrases { get; set; } = [];
++
++    [System.Text.Json.Serialization.JsonExtensionData]
++    public Dictionary<string, System.Text.Json.JsonElement>? AdditionalProperties { get; set; }
++}
+diff --git a/src/VirtualCompany.Application/Orchestration/CommunicationStyleRuleChecker.cs b/src/VirtualCompany.Application/Orchestration/CommunicationStyleRuleChecker.cs
+new file mode 100644
+index 0000000..1bb1bb2
+--- /dev/null
++++ b/src/VirtualCompany.Application/Orchestration/CommunicationStyleRuleChecker.cs
+@@ -0,0 +1,63 @@
++using VirtualCompany.Application.Agents;
++
++namespace VirtualCompany.Application.Orchestration;
++
++public sealed class CommunicationStyleRuleChecker : ICommunicationStyleRuleChecker
++{
++    public CommunicationStyleRuleCheckResult Check(string? generatedText, AgentCommunicationProfileDto profile)
++    {
++        ArgumentNullException.ThrowIfNull(profile);
++
++        var text = generatedText ?? string.Empty;
++        var violations = new List<CommunicationStyleRuleViolation>();
++
++        foreach (var rule in profile.ForbiddenToneRules)
++        {
++            var normalized = NormalizeRule(rule);
++            if (string.IsNullOrWhiteSpace(normalized))
++            {
++                continue;
++            }
++
++            if (ContainsForbiddenMarker(text, normalized))
++            {
++                violations.Add(new CommunicationStyleRuleViolation(
++                    BuildRuleId(normalized),
++                    "forbidden_tone_rule",
++                    $"Generated output contains forbidden communication marker '{normalized}'."));
++            }
++        }
++
++        return new CommunicationStyleRuleCheckResult(
++            violations.Count == 0,
++            violations,
++            violations.Select(static x => x.RuleId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
++    }
++
++    private static bool ContainsForbiddenMarker(string text, string rule)
++    {
++        if (string.IsNullOrWhiteSpace(text))
++        {
++            return false;
++        }
++
++        var marker = rule;
++        foreach (var prefix in new[] { "avoid ", "do not use ", "do not ", "never use ", "never " })
++        {
++            if (marker.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
++            {
++                marker = marker[prefix.Length..].Trim();
++                break;
++            }
++        }
++
++        return marker.Length > 0 &&
++               text.Contains(marker, StringComparison.OrdinalIgnoreCase);
++    }
++
++    private static string NormalizeRule(string value) =>
++        value.ReplaceLineEndings(" ").Trim();
++
++    private static string BuildRuleId(string rule)
++    {
++        var normalized = new string(rule.ToLowerInvariant().Select(static ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray());
++        normalized = string.Join("_", normalized.Split('_', StringSplitOptions.RemoveEmptyEntries));
++        return string.IsNullOrWhiteSpace(normalized) ? "forbidden_style_rule" : $"forbidden_style_{normalized}";
++    }
++}
+diff --git a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+index 9a8d6c5..cff8fc1 100644
+--- a/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
++++ b/src/VirtualCompany.Application/Orchestration/SingleAgentOrchestrationContracts.cs
+@@ -322,6 +322,19 @@ public interface IOrchestrationAuditWriter
+     Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken);
+ }
+ 
++public sealed record CommunicationStyleRuleViolation(
++    string RuleId,
++    string RuleType,
++    string Message);
++
++public sealed record CommunicationStyleRuleCheckResult(
++    bool Passed,
++    IReadOnlyList<CommunicationStyleRuleViolation> Violations,
++    IReadOnlyList<string> RuleIds);
++
++public interface ICommunicationStyleRuleChecker
++{
++    CommunicationStyleRuleCheckResult Check(string? generatedText, AgentCommunicationProfileDto profile);
++}
++
+ public sealed class OrchestrationValidationException : Exception
+ {
+     public OrchestrationValidationException(IDictionary<string, string[]> errors)
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 1bca54b..58b6c3f 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -123,6 +123,7 @@ public sealed record AgentOperatingProfileDto(
+     Dictionary<string, JsonNode?> EscalationRules,
+     Dictionary<string, JsonNode?> TriggerLogic,
+     Dictionary<string, JsonNode?> WorkingHours,
++    Dictionary<string, JsonNode?> CommunicationProfile,
+     AgentProfileVisibilityDto Visibility,
+     DateTime UpdatedUtc,
+     bool CanReceiveAssignments,
+@@ -140,7 +141,8 @@ public sealed record UpdateAgentOperatingProfileCommand(
+     AgentEscalationRulesInput? EscalationRules,
+     AgentTriggerLogicInput? TriggerLogic,
+     Dictionary<string, JsonNode?>? WorkingHours,
+-    string? AutonomyLevel = null);
++    string? AutonomyLevel = null,
++    AgentCommunicationProfileInput? CommunicationProfile = null);
+ 
+ public sealed record AgentRuntimeProfileDto(
+     Guid Id,
+@@ -162,6 +164,7 @@ public sealed record AgentRuntimeProfileDto(
+     Dictionary<string, JsonNode?> EscalationRules,
+     Dictionary<string, JsonNode?> TriggerLogic,
+     Dictionary<string, JsonNode?> WorkingHours,
++    AgentCommunicationProfileDto CommunicationProfile,
+     bool CanReceiveAssignments,
+     DateTime UpdatedUtc,
+     string AutonomyLevel);
+@@ -180,7 +183,9 @@ public interface IAgentRuntimeProfileResolver
+ {
+     Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
+         Guid companyId,
+         Guid agentId,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken,
++        string? generationPath = null,
++        string? correlationId = null);
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/AgentEntities.cs b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+index 4ab2d11..a029674 100644
+--- a/src/VirtualCompany.Domain/Entities/AgentEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/AgentEntities.cs
+@@ -295,7 +295,8 @@ public sealed class Agent : ICompanyOwnedEntity
+         string? roleBrief = null,
+         IDictionary<string, JsonNode?>? triggerLogic = null,
+         IDictionary<string, JsonNode?>? workingHours = null)
++        , IDictionary<string, JsonNode?>? communicationProfile = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -331,6 +332,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         EscalationRules = CloneNodes(escalationRules);
+         TriggerLogic = CloneNodes(triggerLogic);
+         WorkingHours = CloneNodes(workingHours);
++        CommunicationProfile = CloneNodes(communicationProfile);
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -356,6 +358,7 @@ public sealed class Agent : ICompanyOwnedEntity
+     public Dictionary<string, JsonNode?> EscalationRules { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> TriggerLogic { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonNode?> WorkingHours { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonNode?> CommunicationProfile { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -374,7 +377,8 @@ public sealed class Agent : ICompanyOwnedEntity
+         IDictionary<string, JsonNode?>? escalationRules,
+         IDictionary<string, JsonNode?>? triggerLogic,
+         IDictionary<string, JsonNode?>? workingHours)
++        , IDictionary<string, JsonNode?>? communicationProfile = null)
+     {
+         AgentStatusValues.EnsureSupported(status, nameof(status));
+         AgentAutonomyLevelValues.EnsureSupported(autonomyLevel, nameof(autonomyLevel));
+@@ -390,6 +394,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         var updatedEscalationRules = CloneNodes(escalationRules);
+         var updatedTriggerLogic = CloneNodes(triggerLogic);
+         var updatedWorkingHours = CloneNodes(workingHours);
++        var updatedCommunicationProfile = CloneNodes(communicationProfile);
+ 
+         if (string.Equals(RoleBrief, normalizedRoleBrief, StringComparison.Ordinal) &&
+             Status == status &&
+@@ -402,7 +407,8 @@ public sealed class Agent : ICompanyOwnedEntity
+             JsonDictionariesEqual(Thresholds, updatedThresholds) &&
+             JsonDictionariesEqual(EscalationRules, updatedEscalationRules) &&
+             JsonDictionariesEqual(TriggerLogic, updatedTriggerLogic) &&
+-            JsonDictionariesEqual(WorkingHours, updatedWorkingHours))
++            JsonDictionariesEqual(WorkingHours, updatedWorkingHours) &&
++            JsonDictionariesEqual(CommunicationProfile, updatedCommunicationProfile))
+         {
+             return false;
+         }
+@@ -419,6 +425,7 @@ public sealed class Agent : ICompanyOwnedEntity
+         EscalationRules = updatedEscalationRules;
+         TriggerLogic = updatedTriggerLogic;
+         WorkingHours = updatedWorkingHours;
++        CommunicationProfile = updatedCommunicationProfile;
+         UpdatedUtc = DateTime.UtcNow;
+         return true;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs b/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs
+new file mode 100644
+index 0000000..e0b983d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs
+@@ -0,0 +1,74 @@
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Agents;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class DefaultAgentCommunicationProfileProvider : IDefaultAgentCommunicationProfileProvider
++{
++    public AgentCommunicationProfileDto GetDefaultProfile() =>
++        new(
++            "professional, clear, helpful",
++            "reliable business assistant",
++            [
++                "Be concise and structured.",
++                "State assumptions when context is incomplete.",
++                "Keep claims factual and avoid unsupported certainty."
++            ],
++            [
++                "Use business-appropriate language.",
++                "Focus on the requested outcome and next concrete step."
++            ],
++            [
++                "hostile",
++                "manipulative",
++                "flippant",
++                "overly casual",
++                "abusive"
++            ],
++            AgentCommunicationProfileSources.Fallback,
++            true);
++}
++
++public sealed class AgentCommunicationProfileResolver : IAgentCommunicationProfileResolver
++{
++    private readonly IDefaultAgentCommunicationProfileProvider _defaultProfileProvider;
++    private readonly ILogger<AgentCommunicationProfileResolver> _logger;
++
++    public AgentCommunicationProfileResolver(
++        IDefaultAgentCommunicationProfileProvider defaultProfileProvider,
++        ILogger<AgentCommunicationProfileResolver> logger)
++    {
++        _defaultProfileProvider = defaultProfileProvider;
++        _logger = logger;
++    }
++
++    public AgentCommunicationProfileDto Resolve(
++        IReadOnlyDictionary<string, JsonNode?>? persistedProfile,
++        CommunicationProfileResolutionContext context)
++    {
++        if (AgentCommunicationProfileJsonMapper.HasExplicitProfile(persistedProfile))
++        {
++            return AgentCommunicationProfileJsonMapper.ToDto(
++                persistedProfile,
++                AgentCommunicationProfileSources.Explicit,
++                isFallback: false);
++        }
++
++        var fallback = _defaultProfileProvider.GetDefaultProfile();
++        _logger.LogInformation(
++            "Applied fallback agent communication profile. AgentId={AgentId} CompanyId={CompanyId} GenerationPath={GenerationPath} CorrelationId={CorrelationId}",
++            context.AgentId,
++            context.CompanyId,
++            context.GenerationPath,
++            context.CorrelationId);
++
++        return fallback;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+index 83d2523..ddbb4d9 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/PersistedAgentRuntimeProfileResolver.cs
+@@ -11,19 +11,25 @@ namespace VirtualCompany.Infrastructure.Companies;
+ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileResolver
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IAgentCommunicationProfileResolver _communicationProfileResolver;
+ 
+-    public PersistedAgentRuntimeProfileResolver(VirtualCompanyDbContext dbContext)
++    public PersistedAgentRuntimeProfileResolver(
++        VirtualCompanyDbContext dbContext,
++        IAgentCommunicationProfileResolver communicationProfileResolver)
+     {
+         _dbContext = dbContext;
++        _communicationProfileResolver = communicationProfileResolver;
+     }
+ 
+     public async Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
+         Guid companyId,
+         Guid agentId,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken,
++        string? generationPath = null,
++        string? correlationId = null)
+     {
+         // Runtime resolution must re-read persisted agent state so later orchestration
+-        // runs pick up profile edits without depending on request-scoped tenant context.
++        // runs pick up operating and communication profile edits immediately.
+         var agent = await _dbContext.Agents
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -35,6 +41,11 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
+             throw new KeyNotFoundException("Agent not found.");
+         }
+ 
++        var communicationProfile = _communicationProfileResolver.Resolve(
++            agent.CommunicationProfile,
++            new CommunicationProfileResolutionContext(
++                companyId, agentId, generationPath, correlationId));
++
+         return new AgentRuntimeProfileDto(
+             agent.Id,
+             agent.CompanyId,
+@@ -56,6 +67,7 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
+             CloneNodes(agent.EscalationRules),
+             CloneNodes(agent.TriggerLogic),
+             CloneNodes(agent.WorkingHours),
++            communicationProfile,
+             agent.CanReceiveAssignments,
+             agent.UpdatedUtc,
+             agent.AutonomyLevel.ToStorageValue());
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 40df311..70f1c64 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -337,7 +337,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules) : CloneNodes(agent.EscalationRules),
+             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic) : CloneNodes(agent.TriggerLogic),
+-            visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours));
++            visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours),
++            visibility.CanEditAgent ? AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile) : CloneNodes(agent.CommunicationProfile));
+ 
+         if (changed)
+         {
+@@ -544,7 +545,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             SerializeJsonDictionary(agent.EscalationRules),
+             SerializeJsonDictionary(agent.TriggerLogic),
+-            SerializeJsonDictionary(agent.WorkingHours));
++            SerializeJsonDictionary(agent.WorkingHours),
++            SerializeJsonDictionary(agent.CommunicationProfile));
+ 
+     private static List<AgentOperatingProfileAuditChange> BuildOperatingProfileChanges(
+         AgentOperatingProfileAuditSnapshot before,
+@@ -563,6 +565,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         AddOperatingProfileChange(changes, "escalationRules", before.EscalationRulesJson, after.EscalationRulesJson);
+         AddOperatingProfileChange(changes, "triggerLogic", before.TriggerLogicJson, after.TriggerLogicJson);
+         AddOperatingProfileChange(changes, "workingHours", before.WorkingHoursJson, after.WorkingHoursJson);
++        AddOperatingProfileChange(changes, "communicationProfile", before.CommunicationProfileJson, after.CommunicationProfileJson);
+         AddOperatingProfileChange(changes, "status", before.Status, after.Status);
+         AddOperatingProfileChange(changes, "autonomyLevel", before.AutonomyLevel, after.AutonomyLevel);
+ 
+@@ -600,6 +603,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         "escalationRules" => "escalation rules",
+         "triggerLogic" => "trigger logic",
+         "workingHours" => "working hours",
++        "communicationProfile" => "communication profile",
+         "status" => "status",
+         "autonomyLevel" => "autonomy level",
+         _ => field
+@@ -644,6 +648,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
+             visibility.CanViewThresholds ? CloneNodes(agent.EscalationRules) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             visibility.CanEditSensitiveGovernance ? CloneNodes(agent.TriggerLogic) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             visibility.CanViewWorkingHours ? CloneNodes(agent.WorkingHours) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            visibility.CanEditAgent ? CloneNodes(agent.CommunicationProfile) : new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
+             visibility,
+             agent.UpdatedUtc,
+             agent.CanReceiveAssignments,
+@@ -1373,6 +1378,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+     private static void Validate(UpdateAgentOperatingProfileCommand command)
+     {
+         UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
++        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
++        AgentCommunicationProfileJsonMapper.Validate(errors, nameof(command.CommunicationProfile), AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile));
++        if (errors.Count > 0)
++        {
++            throw new AgentValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
++        }
+     }
+@@ -1487,7 +1494,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
+         string EscalationRulesJson,
+         string TriggerLogicJson,
+-        string WorkingHoursJson);
++        string WorkingHoursJson,
++        string CommunicationProfileJson);
+ 
+     private sealed record AgentExecutionAggregate(Guid AgentId, int AwaitingApprovalCount, int ExecutedCount, int RecentExecutionCount, int FailedCount, DateTime? LastActivityUtc);
+     private sealed record AgentApprovalAggregate(Guid AgentId, int PendingApprovalCount, DateTime? LastActivityUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 36bc2f0..1cbaf01 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -2,6 +2,7 @@ using System.Diagnostics;
+ using System.Text;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using Microsoft.Extensions.Logging;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auditing;
+@@ -23,6 +24,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     private readonly IPromptBuilder _promptBuilder;
+     private readonly IToolExecutor _toolExecutor;
+     private readonly IOrchestrationAuditWriter _auditWriter;
++    private readonly ICommunicationStyleRuleChecker _styleRuleChecker;
++    private readonly ILogger<SingleAgentOrchestrationService> _logger;
+ 
+     public SingleAgentOrchestrationService(
+         VirtualCompanyDbContext dbContext,
+@@ -31,7 +34,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IPromptBuilder promptBuilder,
+         IToolExecutor toolExecutor,
+-        IOrchestrationAuditWriter auditWriter)
++        IOrchestrationAuditWriter auditWriter,
++        ICommunicationStyleRuleChecker styleRuleChecker,
++        ILogger<SingleAgentOrchestrationService> logger)
+     {
+         _dbContext = dbContext;
+         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
+@@ -39,6 +44,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         _promptBuilder = promptBuilder;
+         _toolExecutor = toolExecutor;
+         _auditWriter = auditWriter;
++        _styleRuleChecker = styleRuleChecker;
++        _logger = logger;
+     }
+@@ -87,7 +94,11 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 : null;
+             var agentId = ResolveAgentId(request, persistedTask);
+-            var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(request.CompanyId, agentId, cancellationToken);
++            var generationPath = NormalizeIntent(request.IntentHint, request.ConversationId);
++            var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
++                request.CompanyId,
++                agentId,
++                cancellationToken,
++                generationPath,
++                correlationId);
+             var company = await GetCompanyAsync(request.CompanyId, cancellationToken);
+             var task = persistedTask ?? CreateTransientTask(request, agent, company);
+@@ -149,16 +160,32 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             var userFacingOutput = BuildUserFacingOutput(runtimeContext, toolResults);
++            var styleCheck = _styleRuleChecker.Check(userFacingOutput, runtimeContext.Agent.CommunicationProfile);
++            if (!styleCheck.Passed)
++            {
++                _logger.LogWarning(
++                    "Communication style rule check failed. AgentId={AgentId} CompanyId={CompanyId} TaskId={TaskId} Intent={Intent} CorrelationId={CorrelationId} RuleIds={RuleIds}",
++                    agent.Id,
++                    request.CompanyId,
++                    task.Id,
++                    runtimeContext.Intent,
++                    correlationId,
++                    string.Join(",", styleCheck.RuleIds));
++            }
++
+             var rationale = BuildRationaleSummary(runtimeContext, groundedContext, toolResults);
+             var confidence = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.Failed.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+                 ? 0.4m
+                 : 0.76m;
+             var userOutput = new OrchestrationUserOutput(userFacingOutput);
+             var sourceReferences = BuildSourceReferences(groundedContext);
+             var toolExecutionReferences = BuildToolExecutionReferences(toolResults);
+-            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence, sourceReferences, toolExecutionReferences);
+-            var metadata = BuildMetadata(runtimeContext, prompt, toolResults, startedAtUtc, completedAtUtc);
++            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence, sourceReferences, toolExecutionReferences, styleCheck);
++            var metadata = BuildMetadata(runtimeContext, prompt, toolResults, styleCheck, startedAtUtc, completedAtUtc);
+@@ -662,7 +689,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         decimal confidence,
+         IReadOnlyList<OrchestrationSourceReference> sourceReferences,
+-        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences)
++        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences,
++        CommunicationStyleRuleCheckResult styleCheck)
+     {
+         var output = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -684,6 +712,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             ["toolExecutionReferences"] = JsonSerializer.SerializeToNode(toolExecutionReferences),
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(sourceReferences),
+-            ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count)
++            ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count),
++            ["agentCommunicationProfile"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile),
++            ["communicationStyleCheck"] = JsonSerializer.SerializeToNode(styleCheck)
+         };
+@@ -858,6 +888,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         SingleAgentRuntimeContext context,
+         PromptBuildResult prompt,
+         IReadOnlyList<ToolInvocationResult> toolResults,
++        CommunicationStyleRuleCheckResult styleCheck,
+         DateTime startedAtUtc,
+         DateTime completedAtUtc)
+@@ -884,7 +915,10 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                 ["taskType"] = context.Task.Type,
+                 ["initiatingActorType"] = context.InitiatingActorType,
+                 ["initiatingActorId"] = context.InitiatingActorId?.ToString("N"),
+-                ["policyInterceptionPoint"] = "tool_executor"
++                ["policyInterceptionPoint"] = "tool_executor",
++                ["communicationProfileSource"] = context.Agent.CommunicationProfile.ProfileSource,
++                ["communicationProfileFallback"] = context.Agent.CommunicationProfile.IsFallback.ToString(),
++                ["communicationStylePassed"] = styleCheck.Passed.ToString()
+             });
+     }
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+index b61e78a..83f0f90 100644
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -49,6 +49,18 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                     ["roleName"] = JsonValue.Create(context.Agent.RoleName),
+                     ["autonomyLevel"] = JsonValue.Create(context.Agent.AutonomyLevel)
+                 }),
++            new(
++                PromptSectionIds.CommunicationProfile,
++                "Communication profile",
++                2,
++                BuildCommunicationProfileContext(context),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["profileSource"] = JsonValue.Create(context.Agent.CommunicationProfile.ProfileSource),
++                    ["isFallback"] = JsonValue.Create(context.Agent.CommunicationProfile.IsFallback),
++                    ["tone"] = JsonValue.Create(context.Agent.CommunicationProfile.Tone),
++                    ["persona"] = JsonValue.Create(context.Agent.CommunicationProfile.Persona)
++                }),
+             new(
+                 PromptSectionIds.CompanyContext,
+                 "Company context",
+-                2,
++                3,
+                 BuildCompanyContext(context),
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+@@ -61,7 +73,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             new(
+                 PromptSectionIds.Memory,
+                 "Memory",
+-                3,
++                4,
+                 BuildMemoryContext(memorySnippets),
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+@@ -71,7 +83,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             new(
+                 PromptSectionIds.Policies,
+                 "Policies",
+-                4,
++                5,
+                 BuildPolicyContext(policyInstructions),
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+@@ -81,7 +93,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             new(
+                 PromptSectionIds.ToolSchemas,
+                 "Tool schemas",
+-                5,
++                6,
+                 BuildToolSchemaContext(toolSchemas),
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                 {
+@@ -150,6 +162,29 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         return builder.ToString().TrimEnd();
+     }
+ 
++    private static string BuildCommunicationProfileContext(SingleAgentRuntimeContext context)
++    {
++        var profile = context.Agent.CommunicationProfile;
++        var builder = new StringBuilder();
++        builder.Append("Tone: ");
++        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Tone) ? "professional, clear, helpful" : profile.Tone);
++        builder.Append("Persona: ");
++        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Persona) ? "reliable business assistant" : profile.Persona);
++        builder.Append("Profile source: ");
++        builder.AppendLine(profile.ProfileSource);
++        builder.Append("Fallback profile: ");
++        builder.AppendLine(profile.IsFallback ? "true" : "false");
++        AppendListSection(builder, "Style directives", profile.StyleDirectives);
++        AppendListSection(builder, "Communication rules", profile.CommunicationRules);
++        AppendListSection(builder, "Forbidden tone rules", profile.ForbiddenToneRules);
++        return builder.ToString().TrimEnd();
++    }
++
++    private static void AppendListSection(StringBuilder builder, string label, IReadOnlyList<string> values)
++    {
++        builder.Append(label);
++        builder.Append(": ");
++        builder.AppendLine(values.Count == 0 ? "none" : string.Join("; ", values));
++    }
++
+     private static string BuildCompanyContext(SingleAgentRuntimeContext context)
+     {
+         var builder = new StringBuilder();
+@@ -363,6 +398,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             ["messages"] = JsonSerializer.SerializeToNode(messages, JsonOptions),
+             ["memory"] = JsonSerializer.SerializeToNode(memorySnippets, JsonOptions),
+             ["policies"] = JsonSerializer.SerializeToNode(policyInstructions, JsonOptions),
++            ["agentIdentityProfile"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile, JsonOptions),
+             ["tools"] = JsonSerializer.SerializeToNode(toolSchemas, JsonOptions),
+             ["outputContract"] = JsonSerializer.SerializeToNode(new
+             {
+@@ -481,6 +517,7 @@ public static class PromptSectionIds
+ {
+     public const string RoleInstructions = "role_instructions";
++    public const string CommunicationProfile = "communication_profile";
+     public const string CompanyContext = "company_context";
+     public const string Memory = "memory";
+     public const string Policies = "policies";
+@@ -490,6 +527,7 @@ public static class PromptSectionIds
+     public static readonly IReadOnlyList<string> Ordered =
+     [
+         RoleInstructions,
++        CommunicationProfile,
+         CompanyContext,
+         Memory,
+         Policies,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index d0de513..2ee3515 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -673,6 +673,12 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.CommunicationProfile)
++            .HasColumnName("communication_profile_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
+         builder.Property(x => x.CreatedUtc).IsRequired();
+         builder.Property(x => x.UpdatedUtc).IsRequired();
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 222050d..3f72adc 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -194,6 +194,9 @@ public static class DependencyInjection
+         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
++        services.AddSingleton<IDefaultAgentCommunicationProfileProvider, DefaultAgentCommunicationProfileProvider>();
++        services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+@@ -229,6 +232,7 @@ public static class DependencyInjection
+         services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
++        services.AddSingleton<ICommunicationStyleRuleChecker, CommunicationStyleRuleChecker>();
+         services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();
+         services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414190000_AddAgentCommunicationProfiles.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414190000_AddAgentCommunicationProfiles.cs
+new file mode 100644
+index 0000000..777524a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414190000_AddAgentCommunicationProfiles.cs
+@@ -0,0 +1,29 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260414190000_AddAgentCommunicationProfiles")]
++public partial class AddAgentCommunicationProfiles : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var type = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL"
++            ? "jsonb"
++            : "nvarchar(max)";
++
++        migrationBuilder.AddColumn<string>(
++            name: "communication_profile_json",
++            table: "agents",
++            type: type,
++            nullable: false,
++            defaultValueSql: ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL" ? "'{}'::jsonb" : "N'{}'");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropColumn(
++            name: "communication_profile_json",
++            table: "agents");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index 92aab03..b5828a2 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -148,6 +148,13 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.Property<DateTime>("CreatedUtc")
+                         .HasColumnType("datetime2");
+ 
++                    b.Property<string>("CommunicationProfile")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("communication_profile_json")
++                        .HasDefaultValueSql("N'{}'");
++
+                     b.Property<string>("Department")
+                         .IsRequired()
+                         .HasMaxLength(100)
+diff --git a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+index 4aeb43e..68c1d11 100644
+--- a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+@@ -19,8 +19,8 @@ public sealed class PromptBuilderTests
+ 
+         Assert.Equal(
+-            [PromptSectionIds.RoleInstructions, PromptSectionIds.CompanyContext, PromptSectionIds.Memory, PromptSectionIds.Policies, PromptSectionIds.ToolSchemas],
++            [PromptSectionIds.RoleInstructions, PromptSectionIds.CommunicationProfile, PromptSectionIds.CompanyContext, PromptSectionIds.Memory, PromptSectionIds.Policies, PromptSectionIds.ToolSchemas],
+             result.Sections.Select(x => x.Id).ToArray());
+-        Assert.Equal([1, 2, 3, 4, 5], result.Sections.Select(x => x.Order).ToArray());
++        Assert.Equal([1, 2, 3, 4, 5, 6], result.Sections.Select(x => x.Order).ToArray());
+         Assert.Contains("You are Nora Ledger", result.SystemPrompt);
+         Assert.Contains("CompanyId: " + context.Company.CompanyId.ToString("N"), result.SystemPrompt);
+@@ -75,6 +75,28 @@ public sealed class PromptBuilderTests
+         Assert.Contains("agent", result.Sections[0].Metadata.Keys, StringComparer.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public void Build_includes_communication_profile_before_model_invocation()
++    {
++        var builder = new StructuredPromptBuilder();
++        var context = CreateRuntimeContext();
++
++        var result = builder.Build(new PromptBuildRequest(context));
++
++        var section = Assert.Single(result.Sections, x => x.Id == PromptSectionIds.CommunicationProfile);
++        Assert.Equal(2, section.Order);
++        Assert.Contains("Tone: concise executive", section.Content);
++        Assert.Contains("Persona: pragmatic operator", section.Content);
++        Assert.Contains("Use bullets for decisions", section.Content);
++        Assert.Contains("Do not use flippant", section.Content);
++        Assert.Contains("Communication profile", result.SystemPrompt);
++        Assert.NotNull(result.Payload["agentIdentityProfile"]);
++        Assert.Equal("concise executive", result.Payload["agentIdentityProfile"]!["tone"]!.GetValue<string>());
++        Assert.Equal("pragmatic operator", result.Payload["agentIdentityProfile"]!["persona"]!.GetValue<string>());
++        Assert.Equal("explicit", result.Payload["agentIdentityProfile"]!["profileSource"]!.GetValue<string>());
++        Assert.False(result.Payload["agentIdentityProfile"]!["isFallback"]!.GetValue<bool>());
++    }
++
+     [Fact]
+     public void Build_includes_manager_worker_topology_for_worker_subtasks()
+@@ -184,6 +206,15 @@ public sealed class PromptBuilderTests
+                 Payload(("escalateTo", JsonValue.Create("founder"))),
+                 [],
+                 [],
++                new AgentCommunicationProfileDto(
++                    "concise executive",
++                    "pragmatic operator",
++                    ["Use bullets for decisions", "Cite assumptions"],
++                    ["Avoid unsupported claims"],
++                    ["Do not use flippant"],
++                    AgentCommunicationProfileSources.Explicit,
++                    false),
+                 true,
+                 timestamp,
+                 "level_2"),
+diff --git a/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs
+new file mode 100644
+index 0000000..e938bb3
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs
+@@ -0,0 +1,43 @@
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Application.Orchestration;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class CommunicationStyleRuleCheckerTests
++{
++    [Fact]
++    public void Check_passes_when_output_avoids_forbidden_rules()
++    {
++        var checker = new CommunicationStyleRuleChecker();
++        var profile = CreateProfile();
++
++        var result = checker.Check("The next step is to verify the invoice and request approval.", profile);
++
++        Assert.True(result.Passed);
++        Assert.Empty(result.Violations);
++        Assert.Empty(result.RuleIds);
++    }
++
++    [Fact]
++    public void Check_detects_forbidden_tone_marker()
++    {
++        var checker = new CommunicationStyleRuleChecker();
++        var profile = CreateProfile();
++
++        var result = checker.Check("This is flippant and should not be sent.", profile);
++
++        Assert.False(result.Passed);
++        var violation = Assert.Single(result.Violations);
++        Assert.Equal("forbidden_tone_rule", violation.RuleType);
++        Assert.Contains("flippant", violation.Message, StringComparison.OrdinalIgnoreCase);
++        Assert.Contains(violation.RuleId, result.RuleIds);
++    }
++
++    private static AgentCommunicationProfileDto CreateProfile() =>
++        new(
++            "professional",
++            "reliable business assistant",
++            ["Be concise"],
++            ["Use business-appropriate language"],
++            ["Do not use flippant"],
++            AgentCommunicationProfileSources.Explicit,
++            false);
++}
+END_OF_PATCH

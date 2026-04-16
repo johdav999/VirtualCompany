@@ -7,7 +7,9 @@ public sealed record GenerateProactiveMessageCommand(
     string SourceEntityType,
     Guid SourceEntityId,
     string Channel,
-    Guid? RecipientUserId = null);
+    Guid? RecipientUserId = null,
+    string? Subject = null,
+    string? Body = null);
 
 public sealed record ProactiveMessageDto(
     Guid Id,

@@ -31,7 +31,7 @@ public partial class AddConditionTriggerEvaluations : Migration
                 entity_type = table.Column<string>(type: isPostgres ? "character varying(100)" : "nvarchar(100)", maxLength: 100, nullable: true),
                 field_path = table.Column<string>(type: isPostgres ? "character varying(200)" : "nvarchar(200)", maxLength: 200, nullable: true),
                 @operator = table.Column<string>(name: "operator", type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false),
-                value_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(max)", nullable: true),
+                value_type = table.Column<string>(type: isPostgres ? "character varying(32)" : "nvarchar(32)", maxLength: 32, nullable: true),
                 repeat_firing_mode = table.Column<string>(type: isPostgres ? "character varying(64)" : "nvarchar(64)", maxLength: 64, nullable: false, defaultValue: "falseToTrueTransition"),
                 input_values_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: isPostgres ? "'{}'::jsonb" : "N'{}'"),
                 previous_outcome = table.Column<bool>(type: boolType, nullable: true),

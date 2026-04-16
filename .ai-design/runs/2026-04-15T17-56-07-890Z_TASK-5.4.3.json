@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.4.3",
+  "promptPath": ".ai-design/prompts/TASK-5.4.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:56:07.890Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-56-07-890Z_TASK-5.4.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-56-07-890Z_TASK-5.4.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:58:17.140Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "om: 1rem;\n+}\n+\n+.activity-detail-drawer__header h2 {\n+    overflow-wrap: anywhere;\n+}\n+\n+.activity-detail-section {\n+    display: grid;\n+    gap: 0.75rem;\n+    min-width: 0;\n+}\n+\n+.activity-detail-section + .activity-detail-section {\n+    border-top: 1px solid rgba(15, 23, 42, 0.08);\n+    padding-top: 1rem;\n+}\n+\n+.activity-detail-facts {\n+    display: flex;\n+    flex-wrap: wrap;\n+    gap: 0.5rem;\n+}\n+\n+.activity-detail-facts span {\n+    background: #f8fafc;\n+    border: 1px solid rgba(15, 23, 42, 0.08);\n+    border-radius: 6px;\n+    color: #475569;\n+    display: inline-flex;\n+    font-size: 0.85rem;\n+    overflow-wrap: anywhere;\n+    padding: 0.25rem 0.5rem;\n+}\n+\n .activity-correlation-panel__header,\n .activity-correlation-section__title {\n     align-items: flex-start;\n@@ -877,6 +950,11 @@\n         grid-template-columns: 1fr;\n     }\n \n+    .activity-detail-drawer {\n+        max-width: 100vw;\n+        width: 100vw;\n+    }\n+\n     .activity-correlation-panel {\n         position: static;\n     }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\nindex 0c96bf6..e5828da 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\n@@ -90,4 +90,17 @@ public sealed class ActivityFeedFilterStateTests\n         Assert.Null(parameters[\"from\"]);\n         Assert.Null(parameters[\"to\"]);\n     }\n+\n+    [Fact]\n+    public void Query_string_accepts_stable_task_alias()\n+    {\n+        var taskId = \"560bc97c-372f-4b48-a56a-6d79aa3d3b79\";\n+        var query = HttpUtility.ParseQueryString(string.Empty);\n+        query[\"task\"] = taskId;\n+\n+        var state = ActivityFeedFilterState.FromQuery(query);\n+        var parameters = state.ToQueryParameters(Guid.Parse(\"6b4558ee-086a-4bbf-b539-2e26ec867be2\"));\n+\n+        Assert.Equal(taskId, state.TaskId);\n+        Assert.Equal(taskId, parameters[\"task\"]);\n+    }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "tivity-detail-drawer__header h2 {\n+    overflow-wrap: anywhere;\n+}\n+\n+.activity-detail-section {\n+    display: grid;\n+    gap: 0.75rem;\n+    min-width: 0;\n+}\n+\n+.activity-detail-section + .activity-detail-section {\n+    border-top: 1px solid rgba(15, 23, 42, 0.08);\n+    padding-top: 1rem;\n+}\n+\n+.activity-detail-facts {\n+    display: flex;\n+    flex-wrap: wrap;\n+    gap: 0.5rem;\n+}\n+\n+.activity-detail-facts span {\n+    background: #f8fafc;\n+    border: 1px solid rgba(15, 23, 42, 0.08);\n+    border-radius: 6px;\n+    color: #475569;\n+    display: inline-flex;\n+    font-size: 0.85rem;\n+    overflow-wrap: anywhere;\n+    padding: 0.25rem 0.5rem;\n+}\n+\n .activity-correlation-panel__header,\n .activity-correlation-section__title {\n     align-items: flex-start;\n@@ -877,6 +950,11 @@\n         grid-template-columns: 1fr;\n     }\n \n+    .activity-detail-drawer {\n+        max-width: 100vw;\n+        width: 100vw;\n+    }\n+\n     .activity-correlation-panel {\n         position: static;\n     }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\nindex 0c96bf6..e5828da 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs\n@@ -90,4 +90,17 @@ public sealed class ActivityFeedFilterStateTests\n         Assert.Null(parameters[\"from\"]);\n         Assert.Null(parameters[\"to\"]);\n     }\n+\n+    [Fact]\n+    public void Query_string_accepts_stable_task_alias()\n+    {\n+        var taskId = \"560bc97c-372f-4b48-a56a-6d79aa3d3b79\";\n+        var query = HttpUtility.ParseQueryString(string.Empty);\n+        query[\"task\"] = taskId;\n+\n+        var state = ActivityFeedFilterState.FromQuery(query);\n+        var parameters = state.ToQueryParameters(Guid.Parse(\"6b4558ee-086a-4bbf-b539-2e26ec867be2\"));\n+\n+        Assert.Equal(taskId, state.TaskId);\n+        Assert.Equal(taskId, parameters[\"task\"]);\n+    }\n }\nEND_OF_PATCH\ntokens used\n53,912\n",
+  "verbosityMode": "summary"
+}

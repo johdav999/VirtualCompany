@@ -147,7 +147,14 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
             SafeAuditExplanationMapper.SanitizeMetadata(auditEvent.Metadata),
             linkedApprovals,
             linkedToolExecutions,
-            BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions));
+            BuildAffectedEntities(auditEvent, related, linkedApprovals, linkedToolExecutions),
+            auditEvent.AgentName,
+            auditEvent.AgentRole,
+            auditEvent.ResponsibilityDomain,
+            auditEvent.PromptProfileVersion,
+            auditEvent.BoundaryDecisionOutcome,
+            auditEvent.IdentityReasonCode,
+            auditEvent.BoundaryReasonCode);
     }
 
     private void EnsureTenant(Guid companyId)
@@ -544,7 +551,14 @@ public sealed class CompanyAuditQueryService : IAuditQueryService
             auditEvent.OccurredUtc,
             BuildSafeExplanation(auditEvent),
             auditEvent.CorrelationId,
-            BuildAffectedEntities(auditEvent, related));
+            BuildAffectedEntities(auditEvent, related),
+            auditEvent.AgentName,
+            auditEvent.AgentRole,
+            auditEvent.ResponsibilityDomain,
+            auditEvent.PromptProfileVersion,
+            auditEvent.BoundaryDecisionOutcome,
+            auditEvent.IdentityReasonCode,
+            auditEvent.BoundaryReasonCode);
 
     private static AuditSafeExplanationDto BuildSafeExplanation(
         AuditEvent auditEvent,

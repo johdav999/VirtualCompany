@@ -6,8 +6,11 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.DataProtection;
 using VirtualCompany.Infrastructure;
+using VirtualCompany.Application.Activity;
+using VirtualCompany.Application.Authorization;
 using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Activity;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Tenancy;
 using VirtualCompany.Infrastructure.Observability;
@@ -50,6 +53,8 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<IActivityEventPublisher, SignalRActivityEventPublisher>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
 builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
@@ -92,6 +97,7 @@ using (var scope = app.Services.CreateScope())
 
 app.MapVirtualCompanyHealthEndpoints();
 app.MapControllers();
+app.MapHub<ActivityFeedHub>(ActivityFeedHub.Route).RequireAuthorization(CompanyPolicies.AuthenticatedUser);
 
 app.Run();
 
@@ -137,7 +143,7 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                 """
                 ALTER TABLE [agents]
                 ADD [trigger_logic_json] nvarchar(max) NOT NULL
-                    CONSTRAINT [DF_agents_trigger_logic_json_startup] DEFAULT (N'{{}}');
+                    CONSTRAINT [DF_agents_trigger_logic_json_startup] DEFAULT (NCHAR(123) + NCHAR(125));
                 """);
         }
 
@@ -147,7 +153,7 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                 """
                 ALTER TABLE [agents]
                 ADD [working_hours_json] nvarchar(max) NOT NULL
-                    CONSTRAINT [DF_agents_working_hours_json_startup] DEFAULT (N'{{}}');
+                    CONSTRAINT [DF_agents_working_hours_json_startup] DEFAULT (NCHAR(123) + NCHAR(125));
                 """);
         }
 
@@ -169,9 +175,9 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                     [scope] nvarchar(100) NULL,
                     [status] nvarchar(32) NOT NULL,
                     [approval_request_id] uniqueidentifier NULL,
-                    [request_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_request_json] DEFAULT (N'{}'),
-                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_policy_decision_json] DEFAULT (N'{}'),
-                    [response_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_response_json] DEFAULT (N'{}'),
+                    [request_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_request_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_policy_decision_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                    [response_json] nvarchar(max) NOT NULL CONSTRAINT [DF_tool_executions_response_json] DEFAULT (NCHAR(123) + NCHAR(125)),
                     [started_at] datetime2 NOT NULL,
                     [completed_at] datetime2 NULL,
                     [created_at] datetime2 NOT NULL,
@@ -203,8 +209,8 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                     [ActionType] nvarchar(32) NOT NULL,
                     [ApprovalTarget] nvarchar(100) NULL,
                     [Status] nvarchar(32) NOT NULL,
-                    [threshold_context_json] nvarchar(max) NOT NULL CONSTRAINT [DF_approval_requests_threshold_context_json] DEFAULT (N'{{}}'),
-                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_approval_requests_policy_decision_json] DEFAULT (N'{{}}'),
+                    [threshold_context_json] nvarchar(max) NOT NULL CONSTRAINT [DF_approval_requests_threshold_context_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                    [policy_decision_json] nvarchar(max) NOT NULL CONSTRAINT [DF_approval_requests_policy_decision_json] DEFAULT (NCHAR(123) + NCHAR(125)),
                     [CreatedUtc] datetime2 NOT NULL,
                     [UpdatedUtc] datetime2 NOT NULL,
                     CONSTRAINT [FK_approval_requests_companies_CompanyId] FOREIGN KEY ([CompanyId]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
@@ -306,7 +312,7 @@ static async Task EnsureSqlServerAgentExecutionSchemaAsync(VirtualCompanyDbConte
                 """
                 ALTER TABLE [approval_requests]
                 ADD [decision_chain_json] nvarchar(max) NOT NULL
-                    CONSTRAINT [DF_approval_requests_decision_chain_json_startup] DEFAULT (N'{}');
+                    CONSTRAINT [DF_approval_requests_decision_chain_json_startup] DEFAULT (NCHAR(123) + NCHAR(125));
                 """);
         }
 
@@ -430,8 +436,8 @@ static async Task EnsureSqlServerKnowledgeSchemaAsync(VirtualCompanyDbContext db
                 [ContentType] nvarchar(255) NULL,
                 [FileExtension] nvarchar(16) NOT NULL,
                 [FileSizeBytes] bigint NOT NULL,
-                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_documents_metadata_json] DEFAULT (N'{{}}'),
-                [access_scope_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_documents_access_scope_json] DEFAULT (N'{{}}'),
+                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_documents_metadata_json] DEFAULT (NCHAR(123) + NCHAR(125)),
+                [access_scope_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_documents_access_scope_json] DEFAULT (NCHAR(123) + NCHAR(125)),
                 [IngestionStatus] nvarchar(32) NOT NULL CONSTRAINT [DF_knowledge_documents_IngestionStatus] DEFAULT ('uploaded'),
                 [FailureCode] nvarchar(100) NULL,
                 [FailureMessage] nvarchar(2000) NULL,
@@ -480,7 +486,7 @@ static async Task EnsureSqlServerKnowledgeSchemaAsync(VirtualCompanyDbContext db
                 [IsActive] bit NOT NULL CONSTRAINT [DF_knowledge_chunks_IsActive] DEFAULT (1),
                 [Content] nvarchar(max) NOT NULL,
                 [Embedding] nvarchar(max) NOT NULL,
-                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_chunks_metadata_json] DEFAULT (N'{{}}'),
+                [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_knowledge_chunks_metadata_json] DEFAULT (NCHAR(123) + NCHAR(125)),
                 [SourceReference] nvarchar(1024) NOT NULL,
                 [StartOffset] int NULL,
                 [EndOffset] int NULL,
@@ -537,7 +543,7 @@ static async Task EnsureSqlServerDirectChatSchemaAsync(VirtualCompanyDbContext d
                     [subject] nvarchar(200) NULL,
                     [created_by_user_id] uniqueidentifier NOT NULL,
                     [agent_id] uniqueidentifier NULL,
-                    [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_conversations_metadata_json] DEFAULT (N'{}'),
+                    [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_conversations_metadata_json] DEFAULT (NCHAR(123) + NCHAR(125)),
                     [created_at] datetime2 NOT NULL,
                     [updated_at] datetime2 NOT NULL,
                     CONSTRAINT [FK_conversations_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
@@ -563,7 +569,7 @@ static async Task EnsureSqlServerDirectChatSchemaAsync(VirtualCompanyDbContext d
                     [sender_id] uniqueidentifier NULL,
                     [message_type] nvarchar(64) NOT NULL,
                     [body] nvarchar(max) NOT NULL,
-                    [structured_payload] nvarchar(max) NOT NULL CONSTRAINT [DF_messages_structured_payload] DEFAULT (N'{}'),
+                    [structured_payload] nvarchar(max) NOT NULL CONSTRAINT [DF_messages_structured_payload] DEFAULT (NCHAR(123) + NCHAR(125)),
                     [created_at] datetime2 NOT NULL,
                     CONSTRAINT [FK_messages_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                     CONSTRAINT [FK_messages_conversations_conversation_id] FOREIGN KEY ([conversation_id]) REFERENCES [conversations] ([id]) ON DELETE CASCADE
@@ -756,6 +762,173 @@ static async Task EnsureSqlServerAuditEventSchemaAsync(VirtualCompanyDbContext d
     }
 }
 
+static async Task EnsureSqlServerBriefingSchemaAsync(VirtualCompanyDbContext dbContext)
+{
+    var providerName = dbContext.Database.ProviderName;
+    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (!await SqlServerTableExistsAsync(connection, "company_briefing_update_jobs"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [company_briefing_update_jobs] (
+                    [id] uniqueidentifier NOT NULL CONSTRAINT [pk_company_briefing_update_jobs] PRIMARY KEY,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [trigger_type] nvarchar(32) NOT NULL,
+                    [briefing_type] nvarchar(32) NULL,
+                    [event_type] nvarchar(100) NULL,
+                    [correlation_id] nvarchar(128) NOT NULL,
+                    [idempotency_key] nvarchar(300) NOT NULL,
+                    [status] nvarchar(32) NOT NULL,
+                    [attempt_count] int NOT NULL CONSTRAINT [DF_company_briefing_update_jobs_attempt_count_startup] DEFAULT (0),
+                    [max_attempts] int NOT NULL CONSTRAINT [DF_company_briefing_update_jobs_max_attempts_startup] DEFAULT (5),
+                    [next_attempt_at] datetime2 NULL,
+                    [last_error_code] nvarchar(256) NULL,
+                    [last_error] nvarchar(4000) NULL,
+                    [last_error_details] nvarchar(max) NULL,
+                    [last_failure_at] datetime2 NULL,
+                    [started_at] datetime2 NULL,
+                    [completed_at] datetime2 NULL,
+                    [final_failed_at] datetime2 NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    [source_metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_company_briefing_update_jobs_source_metadata_json_startup] DEFAULT (NCHAR(123) + NCHAR(125)),
+                    CONSTRAINT [fk_company_briefing_update_jobs_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+                );
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "company_briefing_update_jobs", "max_attempts"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                ALTER TABLE [company_briefing_update_jobs]
+                ADD [max_attempts] int NOT NULL
+                    CONSTRAINT [DF_company_briefing_update_jobs_max_attempts_startup] DEFAULT (5);
+                """);
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "company_briefing_update_jobs", "last_error_code"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [company_briefing_update_jobs] ADD [last_error_code] nvarchar(256) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "company_briefing_update_jobs", "last_error_details"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [company_briefing_update_jobs] ADD [last_error_details] nvarchar(max) NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "company_briefing_update_jobs", "last_failure_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [company_briefing_update_jobs] ADD [last_failure_at] datetime2 NULL;");
+        }
+
+        if (!await SqlServerColumnExistsAsync(connection, "company_briefing_update_jobs", "started_at"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE [company_briefing_update_jobs] ADD [started_at] datetime2 NULL;");
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_company_briefing_update_jobs_company_id_idempotency_key' AND object_id = OBJECT_ID(N'[company_briefing_update_jobs]'))
+            BEGIN
+                CREATE UNIQUE INDEX [ix_company_briefing_update_jobs_company_id_idempotency_key]
+                ON [company_briefing_update_jobs] ([company_id], [idempotency_key]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_company_briefing_update_jobs_status_next_attempt_at_started_at_created_at' AND object_id = OBJECT_ID(N'[company_briefing_update_jobs]'))
+            BEGIN
+                CREATE INDEX [ix_company_briefing_update_jobs_status_next_attempt_at_started_at_created_at]
+                ON [company_briefing_update_jobs] ([status], [next_attempt_at], [started_at], [created_at]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_company_briefing_update_jobs_company_id_status_created_at' AND object_id = OBJECT_ID(N'[company_briefing_update_jobs]'))
+            BEGIN
+                CREATE INDEX [ix_company_briefing_update_jobs_company_id_status_created_at]
+                ON [company_briefing_update_jobs] ([company_id], [status], [created_at]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_company_briefing_update_jobs_company_id_event_type_created_at' AND object_id = OBJECT_ID(N'[company_briefing_update_jobs]'))
+            BEGIN
+                CREATE INDEX [ix_company_briefing_update_jobs_company_id_event_type_created_at]
+                ON [company_briefing_update_jobs] ([company_id], [event_type], [created_at]);
+            END
+            """);
+
+        if (!await SqlServerTableExistsAsync(connection, "insight_acknowledgments"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [insight_acknowledgments] (
+                    [id] uniqueidentifier NOT NULL CONSTRAINT [PK_insight_acknowledgments] PRIMARY KEY,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [user_id] uniqueidentifier NOT NULL,
+                    [insight_key] nvarchar(200) NOT NULL,
+                    [acknowledged_at] datetime2 NOT NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    CONSTRAINT [FK_insight_acknowledgments_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                    CONSTRAINT [FK_insight_acknowledgments_users_user_id] FOREIGN KEY ([user_id]) REFERENCES [users] ([Id]) ON DELETE CASCADE
+                );
+                """);
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_insight_acknowledgments_company_id_user_id_insight_key' AND object_id = OBJECT_ID(N'[insight_acknowledgments]'))
+            BEGIN
+                CREATE UNIQUE INDEX [IX_insight_acknowledgments_company_id_user_id_insight_key]
+                ON [insight_acknowledgments] ([company_id], [user_id], [insight_key]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_insight_acknowledgments_company_id_user_id_acknowledged_at' AND object_id = OBJECT_ID(N'[insight_acknowledgments]'))
+            BEGIN
+                CREATE INDEX [IX_insight_acknowledgments_company_id_user_id_acknowledged_at]
+                ON [insight_acknowledgments] ([company_id], [user_id], [acknowledged_at]);
+            END
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_insight_acknowledgments_user_id' AND object_id = OBJECT_ID(N'[insight_acknowledgments]'))
+            BEGIN
+                CREATE INDEX [IX_insight_acknowledgments_user_id]
+                ON [insight_acknowledgments] ([user_id]);
+            END
+            """);
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
+}
 static async Task<bool> SqlServerTableExistsAsync(DbConnection connection, string tableName)
 {
     await using var command = connection.CreateCommand();
@@ -814,6 +987,7 @@ static async Task InitializeDatabaseAsync(
             await EnsureSqlServerKnowledgeSchemaAsync(dbContext);
             await EnsureSqlServerDirectChatSchemaAsync(dbContext);
             await EnsureSqlServerAuditEventSchemaAsync(dbContext);
+            await EnsureSqlServerBriefingSchemaAsync(dbContext);
         }
         else
         {

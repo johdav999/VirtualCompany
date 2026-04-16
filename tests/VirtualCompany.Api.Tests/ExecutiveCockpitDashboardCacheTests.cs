@@ -77,7 +77,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
     }
 
     [Fact]
-    public async Task Cache_invalidation_removes_only_the_target_tenant()
+    public async Task Cache_invalidation_versions_only_the_target_tenant_namespace()
     {
         var distributedCache = new RecordingDistributedCache();
         var cache = CreateCache(distributedCache);
@@ -93,9 +93,109 @@ public sealed class ExecutiveCockpitDashboardCacheTests
         Assert.NotNull(await cache.TryGetAsync(companyB, CancellationToken.None));
     }
 
+    [Fact]
+    public void Cache_key_generation_normalizes_role_filters_time_range_and_identity()
+    {
+        var companyId = Guid.NewGuid();
+        var keyA = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+            companyId,
+            "Owner",
+            ["Sales", " finance ", "sales"],
+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
+            "widget:kpis"));
+        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+            companyId,
+            "owner",
+            ["Sales", " finance ", "sales"],
+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
+            "widget:kpis"));
+        var keyC = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+            companyId,
+            "manager",
+            ["finance", "SALES"],
+            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
+            "widget:kpis"));
+
+        Assert.Equal(keyA, keyB);
+        Assert.NotEqual(keyA, keyC);
+    }
+
+    [Fact]
+    public void Cache_key_generation_scopes_departments_time_range_and_widget_identity()
+    {
+        var companyId = Guid.NewGuid();
+        var baseline = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+            companyId,
+            "owner",
+            ["finance", "sales"],
+            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
+            "widget:summary-kpis"));
+
+        Assert.NotEqual(
+            baseline,
+            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+                companyId, "owner", ["finance"], new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), "widget:summary-kpis")));
+        Assert.NotEqual(
+            baseline,
+            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+                companyId, "owner", ["finance", "sales"], new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc), "widget:summary-kpis")));
+        Assert.NotEqual(
+            baseline,
+            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+                companyId, "owner", ["finance", "sales"], new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), "widget:alerts")));
+    }
+
+    [Fact]
+    public async Task Versioned_invalidation_forces_miss_without_wildcard_key_deletes()
+    {
+        var distributedCache = new RecordingDistributedCache();
+        var cache = CreateCache(distributedCache);
+        var companyId = Guid.NewGuid();
+
+        await cache.SetAsync(CreateSnapshot(companyId, "Tenant A"), CancellationToken.None);
+        Assert.NotNull(await cache.TryGetAsync(companyId, CancellationToken.None));
+
+        await cache.InvalidateAsync(companyId, CancellationToken.None);
+
+        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));
+        Assert.Empty(distributedCache.RemovedKeys);
+    }
+
+    [Fact]
+    public async Task Invalidation_event_records_versioned_namespace_without_global_flush()
+    {
+        var distributedCache = new RecordingDistributedCache();
+        var cache = CreateCache(distributedCache);
+        var companyId = Guid.NewGuid();
+
+        await cache.SetAsync(CreateSnapshot(companyId, "Tenant A"), CancellationToken.None);
+        await cache.InvalidateAsync(
+            new ExecutiveCockpitCacheInvalidationEvent(
+                companyId,
+                "TaskUpdated",
+                "work_task",
+                Guid.NewGuid(),
+                DateTime.UtcNow.AddSeconds(-5)),
+            CancellationToken.None);
+
+        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));
+        Assert.Empty(distributedCache.RemovedKeys);
+    }
+
     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>
         new(
             distributedCache,
+            new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions
+            {
+                Enabled = true,
+                KeyPrefix = "vc:executive-cockpit",
+                KeyVersion = "tests-v1",
+                TtlSeconds = 60
+            })),
             Options.Create(new ExecutiveCockpitDashboardCacheOptions
             {
                 Enabled = true,
@@ -119,6 +219,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
             [],
             [],
             [],
+            [],
             new ExecutiveCockpitSetupStateDto(false, false, false, 0, 0, 0, true),
             new ExecutiveCockpitEmptyStateFlagsDto(true, true, true, true, true, true));
 
@@ -129,11 +230,13 @@ public sealed class ExecutiveCockpitDashboardCacheTests
     {
         private readonly ConcurrentDictionary<string, byte[]> _entries = new(StringComparer.Ordinal);
         private readonly ConcurrentQueue<string> _setKeys = new();
+        private readonly ConcurrentQueue<string> _removedKeys = new();
 
         public bool ThrowOnGet { get; init; }
         public bool ThrowOnSet { get; init; }
         public bool ThrowOnRemove { get; init; }
         public IReadOnlyList<string> SetKeys => _setKeys.ToArray();
+        public IReadOnlyList<string> RemovedKeys => _removedKeys.ToArray();
 
         public byte[]? Get(string key)
         {
@@ -191,6 +294,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
             }
 
             _entries.TryRemove(key, out _);
+            _removedKeys.Enqueue(key);
         }
 
         public Task RemoveAsync(string key, CancellationToken token = default)

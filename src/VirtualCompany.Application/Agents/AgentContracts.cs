@@ -74,6 +74,123 @@ public sealed record AgentRosterFilterDto(
     string? Department,
     string? Status);
 
+public sealed record AgentStatusWorkloadDto(
+    int ActiveTaskCount,
+    int BlockedTaskCount,
+    int AwaitingApprovalCount,
+    int ActiveWorkflowCount,
+    string WorkloadLevel);
+
+public sealed record AgentStatusRecentActionDto(
+    DateTime OccurredUtc,
+    string ActionType,
+    string Title,
+    string Status,
+    string RelatedEntityType,
+    Guid? RelatedEntityId);
+
+public sealed record AgentStatusDetailLinkDto(
+    string Path,
+    string ActiveTab,
+    IReadOnlyDictionary<string, string> Query);
+
+public sealed record AgentStatusCardDto(
+    Guid AgentId,
+    Guid CompanyId,
+    string DisplayName,
+    string RoleName,
+    string Department,
+    AgentStatusWorkloadDto Workload,
+    string HealthStatus,
+    IReadOnlyList<string> HealthReasons,
+    int ActiveAlertsCount,
+    IReadOnlyList<AgentStatusRecentActionDto> RecentActions,
+    DateTime LastUpdatedUtc,
+    AgentStatusDetailLinkDto DetailLink);
+
+public sealed record AgentStatusCardsResponseDto(
+    IReadOnlyList<AgentStatusCardDto> Items,
+    DateTime GeneratedUtc);
+
+public sealed record AgentStatusDetailTaskDto(
+    Guid Id,
+    string Type,
+    string Title,
+    string Priority,
+    string Status,
+    DateTime? DueUtc,
+    DateTime UpdatedUtc);
+
+public sealed record AgentStatusDetailWorkflowDto(
+    Guid Id,
+    string DefinitionName,
+    string State,
+    string? CurrentStep,
+    DateTime StartedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record AgentStatusDetailAlertDto(
+    Guid Id,
+    string Type,
+    string Severity,
+    string Title,
+    string Summary,
+    string Status,
+    DateTime UpdatedUtc);
+
+public sealed record AgentStatusHealthBreakdownDto(
+    string Status,
+    IReadOnlyList<string> Reasons,
+    AgentStatusHealthMetrics Metrics);
+
+public sealed record AgentStatusDetailDto(
+    Guid AgentId,
+    Guid CompanyId,
+    string DisplayName,
+    string RoleName,
+    string Department,
+    AgentStatusWorkloadDto Workload,
+    AgentStatusHealthBreakdownDto Health,
+    int ActiveAlertsCount,
+    IReadOnlyList<AgentStatusDetailTaskDto> ActiveTasks,
+    IReadOnlyList<AgentStatusDetailWorkflowDto> ActiveWorkflows,
+    IReadOnlyList<AgentStatusDetailAlertDto> ActiveAlerts,
+    IReadOnlyList<AgentStatusRecentActionDto> RecentActions,
+    DateTime LastUpdatedUtc,
+    DateTime GeneratedUtc);
+
+public sealed record AgentStatusHealthMetrics(
+    int FailedRunCount,
+    int StalledWorkCount,
+    int PolicyViolationCount);
+
+public sealed record AgentStatusHealthResult(
+    string Status,
+    IReadOnlyList<string> Reasons);
+
+public sealed class AgentStatusHealthThresholds
+{
+    public const int DefaultWarningFailedRuns = 1;
+    public const int DefaultCriticalFailedRuns = 3;
+    public const int DefaultWarningStalledWork = 1;
+    public const int DefaultCriticalStalledWork = 3;
+    public const int DefaultWarningPolicyViolations = 1;
+    public const int DefaultCriticalPolicyViolations = 2;
+
+    public int WarningFailedRuns { get; init; } = DefaultWarningFailedRuns;
+    public int CriticalFailedRuns { get; init; } = DefaultCriticalFailedRuns;
+    public int WarningStalledWork { get; init; } = DefaultWarningStalledWork;
+    public int CriticalStalledWork { get; init; } = DefaultCriticalStalledWork;
+    public int WarningPolicyViolations { get; init; } = DefaultWarningPolicyViolations;
+    public int CriticalPolicyViolations { get; init; } = DefaultCriticalPolicyViolations;
+}
+
+public interface IAgentStatusAggregationService
+{
+    Task<AgentStatusCardsResponseDto> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<AgentStatusDetailDto> GetStatusDetailAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+}
+
 public sealed record AgentRecentActivityDto(
     DateTime OccurredUtc,
     string ActivityType,
@@ -166,6 +283,7 @@ public sealed record AgentOperatingProfileDto(
     Dictionary<string, JsonNode?> EscalationRules,
     Dictionary<string, JsonNode?> TriggerLogic,
     Dictionary<string, JsonNode?> WorkingHours,
+    Dictionary<string, JsonNode?> CommunicationProfile,
     AgentProfileVisibilityDto Visibility,
     DateTime UpdatedUtc,
     bool CanReceiveAssignments,
@@ -182,7 +300,8 @@ public sealed record UpdateAgentOperatingProfileCommand(
     AgentEscalationRulesInput? EscalationRules,
     AgentTriggerLogicInput? TriggerLogic,
     Dictionary<string, JsonNode?>? WorkingHours,
-    string? AutonomyLevel = null);
+    string? AutonomyLevel = null,
+    AgentCommunicationProfileInput? CommunicationProfile = null);
 
 public sealed record AgentRuntimeProfileDto(
     Guid Id,
@@ -203,6 +322,7 @@ public sealed record AgentRuntimeProfileDto(
     Dictionary<string, JsonNode?> EscalationRules,
     Dictionary<string, JsonNode?> TriggerLogic,
     Dictionary<string, JsonNode?> WorkingHours,
+    AgentCommunicationProfileDto CommunicationProfile,
     bool CanReceiveAssignments,
     DateTime UpdatedUtc,
     string AutonomyLevel);
@@ -223,7 +343,9 @@ public interface IAgentRuntimeProfileResolver
     Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
         Guid companyId,
         Guid agentId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? generationPath = null,
+        string? correlationId = null);
 }
 
 public sealed record AssignableAgentDto(

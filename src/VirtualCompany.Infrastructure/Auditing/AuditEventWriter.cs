@@ -31,7 +31,15 @@ public sealed class AuditEventWriter : IAuditEventWriter
             auditEvent.Metadata,
             auditEvent.CorrelationId,
             auditEvent.OccurredUtc,
-            BuildDataSourcesUsed(auditEvent)));
+            BuildDataSourcesUsed(auditEvent),
+            auditEvent.PayloadDiffJson,
+            auditEvent.AgentName,
+            auditEvent.AgentRole,
+            auditEvent.ResponsibilityDomain,
+            auditEvent.PromptProfileVersion,
+            auditEvent.BoundaryDecisionOutcome,
+            auditEvent.IdentityReasonCode,
+            auditEvent.BoundaryReasonCode));
         return Task.CompletedTask;
     }
 

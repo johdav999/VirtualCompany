@@ -89,6 +89,8 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
         RetryAttemptCount = Math.Max(RetryAttemptCount + 1, retryAttempt);
         Status = TriggerExecutionAttemptStatus.Retried;
         UpdatedUtc = DateTime.UtcNow;
+        FailureDetails = null;
+        DenialReason = null;
         CompletedUtc = null;
         NextRetryUtc = null;
     }

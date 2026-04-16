@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.3.1",
+  "promptPath": ".ai-design/prompts/TASK-13.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:05:18.166Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-05-18-166Z_TASK-13.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-05-18-166Z_TASK-13.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:07:42.238Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "many\"));\n+\n+        var errors = ConditionExpressionValidator.Validate(condition);\n+\n+        Assert.Contains(\"condition.comparisonValue\", errors.Keys);\n+    }\n+\n+    [Fact]\n+    public void Validate_rejects_invalid_repeat_firing_mode()\n+    {\n+        var condition = new ConditionExpression(\n+            new ConditionTargetReference(ConditionOperandSourceType.Metric, \"task.backlog.count\", null, null),\n+            ConditionOperator.GreaterThan,\n+            ConditionValueType.Number,\n+            JsonValue.Create(10),\n+            (RepeatFiringMode)99);\n+\n+        var errors = ConditionExpressionValidator.Validate(condition);\n+\n+        Assert.Contains(\"condition.repeatFiringMode\", errors.Keys);\n+    }\n+\n+    [Fact]\n+    public void ValidateAndThrow_raises_field_level_errors()\n+    {\n+        var condition = MetricCondition(\n+            ConditionOperator.GreaterThan,\n+            ConditionValueType.String,\n+            JsonValue.Create(\"10\"));\n+\n+        var exception = Assert.Throws<AgentValidationException>(() =>\n+            ConditionExpressionValidator.ValidateAndThrow(condition));\n+\n+        Assert.Contains(\"condition.valueType\", exception.Errors.Keys);\n+    }\n+\n+    private static ConditionExpression MetricCondition(\n+        ConditionOperator conditionOperator,\n+        ConditionValueType? valueType,\n+        JsonNode? comparisonValue) =>\n+        new(\n+            new ConditionTargetReference(ConditionOperandSourceType.Metric, \"task.backlog.count\", null, null),\n+            conditionOperator,\n+            valueType,\n+            comparisonValue);\n+\n+    private static ConditionExpression EntityFieldCondition(\n+        ConditionOperator conditionOperator,\n+        ConditionValueType? valueType,\n+        JsonNode? comparisonValue) =>\n+        new(\n+            new ConditionTargetReference(ConditionOperandSourceType.EntityField, null, \"workTask\", \"status\"),\n+            conditionOperator,\n+            valueType,\n+            comparisonValue);\n+}\nEND_OF_PATCH\n",
+  "stderrTail": " var errors = ConditionExpressionValidator.Validate(condition);\n+\n+        Assert.Contains(\"condition.comparisonValue\", errors.Keys);\n+    }\n+\n+    [Fact]\n+    public void Validate_rejects_invalid_repeat_firing_mode()\n+    {\n+        var condition = new ConditionExpression(\n+            new ConditionTargetReference(ConditionOperandSourceType.Metric, \"task.backlog.count\", null, null),\n+            ConditionOperator.GreaterThan,\n+            ConditionValueType.Number,\n+            JsonValue.Create(10),\n+            (RepeatFiringMode)99);\n+\n+        var errors = ConditionExpressionValidator.Validate(condition);\n+\n+        Assert.Contains(\"condition.repeatFiringMode\", errors.Keys);\n+    }\n+\n+    [Fact]\n+    public void ValidateAndThrow_raises_field_level_errors()\n+    {\n+        var condition = MetricCondition(\n+            ConditionOperator.GreaterThan,\n+            ConditionValueType.String,\n+            JsonValue.Create(\"10\"));\n+\n+        var exception = Assert.Throws<AgentValidationException>(() =>\n+            ConditionExpressionValidator.ValidateAndThrow(condition));\n+\n+        Assert.Contains(\"condition.valueType\", exception.Errors.Keys);\n+    }\n+\n+    private static ConditionExpression MetricCondition(\n+        ConditionOperator conditionOperator,\n+        ConditionValueType? valueType,\n+        JsonNode? comparisonValue) =>\n+        new(\n+            new ConditionTargetReference(ConditionOperandSourceType.Metric, \"task.backlog.count\", null, null),\n+            conditionOperator,\n+            valueType,\n+            comparisonValue);\n+\n+    private static ConditionExpression EntityFieldCondition(\n+        ConditionOperator conditionOperator,\n+        ConditionValueType? valueType,\n+        JsonNode? comparisonValue) =>\n+        new(\n+            new ConditionTargetReference(ConditionOperandSourceType.EntityField, null, \"workTask\", \"status\"),\n+            conditionOperator,\n+            valueType,\n+            comparisonValue);\n+}\nEND_OF_PATCH\ntokens used\n64,380\n",
+  "verbosityMode": "summary"
+}

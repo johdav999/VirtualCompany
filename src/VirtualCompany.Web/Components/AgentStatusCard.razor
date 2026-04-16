@@ -1,0 +1,77 @@
+@namespace VirtualCompany.Web.Components
+@using VirtualCompany.Web.Services
+
+<article class="agent-status-card">
+    <a class="agent-status-card__link" href="@DetailHref" aria-label="@($"Open {Card.DisplayName} status detail")">
+        <div class="agent-template-header">
+            <div>
+                <span class="dashboard-kicker">@Card.Department</span>
+                <h3 class="h5 mb-1 mt-2">@Card.DisplayName</h3>
+                <p class="text-body-secondary mb-0">@Card.RoleName</p>
+            </div>
+            <span class="badge @GetHealthBadgeCss(Card.HealthStatus)">@ToDisplayText(Card.HealthStatus)</span>
+        </div>
+
+        <div class="agent-status-metrics mt-4">
+            <div>
+                <span class="dashboard-kicker">Workload</span>
+                <strong>@Card.Workload.WorkloadLevel</strong>
+                <small>@Card.Workload.ActiveTaskCount task(s), @Card.Workload.ActiveWorkflowCount workflow(s)</small>
+            </div>
+            <div>
+                <span class="dashboard-kicker">Blocked</span>
+                <strong>@Card.Workload.BlockedTaskCount</strong>
+                <small>@Card.Workload.AwaitingApprovalCount awaiting approval</small>
+            </div>
+            <div>
+                <span class="dashboard-kicker">Alerts</span>
+                <strong>@Card.ActiveAlertsCount</strong>
+                <small>Active signals</small>
+            </div>
+        </div>
+
+        @if (Card.HealthReasons.Count > 0)
+        {
+            <p class="agent-status-reason mb-0 mt-3">@Card.HealthReasons[0]</p>
+        }
+
+        <div class="activity-list mt-4">
+            <div class="agent-template-header">
+                <strong>Recent actions</strong>
+                <span class="text-body-secondary small">Updated @Card.LastUpdatedUtc.ToLocalTime().ToString("g")</span>
+            </div>
+
+            @if (Card.RecentActions.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No recent actions are available.</p>
+            }
+            else
+            {
+                @foreach (var action in Card.RecentActions.Take(5))
+                {
+                    <div class="agent-status-action">
+                        <span>@action.Title</span>
+                        <small>@ToDisplayText(action.ActionType) | @ToDisplayText(action.Status) | @action.OccurredUtc.ToLocalTime().ToString("g")</small>
+                    </div>
+                }
+            }
+        </div>
+    </a>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public AgentStatusCardViewModel Card { get; set; } = new();
+
+    private string DetailHref => BuildDetailHref(Card.DetailLink, Card.CompanyId, Card.AgentId);
+
+    private static string BuildDetailHref(AgentStatusDetailLinkViewModel detailLink, Guid companyId, Guid agentId)
+    {
+        var path = string.IsNullOrWhiteSpace(detailLink.Path) ? $"/agents/{agentId}" : detailLink.Path;
+        var query = detailLink.Query.Count == 0 ? $"companyId={companyId}" : string.Join("&", detailLink.Query.Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(x.Value)}"));
+        return $"{path}?{query}#work";
+    }
+
+    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+    private static string GetHealthBadgeCss(string? healthStatus) => string.Equals(healthStatus, "Critical", StringComparison.OrdinalIgnoreCase) ? "text-bg-danger" : string.Equals(healthStatus, "Warning", StringComparison.OrdinalIgnoreCase) ? "text-bg-warning" : "text-bg-success";
+}

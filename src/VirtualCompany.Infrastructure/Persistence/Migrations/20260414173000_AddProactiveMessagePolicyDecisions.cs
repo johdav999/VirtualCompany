@@ -19,6 +19,8 @@ public partial class AddProactiveMessagePolicyDecisions : Migration
                 channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                 recipient_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                 recipient = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                subject = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                body = table.Column<string>(type: "nvarchar(max)", nullable: false),
                 source_entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                 source_entity_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                 originating_agent_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),

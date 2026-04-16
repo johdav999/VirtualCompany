@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -6,6 +9,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
@@ -164,12 +169,17 @@ public interface ICompanyOutboxProcessor
 public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
+    private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit.Outbox");
+    private static readonly Counter<long> CockpitInvalidationEvents = Meter.CreateCounter<long>("executive_cockpit_invalidation_events");
+    private static readonly Histogram<double> CockpitInvalidationDuration = Meter.CreateHistogram<double>("executive_cockpit_invalidation_duration_ms", "ms");
+    private static readonly Histogram<double> CockpitInvalidationLag = Meter.CreateHistogram<double>("executive_cockpit_invalidation_lag_ms", "ms");
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
     private readonly ITriggerExecutionService _triggerExecutionService;
+    private readonly IExecutiveCockpitDashboardCacheInvalidator _cockpitCacheInvalidator;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
     private readonly ILogger<CompanyOutboxProcessor> _logger;
@@ -177,6 +187,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
+    private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -184,12 +195,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ICompanyNotificationDispatcher notificationDispatcher,
         ITriggerExecutionService triggerExecutionService,
         IInternalWorkflowEventTriggerService workflowEventTriggerService,
+        IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
         IOptions<CompanyOutboxDispatcherOptions> options,
         IBackgroundJobExecutor backgroundJobExecutor,
         IBackgroundExecutionRecorder backgroundExecutionRecorder,
         IBackgroundExecutionRetryPolicy retryPolicy,
         IBackgroundExecutionIdentityFactory identityFactory,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+        IBriefingUpdateJobProducer briefingUpdateJobProducer,
         ILogger<CompanyOutboxProcessor> logger)
     {
         _dbContext = dbContext;
@@ -197,12 +210,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _notificationDispatcher = notificationDispatcher;
         _triggerExecutionService = triggerExecutionService;
         _workflowEventTriggerService = workflowEventTriggerService;
+        _cockpitCacheInvalidator = cockpitCacheInvalidator;
         _options = options;
         _backgroundJobExecutor = backgroundJobExecutor;
         _backgroundExecutionRecorder = backgroundExecutionRecorder;
         _retryPolicy = retryPolicy;
         _identityFactory = identityFactory;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+        _briefingUpdateJobProducer = briefingUpdateJobProducer;
         _logger = logger;
     }
 
@@ -421,6 +436,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 }
 
                 await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                await EnqueueBriefingJobForNotificationAsync(message, payload, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 break;
             }
@@ -443,6 +459,26 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _workflowEventTriggerService.HandleAsync(
                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
                     cancellationToken);
+                await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
+                await EnqueueBriefingJobForPlatformEventAsync(message, payload, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.ApprovalUpdated:
+            case CompanyOutboxTopics.AgentStatusUpdated:
+            {
+                var payload = Deserialize<PlatformEventEnvelope>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Cockpit invalidation event payload tenant does not match the outbox message tenant.");
+                }
+
+                if (!string.Equals(payload.EventType, message.Topic, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new CompanyOutboxPermanentException($"Cockpit invalidation event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
+                }
+
+                await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
+                await EnqueueBriefingJobForPlatformEventAsync(message, payload, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested:
@@ -473,6 +509,131 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 throw new CompanyOutboxPermanentException($"Unsupported company outbox topic '{message.Topic}'.");
         }
     }
+
+    private async Task EnqueueBriefingJobForPlatformEventAsync(
+        CompanyOutboxMessage message,
+        PlatformEventEnvelope payload,
+        CancellationToken cancellationToken)
+    {
+        var briefingEventType = NormalizeBriefingEventType(payload);
+        if (briefingEventType is null)
+        {
+            return;
+        }
+
+        var idempotencyKey = $"briefing-event:{payload.CompanyId:N}:{payload.EventId}";
+        var sourceMetadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sourceOutboxMessageId"] = JsonValue.Create(message.Id.ToString("N")),
+            ["sourceEventId"] = JsonValue.Create(payload.EventId),
+            ["sourceEventType"] = JsonValue.Create(payload.EventType),
+            ["sourceEntityType"] = JsonValue.Create(payload.SourceEntityType),
+            ["sourceEntityId"] = JsonValue.Create(payload.SourceEntityId),
+            ["occurredAtUtc"] = JsonValue.Create(payload.OccurredAtUtc),
+            ["payloadRef"] = JsonValue.Create($"company_outbox_messages/{message.Id:N}"),
+            ["metadata"] = new JsonObject(payload.Metadata.ToDictionary(x => x.Key, x => x.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase))
+        };
+
+        var result = await _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
+            payload.CompanyId,
+            briefingEventType,
+            string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId,
+            idempotencyKey,
+            sourceMetadata,
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Briefing update producer handled supported event {EventType} for company {CompanyId}. JobId={JobId} Created={Created} CorrelationId={CorrelationId}.",
+            briefingEventType,
+            payload.CompanyId,
+            result.JobId,
+            result.Created,
+            payload.CorrelationId);
+    }
+
+    private async Task EnqueueBriefingJobForNotificationAsync(
+        CompanyOutboxMessage message,
+        NotificationDeliveryRequestedMessage payload,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(payload.NotificationType, CompanyNotificationType.Escalation.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var idempotencyKey = $"briefing-event:{payload.CompanyId:N}:escalation:{payload.DedupeKey}";
+        await _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
+            payload.CompanyId,
+            BriefingUpdateEventTypes.Escalation,
+            payload.CorrelationId ?? message.CorrelationId ?? idempotencyKey,
+            idempotencyKey,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sourceOutboxMessageId"] = JsonValue.Create(message.Id.ToString("N")),
+                ["sourceEntityType"] = JsonValue.Create(payload.RelatedEntityType),
+                ["sourceEntityId"] = payload.RelatedEntityId.HasValue ? JsonValue.Create(payload.RelatedEntityId.Value.ToString("N")) : null,
+                ["notificationType"] = JsonValue.Create(payload.NotificationType),
+                ["payloadRef"] = JsonValue.Create($"company_outbox_messages/{message.Id:N}")
+            },
+            cancellationToken);
+    }
+
+    private static string? NormalizeBriefingEventType(PlatformEventEnvelope payload)
+    {
+        if (string.Equals(payload.EventType, CompanyOutboxTopics.TaskUpdated, StringComparison.OrdinalIgnoreCase))
+        {
+            return BriefingUpdateEventTypes.TaskStatusChanged;
+        }
+
+        if (string.Equals(payload.EventType, CompanyOutboxTopics.WorkflowStateChanged, StringComparison.OrdinalIgnoreCase))
+        {
+            return BriefingUpdateEventTypes.WorkflowStateChanged;
+        }
+
+        if (string.Equals(payload.EventType, CompanyOutboxTopics.ApprovalUpdated, StringComparison.OrdinalIgnoreCase))
+        {
+            return payload.Metadata.TryGetValue("reason", out var reason) &&
+                   string.Equals(reason?.GetValue<string>(), "created", StringComparison.OrdinalIgnoreCase)
+                ? BriefingUpdateEventTypes.ApprovalRequested
+                : BriefingUpdateEventTypes.ApprovalDecision;
+        }
+
+        return null;
+    }
+
+    private async Task InvalidateCockpitAsync(
+        CompanyOutboxMessage message,
+        string? entityType,
+        Guid? entityId,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        await _cockpitCacheInvalidator.InvalidateAsync(
+            new ExecutiveCockpitCacheInvalidationEvent(
+                message.CompanyId,
+                message.Topic,
+                entityType,
+                entityId,
+                message.CreatedUtc),
+            cancellationToken);
+        CockpitInvalidationEvents.Add(
+            1,
+            new KeyValuePair<string, object?>("trigger", message.Topic));
+        CockpitInvalidationDuration.Record(
+            stopwatch.Elapsed.TotalMilliseconds,
+            new KeyValuePair<string, object?>("trigger", message.Topic));
+        CockpitInvalidationLag.Record(
+            Math.Max(0, (DateTime.UtcNow - message.CreatedUtc).TotalMilliseconds),
+            new KeyValuePair<string, object?>("trigger", message.Topic));
+        _logger.LogInformation(
+            "Processed executive cockpit cache invalidation for company {CompanyId} from trigger {Trigger} in {ElapsedMilliseconds} ms.",
+            message.CompanyId,
+            message.Topic,
+            stopwatch.Elapsed.TotalMilliseconds);
+    }
+
+    private static Guid? TryParseGuid(string? value) =>
+        Guid.TryParse(value, out var parsed) ? parsed : null;
 
     private static T Deserialize<T>(CompanyOutboxMessage message)
     {

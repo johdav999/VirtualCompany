@@ -34,7 +34,15 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         IReadOnlyDictionary<string, string?>? metadata = null,
         string? correlationId = null,
         DateTime? occurredUtc = null,
-        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null)
+        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null,
+        string? payloadDiffJson = null,
+        string? agentName = null,
+        string? agentRole = null,
+        string? responsibilityDomain = null,
+        string? promptProfileVersion = null,
+        string? boundaryDecisionOutcome = null,
+        string? identityReasonCode = null,
+        string? boundaryReasonCode = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -65,6 +73,14 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         RelatedApprovalRequestId = ResolveRelatedId(ApprovalRequestTargetType, "approvalRequestId");
         RelatedToolExecutionAttemptId = ResolveRelatedId(AgentToolExecutionTargetType, "toolExecutionId", "toolExecutionAttemptId");
         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
+        PayloadDiffJson = NormalizeOptional(payloadDiffJson, nameof(payloadDiffJson), 16000);
+        AgentName = NormalizeOptional(agentName ?? ResolveMetadataValue("agentName", "agentDisplayName"), nameof(agentName), 200);
+        AgentRole = NormalizeOptional(agentRole ?? ResolveMetadataValue("agentRole", "agentRoleName"), nameof(agentRole), 128);
+        ResponsibilityDomain = NormalizeOptional(responsibilityDomain ?? ResolveMetadataValue("responsibilityDomain", "requestedDomain"), nameof(responsibilityDomain), 128);
+        PromptProfileVersion = NormalizeOptional(promptProfileVersion ?? ResolveMetadataValue("promptProfileVersion"), nameof(promptProfileVersion), 64);
+        BoundaryDecisionOutcome = NormalizeOptional(boundaryDecisionOutcome ?? ResolveMetadataValue("boundaryDecisionOutcome"), nameof(boundaryDecisionOutcome), 64);
+        IdentityReasonCode = NormalizeOptional(identityReasonCode ?? ResolveMetadataValue("identityReasonCode", "reasonCode"), nameof(identityReasonCode), 128);
+        BoundaryReasonCode = NormalizeOptional(boundaryReasonCode ?? ResolveMetadataValue("boundaryReasonCode"), nameof(boundaryReasonCode), 128);
     }
 
     public Guid Id { get; private set; }
@@ -86,6 +102,14 @@ public sealed class AuditEvent : ICompanyOwnedEntity
     public Guid? RelatedApprovalRequestId { get; private set; }
     public Guid? RelatedToolExecutionAttemptId { get; private set; }
     public DateTime OccurredUtc { get; private set; }
+    public string? PayloadDiffJson { get; private set; }
+    public string? AgentName { get; private set; }
+    public string? AgentRole { get; private set; }
+    public string? ResponsibilityDomain { get; private set; }
+    public string? PromptProfileVersion { get; private set; }
+    public string? BoundaryDecisionOutcome { get; private set; }
+    public string? IdentityReasonCode { get; private set; }
+    public string? BoundaryReasonCode { get; private set; }
     public Company Company { get; private set; } = null!;
 
     private static string NormalizeRequired(string value, string name, int maxLength)
@@ -203,6 +227,19 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         ActorId.HasValue && string.Equals(ActorType, AgentActorType, StringComparison.OrdinalIgnoreCase)
             ? ActorId.Value
             : null;
+
+    private string? ResolveMetadataValue(params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (Metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
 
     private Guid? ResolveRelatedId(string targetType, params string[] metadataKeys)
     {

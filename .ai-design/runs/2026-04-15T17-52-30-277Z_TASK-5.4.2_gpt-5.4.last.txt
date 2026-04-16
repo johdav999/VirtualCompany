@@ -1,0 +1,643 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 3cba7f1..b4f2c7e 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -38,7 +38,8 @@ public sealed record ActivityFeedQuery(
+     string? EventType = null,
+     string? Status = null,
+     DateTime? FromUtc = null,
+-    DateTime? ToUtc = null);
++    DateTime? ToUtc = null,
++    string? Timeframe = null);
+ 
+ public sealed record ActivityEventDto(
+     Guid EventId,
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index 5acb92a..f340c54 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -27,15 +27,17 @@ public sealed class ActivityFeedController : ControllerBase
+         [FromQuery] int? pageSize,
+         [FromQuery] Guid? agentId,
+         [FromQuery] string? department,
++        [FromQuery] Guid? task,
+         [FromQuery] Guid? taskId,
+         [FromQuery] string? eventType,
+         [FromQuery] string? status,
++        [FromQuery] string? timeframe,
+         [FromQuery(Name = "from")] DateTime? fromUtc,
+         [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _activityEvents.QueryFeedAsync(companyId, new ActivityFeedQuery(cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc), cancellationToken));
++            return Ok(await _activityEvents.QueryFeedAsync(companyId, new ActivityFeedQuery(cursor, pageSize, agentId, department, taskId ?? task, eventType, status, fromUtc, toUtc, timeframe), cancellationToken));
+         }
+         catch (ActivityFeedValidationException ex)
+         {
+@@ -155,15 +157,17 @@ public sealed class ActivityFeedController : ControllerBase
+         [FromQuery] int? pageSize,
+         [FromQuery] Guid? agentId,
+         [FromQuery] string? department,
++        [FromQuery] Guid? task,
+         [FromQuery] Guid? taskId,
+         [FromQuery] string? eventType,
+         [FromQuery] string? status,
++        [FromQuery] string? timeframe,
+         [FromQuery(Name = "from")] DateTime? fromUtc,
+         [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken) =>
+-        ListAsync(tenantId, cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc, cancellationToken);
++        ListAsync(tenantId, cursor, pageSize, agentId, department, task, taskId, eventType, status, timeframe, fromUtc, toUtc, cancellationToken);
+ 
+     [HttpGet("/api/companies/{companyId:guid}/agent-activity")]
+     public Task<ActionResult<ActivityFeedPageDto>> ListAgentActivityAliasAsync(
+@@ -172,13 +176,15 @@ public sealed class ActivityFeedController : ControllerBase
+         [FromQuery] int? pageSize,
+         [FromQuery] Guid? agentId,
+         [FromQuery] string? department,
++        [FromQuery] Guid? task,
+         [FromQuery] Guid? taskId,
+         [FromQuery] string? eventType,
+         [FromQuery] string? status,
++        [FromQuery] string? timeframe,
+         [FromQuery(Name = "from")] DateTime? fromUtc,
+         [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken) =>
+-        ListAsync(companyId, cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc, cancellationToken);
++        ListAsync(companyId, cursor, pageSize, agentId, department, task, taskId, eventType, status, timeframe, fromUtc, toUtc, cancellationToken);
+ 
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 6b84310..4dd6aab 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -265,6 +265,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         AddOptional(errors, nameof(query.Department), query.Department, 100);
+         AddOptional(errors, nameof(query.EventType), query.EventType, 100);
+         AddOptional(errors, nameof(query.Status), query.Status, 64);
++        AddOptional(errors, nameof(query.Timeframe), query.Timeframe, 32);
+ 
+         if (query.AgentId == Guid.Empty)
+         {
+@@ -275,6 +276,11 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             errors[nameof(query.TaskId)] = ["TaskId cannot be empty."];
+         }
+ 
++        if (!IsSupportedTimeframe(query.Timeframe))
++        {
++            errors[nameof(query.Timeframe)] = ["Timeframe must be one of all, lastHour, last24Hours, last7Days, last30Days, or custom."];
++        }
++
+         if (query.FromUtc is DateTime fromUtc && query.ToUtc is DateTime toUtc && fromUtc > toUtc)
+         {
+             errors["dateRange"] = ["Activity feed from date must be on or before the to date."];
+@@ -319,14 +325,16 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             events = events.Where(x => x.Status == status);
+         }
+ 
+-        if (query.FromUtc is DateTime fromUtc)
++        var range = ResolveTimeframeRange(query);
++
++        if (range.FromUtc is DateTime fromUtc)
+         {
+-            events = events.Where(x => x.OccurredUtc >= NormalizeQueryUtc(fromUtc));
++            events = events.Where(x => x.OccurredUtc >= fromUtc);
+         }
+ 
+-        if (query.ToUtc is DateTime toUtc)
++        if (range.ToUtc is DateTime toUtc)
+         {
+-            events = events.Where(x => x.OccurredUtc < NormalizeQueryUtc(toUtc));
++            events = events.Where(x => x.OccurredUtc < toUtc);
+         }
+ 
+         return events;
+@@ -495,6 +503,50 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         source is null ? null : ReadGuid(source, "auditEventId", "auditId");
+ 
+     private static Guid? ExtractTaskId(IReadOnlyDictionary<string, JsonNode?>? source)
+@@ -527,6 +579,50 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         };
+ 
++    private static bool IsSupportedTimeframe(string? timeframe)
++    {
++        if (string.IsNullOrWhiteSpace(timeframe))
++        {
++            return true;
++        }
++
++        return NormalizeTimeframe(timeframe) is "all" or "lastHour" or "last24Hours" or "last7Days" or "last30Days" or "custom";
++    }
++
++    private static (DateTime? FromUtc, DateTime? ToUtc) ResolveTimeframeRange(ActivityFeedQuery query)
++    {
++        var fromUtc = query.FromUtc.HasValue ? NormalizeQueryUtc(query.FromUtc.Value) : (DateTime?)null;
++        var toUtc = query.ToUtc.HasValue ? NormalizeQueryUtc(query.ToUtc.Value) : (DateTime?)null;
++        var timeframe = NormalizeTimeframe(query.Timeframe);
++
++        if (timeframe is null or "all" or "custom" || fromUtc.HasValue || toUtc.HasValue)
++        {
++            return (fromUtc, toUtc);
++        }
++
++        var now = DateTime.UtcNow;
++        return timeframe switch
++        {
++            "lastHour" => (now.AddHours(-1), now),
++            "last24Hours" => (now.AddHours(-24), now),
++            "last7Days" => (now.AddDays(-7), now),
++            "last30Days" => (now.AddDays(-30), now),
++            _ => (fromUtc, toUtc)
++        };
++    }
++
++    private static string? NormalizeTimeframe(string? timeframe)
++    {
++        if (string.IsNullOrWhiteSpace(timeframe))
++        {
++            return null;
++        }
++
++        return timeframe.Trim() switch
++        {
++            "last-hour" => "lastHour",
++            "last-24-hours" => "last24Hours",
++            "last-7-days" => "last7Days",
++            "last-30-days" => "last30Days",
++            var value => value
++        };
++    }
++
+     private static string EncodeCursor(DateTime occurredAt, Guid eventId)
+     {
+         var json = JsonSerializer.Serialize(new ActivityFeedCursor(occurredAt, eventId), CursorJsonOptions);
+diff --git a/src/VirtualCompany.Web/Pages/ActivityFeed.razor b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+index 3dccbe5..df7f0a1 100644
+--- a/src/VirtualCompany.Web/Pages/ActivityFeed.razor
++++ b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+@@ -70,20 +70,29 @@ else
+                     <input id="activity-status-filter" class="form-control" @bind="statusFilter" placeholder="completed" />
+                 </div>
+                 <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-timeframe-filter">Timeframe</label>
++                    <select id="activity-timeframe-filter" class="form-select" @bind="timeframeFilter">
++                        @foreach (var option in ActivityFeedFilterState.TimeframeOptions)
++                        {
++                            <option value="@option.Value">@option.Label</option>
++                        }
++                    </select>
++                </div>
++                <div class="col-md-4 col-lg-2">
+                     <label class="form-label" for="activity-from-filter">From</label>
+                     <input id="activity-from-filter" class="form-control" type="datetime-local" @bind="fromFilter" />
+                 </div>
+                 <div class="col-md-4 col-lg-2">
+                     <label class="form-label" for="activity-to-filter">To</label>
+                     <input id="activity-to-filter" class="form-control" type="datetime-local" @bind="toFilter" />
+                 </div>
+-                <div class="col-md-8 col-lg-4 d-flex gap-2">
++                <div class="col-md-8 col-lg-6 d-flex gap-2">
+                     <button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">Apply filters</button>
+                     <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">Clear</button>
+                 </div>
+             </div>
++            <p class="text-body-secondary mt-3 mb-0">Custom dates are applied only when the timeframe is Custom range.</p>
+         </div>
+ 
+         @if (!string.IsNullOrWhiteSpace(errorMessage))
+@@ -221,6 +230,9 @@ else
+     [SupplyParameterFromQuery(Name = "status")]
+     public string? StatusQuery { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "timeframe")]
++    public string? TimeframeQuery { get; set; }
++
+     [SupplyParameterFromQuery(Name = "from")]
+     public DateTime? FromQuery { get; set; }
+ 
+@@ -237,6 +249,7 @@ else
+     private string? taskIdFilter;
+     private string? eventTypeFilter;
+     private string? statusFilter;
++    private string timeframeFilter = ActivityFeedFilterState.AllTime;
+     private DateTime? fromFilter;
+     private DateTime? toFilter;
+     private bool isLoading = true;
+@@ -544,39 +557,45 @@ else
+         !string.IsNullOrWhiteSpace(taskIdFilter) ||
+         !string.IsNullOrWhiteSpace(eventTypeFilter) ||
+         !string.IsNullOrWhiteSpace(statusFilter) ||
++        !ActivityFeedFilterState.IsDefaultTimeframe(timeframeFilter) ||
+         fromFilter.HasValue ||
+         toFilter.HasValue;
+ 
+-    private ActivityFeedFilterViewModel BuildFilters() =>
+-        new()
++    private ActivityFeedFilterViewModel BuildFilters() =>
++        BuildFilterState().ToApiFilter();
++
++    private ActivityFeedFilterState BuildFilterState() =>
++        new()
+         {
+             AgentId = agentIdFilter,
+             Department = departmentFilter,
+             TaskId = taskIdFilter,
+             EventType = eventTypeFilter,
+             Status = statusFilter,
++            Timeframe = timeframeFilter,
+             FromUtc = fromFilter,
+             ToUtc = toFilter
+         };
+ 
+     private void HydrateFiltersFromQuery()
+     {
+-        agentIdFilter = AgentIdQuery;
+-        departmentFilter = DepartmentQuery;
+-        taskIdFilter = TaskIdQuery;
+-        eventTypeFilter = EventTypeQuery;
+-        statusFilter = StatusQuery;
+-        fromFilter = FromQuery;
+-        toFilter = ToQuery;
++        var state = new ActivityFeedFilterState
++        {
++            AgentId = AgentIdQuery,
++            Department = DepartmentQuery,
++            TaskId = TaskIdQuery,
++            EventType = EventTypeQuery,
++            Status = StatusQuery,
++            Timeframe = TimeframeQuery,
++            FromUtc = FromQuery,
++            ToUtc = ToQuery
++        }.Normalize();
++
++        agentIdFilter = state.AgentId;
++        departmentFilter = state.Department;
++        taskIdFilter = state.TaskId;
++        eventTypeFilter = state.EventType;
++        statusFilter = state.Status;
++        timeframeFilter = state.Timeframe;
++        fromFilter = state.FromUtc;
++        toFilter = state.ToUtc;
+     }
+@@ -590,6 +609,7 @@ else
+         taskIdFilter = null;
+         eventTypeFilter = null;
+         statusFilter = null;
++        timeframeFilter = ActivityFeedFilterState.AllTime;
+         fromFilter = null;
+         toFilter = null;
+         NavigateWithFilters();
+@@ -598,26 +618,16 @@ else
+ 
+     private void NavigateWithFilters()
+     {
+-        var values = new Dictionary<string, object?>
+-        {
+-            ["companyId"] = CompanyId,
+-            ["agentId"] = EmptyToNull(agentIdFilter),
+-            ["department"] = EmptyToNull(departmentFilter),
+-            ["taskId"] = EmptyToNull(taskIdFilter),
+-            ["eventType"] = EmptyToNull(eventTypeFilter),
+-            ["status"] = EmptyToNull(statusFilter),
+-            ["from"] = fromFilter,
+-            ["to"] = toFilter
+-        };
++        var values = BuildFilterState().Normalize().ToQueryParameters(CompanyId);
+ 
+-        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(values));
++        var nextUri = Navigation.GetUriWithQueryParameters(values);
++        if (!string.Equals(nextUri, Navigation.Uri, StringComparison.Ordinal))
++        {
++            Navigation.NavigateTo(nextUri);
++        }
+     }
+ 
+     private string BuildQuerySignature() =>
+-        string.Join("|", CompanyId, AgentIdQuery, DepartmentQuery, TaskIdQuery, EventTypeQuery, StatusQuery, FromQuery?.ToUniversalTime().ToString("O"), ToQuery?.ToUniversalTime().ToString("O"));
+-
+-    private static string? EmptyToNull(string? value) =>
+-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++        string.Join("|", CompanyId, AgentIdQuery, DepartmentQuery, TaskIdQuery, EventTypeQuery, StatusQuery, TimeframeQuery, FromQuery?.ToUniversalTime().ToString("O"), ToQuery?.ToUniversalTime().ToString("O"));
+ 
+     public async ValueTask DisposeAsync() =>
+         await ActivityFeedClient.DisposeAsync();
+diff --git a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+index 9fdd52d..6c76b8c 100644
+--- a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+@@ -43,7 +43,7 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+ 
+             if (!string.IsNullOrWhiteSpace(filters.TaskId))
+             {
+-                query["taskId"] = filters.TaskId.Trim();
++                query["task"] = filters.TaskId.Trim();
+             }
+ 
+             if (!string.IsNullOrWhiteSpace(filters.EventType))
+@@ -58,6 +58,11 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+                 query["status"] = filters.Status.Trim();
+             }
+ 
++            if (!ActivityFeedFilterState.IsDefaultTimeframe(filters.Timeframe))
++            {
++                query["timeframe"] = ActivityFeedFilterState.NormalizeTimeframe(filters.Timeframe);
++            }
++
+             AddDateQuery(query, "from", filters.FromUtc);
+             AddDateQuery(query, "to", filters.ToUtc);
+         }
+@@ -360,6 +365,7 @@ public sealed class ActivityFeedFilterViewModel
+     public string? TaskId { get; set; }
+     public string? EventType { get; set; }
+     public string? Status { get; set; }
++    public string? Timeframe { get; set; }
+     public DateTime? FromUtc { get; set; }
+     public DateTime? ToUtc { get; set; }
+ }
+diff --git a/src/VirtualCompany.Web/Services/ActivityFeedFilterState.cs b/src/VirtualCompany.Web/Services/ActivityFeedFilterState.cs
+new file mode 100644
+index 0000000..d0f152e
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/ActivityFeedFilterState.cs
+@@ -0,0 +1,139 @@
++using System.Collections.Specialized;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class ActivityFeedFilterState
++{
++    public const string AllTime = "all";
++    public const string LastHour = "lastHour";
++    public const string Last24Hours = "last24Hours";
++    public const string Last7Days = "last7Days";
++    public const string Last30Days = "last30Days";
++    public const string Custom = "custom";
++
++    public static readonly IReadOnlyList<ActivityFeedTimeframeOption> TimeframeOptions =
++    [
++        new(AllTime, "All time"),
++        new(LastHour, "Last hour"),
++        new(Last24Hours, "Last 24 hours"),
++        new(Last7Days, "Last 7 days"),
++        new(Last30Days, "Last 30 days"),
++        new(Custom, "Custom range")
++    ];
++
++    public string? AgentId { get; set; }
++    public string? Department { get; set; }
++    public string? TaskId { get; set; }
++    public string? EventType { get; set; }
++    public string? Status { get; set; }
++    public string? Timeframe { get; set; } = AllTime;
++    public DateTime? FromUtc { get; set; }
++    public DateTime? ToUtc { get; set; }
++
++    public static ActivityFeedFilterState FromQuery(NameValueCollection query) =>
++        new()
++        {
++            AgentId = query["agentId"],
++            Department = query["department"],
++            TaskId = query["task"] ?? query["taskId"],
++            EventType = query["eventType"],
++            Status = query["status"],
++            Timeframe = query["timeframe"],
++            FromUtc = ParseDateTime(query["from"]),
++            ToUtc = ParseDateTime(query["to"])
++        }.Normalize();
++
++    public ActivityFeedFilterState Normalize()
++    {
++        AgentId = EmptyToNull(AgentId);
++        Department = EmptyToNull(Department);
++        TaskId = EmptyToNull(TaskId);
++        EventType = EmptyToNull(EventType);
++        Status = EmptyToNull(Status);
++        Timeframe = NormalizeTimeframe(Timeframe);
++
++        if (!string.Equals(Timeframe, Custom, StringComparison.Ordinal))
++        {
++            FromUtc = null;
++            ToUtc = null;
++        }
++
++        return this;
++    }
++
++    public ActivityFeedFilterViewModel ToApiFilter()
++    {
++        var normalized = Normalize();
++        return new ActivityFeedFilterViewModel
++        {
++            AgentId = normalized.AgentId,
++            Department = normalized.Department,
++            TaskId = normalized.TaskId,
++            EventType = normalized.EventType,
++            Status = normalized.Status,
++            Timeframe = normalized.Timeframe,
++            FromUtc = normalized.FromUtc,
++            ToUtc = normalized.ToUtc
++        };
++    }
++
++    public IReadOnlyDictionary<string, object?> ToQueryParameters(Guid? companyId)
++    {
++        var normalized = Normalize();
++
++        // Keep shareable URLs stable by omitting defaults and custom-only date values when unused.
++        return new Dictionary<string, object?>
++        {
++            ["companyId"] = companyId,
++            ["agentId"] = normalized.AgentId,
++            ["department"] = normalized.Department,
++            ["task"] = normalized.TaskId,
++            ["taskId"] = null,
++            ["eventType"] = normalized.EventType,
++            ["status"] = normalized.Status,
++            ["timeframe"] = IsDefaultTimeframe(normalized.Timeframe) ? null : normalized.Timeframe,
++            ["from"] = string.Equals(normalized.Timeframe, Custom, StringComparison.Ordinal) ? normalized.FromUtc : null,
++            ["to"] = string.Equals(normalized.Timeframe, Custom, StringComparison.Ordinal) ? normalized.ToUtc : null
++        };
++    }
++
++    public static bool IsDefaultTimeframe(string? value) =>
++        string.Equals(NormalizeTimeframe(value), AllTime, StringComparison.Ordinal);
++
++    public static string NormalizeTimeframe(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return AllTime;
++        }
++
++        return value.Trim() switch
++        {
++            "last-hour" => LastHour,
++            "last-24-hours" => Last24Hours,
++            "last-7-days" => Last7Days,
++            "last-30-days" => Last30Days,
++            LastHour => LastHour,
++            Last24Hours => Last24Hours,
++            Last7Days => Last7Days,
++            Last30Days => Last30Days,
++            Custom => Custom,
++            AllTime => AllTime,
++            _ => AllTime
++        };
++    }
++
++    private static DateTime? ParseDateTime(string? value)
++    {
++        if (!DateTime.TryParse(value, out var parsed))
++        {
++            return null;
++        }
++
++        return parsed.Kind == DateTimeKind.Unspecified
++            ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc)
++            : parsed.ToUniversalTime();
++    }
++
++    private static string? EmptyToNull(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++}
++
++public sealed record ActivityFeedTimeframeOption(
++    string Value,
++    string Label);
+diff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+index ef720c5..2b7d521 100644
+--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
++++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+@@ -22,6 +22,7 @@
+ 
+   <ItemGroup>
+     <ProjectReference Include="..\..\src\VirtualCompany.Api\VirtualCompany.Api.csproj" />
++    <ProjectReference Include="..\..\src\VirtualCompany.Web\VirtualCompany.Web.csproj" />
+     <ProjectReference Include="..\..\src\VirtualCompany.Domain\VirtualCompany.Domain.csproj" />
+     <ProjectReference Include="..\..\src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj" />
+     <ProjectReference Include="..\..\src\VirtualCompany.Shared\VirtualCompany.Shared.csproj" />
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs
+new file mode 100644
+index 0000000..e02529d
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs
+@@ -0,0 +1,80 @@
++using System.Web;
++using VirtualCompany.Web.Services;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ActivityFeedFilterStateTests
++{
++    [Fact]
++    public void Query_string_round_trip_preserves_filter_state()
++    {
++        var from = new DateTime(2026, 4, 15, 8, 0, 0, DateTimeKind.Utc);
++        var to = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc);
++        var query = HttpUtility.ParseQueryString(string.Empty);
++        query["agentId"] = " 71f7f407-a6d1-49bb-bf56-7890e8453102 ";
++        query["department"] = "Finance";
++        query["task"] = "560bc97c-372f-4b48-a56a-6d79aa3d3b79";
++        query["eventType"] = "task_completed";
++        query["status"] = "completed";
++        query["timeframe"] = "custom";
++        query["from"] = from.ToString("O");
++        query["to"] = to.ToString("O");
++
++        var state = ActivityFeedFilterState.FromQuery(query);
++        var parameters = state.ToQueryParameters(Guid.Parse("6b4558ee-086a-4bbf-b539-2e26ec867be2"));
++
++        Assert.Equal("71f7f407-a6d1-49bb-bf56-7890e8453102", state.AgentId);
++        Assert.Equal("Finance", state.Department);
++        Assert.Equal("560bc97c-372f-4b48-a56a-6d79aa3d3b79", state.TaskId);
++        Assert.Equal("task_completed", state.EventType);
++        Assert.Equal("completed", state.Status);
++        Assert.Equal(ActivityFeedFilterState.Custom, state.Timeframe);
++        Assert.Equal(from, state.FromUtc);
++        Assert.Equal(to, state.ToUtc);
++        Assert.Equal("560bc97c-372f-4b48-a56a-6d79aa3d3b79", parameters["task"]);
++        Assert.Null(parameters["taskId"]);
++        Assert.Equal(ActivityFeedFilterState.Custom, parameters["timeframe"]);
++        Assert.Equal(from, parameters["from"]);
++        Assert.Equal(to, parameters["to"]);
++    }
++
++    [Fact]
++    public void Clear_filters_omits_default_query_values()
++    {
++        var state = new ActivityFeedFilterState
++        {
++            AgentId = " ",
++            Department = null,
++            TaskId = "",
++            EventType = null,
++            Status = null,
++            Timeframe = ActivityFeedFilterState.AllTime,
++            FromUtc = new DateTime(2026, 4, 15, 8, 0, 0, DateTimeKind.Utc),
++            ToUtc = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc)
++        };
++
++        var parameters = state.ToQueryParameters(Guid.Parse("6b4558ee-086a-4bbf-b539-2e26ec867be2"));
++
++        Assert.Null(parameters["agentId"]);
++        Assert.Null(parameters["department"]);
++        Assert.Null(parameters["task"]);
++        Assert.Null(parameters["eventType"]);
++        Assert.Null(parameters["status"]);
++        Assert.Null(parameters["timeframe"]);
++        Assert.Null(parameters["from"]);
++        Assert.Null(parameters["to"]);
++    }
++
++    [Fact]
++    public void Preset_timeframes_do_not_serialize_custom_dates()
++    {
++        var state = new ActivityFeedFilterState
++        {
++            Timeframe = "last-24-hours",
++            FromUtc = new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc),
++            ToUtc = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc)
++        };
++
++        var apiFilter = state.ToApiFilter();
++        var parameters = state.ToQueryParameters(Guid.Parse("6b4558ee-086a-4bbf-b539-2e26ec867be2"));
++
++        Assert.Equal(ActivityFeedFilterState.Last24Hours, apiFilter.Timeframe);
++        Assert.Null(apiFilter.FromUtc);
++        Assert.Null(apiFilter.ToUtc);
++        Assert.Equal(ActivityFeedFilterState.Last24Hours, parameters["timeframe"]);
++        Assert.Null(parameters["from"]);
++        Assert.Null(parameters["to"]);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+index 14a6ddc..381e4bc 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+@@ -37,9 +37,9 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Assert.Equal("task_completed", financeCompleted.EventType);
+ 
+-        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $"taskId={seed.OpsTaskId}&status=failed");
++        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $"task={seed.OpsTaskId}&status=failed");
+         var opsFailed = Assert.Single(taskAndStatus.Items);
+         Assert.Equal(seed.OpsFailedId, opsFailed.EventId);
+         Assert.Equal(seed.OpsTaskId, opsFailed.TaskId);
+         Assert.Equal("failed", opsFailed.Status);
+ 
+@@ -54,6 +54,11 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Assert.Equal(seed.OpsToolStartedId, toolStarted.EventId);
+         Assert.Equal("tool_execution_started", toolStarted.EventType);
+         Assert.Equal("running", toolStarted.Status);
++
++        var legacyTaskAlias = await GetFeedAsync(client, seed.CompanyId, $"taskId={seed.OpsTaskId}&status=failed");
++        var legacyOpsFailed = Assert.Single(legacyTaskAlias.Items);
++        Assert.Equal(seed.OpsFailedId, legacyOpsFailed.EventId);
++        Assert.Equal(seed.OpsTaskId, legacyOpsFailed.TaskId);
+     }
+ 
+     [Fact]
+END_OF_PATCH

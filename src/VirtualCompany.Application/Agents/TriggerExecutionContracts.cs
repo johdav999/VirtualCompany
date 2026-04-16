@@ -97,6 +97,11 @@ public interface ITriggerAuditEventWriter
         TriggerExecutionAttempt attempt,
         CancellationToken cancellationToken);
 
+    Task WriteRetryDeferredAsync(
+        TriggerExecutionAttempt attempt,
+        string reason,
+        CancellationToken cancellationToken);
+
     Task WriteDuplicatePreventedAsync(
         TriggerExecutionAttempt attempt,
         CancellationToken cancellationToken);
@@ -130,14 +135,17 @@ public interface ITriggerEvaluationWorker
         int retryBackoffSeconds = 0);
 }
 
-public interface ITriggerExecutionService
+public interface ITriggerInitiatedOrchestrationService
 {
     Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
         TriggerExecutionWorkItem workItem,
         int maxRetryAttempts,
         CancellationToken cancellationToken,
         int retryBackoffSeconds = 0);
+}
 
+public interface ITriggerExecutionService : ITriggerInitiatedOrchestrationService
+{
     Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
         AgentScheduledTriggerExecutionRequestMessage message,
         int maxRetryAttempts,

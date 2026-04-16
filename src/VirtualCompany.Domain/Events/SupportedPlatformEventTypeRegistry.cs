@@ -14,14 +14,60 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
     public const string TaskCreated = "task_created";
     public const string TaskUpdated = "task_updated";
     public const string DocumentUploaded = "document_uploaded";
+    public const string TaskStatusChanged = "task_status_changed";
+    public const string TaskAssigned = "task_assigned";
+    public const string TaskCompleted = "task_completed";
+    public const string TaskFailed = "task_failed";
+    public const string WorkflowStarted = "workflow_started";
+    public const string WorkflowStepCompleted = "workflow_step_completed";
+    public const string WorkflowFailed = "workflow_failed";
+    public const string ApprovalApproved = "approval_approved";
+    public const string ApprovalRejected = "approval_rejected";
+    public const string AgentHired = "agent_hired";
+    public const string AgentUpdated = "agent_updated";
+    public const string AgentPaused = "agent_paused";
+    public const string AgentArchived = "agent_archived";
+    public const string ToolExecutionAllowed = "tool_execution_allowed";
+    public const string ToolExecutionDenied = "tool_execution_denied";
+    public const string DocumentProcessed = "document_processed";
+    public const string MemoryItemCreated = "memory_item_created";
+    public const string ConversationMessageSent = "conversation_message_sent";
+    public const string ApprovalRequested = "approval_requested";
+    public const string ApprovalDecision = "approval_decision";
+    public const string AgentGeneratedAlert = "agent_generated_alert";
     public const string WorkflowStateChanged = "workflow_state_changed";
+    public const string ApprovalUpdated = "approval_updated";
+    public const string AgentStatusUpdated = "agent_status_updated";
 
     private static readonly string[] EventTypes =
     [
         TaskCreated,
         TaskUpdated,
+        TaskAssigned,
+        TaskStatusChanged,
+        TaskCompleted,
+        TaskFailed,
         DocumentUploaded,
-        WorkflowStateChanged
+        DocumentProcessed,
+        WorkflowStarted,
+        WorkflowStepCompleted,
+        WorkflowFailed,
+        WorkflowStateChanged,
+        ApprovalApproved,
+        ApprovalRejected,
+        ApprovalRequested,
+        ApprovalDecision,
+        ApprovalUpdated,
+        AgentHired,
+        AgentUpdated,
+        AgentPaused,
+        AgentArchived,
+        AgentGeneratedAlert,
+        AgentStatusUpdated,
+        ToolExecutionAllowed,
+        ToolExecutionDenied,
+        MemoryItemCreated,
+        ConversationMessageSent
     ];
 
     private static readonly HashSet<string> EventTypeSet =

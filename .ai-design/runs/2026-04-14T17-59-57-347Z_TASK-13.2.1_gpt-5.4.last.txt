@@ -1,0 +1,58 @@
+diff --git a/README.md b/README.md
+index 0a8f6c7..d2147a1 100644
+--- a/README.md
++++ b/README.md
+@@ -155,6 +155,8 @@
+ 
+ Workflow v1 intentionally supports only predefined, versioned workflow templates from the curated catalog. Admins can review the catalog and start manual workflows, while schedule and internal event starts use the same predefined definitions. Arbitrary workflow graph authoring, builder UX, and custom node/edge editing are intentionally deferred.
++
++Event-driven workflow triggers use the canonical platform event registry: `task.created`, `task.updated`, `document.uploaded`, and `workflow.state_changed`. Platform events carry `eventId`, `eventType`, `occurredAtUtc`, `companyId`, `correlationId`, source entity identifiers, and metadata. Trigger evaluation is tenant-scoped and persists `(company_id, workflow_trigger_id, event_id)` idempotency records so duplicate event delivery does not create duplicate workflow executions for the same trigger/event pair.
+ Configuration:
+ 
+ - `Observability:Redis:ConnectionString` enables the Redis readiness check.
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index e3d7a2f..5a0db79 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -11,10 +11,10 @@ public interface ISupportedPlatformEventTypeRegistry
+ 
+ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEventTypeRegistry
+ {
+-    public const string TaskCreated = "task_created";
+-    public const string TaskUpdated = "task_updated";
+-    public const string DocumentUploaded = "document_uploaded";
+-    public const string WorkflowStateChanged = "workflow_state_changed";
++    public const string TaskCreated = "task.created";
++    public const string TaskUpdated = "task.updated";
++    public const string DocumentUploaded = "document.uploaded";
++    public const string WorkflowStateChanged = "workflow.state_changed";
+ 
+     private static readonly string[] EventTypes =
+     [
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 68c3f6b..c81e2bb 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1478,7 +1478,7 @@ internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeCon
+         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
+         builder.HasIndex(x => x.WorkflowTriggerId);
+         builder.HasIndex(x => x.CreatedWorkflowInstanceId)
+-            .HasFilter("[created_workflow_instance_id] IS NOT NULL");
++            .HasFilter("created_workflow_instance_id IS NOT NULL");
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+index f2f9346..d258d62 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -33,7 +33,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);
+         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);
+         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);
+-        Assert.True(registry.IsSupported("TASK_CREATED"));
++        Assert.True(registry.IsSupported("TASK.CREATED"));
+         Assert.False(registry.IsSupported("task.deleted"));
+     }
+ 
+END_OF_PATCH

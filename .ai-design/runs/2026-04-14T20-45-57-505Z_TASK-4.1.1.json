@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-4.1.1",
+  "promptPath": ".ai-design/prompts/TASK-4.1.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:45:57.505Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-45-57-505Z_TASK-4.1.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-45-57-505Z_TASK-4.1.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:51:25.269Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "+                    principalColumn: \"id\",\n+                    onDelete: ReferentialAction.Cascade);\n+            });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_event_type_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"event_type\", \"created_at\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_idempotency_key\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"idempotency_key\" },\n+            unique: true);\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_status_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"status\", \"created_at\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_status_next_attempt_at_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"status\", \"next_attempt_at\", \"created_at\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropTable(\n+            name: \"company_briefing_update_jobs\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\nindex 9cf801e..42c87c4 100644\n--- a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\n@@ -77,7 +77,7 @@ public sealed class BriefingSchedulerCoordinatorTests\n \n         public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)\n         {\n-            Calls++;\n+            Calls++;\n             return Task.FromResult(_result);\n         }\n \nEND_OF_PATCH\n",
+  "stderrTail": " principalColumn: \"id\",\n+                    onDelete: ReferentialAction.Cascade);\n+            });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_event_type_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"event_type\", \"created_at\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_idempotency_key\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"idempotency_key\" },\n+            unique: true);\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_company_id_status_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"company_id\", \"status\", \"created_at\" });\n+\n+        migrationBuilder.CreateIndex(\n+            name: \"ix_company_briefing_update_jobs_status_next_attempt_at_created_at\",\n+            table: \"company_briefing_update_jobs\",\n+            columns: new[] { \"status\", \"next_attempt_at\", \"created_at\" });\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.DropTable(\n+            name: \"company_briefing_update_jobs\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\nindex 9cf801e..42c87c4 100644\n--- a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs\n@@ -77,7 +77,7 @@ public sealed class BriefingSchedulerCoordinatorTests\n \n         public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)\n         {\n-            Calls++;\n+            Calls++;\n             return Task.FromResult(_result);\n         }\n \nEND_OF_PATCH\ntokens used\n103,548\n",
+  "verbosityMode": "summary"
+}

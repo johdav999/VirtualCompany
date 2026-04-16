@@ -1,0 +1,792 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 9a3c7a1..d5f84bb 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -124,6 +124,7 @@ public static class AuditTargetTypes
+     public const string CompanyNotification = "company_notification";
+     public const string ProactiveMessage = "proactive_message";
++    public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
+ }
+ 
+ public static class AuditEventOutcomes
+@@ -184,4 +185,5 @@ public static class AuditEventActions
+     public const string CompanyNotificationActioned = "company.notification.actioned";
+     public const string ProactiveMessageDelivered = "proactive_message.delivered";
+     public const string ProactiveMessageBlocked = "proactive_message.blocked";
++    public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
+ }
+diff --git a/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs b/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs
+new file mode 100644
+index 0000000..f95f084
+--- /dev/null
++++ b/src/VirtualCompany.Application/Orchestration/ResponsibilityPolicyContracts.cs
+@@ -0,0 +1,47 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Orchestration;
++
++public sealed record ResponsibilityPolicyEvaluationRequest(
++    Guid CompanyId,
++    Guid AgentId,
++    string AgentRoleName,
++    string RequestedDomain,
++    IReadOnlyDictionary<string, JsonNode?> DataScopes,
++    IReadOnlyDictionary<string, JsonNode?> EscalationRules,
++    string CorrelationId);
++
++public sealed record ResponsibilityPolicyDecision(
++    bool IsInScope,
++    string RequestedDomain,
++    string MatchedRule,
++    string DecisionType,
++    string DelegationTarget,
++    string Reason)
++{
++    public bool RequiresDelegation => !IsInScope;
++}
++
++public interface IResponsibilityPolicyEvaluator
++{
++    ResponsibilityPolicyDecision Evaluate(ResponsibilityPolicyEvaluationRequest request);
++}
++
++public static class ResponsibilityPolicyDecisionTypes
++{
++    public const string InScope = "in_scope";
++    public const string Delegation = "delegation";
++    public const string Escalation = "escalation";
++}
++
++public static class ResponsibilityPolicyRuleKinds
++{
++    public const string NotConfigured = "responsibility_policy:not_configured";
++    public const string ExplicitDeny = "responsibility_policy:deny";
++    public const string ExplicitAllow = "responsibility_policy:allow";
++    public const string DefaultDeny = "responsibility_policy:default_deny";
++}
++
++public static class ResponsibilityPolicyConfigurationKeys
++{
++    public const string Root = "responsibilityPolicy";
++    public const string AllowedDomains = "allowedDomains";
++    public const string DeniedDomains = "deniedDomains";
++    public const string DelegationTargets = "delegationTargets";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs b/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs
+new file mode 100644
+index 0000000..1a30db4
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/AgentResponsibilityPolicy.cs
+@@ -0,0 +1,86 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed record AgentResponsibilityPolicy(
++    IReadOnlyList<ResponsibilityDomainRule> AllowedDomains,
++    IReadOnlyList<ResponsibilityDomainRule> DeniedDomains,
++    IReadOnlyDictionary<string, DelegationTarget> DelegationTargets)
++{
++    public static AgentResponsibilityPolicy Empty { get; } =
++        new([], [], new Dictionary<string, DelegationTarget>(StringComparer.OrdinalIgnoreCase));
++}
++
++public sealed record ResponsibilityDomainRule(
++    string RuleId,
++    string DomainPattern)
++{
++    public bool IsMatch(string requestedDomain)
++    {
++        if (string.IsNullOrWhiteSpace(requestedDomain))
++        {
++            return false;
++        }
++
++        var domain = requestedDomain.Trim();
++        var pattern = DomainPattern.Trim();
++
++        if (pattern == "*")
++        {
++            return true;
++        }
++
++        if (pattern.EndsWith(".*", StringComparison.Ordinal))
++        {
++            var prefix = pattern[..^1];
++            return domain.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
++        }
++
++        return string.Equals(domain, pattern, StringComparison.OrdinalIgnoreCase);
++    }
++}
++
++public sealed record DelegationTarget(
++    string Target,
++    string ActionType = "delegate")
++{
++    public static DelegationTarget EscalateTo(string target) => new(target, "escalate");
++}
++
++public static class ResponsibilityDomainRules
++{
++    public static IReadOnlyList<ResponsibilityDomainRule> Normalize(
++        IEnumerable<string>? domains,
++        string rulePrefix)
++    {
++        if (domains is null)
++        {
++            return [];
++        }
++
++        return domains
++            .Where(static domain => !string.IsNullOrWhiteSpace(domain))
++            .Select(static domain => domain.Trim())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(static domain => domain.Count(static character => character == '*'))
++            .ThenByDescending(static domain => domain.Length)
++            .ThenBy(static domain => domain, StringComparer.OrdinalIgnoreCase)
++            .Select((domain, index) => new ResponsibilityDomainRule($"{rulePrefix}:{index + 1}", domain))
++            .ToArray();
++    }
++
++    public static string NormalizeRequestedDomain(string? requestedDomain, string fallback)
++    {
++        var domain = string.IsNullOrWhiteSpace(requestedDomain) ? fallback : requestedDomain;
++        if (string.IsNullOrWhiteSpace(domain))
++        {
++            return "unknown";
++        }
++
++        return domain.Trim().ToLowerInvariant();
++    }
++
++    public static ResponsibilityDomainRule? FirstMatch(
++        IEnumerable<ResponsibilityDomainRule> rules,
++        string requestedDomain)
++    {
++        foreach (var rule in rules)
++        {
++            if (rule.IsMatch(requestedDomain))
++            {
++                return rule;
++            }
++        }
++
++        return null;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs b/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs
+new file mode 100644
+index 0000000..23ced8d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ResponsibilityPolicyEvaluator.cs
+@@ -0,0 +1,161 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class ResponsibilityPolicyEvaluator : IResponsibilityPolicyEvaluator
++{
++    private const string DefaultDelegationTarget = "manager";
++
++    public ResponsibilityPolicyDecision Evaluate(ResponsibilityPolicyEvaluationRequest request)
++    {
++        ArgumentNullException.ThrowIfNull(request);
++
++        var requestedDomain = ResponsibilityDomainRules.NormalizeRequestedDomain(request.RequestedDomain, "unknown");
++        var configured = TryReadPolicy(request.DataScopes, out var policy);
++        if (!configured)
++        {
++            return new ResponsibilityPolicyDecision(
++                true,
++                requestedDomain,
++                ResponsibilityPolicyRuleKinds.NotConfigured,
++                ResponsibilityPolicyDecisionTypes.InScope,
++                string.Empty,
++                "No role responsibility policy is configured for this agent.");
++        }
++
++        var denyMatch = ResponsibilityDomainRules.FirstMatch(policy.DeniedDomains, requestedDomain);
++        if (denyMatch is not null)
++        {
++            var delegationTarget = ResolveDelegationTarget(policy, requestedDomain, request.EscalationRules);
++            return new ResponsibilityPolicyDecision(
++                false,
++                requestedDomain,
++                $"{ResponsibilityPolicyRuleKinds.ExplicitDeny}:{denyMatch.DomainPattern}",
++                delegationTarget.ActionType,
++                delegationTarget.Target,
++                "The requested domain is explicitly denied for this agent role.");
++        }
++
++        var allowMatch = ResponsibilityDomainRules.FirstMatch(policy.AllowedDomains, requestedDomain);
++        if (allowMatch is not null)
++        {
++            return new ResponsibilityPolicyDecision(
++                true,
++                requestedDomain,
++                $"{ResponsibilityPolicyRuleKinds.ExplicitAllow}:{allowMatch.DomainPattern}",
++                ResponsibilityPolicyDecisionTypes.InScope,
++                string.Empty,
++                "The requested domain is allowed for this agent role.");
++        }
++
++        var fallbackTarget = ResolveDelegationTarget(policy, requestedDomain, request.EscalationRules);
++        return new ResponsibilityPolicyDecision(
++            false,
++            requestedDomain,
++            ResponsibilityPolicyRuleKinds.DefaultDeny,
++            fallbackTarget.ActionType,
++            fallbackTarget.Target,
++            "The requested domain did not match an allowed responsibility domain.");
++    }
++
++    private static bool TryReadPolicy(
++        IReadOnlyDictionary<string, JsonNode?> dataScopes,
++        out AgentResponsibilityPolicy policy)
++    {
++        policy = AgentResponsibilityPolicy.Empty;
++        if (!dataScopes.TryGetValue(ResponsibilityPolicyConfigurationKeys.Root, out var root) || root is not JsonObject policyObject)
++        {
++            return false;
++        }
++
++        var allowed = ResponsibilityDomainRules.Normalize(
++            ReadStringArray(policyObject[ResponsibilityPolicyConfigurationKeys.AllowedDomains]),
++            "allow");
++        var denied = ResponsibilityDomainRules.Normalize(
++            ReadStringArray(policyObject[ResponsibilityPolicyConfigurationKeys.DeniedDomains]),
++            "deny");
++        var delegationTargets = ReadDelegationTargets(policyObject[ResponsibilityPolicyConfigurationKeys.DelegationTargets]);
++
++        policy = new AgentResponsibilityPolicy(allowed, denied, delegationTargets);
++        return true;
++    }
++
++    private static IReadOnlyList<string> ReadStringArray(JsonNode? node)
++    {
++        if (node is not JsonArray array)
++        {
++            return [];
++        }
++
++        var values = new List<string>();
++        foreach (var item in array)
++        {
++            if (item is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text))
++            {
++                values.Add(text.Trim());
++            }
++        }
++
++        return values;
++    }
++
++    private static IReadOnlyDictionary<string, DelegationTarget> ReadDelegationTargets(JsonNode? node)
++    {
++        var targets = new Dictionary<string, DelegationTarget>(StringComparer.OrdinalIgnoreCase);
++        if (node is not JsonObject targetObject)
++        {
++            return targets;
++        }
++
++        foreach (var (domain, value) in targetObject)
++        {
++            if (string.IsNullOrWhiteSpace(domain))
++            {
++                continue;
++            }
++
++            if (value is JsonValue scalar && scalar.TryGetValue<string>(out var target) && !string.IsNullOrWhiteSpace(target))
++            {
++                targets[domain.Trim()] = new DelegationTarget(target.Trim());
++                continue;
++            }
++
++            if (value is not JsonObject objectValue)
++            {
++                continue;
++            }
++
++            var objectTarget = ReadString(objectValue["target"]);
++            if (string.IsNullOrWhiteSpace(objectTarget))
++            {
++                continue;
++            }
++
++            var actionType = ReadString(objectValue["actionType"]);
++            targets[domain.Trim()] = new DelegationTarget(
++                objectTarget,
++                string.Equals(actionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
++                    ? ResponsibilityPolicyDecisionTypes.Escalation
++                    : ResponsibilityPolicyDecisionTypes.Delegation);
++        }
++
++        return targets;
++    }
++
++    private static DelegationTarget ResolveDelegationTarget(
++        AgentResponsibilityPolicy policy,
++        string requestedDomain,
++        IReadOnlyDictionary<string, JsonNode?> escalationRules)
++    {
++        if (policy.DelegationTargets.TryGetValue(requestedDomain, out var exactTarget))
++        {
++            return exactTarget;
++        }
++
++        if (policy.DelegationTargets.TryGetValue("default", out var defaultTarget))
++        {
++            return defaultTarget;
++        }
++
++        var escalationTarget = ReadString(escalationRules.TryGetValue("escalateTo", out var target) ? target : null);
++        return string.IsNullOrWhiteSpace(escalationTarget)
++            ? DelegationTarget.EscalateTo(DefaultDelegationTarget)
++            : DelegationTarget.EscalateTo(escalationTarget);
++    }
++
++    private static string? ReadString(JsonNode? node) =>
++        node is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
++            ? text.Trim()
++            : null;
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 2d4ed7b..68d4e50 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -23,6 +23,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+     private readonly IToolExecutor _toolExecutor;
+     private readonly IOrchestrationAuditWriter _auditWriter;
+     private readonly ICommunicationStyleRuleChecker _styleRuleChecker;
++    private readonly IResponsibilityPolicyEvaluator _responsibilityPolicyEvaluator;
++    private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ILogger<SingleAgentOrchestrationService> _logger;
+ 
+     public SingleAgentOrchestrationService(
+@@ -33,6 +35,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         IToolExecutor toolExecutor,
+         IOrchestrationAuditWriter auditWriter,
+         ICommunicationStyleRuleChecker styleRuleChecker,
++        IResponsibilityPolicyEvaluator responsibilityPolicyEvaluator,
++        IAuditEventWriter auditEventWriter,
+         ILogger<SingleAgentOrchestrationService> logger)
+     {
+         _dbContext = dbContext;
+@@ -42,6 +46,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+         _toolExecutor = toolExecutor;
+         _auditWriter = auditWriter;
+         _styleRuleChecker = styleRuleChecker;
++        _responsibilityPolicyEvaluator = responsibilityPolicyEvaluator;
++        _auditEventWriter = auditEventWriter;
+         _logger = logger;
+     }
+ 
+@@ -93,6 +99,24 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             var company = await GetCompanyAsync(request.CompanyId, cancellationToken);
+             var task = persistedTask ?? CreateTransientTask(request, agent, company);
+ 
++            var responsibilityDecision = _responsibilityPolicyEvaluator.Evaluate(
++                new ResponsibilityPolicyEvaluationRequest(
++                    request.CompanyId,
++                    agent.Id,
++                    agent.RoleName,
++                    ResolveRequestedDomain(request, task),
++                    agent.DataScopes,
++                    agent.EscalationRules,
++                    correlationId));
++            if (responsibilityDecision.RequiresDelegation)
++            {
++                var outOfScopeResult = BuildOutOfScopeResult(request, agent, company, task, responsibilityDecision, startedAtUtc, correlationId);
++                if (persistTaskResult)
++                {
++                    await PersistTaskResultAsync(task.Id, outOfScopeResult, cancellationToken);
++                }
++
++                await PersistOutOfScopeAuditAsync(outOfScopeResult, responsibilityDecision, cancellationToken);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                return outOfScopeResult;
++            }
++
+             if (!agent.CanReceiveAssignments)
+             {
+                 throw new OrchestrationValidationException(
+@@ -485,6 +509,35 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             : "single_agent_task_execution";
+ 
++    private static string ResolveRequestedDomain(OrchestrationRequest request, TaskDetailDto task)
++    {
++        var explicitDomain = ReadString(request.ActorMetadata, "requestedDomain")
++            ?? ReadString(request.ActorMetadata, "domain")
++            ?? ReadString(task.InputPayload, "requestedDomain")
++            ?? ReadString(task.InputPayload, "domain");
++
++        if (!string.IsNullOrWhiteSpace(explicitDomain))
++        {
++            return explicitDomain;
++        }
++
++        return string.IsNullOrWhiteSpace(task.Type) ? NormalizeIntent(request.IntentHint, request.ConversationId) : task.Type;
++    }
++
++    private static string? ReadString(IReadOnlyDictionary<string, JsonNode?>? values, string key)
++    {
++        if (values is null || !values.TryGetValue(key, out var node) || node is not JsonValue value)
++        {
++            return null;
++        }
++
++        if (value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text))
++        {
++            return text.Trim();
++        }
++
++        return null;
++    }
++
+     private static string EnsureCorrelationId(string? requestedCorrelationId)
+     {
+         if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
+@@ -879,6 +932,104 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             });
+     }
+ 
++    private static OrchestrationResult BuildOutOfScopeResult(
++        OrchestrationRequest request,
++        AgentRuntimeProfileDto agent,
++        CompanyRuntimeContext company,
++        TaskDetailDto task,
++        ResponsibilityPolicyDecision decision,
++        DateTime startedAtUtc,
++        string correlationId)
++    {
++        var completedAtUtc = DateTime.UtcNow;
++        var orchestrationId = Guid.NewGuid();
++        var output = $"This request is outside {agent.DisplayName}'s responsibility boundary. {BuildDelegationSentence(decision)}";
++        var structuredOutput = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["schemaVersion"] = JsonValue.Create("2026-04-14"),
++            ["orchestrationId"] = JsonValue.Create(orchestrationId.ToString("N")),
++            ["correlationId"] = JsonValue.Create(correlationId),
++            ["agentId"] = JsonValue.Create(agent.Id.ToString("N")),
++            ["agentDisplayName"] = JsonValue.Create(agent.DisplayName),
++            ["agent_role_name"] = JsonValue.Create(agent.RoleName),
++            ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
++            ["intent"] = JsonValue.Create(NormalizeIntent(request.IntentHint, request.ConversationId)),
++            ["action"] = JsonValue.Create(decision.DecisionType),
++            ["requestedDomain"] = JsonValue.Create(decision.RequestedDomain),
++            ["matchedRule"] = JsonValue.Create(decision.MatchedRule),
++            ["delegationTarget"] = JsonValue.Create(decision.DelegationTarget),
++            ["userFacingOutput"] = JsonValue.Create(output),
++            ["rationaleSummary"] = JsonValue.Create(decision.Reason),
++            ["confidenceScore"] = JsonValue.Create(1m)
++        };
++        var metadata = new OrchestrationMetadata(
++            orchestrationId,
++            Guid.Empty,
++            company.CompanyId,
++            task.Id,
++            agent.Id,
++            correlationId,
++            NormalizeIntent(request.IntentHint, request.ConversationId),
++            startedAtUtc,
++            completedAtUtc,
++            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["policyInterceptionPoint"] = "responsibility_policy",
++                ["requestedDomain"] = decision.RequestedDomain,
++                ["matchedRule"] = decision.MatchedRule,
++                ["delegationTarget"] = decision.DelegationTarget,
++                ["delegationAction"] = decision.DecisionType,
++                ["agentRoleName"] = agent.RoleName
++            });
++        var taskArtifact = new OrchestrationTaskArtifact(task.Id, WorkTaskStatus.Completed.ToStorageValue(), CloneNodes(structuredOutput), decision.Reason, 1m, [], [], correlationId);
++        var auditArtifact = new OrchestrationAuditArtifact(
++            company.CompanyId,
++            AuditActorTypes.Agent,
++            agent.Id,
++            AuditEventActions.AgentResponsibilityOutOfScopeHandled,
++            AuditTargetTypes.AgentResponsibilityPolicy,
++            agent.Id.ToString("N"),
++            AuditEventOutcomes.Denied,
++            decision.Reason,
++            ["single_agent_orchestration", "responsibility_policy"],
++            metadata.AuditMetadata,
++            correlationId,
++            completedAtUtc);
++        var finalResult = new OrchestrationCompositeFinalResult(new OrchestrationUserOutput(output), taskArtifact, [auditArtifact], decision.Reason, [], [], correlationId);
++
++        return new OrchestrationResult(
++            orchestrationId,
++            company.CompanyId,
++            task.Id,
++            agent.Id,
++            OrchestrationStatusValues.Completed,
++            output,
++            structuredOutput,
++            decision.Reason,
++            1m,
++            [],
++            [new OrchestrationArtifact(OrchestrationArtifactTypes.AuditEvent, "responsibility_policy_out_of_scope", structuredOutput)],
++            metadata,
++            correlationId)
++        {
++            UserOutput = new OrchestrationUserOutput(output),
++            TaskArtifact = taskArtifact,
++            AuditArtifacts = [auditArtifact],
++            FinalResult = finalResult
++        };
++    }
++
++    private static string BuildDelegationSentence(ResponsibilityPolicyDecision decision) =>
++        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
++            ? $"Escalating to {decision.DelegationTarget}."
++            : $"Delegating to {decision.DelegationTarget}.";
++
++    private async Task PersistOutOfScopeAuditAsync(
++        OrchestrationResult result,
++        ResponsibilityPolicyDecision decision,
++        CancellationToken cancellationToken)
++    {
++        var artifact = result.AuditArtifacts.Single();
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                artifact.CompanyId,
++                artifact.ActorType,
++                artifact.ActorId,
++                artifact.Action,
++                artifact.TargetType,
++                artifact.TargetId,
++                artifact.Outcome,
++                artifact.RationaleSummary,
++                artifact.DataSources,
++                artifact.Metadata,
++                artifact.CorrelationId,
++                artifact.OccurredUtc,
++                PayloadDiffJson: JsonSerializer.Serialize(new
++                {
++                    agentId = result.AgentId,
++                    requestedDomain = decision.RequestedDomain,
++                    matchedRule = decision.MatchedRule,
++                    delegationTarget = decision.DelegationTarget
++                })),
++            cancellationToken);
++    }
++
+     private static Dictionary<string, object?> ToToolExecutionSummary(ToolInvocationResult result) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2cab568..34bb6e1 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -234,6 +234,7 @@ public static class DependencyInjection
+         services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
+         services.AddSingleton<ICommunicationStyleRuleChecker, CommunicationStyleRuleChecker>();
+         services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();
++        services.AddSingleton<IResponsibilityPolicyEvaluator, ResponsibilityPolicyEvaluator>();
+         services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
+         services.AddScoped<ISingleAgentOrchestrationResolver, SingleAgentOrchestrationResolver>();
+         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
+diff --git a/tests/VirtualCompany.Api.Tests/ResponsibilityPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/ResponsibilityPolicyEvaluatorTests.cs
+new file mode 100644
+index 0000000..3c0f018
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ResponsibilityPolicyEvaluatorTests.cs
+@@ -0,0 +1,101 @@
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Orchestration;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ResponsibilityPolicyEvaluatorTests
++{
++    private readonly ResponsibilityPolicyEvaluator _evaluator = new();
++
++    [Fact]
++    public void Allowed_domain_returns_in_scope_decision()
++    {
++        var decision = _evaluator.Evaluate(Request("finance.payments"));
++
++        Assert.True(decision.IsInScope);
++        Assert.False(decision.RequiresDelegation);
++        Assert.Equal("finance.payments", decision.RequestedDomain);
++        Assert.StartsWith(ResponsibilityPolicyRuleKinds.ExplicitAllow, decision.MatchedRule, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Denied_domain_takes_precedence_over_allowed_domain()
++    {
++        var decision = _evaluator.Evaluate(Request("finance.payments.high_risk"));
++
++        Assert.False(decision.IsInScope);
++        Assert.Equal(ResponsibilityPolicyDecisionTypes.Escalation, decision.DecisionType);
++        Assert.Equal("Chief Financial Officer", decision.DelegationTarget);
++        Assert.StartsWith(ResponsibilityPolicyRuleKinds.ExplicitDeny, decision.MatchedRule, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Unmatched_domain_defaults_to_out_of_scope_with_default_delegation_target()
++    {
++        var decision = _evaluator.Evaluate(Request("legal.contracts"));
++
++        Assert.False(decision.IsInScope);
++        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, decision.MatchedRule);
++        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegation, decision.DecisionType);
++        Assert.Equal("Legal Lead", decision.DelegationTarget);
++    }
++
++    [Fact]
++    public void Unconfigured_policy_preserves_legacy_in_scope_behavior()
++    {
++        var decision = _evaluator.Evaluate(new ResponsibilityPolicyEvaluationRequest(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "Finance Manager",
++            "finance.payments",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase),
++            "corr-policy"));
++
++        Assert.True(decision.IsInScope);
++        Assert.Equal(ResponsibilityPolicyRuleKinds.NotConfigured, decision.MatchedRule);
++    }
++
++    private static ResponsibilityPolicyEvaluationRequest Request(string requestedDomain) =>
++        new(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            "Finance Manager",
++            requestedDomain,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["responsibilityPolicy"] = new JsonObject
++                {
++                    ["allowedDomains"] = new JsonArray(
++                        JsonValue.Create("finance.*"),
++                        JsonValue.Create("finance.payments.high_risk")),
++                    ["deniedDomains"] = new JsonArray(
++                        JsonValue.Create("finance.payments.high_risk")),
++                    ["delegationTargets"] = new JsonObject
++                    {
++                        ["finance.payments.high_risk"] = new JsonObject
++                        {
++                            ["target"] = JsonValue.Create("Chief Financial Officer"),
++                            ["actionType"] = JsonValue.Create("escalation")
++                        },
++                        ["default"] = JsonValue.Create("Legal Lead")
++                    }
++                }
++            },
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["escalateTo"] = JsonValue.Create("Founder")
++            },
++            "corr-policy");
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index b7489fc..0d46e13 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -196,6 +196,54 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("orch-denial-correlation", auditEvent.CorrelationId);
+     }
+ 
++    [Fact]
++    public async Task Out_of_scope_request_returns_delegation_action_and_persists_business_audit_event()
++    {
++        var seed = await SeedTaskAsync("legal.contracts");
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{seed.TaskId}/execute", new
++        {
++            agentId = seed.AgentId,
++            initiatingActorId = seed.UserId,
++            initiatingActorType = "user",
++            correlationId = "orch-responsibility-out-of-scope",
++            intent = "execute_task"
++        });
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<OrchestrationResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("completed", payload!.Status);
++        Assert.Contains("outside Nora Ledger's responsibility boundary", payload.UserFacingOutput);
++        Assert.Contains("Delegating to Legal Lead", payload.UserFacingOutput);
++        Assert.Empty(payload.ToolExecutions);
++        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
++        Assert.NotNull(payload.TaskArtifact);
++        Assert.Equal("legal.contracts", payload.TaskArtifact!.OutputPayload!.Value.GetProperty("requestedDomain").GetString());
++        Assert.Equal("responsibility_policy:default_deny", payload.TaskArtifact.OutputPayload.Value.GetProperty("matchedRule").GetString());
++        Assert.Equal("Legal Lead", payload.TaskArtifact.OutputPayload.Value.GetProperty("delegationTarget").GetString());
++
++        using var scope = _factory.Services.CreateScope();
++        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
++        companyContextAccessor.SetCompanyId(seed.CompanyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var auditEvent = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
++            x.ActorId == seed.AgentId);
++
++        Assert.Equal(AuditEventOutcomes.Denied, auditEvent.Outcome);
++        Assert.Equal("legal.contracts", auditEvent.Metadata["requestedDomain"]);
++        Assert.Equal("responsibility_policy:default_deny", auditEvent.Metadata["matchedRule"]);
++        Assert.Equal("Legal Lead", auditEvent.Metadata["delegationTarget"]);
++        Assert.Equal("orch-responsibility-out-of-scope", auditEvent.CorrelationId);
++        Assert.NotNull(auditEvent.PayloadDiffJson);
++        Assert.Contains("legal.contracts", auditEvent.PayloadDiffJson, StringComparison.OrdinalIgnoreCase);
++    }
++
+     [Fact]
+     public void Single_agent_entry_points_resolve_one_shared_orchestration_engine()
+     {
+@@ -217,7 +265,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         return client;
+     }
+ 
+-    private async Task<SeededTask> SeedTaskAsync()
++    private async Task<SeededTask> SeedTaskAsync(string requestedDomain = "finance.payments")
+     {
+         var userId = Guid.NewGuid();
+         var companyId = Guid.NewGuid();
+@@ -252,7 +300,19 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+                 objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
+                 kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
+                 tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
+-                scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
++                scopes: Payload(
++                    ("execute", new JsonArray(JsonValue.Create("payments"))),
++                    ("responsibilityPolicy", new JsonObject
++                    {
++                        ["allowedDomains"] = new JsonArray(JsonValue.Create("finance.*")),
++                        ["deniedDomains"] = new JsonArray(JsonValue.Create("finance.payments.high_risk")),
++                        ["delegationTargets"] = new JsonObject
++                        {
++                            ["finance.payments.high_risk"] = new JsonObject
++                            {
++                                ["target"] = JsonValue.Create("Chief Financial Officer"),
++                                ["actionType"] = JsonValue.Create("escalation")
++                            },
++                            ["default"] = JsonValue.Create("Legal Lead")
++                        }
++                    })),
+                 thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
+                 escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
+                 roleBrief: "Execute finance operations through approved tools."));
+@@ -270,7 +330,10 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+                 null,
+                 "user",
+                 userId,
+-                Payload(("invoiceId", JsonValue.Create("inv-100")))));
++                Payload(
++                    ("invoiceId", JsonValue.Create("inv-100")),
++                    ("requestedDomain", JsonValue.Create(requestedDomain)))));
+             return Task.CompletedTask;
+         });
+ 
+END_OF_PATCH

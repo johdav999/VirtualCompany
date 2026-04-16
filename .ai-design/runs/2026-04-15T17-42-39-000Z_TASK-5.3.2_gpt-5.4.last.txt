@@ -1,0 +1,139 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -11,13 +11,19 @@ public sealed record PersistActivityEventCommand(
+ 
+ public sealed record ActivitySummaryDto(
+     string EventType,
+     string FormatterKey,
++    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+     string? Actor,
+     string Action,
++    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+     string? Target,
++    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+     string? Outcome,
+-    string Text);
++    string SummaryText)
++{
++    public string Text => SummaryText;
++}
+ 
+ public sealed record ActivityFeedQuery(
+     string? Cursor,
+     int? PageSize);
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+@@ -42,10 +42,16 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA
+ 
+         Assert.NotNull(timeline);
+         Assert.Equal(seed.CorrelationId, timeline!.CorrelationId);
+         Assert.Equal(3, timeline.Items.Count);
+         Assert.Equal(["task_started", "tool_executed", "task_completed"], timeline.Items.Select(x => x.Activity.EventType).ToArray());
++        Assert.True(timeline.Items[1].Activity.RawPayload.ContainsKey("taskId"));
++        Assert.Equal("fallback", timeline.Items[1].Activity.NormalizedSummary.FormatterKey);
++        Assert.False(string.IsNullOrWhiteSpace(timeline.Items[1].Activity.NormalizedSummary.SummaryText));
++        Assert.DoesNotContain("null", timeline.Items[1].Activity.NormalizedSummary.SummaryText, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain("undefined", timeline.Items[1].Activity.NormalizedSummary.SummaryText, StringComparison.OrdinalIgnoreCase);
+ 
+         var selectedLinks = Assert.NotNull(timeline.SelectedActivityLinks);
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Task && x.CurrentStatus == WorkTaskStatus.InProgress.ToStorageValue());
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.WorkflowInstance && x.CurrentStatus == WorkflowInstanceStatus.Running.ToStorageValue());
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Approval && x.CurrentStatus == ApprovalRequestStatus.Pending.ToStorageValue());
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+@@ -147,14 +147,64 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+                 }
+             });
+ 
+         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+-        var payload = await response.Content.ReadFromJsonAsync<ActivityEventResponse>();
++        var json = await response.Content.ReadAsStringAsync();
++        using var document = JsonDocument.Parse(json);
++        var normalizedSummary = document.RootElement.GetProperty("normalizedSummary");
++        Assert.Equal("Ops Agent completed task Invoice Review", normalizedSummary.GetProperty("summaryText").GetString());
++        Assert.Equal("Ops Agent completed task Invoice Review", normalizedSummary.GetProperty("text").GetString());
++
++        var payload = JsonSerializer.Deserialize<ActivityEventResponse>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+         Assert.NotNull(payload);
+         Assert.Equal("Invoice Review", payload!.RawPayload["taskTitle"].GetString());
++        Assert.Equal("Ops Agent completed task Invoice Review", payload.NormalizedSummary.SummaryText);
+         Assert.Equal("Ops Agent completed task Invoice Review", payload.NormalizedSummary.Text);
+     }
+ 
++    [Fact]
++    public async Task Feed_omits_missing_normalized_summary_fields_without_placeholder_text()
++    {
++        var seed = await SeedTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/activity-events",
++            new
++            {
++                tenantId = seed.CompanyId,
++                agentId = seed.AgentId,
++                eventType = "task_completed",
++                occurredAt = DateTime.UtcNow,
++                status = "completed",
++                summary = "Legacy summary",
++                correlationId = "corr-summary-missing-fields",
++                source = new Dictionary<string, object?>
++                {
++                    ["taskTitle"] = "Invoice Review",
++                    ["actor"] = null
++                }
++            });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var json = await response.Content.ReadAsStringAsync();
++        using var document = JsonDocument.Parse(json);
++        var normalizedSummary = document.RootElement.GetProperty("normalizedSummary");
++        var summaryText = normalizedSummary.GetProperty("summaryText").GetString();
++
++        Assert.False(normalizedSummary.TryGetProperty("actor", out _));
++        Assert.Equal("Invoice Review", normalizedSummary.GetProperty("target").GetString());
++        Assert.Equal("completed", normalizedSummary.GetProperty("outcome").GetString());
++        Assert.Equal("completed task Invoice Review", summaryText);
++        Assert.DoesNotContain("null", summaryText, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain("undefined", summaryText, StringComparison.OrdinalIgnoreCase);
++
++        var payload = JsonSerializer.Deserialize<ActivityEventResponse>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
++        Assert.NotNull(payload);
++        Assert.True(payload!.RawPayload.ContainsKey("taskTitle"));
++        Assert.Null(payload.NormalizedSummary.Actor);
++        Assert.Equal("Invoice Review", payload.NormalizedSummary.Target);
++        Assert.Equal("completed task Invoice Review", payload.NormalizedSummary.SummaryText);
++    }
++
+     [Fact]
+     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()
+     {
+         var seed = await SeedTenantAsync(includeOtherMembership: true);
+         using var tenantAConnection = CreateHubConnection(seed.CompanyId);
+@@ -325,6 +375,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+         string? Actor,
+         string Action,
+         string? Target,
+         string? Outcome,
++        string SummaryText,
+         string Text);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+--- a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+@@ -65,10 +65,11 @@ public sealed class ActivitySummaryFormatterTests
+         Assert.Equal(eventType, result.FormatterKey);
+         Assert.Equal("Alice", result.Actor);
+         Assert.Equal(expectedAction, result.Action);
+         Assert.Equal(expectedOutcome, result.Outcome);
++        Assert.Equal(expectedText, result.SummaryText);
+         Assert.Equal(expectedText, result.Text);
+         Assert.DoesNotContain("null", result.Text, StringComparison.OrdinalIgnoreCase);
+         Assert.DoesNotContain("undefined", result.Text, StringComparison.OrdinalIgnoreCase);
+         Assert.DoesNotContain("  ", result.Text, StringComparison.Ordinal);
+     }
+END_OF_PATCH

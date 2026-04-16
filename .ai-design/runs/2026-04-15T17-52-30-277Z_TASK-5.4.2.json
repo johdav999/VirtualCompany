@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.4.2",
+  "promptPath": ".ai-design/prompts/TASK-5.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:52:30.277Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-52-30-277Z_TASK-5.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-52-30-277Z_TASK-5.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:56:05.642Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "\"6b4558ee-086a-4bbf-b539-2e26ec867be2\"));\n+\n+        Assert.Equal(ActivityFeedFilterState.Last24Hours, apiFilter.Timeframe);\n+        Assert.Null(apiFilter.FromUtc);\n+        Assert.Null(apiFilter.ToUtc);\n+        Assert.Equal(ActivityFeedFilterState.Last24Hours, parameters[\"timeframe\"]);\n+        Assert.Null(parameters[\"from\"]);\n+        Assert.Null(parameters[\"to\"]);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\nindex 14a6ddc..381e4bc 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\n@@ -37,9 +37,9 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe\n         Assert.Equal(\"task_completed\", financeCompleted.EventType);\n \n-        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $\"taskId={seed.OpsTaskId}&status=failed\");\n+        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $\"task={seed.OpsTaskId}&status=failed\");\n         var opsFailed = Assert.Single(taskAndStatus.Items);\n         Assert.Equal(seed.OpsFailedId, opsFailed.EventId);\n         Assert.Equal(seed.OpsTaskId, opsFailed.TaskId);\n         Assert.Equal(\"failed\", opsFailed.Status);\n \n@@ -54,6 +54,11 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe\n         Assert.Equal(seed.OpsToolStartedId, toolStarted.EventId);\n         Assert.Equal(\"tool_execution_started\", toolStarted.EventType);\n         Assert.Equal(\"running\", toolStarted.Status);\n+\n+        var legacyTaskAlias = await GetFeedAsync(client, seed.CompanyId, $\"taskId={seed.OpsTaskId}&status=failed\");\n+        var legacyOpsFailed = Assert.Single(legacyTaskAlias.Items);\n+        Assert.Equal(seed.OpsFailedId, legacyOpsFailed.EventId);\n+        Assert.Equal(seed.OpsTaskId, legacyOpsFailed.TaskId);\n     }\n \n     [Fact]\nEND_OF_PATCH\n",
+  "stderrTail": "-b539-2e26ec867be2\"));\n+\n+        Assert.Equal(ActivityFeedFilterState.Last24Hours, apiFilter.Timeframe);\n+        Assert.Null(apiFilter.FromUtc);\n+        Assert.Null(apiFilter.ToUtc);\n+        Assert.Equal(ActivityFeedFilterState.Last24Hours, parameters[\"timeframe\"]);\n+        Assert.Null(parameters[\"from\"]);\n+        Assert.Null(parameters[\"to\"]);\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\nindex 14a6ddc..381e4bc 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs\n@@ -37,9 +37,9 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe\n         Assert.Equal(\"task_completed\", financeCompleted.EventType);\n \n-        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $\"taskId={seed.OpsTaskId}&status=failed\");\n+        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $\"task={seed.OpsTaskId}&status=failed\");\n         var opsFailed = Assert.Single(taskAndStatus.Items);\n         Assert.Equal(seed.OpsFailedId, opsFailed.EventId);\n         Assert.Equal(seed.OpsTaskId, opsFailed.TaskId);\n         Assert.Equal(\"failed\", opsFailed.Status);\n \n@@ -54,6 +54,11 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe\n         Assert.Equal(seed.OpsToolStartedId, toolStarted.EventId);\n         Assert.Equal(\"tool_execution_started\", toolStarted.EventType);\n         Assert.Equal(\"running\", toolStarted.Status);\n+\n+        var legacyTaskAlias = await GetFeedAsync(client, seed.CompanyId, $\"taskId={seed.OpsTaskId}&status=failed\");\n+        var legacyOpsFailed = Assert.Single(legacyTaskAlias.Items);\n+        Assert.Equal(seed.OpsFailedId, legacyOpsFailed.EventId);\n+        Assert.Equal(seed.OpsTaskId, legacyOpsFailed.TaskId);\n     }\n \n     [Fact]\nEND_OF_PATCH\ntokens used\n71,436\n",
+  "verbosityMode": "summary"
+}

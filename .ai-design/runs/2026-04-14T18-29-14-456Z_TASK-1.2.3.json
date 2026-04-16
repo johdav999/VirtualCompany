@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.2.3",
+  "promptPath": ".ai-design/prompts/TASK-1.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:29:14.456Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-29-14-456Z_TASK-1.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-29-14-456Z_TASK-1.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:30:59.590Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "f (query.CreatedTo.HasValue)\n+        {\n+            alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);\n+        }\n+\n+        return alerts;\n+    }\n+\n     public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)\n     {\n         await RequireMembershipAsync(companyId, cancellationToken);\ndiff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\nindex 79ef596..d4d634b 100644\n--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n@@ -120,6 +120,28 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.Equal(HttpStatusCode.Created, second.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Query_without_filters_returns_only_current_tenant_page()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        await CreateAlertAsync(client, seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-tenant-page-1\", seed.AgentId);\n+        await CreateAlertAsync(client, seed.CompanyId, \"anomaly\", \"medium\", \"open\", \"fp-tenant-page-2\", seed.AgentId);\n+        await CreateAlertAsync(client, seed.OtherCompanyId, \"opportunity\", \"low\", \"open\", \"fp-other-tenant-page\", null);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        Assert.Equal(2, list!.TotalCount);\n+        Assert.Equal(1, list.Page);\n+        Assert.Equal(10, list.PageSize);\n+        Assert.Equal(1, list.TotalPages);\n+        Assert.Equal(2, list.Items.Count);\n+        Assert.All(list.Items, alert => Assert.Equal(seed.CompanyId, alert.CompanyId));\n+    }\n+\n     [Fact]\n     public async Task Query_supports_filters_pagination_and_tenant_scoping()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "HasValue)\n+        {\n+            alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);\n+        }\n+\n+        return alerts;\n+    }\n+\n     public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)\n     {\n         await RequireMembershipAsync(companyId, cancellationToken);\ndiff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\nindex 79ef596..d4d634b 100644\n--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs\n@@ -120,6 +120,28 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.Equal(HttpStatusCode.Created, second.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Query_without_filters_returns_only_current_tenant_page()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        await CreateAlertAsync(client, seed.CompanyId, \"risk\", \"high\", \"open\", \"fp-tenant-page-1\", seed.AgentId);\n+        await CreateAlertAsync(client, seed.CompanyId, \"anomaly\", \"medium\", \"open\", \"fp-tenant-page-2\", seed.AgentId);\n+        await CreateAlertAsync(client, seed.OtherCompanyId, \"opportunity\", \"low\", \"open\", \"fp-other-tenant-page\", null);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        Assert.Equal(2, list!.TotalCount);\n+        Assert.Equal(1, list.Page);\n+        Assert.Equal(10, list.PageSize);\n+        Assert.Equal(1, list.TotalPages);\n+        Assert.Equal(2, list.Items.Count);\n+        Assert.All(list.Items, alert => Assert.Equal(seed.CompanyId, alert.CompanyId));\n+    }\n+\n     [Fact]\n     public async Task Query_supports_filters_pagination_and_tenant_scoping()\n     {\nEND_OF_PATCH\ntokens used\n67,675\n",
+  "verbosityMode": "summary"
+}

@@ -666,7 +666,7 @@ public sealed class CompanyMembershipAdministrationService : ICompanyMembershipA
 
     private string CreateCorrelationId() =>
         string.IsNullOrWhiteSpace(_correlationContextAccessor.CorrelationId)
-            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+            ? System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : _correlationContextAccessor.CorrelationId!;
 
     private Task WriteAuditEventAsync(

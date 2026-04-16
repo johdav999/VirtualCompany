@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.2.1",
+  "promptPath": ".ai-design/prompts/TASK-13.2.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T17:59:57.347Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T17-59-57-347Z_TASK-13.2.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T17-59-57-347Z_TASK-13.2.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:01:30.441Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ted\";\n+    public const string DocumentUploaded = \"document.uploaded\";\n+    public const string WorkflowStateChanged = \"workflow.state_changed\";\n \n     private static readonly string[] EventTypes =\n     [\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\nindex 68c3f6b..c81e2bb 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n@@ -1478,7 +1478,7 @@ internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeCon\n         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });\n         builder.HasIndex(x => x.WorkflowTriggerId);\n         builder.HasIndex(x => x.CreatedWorkflowInstanceId)\n-            .HasFilter(\"[created_workflow_instance_id] IS NOT NULL\");\n+            .HasFilter(\"created_workflow_instance_id IS NOT NULL\");\n \n         builder.HasOne(x => x.Company)\n             .WithMany()\ndiff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\nindex f2f9346..d258d62 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -33,7 +33,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);\n-        Assert.True(registry.IsSupported(\"TASK_CREATED\"));\n+        Assert.True(registry.IsSupported(\"TASK.CREATED\"));\n         Assert.False(registry.IsSupported(\"task.deleted\"));\n     }\n \nEND_OF_PATCH\n",
+  "stderrTail": "onst string DocumentUploaded = \"document.uploaded\";\n+    public const string WorkflowStateChanged = \"workflow.state_changed\";\n \n     private static readonly string[] EventTypes =\n     [\ndiff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\nindex 68c3f6b..c81e2bb 100644\n--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n+++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs\n@@ -1478,7 +1478,7 @@ internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeCon\n         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });\n         builder.HasIndex(x => x.WorkflowTriggerId);\n         builder.HasIndex(x => x.CreatedWorkflowInstanceId)\n-            .HasFilter(\"[created_workflow_instance_id] IS NOT NULL\");\n+            .HasFilter(\"created_workflow_instance_id IS NOT NULL\");\n \n         builder.HasOne(x => x.Company)\n             .WithMany()\ndiff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\nindex f2f9346..d258d62 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -33,7 +33,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);\n         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);\n-        Assert.True(registry.IsSupported(\"TASK_CREATED\"));\n+        Assert.True(registry.IsSupported(\"TASK.CREATED\"));\n         Assert.False(registry.IsSupported(\"task.deleted\"));\n     }\n \nEND_OF_PATCH\ntokens used\n77,651\n",
+  "verbosityMode": "summary"
+}

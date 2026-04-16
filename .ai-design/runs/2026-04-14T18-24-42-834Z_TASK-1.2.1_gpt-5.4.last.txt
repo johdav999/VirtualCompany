@@ -1,0 +1,194 @@
+diff --git a/src/VirtualCompany.Application/Alerts/AlertContracts.cs b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+index 1c6e52a..c7a0b20 100644
+--- a/src/VirtualCompany.Application/Alerts/AlertContracts.cs
++++ b/src/VirtualCompany.Application/Alerts/AlertContracts.cs
+@@ -11,6 +11,7 @@ public sealed record CreateAlertCommand(
+     string Title,
+     string Summary,
+     Dictionary<string, JsonNode?>? Evidence,
++    string Status,
+     string CorrelationId,
+     string Fingerprint,
+     Guid? SourceAgentId,
+@@ -23,6 +24,7 @@ public sealed record CreateDetectionAlertCommand(
+     string Title,
+     string Summary,
+     Dictionary<string, JsonNode?>? Evidence,
++    string Status,
+     string CorrelationId,
+     string Fingerprint,
+     Guid? SourceAgentId,
+diff --git a/src/VirtualCompany.Domain/Entities/Alert.cs b/src/VirtualCompany.Domain/Entities/Alert.cs
+index 4f70fd0..e022e7d 100644
+--- a/src/VirtualCompany.Domain/Entities/Alert.cs
++++ b/src/VirtualCompany.Domain/Entities/Alert.cs
+@@ -27,6 +27,7 @@ public sealed class Alert : ICompanyOwnedEntity
+         IReadOnlyDictionary<string, JsonNode?> evidence,
+         string correlationId,
+         string fingerprint,
++        AlertStatus status = AlertStatus.Open,
+         Guid? sourceAgentId = null,
+         IReadOnlyDictionary<string, JsonNode?>? metadata = null)
+     {
+@@ -45,7 +46,7 @@ public sealed class Alert : ICompanyOwnedEntity
+         CompanyId = companyId;
+         Type = type;
+         Severity = severity;
+-        Status = AlertStatus.Open;
++        Status = status;
+         Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
+         Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
+         Evidence = CloneRequiredEvidence(evidence);
+@@ -58,6 +59,8 @@ public sealed class Alert : ICompanyOwnedEntity
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+         LastDetectedUtc = CreatedUtc;
++        ResolvedUtc = status == AlertStatus.Resolved ? CreatedUtc : null;
++        ClosedUtc = status == AlertStatus.Closed ? CreatedUtc : null;
+     }
+ 
+     public Guid Id { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index a586a3e..6dfc5f6 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -26,26 +26,30 @@ public sealed class CompanyAlertService : ICompanyAlertService
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+         ValidateTenant(companyId, command.CompanyId);
+-        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++        Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+ 
+         var type = AlertTypeValues.Parse(command.Type);
+         var severity = AlertSeverityValues.Parse(command.Severity);
+-        var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
+-        if (existing is not null)
++        var status = AlertStatusValues.Parse(command.Status);
++        if (status.IsOpenForDeduplication())
+         {
+-            existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
+-            await _dbContext.SaveChangesAsync(cancellationToken);
+-            return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
++            var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
++            if (existing is not null)
++            {
++                existing.RefreshFromDuplicateDetection(severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.SourceAgentId, command.Metadata);
++                await _dbContext.SaveChangesAsync(cancellationToken);
++                return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
++            }
+         }
+ 
+-        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
++        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, status, command.SourceAgentId, command.Metadata);
+         _dbContext.Alerts.Add(alert);
+-        var deduplicated = await SaveCreateAsync(alert, cancellationToken);
++        var deduplicated = status.IsOpenForDeduplication()
++            ? await SaveCreateAsync(alert, cancellationToken)
++            : await SaveCreateWithoutDedupAsync(cancellationToken);
+         if (deduplicated is not null)
+         {
+             return deduplicated;
+         }
+-
+         return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+     }
+ 
+@@ -53,9 +57,15 @@ public sealed class CompanyAlertService : ICompanyAlertService
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+         ValidateTenant(companyId, command.CompanyId);
+-        Validate(command.Type, command.Severity, AlertStatusValues.DefaultStatus.ToStorageValue(), command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
++        Validate(command.Type, command.Severity, command.Status, command.Title, command.Summary, command.Evidence, command.CorrelationId, command.Fingerprint, command.SourceAgentId, requireFingerprint: true);
+ 
+         var type = AlertTypeValues.Parse(command.Type);
++        var status = AlertStatusValues.Parse(command.Status);
++        if (!status.IsOpenForDeduplication())
++        {
++            throw BuildValidationException(nameof(CreateDetectionAlertCommand.Status), "Detection alerts must be open or acknowledged so fingerprint deduplication remains well-defined.");
++        }
++
+         var severity = AlertSeverityValues.Parse(command.Severity);
+         var existing = await FindOpenByFingerprintAsync(companyId, command.Fingerprint, cancellationToken);
+         if (existing is not null)
+@@ -66,7 +76,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+             return new AlertMutationResultDto(ToDto(existing), Created: false, Deduplicated: true);
+         }
+ 
+-        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, command.SourceAgentId, command.Metadata);
++        var alert = new Alert(Guid.NewGuid(), companyId, type, severity, command.Title, command.Summary, command.Evidence!, command.CorrelationId, command.Fingerprint, status, command.SourceAgentId, command.Metadata);
+         _dbContext.Alerts.Add(alert);
+         var deduplicated = await SaveCreateAsync(alert, cancellationToken);
+         if (deduplicated is not null)
+@@ -217,6 +227,12 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         }
+     }
+ 
++    private async Task<AlertMutationResultDto?> SaveCreateWithoutDedupAsync(CancellationToken cancellationToken)
++    {
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return null;
++    }
++
+     private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         if (await _membershipContextResolver.ResolveAsync(companyId, cancellationToken) is null)
+@@ -352,6 +368,14 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         }
+     }
+ 
++    private static AlertValidationException BuildValidationException(string key, string message) =>
++        new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
++        {
++            [key] =
++            [
++                message
++            ]
++        });
++
+     private static bool IsDedupUniqueViolation(DbUpdateException exception)
+     {
+         for (Exception? current = exception; current is not null; current = current.InnerException)
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+index b633bb6..4e4e92a 100644
+--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@ -111,6 +111,35 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         Assert.Equal("corr-fp-risk", list.Items[0].CorrelationId);
+     }
+ 
++    [Fact]
++    public async Task Create_alert_persists_requested_non_open_status_without_deduplicating()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var open = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/alerts",
++            CreatePayload(seed.CompanyId, "risk", "high", "open", "fp-status-create", seed.AgentId));
++        var resolved = await client.PostAsJsonAsync(
++            $"/api/companies/{seed.CompanyId}/alerts",
++            CreatePayload(seed.CompanyId, "risk", "high", "resolved", "fp-status-create", seed.AgentId));
++
++        Assert.Equal(HttpStatusCode.Created, open.StatusCode);
++        Assert.Equal(HttpStatusCode.Created, resolved.StatusCode);
++
++        var openAlert = await open.Content.ReadFromJsonAsync<AlertMutationResponse>();
++        var resolvedAlert = await resolved.Content.ReadFromJsonAsync<AlertMutationResponse>();
++
++        Assert.NotNull(openAlert);
++        Assert.NotNull(resolvedAlert);
++        Assert.NotEqual(openAlert!.Alert.Id, resolvedAlert!.Alert.Id);
++        Assert.Equal("resolved", resolvedAlert.Alert.Status);
++
++        var list = await client.GetFromJsonAsync<AlertListResponse>(
++            $"/api/companies/{seed.CompanyId}/alerts?status=resolved&page=1&pageSize=10");
++
++        Assert.NotNull(list);
++        var item = Assert.Single(list!.Items);
++        Assert.Equal(resolvedAlert.Alert.Id, item.Id);
++    }
++
+     [Theory]
+     [InlineData("type", "risk", 1)]
+     [InlineData("severity", "high", 1)]
+END_OF_PATCH

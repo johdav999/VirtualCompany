@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-14T15:25:26.905Z",
+  "generatedAt": "2026-04-15T20:38:28.905Z",
   "epics": [
     {
       "id": "EP-1",
@@ -2853,6 +2853,841 @@
             "Clicking an activity item opens a detail view showing raw payload, summary, correlation links, and a deep link to the corresponding audit record when available.",
             "If an activity event has an audit record, the detail view includes a working deep link that opens the correct audit detail page for the same tenant.",
             "Filter and detail interactions are covered by automated integration tests for at least the top 5 filter combinations and the audit deep-link flow."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-6",
+      "title": "EPIC-6 — Mock financial domain and internal finance service layer",
+      "stories": [
+        {
+          "id": "US-6.1",
+          "title": "Core tenant-scoped financial domain model and seed data",
+          "tasks": [
+            {
+              "id": "TASK-6.1.1",
+              "title": "Design and implement finance database schema with tenant-scoped entities and relationships",
+              "tags": [
+                "backend",
+                "db",
+                "finance",
+                "multitenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.1.2",
+              "title": "Add migration scripts for accounts, transactions, invoices, bills, counterparties, balances, and policy tables",
+              "tags": [
+                "backend",
+                "migration",
+                "db"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.1.3",
+              "title": "Build deterministic mock finance seed generator with internally consistent relationships",
+              "tags": [
+                "backend",
+                "seed",
+                "testdata",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.1.4",
+              "title": "Write integration tests for tenant isolation and referential integrity across finance entities",
+              "tags": [
+                "test",
+                "integration",
+                "multitenant",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Database schema defines tenant-scoped entities for accounts, transactions, invoices, bills, counterparties, balances, and finance policy configuration.",
+            "Foreign key relationships enforce consistency between transactions, accounts, balances, invoices/bills, and counterparties.",
+            "Seed routines create realistic mock finance data for a tenant with at least 3 accounts, 50 transactions, 10 invoices/bills, and linked counterparties.",
+            "Balance records are derivable from seeded transactions and account opening balances with no orphaned records.",
+            "Automated tests verify that records from one tenant cannot be queried or mutated using another tenant context."
+          ]
+        },
+        {
+          "id": "US-6.2",
+          "title": "Computed financial summaries and aggregate query endpoints",
+          "tasks": [
+            {
+              "id": "TASK-6.2.1",
+              "title": "Implement typed finance service interfaces and query handlers for core read operations",
+              "tags": [
+                "backend",
+                "api",
+                "service",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.2.2",
+              "title": "Add aggregate computation logic for cash balance, monthly P&L, and expense category summaries",
+              "tags": [
+                "backend",
+                "aggregation",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.2.3",
+              "title": "Expose internal API endpoints for finance reads with tenant context enforcement",
+              "tags": [
+                "backend",
+                "api",
+                "multitenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.2.4",
+              "title": "Create unit and integration tests validating aggregate calculations from underlying records",
+              "tags": [
+                "test",
+                "backend",
+                "aggregation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Internal finance service exposes typed read methods for cash balance, monthly P&L summary, expense breakdown by category, transactions, invoices, and balances.",
+            "Cash balance is computed from account balances or transaction-derived ledger data and matches seeded source data within test fixtures.",
+            "Monthly P&L summary returns revenue, expenses, and net result for a requested month using underlying invoice and transaction data rather than hardcoded values.",
+            "Expense breakdown groups expenses by category and returns deterministic totals for a given tenant and date range.",
+            "Automated tests cover summary calculations for at least one positive and one negative net-income month."
+          ]
+        },
+        {
+          "id": "US-6.3",
+          "title": "Controlled finance write operations and policy configuration",
+          "tasks": [
+            {
+              "id": "TASK-6.3.1",
+              "title": "Implement finance policy configuration persistence and typed retrieval service",
+              "tags": [
+                "backend",
+                "policy",
+                "config",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.3.2",
+              "title": "Add invoice approval and transaction categorization write handlers with validation rules",
+              "tags": [
+                "backend",
+                "write",
+                "workflow",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.3.3",
+              "title": "Enforce tenant and policy checks in finance mutation paths",
+              "tags": [
+                "backend",
+                "security",
+                "multitenant",
+                "policy"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.3.4",
+              "title": "Write integration tests for policy retrieval and controlled finance mutations",
+              "tags": [
+                "test",
+                "integration",
+                "policy",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Internal finance service supports controlled write operations for invoice approval status changes and transaction category updates.",
+            "Policy configuration supports per-tenant invoice approval limits, anomaly detection bounds, and cash runway thresholds.",
+            "Write operations validate tenant scope and reject updates when the target record belongs to a different tenant.",
+            "Policy configuration is retrievable through a typed service interface consumable by orchestration and policy components.",
+            "Automated tests verify successful writes for authorized tenant context and rejection for invalid tenant or invalid state transitions."
+          ]
+        },
+        {
+          "id": "US-6.4",
+          "title": "Finance document linkage and scoped retrieval integration",
+          "tasks": [
+            {
+              "id": "TASK-6.4.1",
+              "title": "Extend finance entities to store document references for transactions and invoices or bills",
+              "tags": [
+                "backend",
+                "db",
+                "documents",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.4.2",
+              "title": "Integrate finance service with knowledge retrieval to resolve linked document metadata",
+              "tags": [
+                "backend",
+                "integration",
+                "knowledge",
+                "documents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.4.3",
+              "title": "Add scoped access checks for finance-linked document retrieval paths",
+              "tags": [
+                "backend",
+                "security",
+                "access",
+                "documents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-6.4.4",
+              "title": "Create end-to-end tests covering linked document visibility from finance queries",
+              "tags": [
+                "test",
+                "e2e",
+                "documents",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Transactions and invoices/bills can store references to document identifiers from the existing knowledge system.",
+            "Finance read responses include linked document metadata when a caller has access to the referenced document.",
+            "Document retrieval for linked finance records respects tenant scope and existing access controls.",
+            "Seed data includes at least 5 finance records linked to mock documents for end-to-end testing.",
+            "Automated tests verify that linked documents are returned for authorized requests and omitted or denied for unauthorized requests."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-14",
+      "title": "EPIC-14 — Mock financial integration layer and tool execution boundary",
+      "stories": [
+        {
+          "id": "US-14.1",
+          "title": "Finance tool definitions with versioned contracts",
+          "tasks": [
+            {
+              "id": "TASK-14.1.1",
+              "title": "Implement finance tool definition manifests with versioned JSON schemas",
+              "tags": [
+                "backend",
+                "tools",
+                "schema"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.1.2",
+              "title": "Register finance tool definitions in the tool registry discovery flow",
+              "tags": [
+                "backend",
+                "registry",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.1.3",
+              "title": "Add contract validation tests for all finance tool inputs and outputs",
+              "tags": [
+                "test",
+                "schema",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Tool definitions exist for get_cash_balance, list_transactions, list_uncategorized_transactions, list_invoices_awaiting_approval, and get_profit_and_loss_summary.",
+            "Each tool definition includes a unique tool name, semantic version, action type, input schema, and output schema.",
+            "Input and output payloads are validated against the declared schemas before execution and before response persistence.",
+            "Tool definitions are discoverable through the existing tool registry API and returned with version metadata.",
+            "Automated tests verify valid payload acceptance and invalid payload rejection for all finance tools."
+          ]
+        },
+        {
+          "id": "US-14.2",
+          "title": "Tool executor integration for finance operations",
+          "tasks": [
+            {
+              "id": "TASK-14.2.1",
+              "title": "Wire finance tools into the shared tool executor dispatch pipeline",
+              "tags": [
+                "backend",
+                "executor",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.2.2",
+              "title": "Persist finance execution lifecycle events and payloads in tool_executions",
+              "tags": [
+                "backend",
+                "persistence",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.2.3",
+              "title": "Create end-to-end integration tests for finance tool execution flows",
+              "tags": [
+                "test",
+                "integration",
+                "executor"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Finance tools execute through the shared tool executor path used by other integrations.",
+            "Every finance tool execution creates a tool_executions record containing tool name, version, request payload, response payload, status, and timestamps.",
+            "Execution requests are blocked when policy evaluation returns deny, and the denial reason is persisted on the execution record.",
+            "Successful read tool executions return structured responses sourced only from the finance integration interface, not direct domain service calls from orchestration.",
+            "Integration tests verify end-to-end execution from orchestration request through policy check, executor dispatch, provider response, and persistence."
+          ]
+        },
+        {
+          "id": "US-14.3",
+          "title": "Action-type policy enforcement and approval-aware execution",
+          "tasks": [
+            {
+              "id": "TASK-14.3.1",
+              "title": "Add action-type metadata and policy checks for finance tools",
+              "tags": [
+                "backend",
+                "policy",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.3.2",
+              "title": "Implement approval handoff for threshold-triggered finance execute actions",
+              "tags": [
+                "backend",
+                "approval",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.3.3",
+              "title": "Add execution state handling for approved and rejected finance actions",
+              "tags": [
+                "backend",
+                "state",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.3.4",
+              "title": "Build automated tests for action-type and approval policy scenarios",
+              "tags": [
+                "test",
+                "policy",
+                "approval"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each finance tool is classified as read, recommend, or execute in registry metadata.",
+            "Policy evaluation enforces action-type restrictions before any finance tool handler is invoked.",
+            "Execute-type finance actions above the configured approval threshold create an approval request instead of performing a state change.",
+            "Approval requests store a reference to the originating task and tool execution record.",
+            "Rejected approval requests leave the underlying finance state unchanged and mark the tool execution as rejected.",
+            "Automated tests cover allowed read execution, denied execute execution, approval-required execution, approved execution, and rejected execution."
+          ]
+        },
+        {
+          "id": "US-14.4",
+          "title": "Replaceable mock provider adapter boundary for finance tools",
+          "tasks": [
+            {
+              "id": "TASK-14.4.1",
+              "title": "Define the finance provider interface used by tool handlers",
+              "tags": [
+                "backend",
+                "architecture",
+                "interface"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.4.2",
+              "title": "Implement a mock finance provider adapter for all finance tool operations",
+              "tags": [
+                "backend",
+                "mock",
+                "adapter"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.4.3",
+              "title": "Refactor tool handlers to depend on the provider interface only",
+              "tags": [
+                "backend",
+                "refactor",
+                "decoupling"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-14.4.4",
+              "title": "Add architecture tests to prevent direct orchestration-to-domain finance access",
+              "tags": [
+                "test",
+                "architecture",
+                "guardrail"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The orchestration layer accesses finance capabilities only through a finance tool provider interface.",
+            "No orchestration component imports or calls internal finance domain services directly for tool-backed operations.",
+            "A mock finance provider adapter implements all registered finance tool operations and returns schema-compliant responses.",
+            "Provider selection is configurable so the mock adapter can be replaced by a future real external adapter without changing tool contracts.",
+            "Static analysis or architecture tests fail when orchestration code introduces direct dependencies on finance domain services."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-15",
+      "title": "EPIC-15 — Finance agent Laura and bounded finance workflows",
+      "stories": [
+        {
+          "id": "US-15.1",
+          "title": "ST-F301 — Provision preconfigured finance agent Laura",
+          "tasks": [
+            {
+              "id": "TASK-15.1.1",
+              "title": "Add Laura agent seed configuration with finance persona, objectives, and default scopes",
+              "tags": [
+                "backend",
+                "seed",
+                "agents"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.1.2",
+              "title": "Expose finance agent metadata in roster and agent detail APIs",
+              "tags": [
+                "api",
+                "agents",
+                "roster"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.1.3",
+              "title": "Enforce finance tool allowlist and scope checks for Laura executions",
+              "tags": [
+                "security",
+                "tools",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A seeded agent named Laura is created for each new company with role description, personality traits 'conservative' and 'precise', and objectives including accuracy and risk detection.",
+            "Laura is assigned only finance-approved tools and scopes from the finance integration boundary and cannot access tools outside configured finance permissions.",
+            "Laura appears in the agent roster with finance role metadata, status, and default workflow capabilities.",
+            "Agent configuration is retrievable via API and includes versioned persona and workflow settings."
+          ]
+        },
+        {
+          "id": "US-15.2",
+          "title": "ST-F302 — Implement invoice review and approval recommendation workflow",
+          "tasks": [
+            {
+              "id": "TASK-15.2.1",
+              "title": "Create invoice review workflow handler using finance service invoice data and policy checks",
+              "tags": [
+                "workflow",
+                "backend",
+                "invoices"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.2.2",
+              "title": "Persist structured invoice review outputs and link them to tasks and approvals",
+              "tags": [
+                "storage",
+                "tasks",
+                "approvals"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.2.3",
+              "title": "Trigger approval request creation for review outcomes requiring escalation",
+              "tags": [
+                "workflow",
+                "approvals",
+                "automation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "When an invoice enters awaiting-approval state, Laura can execute an invoice review workflow against the invoice payload and related vendor/payment context.",
+            "The workflow produces a structured output containing invoice classification, risk level, recommended action, rationale, and confidence score.",
+            "If the recommendation requires human approval, an approval request is created and linked to the invoice and workflow run.",
+            "Workflow results are persisted in task/output payloads and are queryable by invoice ID and company ID."
+          ]
+        },
+        {
+          "id": "US-15.3",
+          "title": "ST-F303 — Implement transaction anomaly detection alerts and follow-up tasks",
+          "tasks": [
+            {
+              "id": "TASK-15.3.1",
+              "title": "Build anomaly detection evaluator using threshold rules and historical transaction comparisons",
+              "tags": [
+                "backend",
+                "detection",
+                "transactions"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.3.2",
+              "title": "Create alert and task generation pipeline for detected transaction anomalies",
+              "tags": [
+                "alerts",
+                "tasks",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.3.3",
+              "title": "Implement anomaly deduplication keyed by transaction, anomaly type, and time window",
+              "tags": [
+                "backend",
+                "idempotency",
+                "alerts"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Laura evaluates transactions against configured thresholds and historical baselines available in the mock financial domain.",
+            "Transactions flagged as anomalous generate a structured output with anomaly type, explanation, confidence, and recommended action.",
+            "Each detected anomaly creates an alert record and a follow-up task assigned to the finance workflow queue.",
+            "Duplicate alerts are not created for the same transaction and anomaly type within the configured deduplication window."
+          ]
+        },
+        {
+          "id": "US-15.4",
+          "title": "ST-F304/ST-F305 — Deliver cash monitoring, runway insights, and structured finance outputs",
+          "tasks": [
+            {
+              "id": "TASK-15.4.1",
+              "title": "Implement cash position and runway calculation service for finance agent workflows",
+              "tags": [
+                "backend",
+                "cashflow",
+                "analytics"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.4.2",
+              "title": "Publish cash monitoring results to dashboard and briefing read models",
+              "tags": [
+                "dashboard",
+                "briefing",
+                "readmodel"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-15.4.3",
+              "title": "Define and enforce shared structured finance output schema across finance workflows",
+              "tags": [
+                "schema",
+                "api",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Laura calculates current cash position and simple runway estimate using available balance and average burn inputs from the finance service layer.",
+            "A low-cash alert is created when cash position or runway falls below configured company thresholds.",
+            "Cash position, runway estimate, and alert state are exposed to the dashboard and executive briefing payloads.",
+            "All finance workflow outputs conform to a shared schema containing classification, risk level, recommended action, rationale, confidence, and source workflow."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-16",
+      "title": "EPIC-16 — Seed data, anomalies, and time progression simulation",
+      "stories": [
+        {
+          "id": "US-16.1",
+          "title": "ST-F401 — Build realistic seed financial dataset generation",
+          "tasks": [
+            {
+              "id": "TASK-16.1.1",
+              "title": "Implement deterministic seed dataset generator for transactions, invoices, bills, suppliers, and recurring expenses",
+              "tags": [
+                "backend",
+                "seed",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.1.2",
+              "title": "Add dataset consistency validator covering references, totals, dates, and recurring expense expansion",
+              "tags": [
+                "backend",
+                "validation",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.1.3",
+              "title": "Expose company seed generation through an internal bootstrap API and CLI command",
+              "tags": [
+                "api",
+                "cli",
+                "bootstrap"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Seed generation creates 60-90 days of financial history for a company, including transactions, invoices, bills, suppliers, and recurring expenses.",
+            "Generated records reference valid company, supplier, invoice, and category identifiers with no broken foreign-key relationships.",
+            "Recurring expenses produce dated transaction instances aligned to their configured cadence within the seeded time window.",
+            "Running seed generation with the same company ID and seed value produces identical output.",
+            "A validation suite confirms ledger totals, invoice amounts, bill amounts, and transaction links are internally consistent with zero validation errors."
+          ]
+        },
+        {
+          "id": "US-16.2",
+          "title": "ST-F402 — Inject traceable financial anomalies into generated datasets",
+          "tasks": [
+            {
+              "id": "TASK-16.2.1",
+              "title": "Implement anomaly injection pipeline for invoice, transaction, and document-linked records",
+              "tags": [
+                "backend",
+                "anomalies",
+                "generator"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.2.2",
+              "title": "Create anomaly registry schema and persistence model for traceability metadata",
+              "tags": [
+                "schema",
+                "database",
+                "anomalies"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.2.3",
+              "title": "Add query endpoints to retrieve anomalies by company, type, and affected record",
+              "tags": [
+                "api",
+                "backend",
+                "testing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Dataset generation supports anomaly injection for unusually high invoice, duplicate vendor charge, category mismatch, and missing receipt scenarios.",
+            "Each injected anomaly is stored with a unique anomaly ID, anomaly type, affected record IDs, and expected detection metadata.",
+            "Anomaly injection can be enabled or disabled per company and configured by scenario profile.",
+            "Automated tests verify that each anomaly type appears in generated data and can be queried by anomaly ID.",
+            "Normal records remain valid after anomaly injection, and anomaly records are the only intentional validation exceptions."
+          ]
+        },
+        {
+          "id": "US-16.3",
+          "title": "ST-F403 — Implement time progression and data evolution engine",
+          "tasks": [
+            {
+              "id": "TASK-16.3.1",
+              "title": "Build simulation scheduler and clock abstraction for accelerated company time progression",
+              "tags": [
+                "backend",
+                "simulation",
+                "scheduler"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.3.2",
+              "title": "Implement data evolution rules for periodic invoices, bills, transactions, and recurring expenses",
+              "tags": [
+                "backend",
+                "rules",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.3.3",
+              "title": "Persist simulation run logs and progression metrics for replay and debugging",
+              "tags": [
+                "observability",
+                "database",
+                "simulation"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A time progression service advances simulated company time in configurable increments from 1 hour to 7 days.",
+            "Advancing simulated time generates new transactions, invoices, bills, and recurring expense instances according to configured business rules.",
+            "Generated records use timestamps derived from simulated time rather than wall-clock time.",
+            "The engine supports accelerated execution for tests, allowing 30 simulated days to be processed in under 60 seconds in non-production mode.",
+            "Each progression step writes an execution log containing company ID, simulated time range, generated record counts, and emitted event counts."
+          ]
+        },
+        {
+          "id": "US-16.4",
+          "title": "ST-F404 — Emit financial domain events from seeded and simulated data changes",
+          "tasks": [
+            {
+              "id": "TASK-16.4.1",
+              "title": "Add domain event emission hooks to finance record creation and anomaly evaluation flows",
+              "tags": [
+                "backend",
+                "events",
+                "finance"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.4.2",
+              "title": "Map finance events to the shared event contract used by the trigger system",
+              "tags": [
+                "integration",
+                "contracts",
+                "events"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-16.4.3",
+              "title": "Implement integration tests covering event publication and trigger-system consumption",
+              "tags": [
+                "testing",
+                "integration",
+                "ep7"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Creating a new transaction emits a `finance.transaction.created` event with company ID, record ID, amount, category, and timestamp.",
+            "Creating a new invoice emits a `finance.invoice.created` event with company ID, invoice ID, supplier/customer reference, amount, due date, and timestamp.",
+            "Configured anomaly or threshold conditions emit a `finance.threshold.breached` event with breach type, affected record ID, and evaluation details.",
+            "Events are published for both initial simulation-generated changes and ongoing time progression changes without duplicate delivery from a single write operation.",
+            "Published events are consumable by the trigger system from EP-7 through the existing event contract, and an integration test verifies end-to-end delivery."
           ]
         }
       ]

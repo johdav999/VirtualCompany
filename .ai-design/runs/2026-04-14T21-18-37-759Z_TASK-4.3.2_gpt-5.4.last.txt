@@ -1,0 +1,496 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 1c2e9b0..e60f8bb 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -27,6 +27,7 @@ public sealed record BriefingLinkedEntityReferenceDto(
+     Guid EntityId,
+     string DisplayLabel,
+     string State,
++    string? EntityStatus,
+     bool IsAccessible,
+     string? PlaceholderReason,
+     string? Route = null);
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 8d2f4e1..a44b2b2 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -49,6 +49,14 @@ public enum BriefingLinkedEntityType
+     Approval = 3
+ }
+ 
++public enum BriefingLinkedEntityResolutionState
++{
++    Available = 1,
++    Deleted = 2,
++    Inaccessible = 3,
++    Unknown = 4
++}
++
+ public enum BriefingLinkedEntityPlaceholderReason
+ {
+     None = 0,
+@@ -270,6 +278,21 @@ public static class BriefingLinkedEntityTypeValues
+     }
+ }
+ 
++public static class BriefingLinkedEntityResolutionStateValues
++{
++    public static string ToStorageValue(this BriefingLinkedEntityResolutionState state) =>
++        state switch
++        {
++            BriefingLinkedEntityResolutionState.Available => "available",
++            BriefingLinkedEntityResolutionState.Deleted => "deleted",
++            BriefingLinkedEntityResolutionState.Inaccessible => "inaccessible",
++            BriefingLinkedEntityResolutionState.Unknown => "unknown",
++            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unsupported briefing linked entity resolution state.")
++        };
++}
++
+ public static class BriefingLinkedEntityPlaceholderReasonValues
+ {
+     public static string? ToStorageValue(this BriefingLinkedEntityPlaceholderReason reason) =>
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 8a48c11..836c1db 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -225,9 +225,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var daily = await GetLatestBriefingAsync(companyId, CompanyBriefingType.Daily, cancellationToken);
+         var weekly = await GetLatestBriefingAsync(companyId, CompanyBriefingType.Weekly, cancellationToken);
+         return new DashboardBriefingCardDto(
+-            daily is null ? null : ToDto(daily),
+-            weekly is null ? null : ToDto(weekly));
++            daily is null ? null : await ToDtoAsync(daily, cancellationToken),
++            weekly is null ? null : await ToDtoAsync(weekly, cancellationToken));
+     }
+ 
+     private async Task<CompanyBriefing?> GetLatestBriefingAsync(
+@@ -529,7 +529,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+-                [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId)))
+             .ApplyPriority(ResolvePriority(severityRules, "kpi_highlights", "task", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AssignedAgentId,
+@@ -556,7 +556,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["priority"] = JsonValue.Create(x.Priority.ToStorageValue())
+                 },
+-                [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++                CreateTaskReferences(companyId, x.Id, x.Title, x.Status.ToStorageValue(), x.WorkflowInstanceId)))
+             .ApplyPriority(overdueTaskIds.Contains(x.Id) ? ResolvePriority(severityRules, "anomalies", "task", "due", "overdue")
+                 : ResolvePriority(severityRules, "anomalies", "task", "status", x.Status.ToStorageValue()))
+             {
+@@ -644,10 +644,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         notableAgentUpdates = OrderAggregateItems(notableAgentUpdates);
+ 
++        var blockedWorkflowCount = workflowExceptionRows.Count(x => x.ExceptionType == WorkflowExceptionType.Blocked);
+         var result = new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates)
+         {
+             SummaryCounts = new BriefingSummaryCountsDto(
+                 alerts.Count(x => x.PriorityCategory == BriefingSectionPriorityCategory.Critical),
+                 pendingApprovals.Count,
+-                alerts.Count(x => x.WorkflowInstanceId.HasValue),
++                blockedWorkflowCount,
+                 overdueTaskIds.Count)
+         };
+         var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
+@@ -695,7 +696,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+         return new BriefingAggregate(
+             approvals, kpiHighlights, alerts, anomalies, agentHighlights, sourceReferences,
+-            aggregate.NarrativeText, aggregate.StructuredSections);
++            aggregate.NarrativeText, aggregate.StructuredSections, aggregate.SummaryCounts);
+     }
+ 
+     private static BriefingItem ToBriefingItem(BriefingAggregateItemDto item)
+@@ -904,8 +905,17 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions)
+         };
+ 
+-    private static BriefingSourceReferenceDto CreateTaskReference(Guid taskId, string title, string status) =>
+-        new("task", taskId, title, status, null);
++    private static IReadOnlyList<BriefingSourceReferenceDto> CreateTaskReferences(Guid companyId, Guid taskId, string title, string status, Guid? workflowInstanceId)
++    {
++        var references = new List<BriefingSourceReferenceDto>
++        {
++            new("task", taskId, title, status, null)
++        };
++        if (workflowInstanceId is { } id && id != Guid.Empty)
++        {
++            references.Add(CreateWorkflowReference(companyId, id, "Related workflow", null));
++        }
++
++        return references;
++    }
+ 
+     private static BriefingSourceReferenceDto CreateApprovalReference(Guid companyId, Guid approvalId, string approvalType, string status) =>
+         new("approval", approvalId, $"{approvalType} approval", status, $"/approvals?companyId={companyId}&approvalId={approvalId}");
++
++    private static BriefingSourceReferenceDto CreateWorkflowReference(Guid companyId, Guid workflowInstanceId, string label, string? status) =>
++        new("workflow_instance", workflowInstanceId, label, status, $"/workflows?companyId={companyId}&workflowInstanceId={workflowInstanceId}");
+@@ -973,8 +983,25 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return membership ?? throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+     }
+ 
+-    private Task<CompanyBriefingDto> ToDtoAsync(CompanyBriefing briefing, CancellationToken cancellationToken) =>
+-        Task.FromResult(ToDto(briefing));
++    private async Task<CompanyBriefingDto> ToDtoAsync(CompanyBriefing briefing, CancellationToken cancellationToken)
++    {
++        var dto = ToDto(briefing);
++        if (dto.StructuredSections.Count == 0)
++        {
++            return dto;
++        }
++
++        var enrichedSections = await EnrichPersistedLinkedEntitiesAsync(briefing.CompanyId, dto.StructuredSections, cancellationToken);
++        var payload = dto.StructuredPayload.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++        payload["structuredSections"] = JsonSerializer.SerializeToNode(enrichedSections, SerializerOptions);
++
++        return dto with
++        {
++            StructuredPayload = payload,
++            StructuredSections = enrichedSections
++        };
++    }
+ 
+     private static CompanyBriefingDto ToDto(CompanyBriefing briefing)
+     {
+@@ -1181,18 +1208,12 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     {
+         var priorityByKey = BuildPriorityMap(aggregate);
+         var linkedReferences = await BuildLinkedReferenceMapAsync(companyId, sections, cancellationToken);
+-
+         return sections
+             .Select(section =>
+             {
+                 var priority = priorityByKey.TryGetValue(section.SectionKey, out var resolved)
+                     ? resolved
+                     : ResolveSectionPriorityFromContributions(section, aggregate);
+-                var links = section.RelatedReferences
+-                    .Select(reference => NormalizeLinkedEntityReference(reference, linkedReferences))
+-                    .Where(reference => reference is not null)
+-                    .Cast<BriefingLinkedEntityReferenceDto>()
+-                    .ToList();
++                var links = ResolveSectionLinks(companyId, section, linkedReferences);
+ 
+                 return section with
+                 {
+@@ -1209,6 +1230,20 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .ToList();
+     }
+ 
++    private async Task<IReadOnlyList<AggregatedBriefingSectionDto>> EnrichPersistedLinkedEntitiesAsync(
++        Guid companyId,
++        IReadOnlyList<AggregatedBriefingSectionDto> sections,
++        CancellationToken cancellationToken)
++    {
++        var linkedReferences = await BuildLinkedReferenceMapAsync(companyId, sections, cancellationToken);
++        return sections
++            .Select(section => section with
++            {
++                LinkedEntities = ResolveSectionLinks(companyId, section, linkedReferences)
++            })
++            .ToList();
++    }
++
+     private static IReadOnlyList<AggregatedBriefingSectionDto> OrderStructuredSections(
+         IReadOnlyList<AggregatedBriefingSectionDto> sections,
+         BriefingAggregateResultDto aggregate)
+@@ -1255,10 +1290,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         IReadOnlyList<AggregatedBriefingSectionDto> sections,
+         CancellationToken cancellationToken)
+     {
+-        var references = sections.SelectMany(section => section.RelatedReferences).ToList();
+-        var taskIds = references.Where(x => string.Equals(x.EntityType, "task", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
+-        var workflowIds = references.Where(x => string.Equals(x.EntityType, "workflow_instance", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
+-        var approvalIds = references.Where(x => string.Equals(x.EntityType, "approval", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++        var references = sections.SelectMany(section => BuildLinkedEntityCandidates(companyId, section)).ToList();
++        var taskIds = references.Where(x => string.Equals(NormalizeLinkedEntityType(x.EntityType), "task", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++        var workflowIds = references.Where(x => string.Equals(NormalizeLinkedEntityType(x.EntityType), "workflow_instance", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++        var approvalIds = references.Where(x => string.Equals(NormalizeLinkedEntityType(x.EntityType), "approval", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
+ 
+         var tasks = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && taskIds.Contains(x.Id))
+-            .Select(x => new BriefingLinkedEntityReferenceDto("task", x.Id, x.Title, x.Status.ToStorageValue(), true, null, null))
++            .Select(x => new BriefingLinkedEntityReferenceDto("task", x.Id, x.Title, BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.Status.ToStorageValue(), true, null, null))
+             .ToListAsync(cancellationToken);
+         var workflows = await _dbContext.WorkflowInstances
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
+-            .Select(x => new BriefingLinkedEntityReferenceDto("workflow_instance", x.Id, x.Definition.Name, x.State.ToStorageValue(), true, null, $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}"))
++            .Select(x => new BriefingLinkedEntityReferenceDto("workflow_instance", x.Id, x.Definition.Name, BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.State.ToStorageValue(), true, null, $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}"))
+             .ToListAsync(cancellationToken);
+         var approvals = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId && approvalIds.Contains(x.Id))
+-            .Select(x => new BriefingLinkedEntityReferenceDto("approval", x.Id, $"{x.ApprovalType} approval", x.Status.ToStorageValue(), true, null, $"/approvals?companyId={companyId}&approvalId={x.Id}"))
++            .Select(x => new BriefingLinkedEntityReferenceDto("approval", x.Id, $"{x.ApprovalType} approval", BriefingLinkedEntityResolutionState.Available.ToStorageValue(), x.Status.ToStorageValue(), true, null, $"/approvals?companyId={companyId}&approvalId={x.Id}"))
+             .ToListAsync(cancellationToken);
+ 
+         return tasks.Concat(workflows).Concat(approvals)
+             .ToDictionary(x => $"{x.EntityType}:{x.EntityId:N}", StringComparer.OrdinalIgnoreCase);
+     }
+ 
++    private static IReadOnlyList<BriefingLinkedEntityReferenceDto> ResolveSectionLinks(
++        Guid companyId,
++        AggregatedBriefingSectionDto section,
++        IReadOnlyDictionary<string, BriefingLinkedEntityReferenceDto> availableReferences) =>
++        BuildLinkedEntityCandidates(companyId, section)
++            .Select(reference => NormalizeLinkedEntityReference(reference, availableReferences))
++            .Where(reference => reference is not null)
++            .Cast<BriefingLinkedEntityReferenceDto>()
++            .GroupBy(reference => $"{reference.EntityType}:{reference.EntityId:N}", StringComparer.OrdinalIgnoreCase)
++            .Select(group => group.First())
++            .OrderBy(reference => LinkTypeSortRank(reference.EntityType))
++            .ThenBy(reference => reference.DisplayLabel, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
++    private static IReadOnlyList<BriefingSourceReferenceDto> BuildLinkedEntityCandidates(Guid companyId, AggregatedBriefingSectionDto section)
++    {
++        var candidates = new List<BriefingSourceReferenceDto>();
++        candidates.AddRange(section.RelatedReferences);
++        candidates.AddRange(section.Contributions.Select(contribution => contribution.SourceReference));
++        foreach (var contribution in section.Contributions)
++        {
++            if (contribution.TaskId is { } taskId && taskId != Guid.Empty)
++            {
++                candidates.Add(new BriefingSourceReferenceDto("task", taskId, contribution.Topic, null, null));
++            }
++
++            if (contribution.WorkflowInstanceId is { } workflowInstanceId && workflowInstanceId != Guid.Empty)
++            {
++                candidates.Add(CreateWorkflowReference(companyId, workflowInstanceId, "Related workflow", null));
++            }
++        }
++
++        return candidates
++            .Where(reference => reference.EntityId != Guid.Empty)
++            .Select(reference => reference with { EntityType = NormalizeLinkedEntityType(reference.EntityType) })
++            .Where(reference => BriefingLinkedEntityTypeValues.TryParse(reference.EntityType, out _))
++            .GroupBy(reference => $"{reference.EntityType}:{reference.EntityId:N}", StringComparer.OrdinalIgnoreCase)
++            .Select(group => group.First())
++            .ToList();
++    }
++
+     private static BriefingLinkedEntityReferenceDto? NormalizeLinkedEntityReference(
+         BriefingSourceReferenceDto reference,
+         IReadOnlyDictionary<string, BriefingLinkedEntityReferenceDto> availableReferences)
+     {
+-        var entityType = reference.EntityType.Equals("approval_request", StringComparison.OrdinalIgnoreCase) ? "approval" : reference.EntityType;
++        var entityType = NormalizeLinkedEntityType(reference.EntityType);
+         if (entityType.Equals("workflow_exception", StringComparison.OrdinalIgnoreCase))
+         {
+             return null;
+@@ -1309,11 +1341,19 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             entityType,
+             reference.EntityId,
+             label,
+-            "unavailable",
++            BriefingLinkedEntityResolutionState.Unknown.ToStorageValue(),
++            null,
+             false,
+             BriefingLinkedEntityPlaceholderReason.DeletedOrInaccessible.ToStorageValue(),
+             null);
+     }
+ 
++    private static string NormalizeLinkedEntityType(string entityType) =>
++        entityType.Equals("approval_request", StringComparison.OrdinalIgnoreCase) ? "approval" : entityType;
++
++    private static int LinkTypeSortRank(string entityType) =>
++        entityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? 0 :
++        entityType.Equals("workflow_instance", StringComparison.OrdinalIgnoreCase) ? 1 :
++        entityType.Equals("approval", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
++
+     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
+     private sealed record DueCompany(Guid Id, string Name, string? Timezone);
+     private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
+diff --git a/src/VirtualCompany.Shared/BriefingContracts.cs b/src/VirtualCompany.Shared/BriefingContracts.cs
+index c4fc789..a29b77d 100644
+--- a/src/VirtualCompany.Shared/BriefingContracts.cs
++++ b/src/VirtualCompany.Shared/BriefingContracts.cs
+@@ -9,6 +9,23 @@ public sealed record SharedBriefingSourceReference(
+     string? Status = null,
+     string? Route = null);
+ 
++public sealed record SharedBriefingLinkedEntityReference(
++    string EntityType,
++    Guid EntityId,
++    string DisplayLabel,
++    string State,
++    string? EntityStatus,
++    bool IsAccessible,
++    string? PlaceholderReason,
++    string? Route = null);
++
++public sealed record SharedBriefingPriority(
++    string Category,
++    int Score,
++    string? RuleCode);
++
++public sealed record SharedBriefingSummaryCounts(
++    int CriticalAlertsCount,
++    int OpenApprovalsCount,
++    int BlockedWorkflowsCount,
++    int OverdueTasksCount);
++
+ public sealed record SharedBriefingInsightContribution(
+     Guid CompanyId,
+     Guid? TenantId,
+@@ -45,7 +62,15 @@ public sealed record SharedAggregatedBriefingSection(
+     IReadOnlyList<SharedBriefingInsightContribution> Contributions,
+     IReadOnlyList<SharedBriefingConflictViewpoint> ConflictViewpoints,
+     IReadOnlyList<SharedBriefingSourceReference> RelatedReferences);
++{
++    public string SectionType { get; init; } = GroupingType;
++    public string PriorityCategory { get; init; } = "informational";
++    public int PriorityScore { get; init; }
++    public string? PriorityRuleCode { get; init; }
++    public IReadOnlyList<SharedBriefingLinkedEntityReference> LinkedEntities { get; init; } = [];
++}
+ 
+ public sealed record SharedCompanyBriefing(
+     Guid Id,
+@@ -59,6 +84,7 @@ public sealed record SharedCompanyBriefing(
+ {
+     public string NarrativeText { get; init; } = SummaryBody;
+     public IReadOnlyList<SharedAggregatedBriefingSection> StructuredSections { get; init; } = [];
++    public SharedBriefingSummaryCounts SummaryCounts { get; init; } = new(0, 0, 0, 0);
+ }
+ 
+ public sealed record SharedCompanyBriefingDeliveryPreference(
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index 7800d5a..d5b911a 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -119,8 +119,13 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryCounts"));
+         Assert.True(result.Briefing.SummaryCounts.OpenApprovalsCount > 0);
+         Assert.True(result.Briefing.SummaryCounts.BlockedWorkflowsCount > 0);
+-        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "task" && reference.EntityId == seed.CompletedTaskId && reference.IsAccessible));
+-        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "approval" && reference.EntityId == seed.ApprovalId && reference.IsAccessible));
++        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "task" && reference.EntityId == seed.CompletedTaskId && reference.IsAccessible && reference.State == "available" && reference.EntityStatus == "completed"));
++        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "workflow_instance" && reference.IsAccessible && reference.State == "available"));
++        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "approval" && reference.EntityId == seed.ApprovalId && reference.IsAccessible && reference.State == "available" && reference.EntityStatus == "pending"));
++        Assert.All(result.Briefing.StructuredSections.SelectMany(section => section.LinkedEntities), reference =>
++        {
++            Assert.True(reference.EntityId != Guid.Empty);
++        });
+         Assert.NotEmpty(result.Briefing.StructuredSections);
+         Assert.Contains(result.Briefing.SourceReferences, reference =>
+             reference.EntityType == "approval" &&
+@@ -315,6 +320,70 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(HttpStatusCode.Forbidden, otherCompanyResponse.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Latest_returns_placeholder_for_missing_linked_entity_without_failing_briefing()
++    {
++        var seed = await SeedBriefingWithMissingTaskLinkAsync();
++
++        using var client = CreateAuthenticatedClient();
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/briefings/latest");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var latest = await response.Content.ReadFromJsonAsync<DashboardBriefingCardResponse>();
++
++        Assert.NotNull(latest?.Daily);
++        var link = Assert.Single(latest!.Daily!.StructuredSections.SelectMany(section => section.LinkedEntities));
++        Assert.Equal("task", link.EntityType);
++        Assert.Equal(seed.MissingTaskId, link.EntityId);
++        Assert.Equal("unknown", link.State);
++        Assert.Null(link.EntityStatus);
++        Assert.False(link.IsAccessible);
++        Assert.Equal("deleted_or_inaccessible", link.PlaceholderReason);
++        Assert.Equal("Unavailable task", link.DisplayLabel);
++    }
++
+     [Fact]
+     public async Task Aggregate_is_tenant_scoped()
+     {
+@@ -556,6 +625,49 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         return new EmptyBriefingSeed(companyId);
+     }
+ 
++    private async Task<MissingLinkBriefingSeed> SeedBriefingWithMissingTaskLinkAsync()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var briefingId = Guid.NewGuid();
++        var missingTaskId = Guid.NewGuid();
++        var now = DateTime.UtcNow;
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
++            dbContext.Companies.Add(new Company(companyId, "Briefing Missing Link Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            var sourceReferences = Payload(("items", JsonSerializer.SerializeToNode(new[]
++            {
++                new BriefingSourceReferenceDto("task", missingTaskId, "Deleted task", "blocked", null)
++            })));
++            var briefing = new CompanyBriefing(
++                briefingId,
++                companyId,
++                CompanyBriefingType.Daily,
++                now.AddDays(-1),
++                now,
++                "Daily briefing",
++                "A linked task is no longer available.",
++                Payload(
++                    ("narrativeText", JsonValue.Create("A linked task is no longer available.")),
++                    ("summaryCounts", JsonSerializer.SerializeToNode(new BriefingSummaryCountsDto(0, 0, 0, 0)))),
++                Payload(("items", JsonSerializer.SerializeToNode(Array.Empty<BriefingSourceReferenceDto>()))));
++            dbContext.CompanyBriefings.Add(briefing);
++            dbContext.CompanyBriefingSections.Add(new CompanyBriefingSection(
++                Guid.NewGuid(),
++                companyId,
++                briefingId,
++                "task:" + missingTaskId.ToString("N"),
++                "Deleted task",
++                BriefingInsightGroupingTypes.Task,
++                missingTaskId.ToString("N"),
++                "The task is referenced by the briefing but cannot be resolved.",
++                false,
++                null,
++                missingTaskId,
++                "task",
++                BriefingSectionPriorityCategory.High,
++                80,
++                "high_task_blocked",
++                null,
++                missingTaskId,
++                null,
++                sourceReferences));
++            return Task.CompletedTask;
++        });
++
++        return new MissingLinkBriefingSeed(companyId, missingTaskId);
++    }
++
+     private async Task<Guid> AddCompletedTaskAsync(BriefingSeed seed, string title)
+     {
+         var taskId = Guid.NewGuid();
+@@ -697,6 +809,8 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+ 
+     private sealed record EmptyBriefingSeed(Guid CompanyId);
+ 
++    private sealed record MissingLinkBriefingSeed(Guid CompanyId, Guid MissingTaskId);
++
+     private sealed record TwoCompanyPreferenceSeed(Guid CompanyAId, Guid CompanyBId);
+ 
+     private sealed record BriefingSeed(
+@@ -770,6 +884,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
+         public Guid EntityId { get; set; }
+         public string DisplayLabel { get; set; } = string.Empty;
+         public string State { get; set; } = string.Empty;
++        public string? EntityStatus { get; set; }
+         public bool IsAccessible { get; set; }
+         public string? PlaceholderReason { get; set; }
+     }
+END_OF_PATCH

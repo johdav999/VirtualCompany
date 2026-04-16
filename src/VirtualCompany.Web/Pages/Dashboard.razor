@@ -1,5 +1,7 @@
 @page "/dashboard"
+@rendermode InteractiveServer
 @inject OnboardingApiClient ApiClient
+@inject ActionInsightApiClient ActionInsightApiClient
 @inject NavigationManager Navigation
 @using Microsoft.AspNetCore.Components
 
@@ -109,6 +111,49 @@ else
             {
                 <ExecutiveCockpitDashboard CompanyId="selectedCompanyId" CompanyName="companyAccess?.CompanyName" />
             }
+
+            <div class="wizard-card wizard-card--compact action-queue">
+                <div class="action-queue__header">
+                    <div>
+                        <span class="dashboard-kicker">Action queue</span>
+                        <h2 class="h5 mb-0">Prioritized operational work</h2>
+                    </div>
+                    <span class="text-body-secondary">@actionQueue.Count item@(actionQueue.Count == 1 ? string.Empty : "s")</span>
+                </div>
+
+                @if (actionQueue.Count == 0)
+                {
+                    <p class="text-body-secondary mb-0">No actionable insights need attention right now.</p>
+                }
+                else
+                {
+                    <div class="action-queue__list">
+                        @foreach (var item in actionQueue)
+                        {
+                            <article class="action-queue__item @(item.IsAcknowledged ? "action-queue__item--acknowledged" : string.Empty)">
+                                <div class="action-queue__topline">
+                                    <span class="action-queue__priority action-queue__priority--@item.Priority">@FormatPriority(item.Priority)</span>
+                                    <span class="text-body-secondary">@FormatInsightType(item.Type)</span>
+                                </div>
+                                <h3 class="h6 mb-1">@item.Title</h3>
+                                <p class="mb-2">@item.Reason</p>
+                                <div class="action-queue__meta">
+                                    <span>Owner: @item.Owner</span>
+                                    <span>@FormatDueState(item)</span>
+                                    <span>Score: @item.PriorityScore</span>
+                                </div>
+                                <div class="action-queue__actions">
+                                    <a class="btn btn-sm btn-outline-primary" href="@item.DeepLink">Open work</a>
+                                    <button class="btn btn-sm btn-outline-secondary" disabled="@item.IsAcknowledged" @onclick="() => AcknowledgeAsync(item)">
+                                        @(item.IsAcknowledged ? "Acknowledged" : "Acknowledge")
+                                    </button>
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+            </div>
+
             <div class="wizard-card wizard-card--compact">
                 <h2 class="h5">Executive briefings</h2>
                 @if (briefings?.Daily is null && briefings?.Weekly is null)
@@ -184,6 +229,7 @@ else
     private CompanyAccessViewModel? companyAccess;
     private CompanyDashboardEntryViewModel? dashboardEntry;
     private DashboardBriefingCardViewModel? briefings;
+    private List<ActionQueueItemViewModel> actionQueue = [];
     private string? errorMessage;
     private string DashboardPath => CompanyId is Guid companyId ? $"/dashboard?companyId={companyId}" : "/dashboard";
     private string AgentRosterPath => CompanyId is Guid companyId ? $"/agents?companyId={companyId}" : "/agents";
@@ -211,6 +257,7 @@ else
             companyAccess = null;
             dashboardEntry = null;
             briefings = null;
+            actionQueue = [];
 
             if (CompanyId is not Guid companyId)
             {
@@ -232,6 +279,7 @@ else
             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
             dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
             briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
+            actionQueue = companyAccess is null ? [] : (await ActionInsightApiClient.GetQueueAsync(companyId)).ToList();
 
             if (dashboardEntry?.RequiresOnboarding == true)
             {
@@ -244,11 +292,27 @@ else
             errorMessage = ex.Message;
             companyAccess = null;
             briefings = null;
+            actionQueue = [];
             dashboardEntry = null;
         }
         finally
         {
             isLoading = false;
+        }
+    }
+
+    private async Task AcknowledgeAsync(ActionQueueItemViewModel item)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        var acknowledged = await ActionInsightApiClient.AcknowledgeAsync(companyId, item.InsightKey);
+        if (acknowledged is not null)
+        {
+            item.IsAcknowledged = acknowledged.IsAcknowledged;
+            item.AcknowledgedAt = acknowledged.AcknowledgedAt;
         }
     }
 
@@ -287,4 +351,22 @@ else
         string.IsNullOrWhiteSpace(reference.Status)
             ? reference.Label
             : $"{reference.Label} ({reference.Status})";
+
+    private static string FormatPriority(string priority) =>
+        priority.Replace("_", " ", StringComparison.Ordinal).ToUpperInvariant();
+
+    private static string FormatInsightType(string type) =>
+        type.Replace("_", " ", StringComparison.Ordinal);
+
+    private static string FormatDueState(ActionQueueItemViewModel item)
+    {
+        var sla = item.SlaState.Replace("_", " ", StringComparison.Ordinal);
+        if (item.DueUtc is not DateTime dueUtc)
+        {
+            return $"SLA: {sla}";
+        }
+
+        return $"{sla}: {dueUtc.ToLocalTime():g}";
+    }
+
 }

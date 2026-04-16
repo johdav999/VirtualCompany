@@ -1,0 +1,152 @@
+@using System.Text.Json
+
+@if (Activity is not null)
+{
+    <div class="activity-detail-backdrop" @onclick="OnClose"></div>
+    <aside class="activity-detail-drawer" aria-live="polite" aria-label="Activity detail">
+        <div class="activity-detail-drawer__header">
+            <div>
+                <span class="dashboard-kicker">Activity detail</span>
+                <h2 class="h5 mb-0">@Activity.Summary</h2>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="OnClose">Close</button>
+        </div>
+
+        <section class="activity-detail-section">
+            <h3 class="h6">Summary</h3>
+            <p class="text-body-secondary mb-0">@SummaryText</p>
+            <div class="activity-detail-facts">
+                <span>Event: @FormatToken(Activity.EventType)</span>
+                <span>Status: @FormatToken(Activity.Status)</span>
+                <span>Occurred: @Activity.OccurredAt.ToLocalTime():g</span>
+                <span>Agent: @(Activity.AgentId?.ToString("N") ?? "system")</span>
+                @if (!string.IsNullOrWhiteSpace(Activity.Department))
+                {
+                    <span>Department: @Activity.Department</span>
+                }
+                @if (Activity.TaskId is Guid taskId)
+                {
+                    <span>Task: @taskId</span>
+                }
+            </div>
+        </section>
+
+        <section class="activity-detail-section">
+            <div class="activity-detail-section__title">
+                <h3 class="h6 mb-0">Correlation links</h3>
+                @if (IsLoadingLinks)
+                {
+                    <span class="text-body-secondary">Loading</span>
+                }
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Activity.CorrelationId))
+            {
+                <p class="activity-correlation-id mb-2">@Activity.CorrelationId</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+            {
+                <div class="alert alert-warning mb-0">@ErrorMessage</div>
+            }
+            else if (LinkedEntities.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No linked entities were recorded for this activity item.</p>
+            }
+            else
+            {
+                <div class="activity-linked-entities">
+                    @foreach (var link in LinkedEntities)
+                    {
+                        <article class="activity-linked-entity @(link.IsAvailable ? string.Empty : "activity-linked-entity--unavailable")" @key="ActivityLinkKey(link)">
+                            <div>
+                                <span class="activity-linked-entity__type">@FormatToken(link.EntityType)</span>
+                                <h4 class="h6 mb-1">@link.DisplayText</h4>
+                                <small class="text-body-secondary">@link.EntityId</small>
+                                @if (!string.IsNullOrWhiteSpace(link.UnavailableReason))
+                                {
+                                    <p class="text-body-secondary mb-0">@link.UnavailableReason</p>
+                                }
+                            </div>
+                            <div class="activity-linked-entity__status">
+                                @if (!string.IsNullOrWhiteSpace(link.CurrentStatus))
+                                {
+                                    <span class="activity-feed-status activity-feed-status--@StatusClass(link.CurrentStatus)">
+                                        @FormatToken(link.CurrentStatus)
+                                    </span>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="activity-detail-section">
+            <h3 class="h6">Audit deep link</h3>
+            @if (Activity.AuditLink is null)
+            {
+                <p class="text-body-secondary mb-0">No tenant-scoped audit record is linked to this activity item.</p>
+            }
+            else
+            {
+                <a class="btn btn-sm btn-outline-secondary" href="@Activity.AuditLink.Href">
+                    Open audit record
+                </a>
+            }
+        </section>
+
+        <section class="activity-detail-section">
+            <h3 class="h6">Raw payload</h3>
+            @if (Activity.RawPayload.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No raw payload was recorded.</p>
+            }
+            else
+            {
+                <pre class="activity-feed-raw">@JsonSerializer.Serialize(Activity.RawPayload, PrettyJson)</pre>
+            }
+        </section>
+    </aside>
+}
+
+@code {
+    private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
+
+    [Parameter]
+    public ActivityFeedItemViewModel? Activity { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<ActivityLinkedEntityViewModel> LinkedEntities { get; set; } = [];
+
+    [Parameter]
+    public bool IsLoadingLinks { get; set; }
+
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private string SummaryText =>
+        !string.IsNullOrWhiteSpace(Activity?.NormalizedSummary?.SummaryText)
+            ? Activity.NormalizedSummary.SummaryText
+            : Activity?.Summary ?? string.Empty;
+
+    private static string ActivityLinkKey(ActivityLinkedEntityViewModel link) =>
+        $"{link.EntityType}:{link.EntityId:N}";
+
+    private static string FormatToken(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "unknown"
+            : value.Replace("_", " ", StringComparison.Ordinal);
+
+    private static string StatusClass(string status) =>
+        status.Equals("completed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("succeeded", StringComparison.OrdinalIgnoreCase)
+            ? "completed"
+            : status.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+              status.Equals("error", StringComparison.OrdinalIgnoreCase)
+                ? "failed"
+                : status.Equals("pending", StringComparison.OrdinalIgnoreCase)
+                    ? "pending"
+                    : "running";
+}

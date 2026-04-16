@@ -17,6 +17,8 @@ public static class CompanyOutboxTopics
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
     public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
     public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
+    public const string ApprovalUpdated = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
+    public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
 }
 
 public sealed record CompanyInvitationDeliveryRequestedMessage(

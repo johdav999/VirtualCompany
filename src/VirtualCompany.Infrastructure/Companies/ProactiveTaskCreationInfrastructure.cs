@@ -25,8 +25,11 @@ public sealed class DefaultTriggerToTaskMappingService : ITriggerToTaskMappingSe
 
         var payload = CloneNodes(trigger.Payload);
         payload["triggerSource"] = JsonValue.Create(trigger.TriggerSource);
+        payload["triggerEventKey"] = JsonValue.Create(trigger.TriggerEventId);
         payload["triggerEventId"] = JsonValue.Create(trigger.TriggerEventId);
         payload["correlationId"] = JsonValue.Create(trigger.CorrelationId);
+        payload["sourceType"] = JsonValue.Create(WorkTaskSourceTypes.Agent);
+        payload["creationReason"] = JsonValue.Create(trigger.CreationReason);
         payload["originatingAgentId"] = JsonValue.Create(trigger.AgentId.ToString("N"));
 
         var title = FirstNonBlank(
@@ -51,6 +54,7 @@ public sealed class DefaultTriggerToTaskMappingService : ITriggerToTaskMappingSe
             title,
             description,
             FirstNonBlank(trigger.TaskPriority, ReadString(payload, "priority"), WorkTaskPriority.Normal.ToStorageValue()),
+            WorkTaskStatus.New.ToStorageValue(),
             trigger.DueAt,
             trigger.AssignedAgentId ?? trigger.AgentId,
             payload);
@@ -254,7 +258,8 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
             request.AgentId,
             request.TriggerSource,
             request.CreationReason,
-            request.TriggerEventId);
+            request.TriggerEventId,
+            WorkTaskStatusValues.Parse(request.Status));
         task.SetDueDate(request.DueAt);
 
         _dbContext.AgentTaskCreationDedupeRecords.Add(new AgentTaskCreationDedupeRecord(
@@ -370,11 +375,11 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
                     ["triggerSource"] = request.TriggerSource,
                     ["triggerEventId"] = request.TriggerEventId,
                     ["correlationId"] = request.CorrelationId,
-                    ["sourceType"] = WorkTaskSourceTypes.Agent,
-                    ["payloadDiff"] = Truncate(diff, 512)
+                    ["sourceType"] = WorkTaskSourceTypes.Agent
                 },
                 request.CorrelationId,
-                nowUtc),
+                nowUtc,
+                PayloadDiffJson: diff),
             cancellationToken);
     }
 
@@ -428,6 +433,11 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
             AddError(errors, nameof(request.Priority), WorkTaskPriorityValues.BuildValidationMessage(request.Priority));
         }
 
+        if (!WorkTaskStatusValues.TryParse(request.Status, out _))
+        {
+            AddError(errors, nameof(request.Status), WorkTaskStatusValues.BuildValidationMessage(request.Status));
+        }
+
         if (errors.Count > 0)
         {
             throw new TaskValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
@@ -471,9 +481,6 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
 
         messages.Add(message);
     }
-
-    private static string Truncate(string value, int maxLength) =>
-        value.Length <= maxLength ? value : value[..maxLength];
 
     private static string BuildDedupeKey(MappedTaskCreationRequest request)
     {

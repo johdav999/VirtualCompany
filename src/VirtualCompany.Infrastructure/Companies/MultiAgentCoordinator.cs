@@ -1146,7 +1146,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
 
     private static string EnsureCorrelationId(string? requestedCorrelationId) =>
         string.IsNullOrWhiteSpace(requestedCorrelationId)
-            ? Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
+            ? System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N")
             : requestedCorrelationId.Trim();
 
     private static bool TryGetString(IReadOnlyDictionary<string, JsonNode?> payload, string key, out string value)

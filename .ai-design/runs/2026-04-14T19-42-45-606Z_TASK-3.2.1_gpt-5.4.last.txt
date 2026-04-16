@@ -1,0 +1,874 @@
+diff --git a/src/VirtualCompany.Application/Agents/AgentContracts.cs b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+index 7ef45d4..f0d5c23 100644
+--- a/src/VirtualCompany.Application/Agents/AgentContracts.cs
++++ b/src/VirtualCompany.Application/Agents/AgentContracts.cs
+@@ -49,6 +49,68 @@ public sealed record AgentRosterFilterDto(
+     string? Department,
+     string? Status);
+ 
++public sealed record AgentStatusWorkloadDto(
++    int ActiveTaskCount,
++    int BlockedTaskCount,
++    int AwaitingApprovalCount,
++    int ActiveWorkflowCount,
++    string WorkloadLevel);
++
++public sealed record AgentStatusRecentActionDto(
++    DateTime OccurredUtc,
++    string ActionType,
++    string Title,
++    string Status,
++    string RelatedEntityType,
++    Guid? RelatedEntityId);
++
++public sealed record AgentStatusDetailLinkDto(
++    string Path,
++    string ActiveTab,
++    IReadOnlyDictionary<string, string> Query);
++
++public sealed record AgentStatusCardDto(
++    Guid AgentId,
++    Guid CompanyId,
++    string DisplayName,
++    string RoleName,
++    string Department,
++    AgentStatusWorkloadDto Workload,
++    string HealthStatus,
++    IReadOnlyList<string> HealthReasons,
++    int ActiveAlertsCount,
++    IReadOnlyList<AgentStatusRecentActionDto> RecentActions,
++    AgentStatusDetailLinkDto DetailLink);
++
++public sealed record AgentStatusCardsResponseDto(
++    IReadOnlyList<AgentStatusCardDto> Items,
++    DateTime GeneratedUtc);
++
++public sealed record AgentStatusHealthMetrics(
++    int FailedRunCount,
++    int StalledWorkCount,
++    int PolicyViolationCount);
++
++public sealed record AgentStatusHealthResult(
++    string Status,
++    IReadOnlyList<string> Reasons);
++
++public sealed class AgentStatusHealthThresholds
++{
++    public const int DefaultWarningFailedRuns = 1;
++    public const int DefaultCriticalFailedRuns = 3;
++    public const int DefaultWarningStalledWork = 1;
++    public const int DefaultCriticalStalledWork = 3;
++    public const int DefaultCriticalPolicyViolations = 1;
++
++    public int WarningFailedRuns { get; init; } = DefaultWarningFailedRuns;
++    public int CriticalFailedRuns { get; init; } = DefaultCriticalFailedRuns;
++    public int WarningStalledWork { get; init; } = DefaultWarningStalledWork;
++    public int CriticalStalledWork { get; init; } = DefaultCriticalStalledWork;
++    public int CriticalPolicyViolations { get; init; } = DefaultCriticalPolicyViolations;
++}
++
++public interface IAgentStatusAggregationService
++{
++    Task<AgentStatusCardsResponseDto> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken);
++}
++
+ public sealed record AgentRecentActivityDto(
+     DateTime OccurredUtc,
+     string ActivityType,
+diff --git a/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs b/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs
+new file mode 100644
+index 0000000..aee2b3a
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentStatusHealthCalculator.cs
+@@ -0,0 +1,49 @@
++namespace VirtualCompany.Application.Agents;
++
++public static class AgentStatusHealthCalculator
++{
++    public const string Healthy = "Healthy";
++    public const string Warning = "Warning";
++    public const string Critical = "Critical";
++
++    public static AgentStatusHealthResult Calculate(
++        AgentStatusHealthMetrics metrics,
++        AgentStatusHealthThresholds? thresholds = null)
++    {
++        var resolvedThresholds = thresholds ?? new AgentStatusHealthThresholds();
++        var reasons = new List<string>();
++
++        if (metrics.PolicyViolationCount >= resolvedThresholds.CriticalPolicyViolations)
++        {
++            reasons.Add(metrics.PolicyViolationCount == 1
++                ? "1 policy violation requires review."
++                : $"{metrics.PolicyViolationCount} policy violations require review.");
++        }
++
++        if (metrics.FailedRunCount >= resolvedThresholds.CriticalFailedRuns)
++        {
++            reasons.Add($"{metrics.FailedRunCount} failed runs reached the critical threshold.");
++        }
++
++        if (metrics.StalledWorkCount >= resolvedThresholds.CriticalStalledWork)
++        {
++            reasons.Add($"{metrics.StalledWorkCount} stalled work items reached the critical threshold.");
++        }
++
++        if (reasons.Count > 0)
++        {
++            return new AgentStatusHealthResult(Critical, reasons);
++        }
++
++        if (metrics.FailedRunCount >= resolvedThresholds.WarningFailedRuns)
++        {
++            reasons.Add(metrics.FailedRunCount == 1 ? "1 failed run needs attention." : $"{metrics.FailedRunCount} failed runs need attention.");
++        }
++
++        if (metrics.StalledWorkCount >= resolvedThresholds.WarningStalledWork)
++        {
++            reasons.Add(metrics.StalledWorkCount == 1 ? "1 stalled work item needs attention." : $"{metrics.StalledWorkCount} stalled work items need attention.");
++        }
++
++        return reasons.Count > 0
++            ? new AgentStatusHealthResult(Warning, reasons)
++            : new AgentStatusHealthResult(Healthy, ["No failed runs, stalled work, or policy violations are active."]);
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/AgentsController.cs b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+index 25279e2..589fa9a 100644
+--- a/src/VirtualCompany.Api/Controllers/AgentsController.cs
++++ b/src/VirtualCompany.Api/Controllers/AgentsController.cs
+@@ -12,14 +12,17 @@ public sealed class AgentsController : ControllerBase
+ {
+     private readonly ICompanyAgentService _agentService;
++    private readonly IAgentStatusAggregationService _agentStatusAggregationService;
+     private readonly IAgentToolExecutionService _agentToolExecutionService;
+     private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
+ 
+     public AgentsController(
+         ICompanyAgentService agentService,
++        IAgentStatusAggregationService agentStatusAggregationService,
+         IAgentToolExecutionService agentToolExecutionService,
+         IAgentScheduledTriggerService agentScheduledTriggerService)
+     {
+         _agentService = agentService;
++        _agentStatusAggregationService = agentStatusAggregationService;
+         _agentToolExecutionService = agentToolExecutionService;
+         _agentScheduledTriggerService = agentScheduledTriggerService;
+     }
+@@ -59,6 +62,22 @@ public sealed class AgentsController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("status")]
++    [Authorize(Policy = CompanyPolicies.CompanyMember)]
++    public async Task<ActionResult<AgentStatusCardsResponseDto>> GetStatusCardsAsync(
++        Guid companyId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var statusCards = await _agentStatusAggregationService.GetStatusCardsAsync(companyId, cancellationToken);
++            return Ok(statusCards);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
+     [HttpGet]
+     public async Task<ActionResult<IReadOnlyList<CompanyAgentSummaryDto>>> GetRosterAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+new file mode 100644
+index 0000000..6b26e2a
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentStatusAggregationService.cs
+@@ -0,0 +1,314 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class AgentStatusAggregationService : IAgentStatusAggregationService
++{
++    private static readonly TimeSpan StalledWorkThreshold = TimeSpan.FromHours(24);
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
++    private readonly TimeProvider _timeProvider;
++
++    public AgentStatusAggregationService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver companyMembershipContextResolver,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _companyMembershipContextResolver = companyMembershipContextResolver;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<AgentStatusCardsResponseDto> GetStatusCardsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        await RequireMembershipAsync(companyId, cancellationToken);
++
++        var generatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var stalledCutoffUtc = generatedUtc - StalledWorkThreshold;
++
++        var agents = await _dbContext.Agents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderBy(x => x.Department)
++            .ThenBy(x => x.DisplayName)
++            .Select(x => new AgentCardAgentProjection(
++                x.Id,
++                x.CompanyId,
++                x.DisplayName,
++                x.RoleName,
++                x.Department))
++            .ToListAsync(cancellationToken);
++
++        if (agents.Count == 0)
++        {
++            return new AgentStatusCardsResponseDto([], generatedUtc);
++        }
++
++        var agentIds = agents.Select(x => x.AgentId).ToArray();
++
++        var taskAggregates = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AssignedAgentId.HasValue && agentIds.Contains(x.AssignedAgentId.Value))
++            .GroupBy(x => x.AssignedAgentId!.Value)
++            .Select(group => new AgentTaskAggregate(
++                group.Key,
++                group.Count(x => x.Status == WorkTaskStatus.New ||
++                                 x.Status == WorkTaskStatus.InProgress ||
++                                 x.Status == WorkTaskStatus.Blocked ||
++                                 x.Status == WorkTaskStatus.AwaitingApproval),
++                group.Count(x => x.Status == WorkTaskStatus.Blocked),
++                group.Count(x => x.Status == WorkTaskStatus.AwaitingApproval),
++                group.Count(x => x.Status == WorkTaskStatus.Failed),
++                group.Count(x =>
++                    (x.Status == WorkTaskStatus.InProgress ||
++                     x.Status == WorkTaskStatus.Blocked ||
++                     x.Status == WorkTaskStatus.AwaitingApproval) &&
++                    x.UpdatedUtc <= stalledCutoffUtc)))
++            .ToListAsync(cancellationToken);
++
++        var taskByAgentId = taskAggregates.ToDictionary(x => x.AgentId);
++
++        var workflowRows = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId.HasValue &&
++                agentIds.Contains(x.AssignedAgentId.Value) &&
++                x.WorkflowInstanceId.HasValue &&
++                x.WorkflowInstance != null &&
++                (x.WorkflowInstance.State == WorkflowInstanceStatus.Started ||
++                 x.WorkflowInstance.State == WorkflowInstanceStatus.Running ||
++                 x.WorkflowInstance.State == WorkflowInstanceStatus.Blocked))
++            .Select(x => new
++            {
++                AgentId = x.AssignedAgentId!.Value,
++                WorkflowInstanceId = x.WorkflowInstanceId!.Value
++            })
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        var workflowCountByAgentId = workflowRows
++            .GroupBy(x => x.AgentId)
++            .ToDictionary(x => x.Key, x => x.Count());
++
++        var workflowFailureRows = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.AssignedAgentId.HasValue &&
++                agentIds.Contains(x.AssignedAgentId.Value) &&
++                x.WorkflowInstanceId.HasValue &&
++                x.WorkflowInstance != null &&
++                x.WorkflowInstance.State == WorkflowInstanceStatus.Failed)
++            .Select(x => new
++            {
++                AgentId = x.AssignedAgentId!.Value,
++                WorkflowInstanceId = x.WorkflowInstanceId!.Value
++            })
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        var workflowFailuresByAgentId = workflowFailureRows
++            .GroupBy(x => x.AgentId)
++            .ToDictionary(x => x.Key, x => x.Count());
++
++        var executionAggregates = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentExecutionStatusAggregate(
++                group.Key,
++                group.Count(x => x.Status == ToolExecutionStatus.Failed),
++                group.Count(x => x.Status == ToolExecutionStatus.Denied),
++                group.Count(x => x.Status == ToolExecutionStatus.AwaitingApproval)))
++            .ToListAsync(cancellationToken);
++
++        var executionByAgentId = executionAggregates.ToDictionary(x => x.AgentId);
++
++        var approvalAggregates = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
++            .GroupBy(x => x.AgentId)
++            .Select(group => new AgentApprovalStatusAggregate(
++                group.Key,
++                group.Count(x => x.Status == ApprovalRequestStatus.Pending)))
++            .ToListAsync(cancellationToken);
++
++        var approvalByAgentId = approvalAggregates.ToDictionary(x => x.AgentId);
++
++        var alertAggregates = await _dbContext.Alerts
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.SourceAgentId.HasValue &&
++                agentIds.Contains(x.SourceAgentId.Value) &&
++                (x.Status == AlertStatus.Open || x.Status == AlertStatus.Acknowledged))
++            .GroupBy(x => x.SourceAgentId!.Value)
++            .Select(group => new AgentAlertAggregate(group.Key, group.Count()))
++            .ToListAsync(cancellationToken);
++
++        var alertByAgentId = alertAggregates.ToDictionary(x => x.AgentId);
++
++        var recentActions = await LoadRecentActionsAsync(companyId, agentIds, cancellationToken);
++        var recentActionsByAgentId = recentActions
++            .GroupBy(x => x.AgentId)
++            .ToDictionary(
++                x => x.Key,
++                x => (IReadOnlyList<AgentStatusRecentActionDto>)x
++                    .OrderByDescending(action => action.OccurredUtc)
++                    .ThenBy(action => action.ActionType, StringComparer.Ordinal)
++                    .ThenBy(action => action.RelatedEntityId?.ToString("N") ?? string.Empty, StringComparer.Ordinal)
++                    .Take(5)
++                    .Select(action => action.Dto)
++                    .ToList());
++
++        var cards = agents.Select(agent =>
++        {
++            taskByAgentId.TryGetValue(agent.AgentId, out var task);
++            executionByAgentId.TryGetValue(agent.AgentId, out var execution);
++            approvalByAgentId.TryGetValue(agent.AgentId, out var approval);
++            alertByAgentId.TryGetValue(agent.AgentId, out var alert);
++            workflowCountByAgentId.TryGetValue(agent.AgentId, out var activeWorkflowCount);
++            workflowFailuresByAgentId.TryGetValue(agent.AgentId, out var failedWorkflowCount);
++            recentActionsByAgentId.TryGetValue(agent.AgentId, out var actions);
++
++            var awaitingApprovalCount = Math.Max(approval?.PendingApprovalCount ?? 0, task?.AwaitingApprovalTaskCount ?? 0) +
++                (execution?.AwaitingApprovalExecutionCount ?? 0);
++            var activeTaskCount = task?.ActiveTaskCount ?? 0;
++            var blockedTaskCount = task?.BlockedTaskCount ?? 0;
++            var failedRunCount = (task?.FailedTaskCount ?? 0) + (execution?.FailedExecutionCount ?? 0) + failedWorkflowCount;
++            var stalledWorkCount = task?.StalledWorkCount ?? 0;
++            var policyViolationCount = execution?.DeniedExecutionCount ?? 0;
++            var health = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(
++                failedRunCount,
++                stalledWorkCount,
++                policyViolationCount));
++
++            // Active alerts include first-class alerts plus actionable exception states until a dedicated alert exists for every source.
++            var activeAlertsCount = (alert?.ActiveAlertCount ?? 0) +
++                awaitingApprovalCount +
++                blockedTaskCount +
++                failedRunCount +
++                policyViolationCount;
++
++            return new AgentStatusCardDto(
++                agent.AgentId,
++                agent.CompanyId,
++                agent.DisplayName,
++                agent.RoleName,
++                agent.Department,
++                new AgentStatusWorkloadDto(
++                    activeTaskCount,
++                    blockedTaskCount,
++                    awaitingApprovalCount,
++                    activeWorkflowCount,
++                    ResolveWorkloadLevel(activeTaskCount, blockedTaskCount, awaitingApprovalCount, activeWorkflowCount)),
++                health.Status,
++                health.Reasons,
++                activeAlertsCount,
++                actions ?? [],
++                BuildDetailLink(agent.CompanyId, agent.AgentId));
++        }).ToList();
++
++        return new AgentStatusCardsResponseDto(cards, generatedUtc);
++    }
++
++    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var membership = await _companyMembershipContextResolver.ResolveAsync(companyId, cancellationToken);
++        if (membership is null)
++        {
++            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
++        }
++    }
++
++    private async Task<IReadOnlyList<RecentActionProjection>> LoadRecentActionsAsync(
++        Guid companyId,
++        Guid[] agentIds,
++        CancellationToken cancellationToken)
++    {
++        var taskActions = await _dbContext.WorkTasks
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.AssignedAgentId.HasValue && agentIds.Contains(x.AssignedAgentId.Value))
++            .Select(x => new RecentActionProjection(
++                x.AssignedAgentId!.Value,
++                x.UpdatedUtc,
++                "task",
++                x.Title,
++                x.Status.ToStorageValue(),
++                "task",
++                x.Id))
++            .ToListAsync(cancellationToken);
++
++        var executionActions = await _dbContext.ToolExecutionAttempts
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
++            .Select(x => new RecentActionProjection(
++                x.AgentId,
++                x.ExecutedUtc ?? x.CompletedUtc ?? x.UpdatedUtc,
++                "tool_execution",
++                x.ToolName,
++                x.Status.ToStorageValue(),
++                "tool_execution",
++                x.Id))
++            .ToListAsync(cancellationToken);
++
++        var approvalActions = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && agentIds.Contains(x.AgentId))
++            .Select(x => new RecentActionProjection(
++                x.AgentId,
++                x.UpdatedUtc,
++                "approval",
++                x.ToolName + " approval",
++                x.Status.ToStorageValue(),
++                "approval",
++                x.Id))
++            .ToListAsync(cancellationToken);
++
++        var auditActions = await _dbContext.AuditEvents
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.RelatedAgentId.HasValue && agentIds.Contains(x.RelatedAgentId.Value))
++            .Select(x => new RecentActionProjection(
++                x.RelatedAgentId!.Value,
++                x.OccurredUtc,
++                "audit_event",
++                x.Action,
++                x.Outcome,
++                x.TargetType,
++                x.RelatedTaskId ?? x.RelatedWorkflowInstanceId ?? x.RelatedApprovalRequestId ?? x.RelatedToolExecutionAttemptId ?? x.RelatedAgentId))
++            .ToListAsync(cancellationToken);
++
++        return taskActions
++            .Concat(executionActions)
++            .Concat(approvalActions)
++            .Concat(auditActions)
++            .ToList();
++    }
++
++    private static string ResolveWorkloadLevel(int activeTaskCount, int blockedTaskCount, int awaitingApprovalCount, int activeWorkflowCount)
++    {
++        if (blockedTaskCount > 0 || awaitingApprovalCount > 0)
++        {
++            return "Blocked";
++        }
++
++        var totalActiveWork = activeTaskCount + activeWorkflowCount;
++        return totalActiveWork switch
++        {
++            0 => "Idle",
++            <= 3 => "Normal",
++            <= 7 => "High",
++            _ => "Overloaded"
++        };
++    }
++
++    private static AgentStatusDetailLinkDto BuildDetailLink(Guid companyId, Guid agentId) =>
++        new(
++            $"/agents/{agentId}",
++            "work",
++            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["companyId"] = companyId.ToString("D"),
++                ["show"] = "active",
++                ["include"] = "tasks,workflows,alerts"
++            });
++
++    private sealed record AgentCardAgentProjection(Guid AgentId, Guid CompanyId, string DisplayName, string RoleName, string Department);
++    private sealed record AgentTaskAggregate(Guid AgentId, int ActiveTaskCount, int BlockedTaskCount, int AwaitingApprovalTaskCount, int FailedTaskCount, int StalledWorkCount);
++    private sealed record AgentExecutionStatusAggregate(Guid AgentId, int FailedExecutionCount, int DeniedExecutionCount, int AwaitingApprovalExecutionCount);
++    private sealed record AgentApprovalStatusAggregate(Guid AgentId, int PendingApprovalCount);
++    private sealed record AgentAlertAggregate(Guid AgentId, int ActiveAlertCount);
++
++    private sealed record RecentActionProjection(
++        Guid AgentId,
++        DateTime OccurredUtc,
++        string ActionType,
++        string Title,
++        string Status,
++        string RelatedEntityType,
++        Guid? RelatedEntityId)
++    {
++        public AgentStatusRecentActionDto Dto => new(OccurredUtc, ActionType, Title, Status, RelatedEntityType, RelatedEntityId);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index cdb14c3..904aa83 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -202,6 +202,7 @@ public static class DependencyInjection
+         services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
+         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
+         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
++        services.AddScoped<IAgentStatusAggregationService, AgentStatusAggregationService>();
+         services.AddScoped<CompanyMemoryService>();
+         services.AddScoped<CompanyTaskService>();
+         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+new file mode 100644
+index 0000000..de40343
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentStatusAggregationTests.cs
+@@ -0,0 +1,304 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public AgentStatusAggregationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public void Health_calculator_returns_healthy_warning_and_critical_from_explicit_thresholds()
++    {
++        Assert.Equal(AgentStatusHealthCalculator.Healthy, AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(0, 0, 0)).Status);
++
++        var warning = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(1, 0, 0));
++        Assert.Equal(AgentStatusHealthCalculator.Warning, warning.Status);
++        Assert.Contains(warning.Reasons, x => x.Contains("failed run", StringComparison.OrdinalIgnoreCase));
++
++        var criticalFromFailures = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(3, 0, 0));
++        Assert.Equal(AgentStatusHealthCalculator.Critical, criticalFromFailures.Status);
++
++        var criticalFromPolicy = AgentStatusHealthCalculator.Calculate(new AgentStatusHealthMetrics(0, 0, 1));
++        Assert.Equal(AgentStatusHealthCalculator.Critical, criticalFromPolicy.Status);
++        Assert.Contains(criticalFromPolicy.Reasons, x => x.Contains("policy violation", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task Status_endpoint_returns_workload_health_alerts_recent_actions_and_deep_link()
++    {
++        var seed = await SeedStatusScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/status");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentStatusCardsResponse>();
++        Assert.NotNull(payload);
++
++        var agent = Assert.Single(payload!.Items.Where(x => x.AgentId == seed.AgentId));
++        Assert.Equal("Nora Ledger", agent.DisplayName);
++        Assert.Equal("Finance Manager", agent.RoleName);
++        Assert.Equal("Finance", agent.Department);
++        Assert.Equal(2, agent.Workload.ActiveTaskCount);
++        Assert.Equal(1, agent.Workload.BlockedTaskCount);
++        Assert.Equal(2, agent.Workload.AwaitingApprovalCount);
++        Assert.Equal(1, agent.Workload.ActiveWorkflowCount);
++        Assert.Equal("Blocked", agent.Workload.WorkloadLevel);
++        Assert.Equal(AgentStatusHealthCalculator.Critical, agent.HealthStatus);
++        Assert.True(agent.ActiveAlertsCount >= 4);
++        Assert.Equal($"/agents/{seed.AgentId}", agent.DetailLink.Path);
++        Assert.Equal("work", agent.DetailLink.ActiveTab);
++        Assert.Equal(seed.CompanyId.ToString("D"), agent.DetailLink.Query["companyId"]);
++        Assert.Equal("active", agent.DetailLink.Query["show"]);
++        Assert.Equal("tasks,workflows,alerts", agent.DetailLink.Query["include"]);
++    }
++
++    [Fact]
++    public async Task Recent_actions_are_newest_first_limited_to_five_with_deterministic_tie_breaker()
++    {
++        var seed = await SeedStatusScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/status");
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentStatusCardsResponse>();
++        var agent = Assert.Single(payload!.Items.Where(x => x.AgentId == seed.AgentId));
++
++        Assert.Equal(5, agent.RecentActions.Count);
++        Assert.Equal(agent.RecentActions.OrderByDescending(x => x.OccurredUtc).ThenBy(x => x.ActionType, StringComparer.Ordinal).Select(x => x.RelatedEntityId), agent.RecentActions.Select(x => x.RelatedEntityId));
++        Assert.Equal("task", agent.RecentActions[0].ActionType);
++        Assert.Equal(seed.NewestTaskId, agent.RecentActions[0].RelatedEntityId);
++    }
++
++    [Fact]
++    public async Task Status_endpoint_is_company_scoped()
++    {
++        var seed = await SeedStatusScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/agents/status");
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++
++        var payload = await response.Content.ReadFromJsonAsync<AgentStatusCardsResponse>();
++        Assert.NotNull(payload);
++        Assert.Contains(payload!.Items, x => x.AgentId == seed.AgentId);
++        Assert.DoesNotContain(payload.Items, x => x.AgentId == seed.OtherCompanyAgentId);
++    }
++
++    [Fact]
++    public async Task Aggregation_reflects_current_persisted_state_without_cache()
++    {
++        var seed = await SeedStatusScenarioAsync();
++
++        using var client = CreateAuthenticatedClient("owner-status", "owner-status@example.com", "Owner Status");
++        var before = await client.GetFromJsonAsync<AgentStatusCardsResponse>($"/api/companies/{seed.CompanyId}/agents/status");
++        var beforeCard = Assert.Single(before!.Items.Where(x => x.AgentId == seed.AgentId));
++
++        using (var scope = _factory.Services.CreateScope())
++        {
++            var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++            var task = await dbContext.WorkTasks.SingleAsync(x => x.Id == seed.BlockedTaskId);
++            task.UpdateStatus(WorkTaskStatus.Completed);
++            await dbContext.SaveChangesAsync();
++        }
++
++        var after = await client.GetFromJsonAsync<AgentStatusCardsResponse>($"/api/companies/{seed.CompanyId}/agents/status");
++        var afterCard = Assert.Single(after!.Items.Where(x => x.AgentId == seed.AgentId));
++
++        Assert.Equal(beforeCard.Workload.BlockedTaskCount - 1, afterCard.Workload.BlockedTaskCount);
++    }
++
++    private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, subject);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, displayName);
++        return client;
++    }
++
++    private async Task<StatusSeed> SeedStatusScenarioAsync()
++    {
++        var ownerUserId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var otherCompanyAgentId = Guid.NewGuid();
++        var workflowDefinitionId = Guid.NewGuid();
++        var workflowInstanceId = Guid.NewGuid();
++        var blockedTaskId = Guid.NewGuid();
++        var newestTaskId = Guid.NewGuid();
++        var failedTaskId = Guid.NewGuid();
++        var executionId = Guid.NewGuid();
++        var approvalId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(ownerUserId, "owner-status@example.com", "Owner Status", "dev-header", "owner-status"));
++
++            dbContext.Companies.AddRange(
++                new Company(companyId, "Status Company"),
++                new Company(otherCompanyId, "Other Status Company"));
++
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            dbContext.Agents.AddRange(
++                new Agent(agentId, companyId, "finance", "Nora Ledger", "Finance Manager", "Finance", null, AgentSeniority.Senior, AgentStatus.Active),
++                new Agent(otherCompanyAgentId, otherCompanyId, "support", "Other Agent", "Support Lead", "Support", null, AgentSeniority.Lead, AgentStatus.Active));
++
++            var definition = new WorkflowDefinition(
++                workflowDefinitionId,
++                companyId,
++                "STATUS_TEST",
++                "Status test",
++                "Finance",
++                WorkflowTriggerType.Manual,
++                1,
++                Payload(("steps", new JsonArray(JsonValue.Create("review")))));
++
++            var workflow = new WorkflowInstance(
++                workflowInstanceId,
++                companyId,
++                workflowDefinitionId,
++                null,
++                Payload(("source", JsonValue.Create("test"))));
++
++            workflow.UpdateState(WorkflowInstanceStatus.Running, "review");
++
++            var blockedTask = new WorkTask(
++                blockedTaskId,
++                companyId,
++                "review",
++                "Blocked finance review",
++                null,
++                WorkTaskPriority.High,
++                agentId,
++                null,
++                "user",
++                ownerUserId,
++                workflowInstanceId: workflowInstanceId);
++            blockedTask.UpdateStatus(WorkTaskStatus.Blocked);
++
++            var newestTask = new WorkTask(
++                newestTaskId,
++                companyId,
++                "close",
++                "Newest finance action",
++                null,
++                WorkTaskPriority.Normal,
++                agentId,
++                null,
++                "user",
++                ownerUserId);
++            newestTask.UpdateStatus(WorkTaskStatus.InProgress);
++
++            var failedTask = new WorkTask(
++                failedTaskId,
++                companyId,
++                "failed",
++                "Failed finance action",
++                null,
++                WorkTaskPriority.Normal,
++                agentId,
++                null,
++                "user",
++                ownerUserId);
++            failedTask.UpdateStatus(WorkTaskStatus.Failed);
++
++            var execution = new ToolExecutionAttempt(
++                executionId,
++                companyId,
++                agentId,
++                "erp",
++                ToolActionType.Execute,
++                "finance");
++            execution.MarkDenied(Payload(("reason", JsonValue.Create("policy_violation"))));
++
++            var approval = new ApprovalRequest(
++                approvalId,
++                companyId,
++                agentId,
++                executionId,
++                ownerUserId,
++                "erp",
++                ToolActionType.Execute,
++                "expense",
++                Payload(("expenseUsd", JsonValue.Create(9000))));
++
++            dbContext.WorkflowDefinitions.Add(definition);
++            dbContext.WorkflowInstances.Add(workflow);
++            dbContext.WorkTasks.AddRange(blockedTask, newestTask, failedTask);
++            dbContext.ToolExecutionAttempts.Add(execution);
++            dbContext.ApprovalRequests.Add(approval);
++            dbContext.Alerts.Add(new Alert(
++                Guid.NewGuid(),
++                companyId,
++                AlertType.Risk,
++                AlertSeverity.High,
++                "Policy violation",
++                "Denied execution requires review.",
++                Payload(("executionId", JsonValue.Create(executionId))),
++                Guid.NewGuid().ToString("N"),
++                $"status:{executionId:N}",
++                sourceAgentId: agentId));
++
++            dbContext.AuditEvents.AddRange(
++                new AuditEvent(Guid.NewGuid(), companyId, "agent", agentId, "agent.status.same_time_a", "agent", agentId.ToString("N"), "succeeded", occurredUtc: new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),
++                new AuditEvent(Guid.NewGuid(), companyId, "agent", agentId, "agent.status.same_time_b", "agent", agentId.ToString("N"), "succeeded", occurredUtc: new DateTime(2026, 4, 14, 12, 0, 0, DateTimeKind.Utc)),
++                new AuditEvent(Guid.NewGuid(), companyId, "agent", agentId, "agent.status.older", "agent", agentId.ToString("N"), "succeeded", occurredUtc: new DateTime(2026, 4, 13, 12, 0, 0, DateTimeKind.Utc)));
++
++            return Task.CompletedTask;
++        });
++
++        return new StatusSeed(companyId, agentId, otherCompanyAgentId, blockedTaskId, newestTaskId);
++    }
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, JsonNode? Value)[] properties)
++    {
++        var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        foreach (var (key, value) in properties)
++        {
++            payload[key] = value?.DeepClone();
++        }
++
++        return payload;
++    }
++
++    private sealed record StatusSeed(Guid CompanyId, Guid AgentId, Guid OtherCompanyAgentId, Guid BlockedTaskId, Guid NewestTaskId);
++
++    private sealed class AgentStatusCardsResponse
++    {
++        public List<AgentStatusCard> Items { get; set; } = [];
++        public DateTime GeneratedUtc { get; set; }
++    }
++
++    private sealed class AgentStatusCard
++    {
++        public Guid AgentId { get; set; }
++        public string DisplayName { get; set; } = string.Empty;
++        public string RoleName { get; set; } = string.Empty;
++        public string Department { get; set; } = string.Empty;
++        public AgentStatusWorkload Workload { get; set; } = new();
++        public string HealthStatus { get; set; } = string.Empty;
++        public List<string> HealthReasons { get; set; } = [];
++        public int ActiveAlertsCount { get; set; }
++        public List<AgentStatusRecentAction> RecentActions { get; set; } = [];
++        public AgentStatusDetailLink DetailLink { get; set; } = new();
++    }
++
++    private sealed class AgentStatusWorkload
++    {
++        public int ActiveTaskCount { get; set; }
++        public int BlockedTaskCount { get; set; }
++        public int AwaitingApprovalCount { get; set; }
++        public int ActiveWorkflowCount { get; set; }
++        public string WorkloadLevel { get; set; } = string.Empty;
++    }
++
++    private sealed class AgentStatusRecentAction
++    {
++        public DateTime OccurredUtc { get; set; }
++        public string ActionType { get; set; } = string.Empty;
++        public Guid? RelatedEntityId { get; set; }
++    }
++
++    private sealed class AgentStatusDetailLink
++    {
++        public string Path { get; set; } = string.Empty;
++        public string ActiveTab { get; set; } = string.Empty;
++        public Dictionary<string, string> Query { get; set; } = [];
++    }
++}
+END_OF_PATCH

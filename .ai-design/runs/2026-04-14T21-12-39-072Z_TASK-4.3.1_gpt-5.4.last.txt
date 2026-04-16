@@ -1,0 +1,1089 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 2c8a1a1..f9b7d43 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -29,6 +29,30 @@ public enum CompanyNotificationPriority
+     Critical = 4
+ }
+ 
++public enum BriefingSectionPriorityCategory
++{
++    Informational = 1,
++    Medium = 2,
++    High = 3,
++    Critical = 4
++}
++
++public enum BriefingLinkedEntityType
++{
++    Task = 1,
++    WorkflowInstance = 2,
++    Approval = 3
++}
++
++public enum BriefingLinkedEntityPlaceholderReason
++{
++    None = 0,
++    DeletedOrInaccessible = 1
++}
++
++public enum BriefingSeverityRuleStatus
++{
++    Active = 1,
++    Disabled = 2
++}
++
+ public static class CompanyNotificationTypeValues
+ {
+     public static string ToStorageValue(this CompanyNotificationType type) =>
+@@ -271,3 +295,93 @@ public static class CompanyNotificationPriorityValues
+     public static CompanyNotificationPriority Parse(string value) =>
+         Enum.TryParse<CompanyNotificationPriority>(value.Trim(), ignoreCase: true, out var parsed) ? parsed : CompanyNotificationPriority.Normal;
+ }
++
++public static class BriefingSectionPriorityCategoryValues
++{
++    private static readonly IReadOnlyDictionary<BriefingSectionPriorityCategory, string> Values = new Dictionary<BriefingSectionPriorityCategory, string>
++    {
++        [BriefingSectionPriorityCategory.Informational] = "informational",
++        [BriefingSectionPriorityCategory.Medium] = "medium",
++        [BriefingSectionPriorityCategory.High] = "high",
++        [BriefingSectionPriorityCategory.Critical] = "critical"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BriefingSectionPriorityCategory> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this BriefingSectionPriorityCategory category) =>
++        Values.TryGetValue(category, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(category), category, "Unsupported briefing section priority category.");
++
++    public static BriefingSectionPriorityCategory Parse(string value) =>
++        !string.IsNullOrWhiteSpace(value) && ReverseValues.TryGetValue(value.Trim(), out var category)
++            ? category
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported briefing section priority category.");
++}
++
++public static class BriefingLinkedEntityTypeValues
++{
++    private static readonly IReadOnlyDictionary<BriefingLinkedEntityType, string> Values = new Dictionary<BriefingLinkedEntityType, string>
++    {
++        [BriefingLinkedEntityType.Task] = "task",
++        [BriefingLinkedEntityType.WorkflowInstance] = "workflow_instance",
++        [BriefingLinkedEntityType.Approval] = "approval"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BriefingLinkedEntityType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this BriefingLinkedEntityType entityType) =>
++        Values.TryGetValue(entityType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(entityType), entityType, "Unsupported briefing linked entity type.");
++
++    public static bool TryParse(string? value, out BriefingLinkedEntityType entityType)
++    {
++        entityType = default;
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return false;
++        }
++
++        return ReverseValues.TryGetValue(value.Trim(), out entityType);
++    }
++}
++
++public static class BriefingLinkedEntityPlaceholderReasonValues
++{
++    public static string? ToStorageValue(this BriefingLinkedEntityPlaceholderReason reason) =>
++        reason switch
++        {
++            BriefingLinkedEntityPlaceholderReason.None => null,
++            BriefingLinkedEntityPlaceholderReason.DeletedOrInaccessible => "deleted_or_inaccessible",
++            _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unsupported briefing linked entity placeholder reason.")
++        };
++}
++
++public static class BriefingSeverityRuleStatusValues
++{
++    private static readonly IReadOnlyDictionary<BriefingSeverityRuleStatus, string> Values = new Dictionary<BriefingSeverityRuleStatus, string>
++    {
++        [BriefingSeverityRuleStatus.Active] = "active",
++        [BriefingSeverityRuleStatus.Disabled] = "disabled"
++    };
++
++    private static readonly IReadOnlyDictionary<string, BriefingSeverityRuleStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this BriefingSeverityRuleStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported briefing severity rule status.");
++
++    public static BriefingSeverityRuleStatus Parse(string value) =>
++        !string.IsNullOrWhiteSpace(value) && ReverseValues.TryGetValue(value.Trim(), out var status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported briefing severity rule status.");
++}
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 5ef6e42..417e2b9 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -102,6 +102,10 @@ public sealed class CompanyBriefingSection : ICompanyOwnedEntity
+         bool isConflicting,
+         string? conflictSummary,
+         Guid? companyEntityId,
++        string sectionType,
++        BriefingSectionPriorityCategory priorityCategory,
++        int priorityScore,
++        string? priorityRuleCode,
+         Guid? workflowInstanceId,
+         Guid? taskId,
+         string? eventCorrelationId,
+@@ -130,6 +134,10 @@ public sealed class CompanyBriefingSection : ICompanyOwnedEntity
+         ConflictSummary = NormalizeOptional(conflictSummary, nameof(conflictSummary), ConflictSummaryMaxLength);
+         CompanyEntityId = NormalizeOptionalGuid(companyEntityId);
+         WorkflowInstanceId = NormalizeOptionalGuid(workflowInstanceId);
++        SectionType = NormalizeRequired(sectionType, nameof(sectionType), GroupingTypeMaxLength);
++        PriorityCategory = priorityCategory;
++        PriorityScore = priorityScore;
++        PriorityRuleCode = NormalizeOptional(priorityRuleCode, nameof(priorityRuleCode), GroupingKeyMaxLength);
+         TaskId = NormalizeOptionalGuid(taskId);
+         EventCorrelationId = NormalizeOptional(eventCorrelationId, nameof(eventCorrelationId), EventCorrelationIdMaxLength);
+         SourceReferences = CloneNodes(sourceReferences);
+@@ -147,6 +155,10 @@ public sealed class CompanyBriefingSection : ICompanyOwnedEntity
+     public string GroupingKey { get; private set; } = null!;
+     public Guid? CompanyEntityId { get; private set; }
+     public Guid? WorkflowInstanceId { get; private set; }
++    public string SectionType { get; private set; } = null!;
++    public BriefingSectionPriorityCategory PriorityCategory { get; private set; }
++    public int PriorityScore { get; private set; }
++    public string? PriorityRuleCode { get; private set; }
+     public Guid? TaskId { get; private set; }
+     public string? EventCorrelationId { get; private set; }
+     public string Narrative { get; private set; } = null!;
+@@ -573,3 +585,81 @@ public sealed class CompanyNotification : ICompanyOwnedEntity
+         ActionedByUserId ??= actionedByUserId;
+     }
+ }
++
++public sealed class CompanyBriefingSeverityRule : ICompanyOwnedEntity
++{
++    private const int RuleCodeMaxLength = 100;
++    private const int SectionTypeMaxLength = 64;
++    private const int EntityTypeMaxLength = 64;
++    private const int ConditionKeyMaxLength = 100;
++    private const int ConditionValueMaxLength = 100;
++
++    private CompanyBriefingSeverityRule()
++    {
++    }
++
++    public CompanyBriefingSeverityRule(
++        Guid id,
++        Guid companyId,
++        string ruleCode,
++        string sectionType,
++        string entityType,
++        string conditionKey,
++        string conditionValue,
++        BriefingSectionPriorityCategory priorityCategory,
++        int priorityScore,
++        int sortOrder = 0)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (priorityScore < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(priorityScore), "Priority score must be non-negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        RuleCode = NormalizeRequired(ruleCode, nameof(ruleCode), RuleCodeMaxLength);
++        SectionType = NormalizeRequired(sectionType, nameof(sectionType), SectionTypeMaxLength);
++        EntityType = NormalizeRequired(entityType, nameof(entityType), EntityTypeMaxLength);
++        ConditionKey = NormalizeRequired(conditionKey, nameof(conditionKey), ConditionKeyMaxLength);
++        ConditionValue = NormalizeRequired(conditionValue, nameof(conditionValue), ConditionValueMaxLength);
++        PriorityCategory = priorityCategory;
++        PriorityScore = priorityScore;
++        SortOrder = sortOrder;
++        Status = BriefingSeverityRuleStatus.Active;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string RuleCode { get; private set; } = null!;
++    public string SectionType { get; private set; } = null!;
++    public string EntityType { get; private set; } = null!;
++    public string ConditionKey { get; private set; } = null!;
++    public string ConditionValue { get; private set; } = null!;
++    public BriefingSectionPriorityCategory PriorityCategory { get; private set; }
++    public int PriorityScore { get; private set; }
++    public int SortOrder { get; private set; }
++    public BriefingSeverityRuleStatus Status { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++}
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+index 3fd62e1..163c11e 100644
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -1,6 +1,7 @@
+ using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Application.Briefings;
+ 
+@@ -17,6 +18,26 @@ public sealed record BriefingSourceReferenceDto(
+     string? Status = null,
+     string? Route = null);
+ 
++public sealed record BriefingLinkedEntityReferenceDto(
++    string EntityType,
++    Guid EntityId,
++    string DisplayLabel,
++    string State,
++    bool IsAccessible,
++    string? PlaceholderReason,
++    string? Route = null);
++
++public sealed record BriefingPriorityDto(
++    string Category,
++    int Score,
++    string? RuleCode);
++
++public sealed record BriefingSummaryCountsDto(
++    int CriticalAlertsCount,
++    int OpenApprovalsCount,
++    int BlockedWorkflowsCount,
++    int OverdueTasksCount);
++
+ public sealed record BriefingSectionDto(
+     string Name,
+     IReadOnlyList<string> Items);
+@@ -42,6 +63,8 @@ public sealed record BriefingAggregateItemDto(
+     public Guid? TaskId { get; init; }
+     public string? EventCorrelationId { get; init; }
+     public string? Assessment { get; init; }
++    public BriefingSectionPriorityCategory PriorityCategory { get; init; } = BriefingSectionPriorityCategory.Informational;
++    public int PriorityScore { get; init; }
++    public string? PriorityRuleCode { get; init; }
+ }
+ 
+ public sealed record BriefingAggregateResultDto(
+@@ -57,6 +80,7 @@ public sealed record BriefingAggregateResultDto(
+ {
+     public string NarrativeText { get; init; } = string.Empty;
+     public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
++    public BriefingSummaryCountsDto SummaryCounts { get; init; } = new(0, 0, 0, 0);
+ 
+     public bool HasItems =>
+         Alerts.Count > 0 ||
+@@ -113,7 +137,14 @@ public sealed record AggregatedBriefingSectionDto(
+     IReadOnlyList<BriefingInsightContributionDto> Contributions,
+     IReadOnlyList<BriefingConflictViewpointDto> ConflictViewpoints,
+-    IReadOnlyList<BriefingSourceReferenceDto> RelatedReferences);
++    IReadOnlyList<BriefingSourceReferenceDto> RelatedReferences)
++{
++    public string SectionType { get; init; } = GroupingType;
++    public string PriorityCategory { get; init; } = BriefingSectionPriorityCategory.Informational.ToStorageValue();
++    public int PriorityScore { get; init; }
++    public string? PriorityRuleCode { get; init; }
++    public IReadOnlyList<BriefingLinkedEntityReferenceDto> LinkedEntities { get; init; } = [];
++}
+ 
+ public sealed record AggregatedBriefingPayloadDto(
+     Guid CompanyId,
+@@ -139,6 +170,7 @@ public sealed record CompanyBriefingDto(
+ {
+     public string NarrativeText { get; init; } = SummaryBody;
+     public IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections { get; init; } = [];
++    public BriefingSummaryCountsDto SummaryCounts { get; init; } = new(0, 0, 0, 0);
+ }
+ 
+ public sealed record DashboardBriefingCardDto(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 477cd74..948c1eb 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -46,6 +46,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanyBriefingSection> CompanyBriefingSections => Set<CompanyBriefingSection>();
+     public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
++    public DbSet<CompanyBriefingSeverityRule> CompanyBriefingSeverityRules => Set<CompanyBriefingSeverityRule>();
+     public DbSet<CompanyBriefingUpdateJob> CompanyBriefingUpdateJobs => Set<CompanyBriefingUpdateJob>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+     public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
+@@ -93,6 +94,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is CompanyBriefing ||
+                 entry.Entity is CompanyBriefingSection ||
+                 entry.Entity is CompanyBriefingContribution ||
++                entry.Entity is CompanyBriefingSeverityRule ||
+                 entry.Entity is CompanyBriefingUpdateJob ||
+                 entry.Entity is Alert)
+             .Select(entry =>
+@@ -159,6 +161,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
+             .HasQueryFilter(preference =>
+                 CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefingSeverityRule>()
++            .HasQueryFilter(rule =>
++                CurrentCompanyId.HasValue && rule.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyNotification>()
+             .HasQueryFilter(notification =>
+                 CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 1fd4bb0..a5ec9d9 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1331,6 +1331,17 @@ internal sealed class CompanyBriefingSectionConfiguration : IEntityTypeConfigurat
+         builder.Property(x => x.CompanyEntityId).HasColumnName("company_entity_id");
+         builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
+         builder.Property(x => x.TaskId).HasColumnName("task_id");
++        builder.Property(x => x.SectionType).HasColumnName("section_type").HasMaxLength(64).HasDefaultValue("informational").IsRequired();
++        builder.Property(x => x.PriorityCategory)
++            .HasColumnName("priority_category")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(BriefingSectionPriorityCategory.Informational)
++            .HasSentinel((BriefingSectionPriorityCategory)0)
++            .IsRequired();
++        builder.Property(x => x.PriorityScore).HasColumnName("priority_score").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.PriorityRuleCode).HasColumnName("priority_rule_code").HasMaxLength(100);
+         builder.Property(x => x.EventCorrelationId).HasColumnName("event_correlation_id").HasMaxLength(128);
+         builder.Property(x => x.Narrative).HasColumnName("narrative").IsRequired();
+         builder.Property(x => x.IsConflicting).HasColumnName("is_conflicting").HasDefaultValue(false).IsRequired();
+@@ -1350,6 +1361,7 @@ internal sealed class CompanyBriefingSectionConfiguration : IEntityTypeConfigurat
+         builder.HasIndex(x => new { x.CompanyId, x.TaskId });
+         builder.HasIndex(x => new { x.CompanyId, x.EventCorrelationId });
++        builder.HasIndex(x => new { x.CompanyId, x.PriorityScore, x.SectionKey });
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+@@ -1398,6 +1410,45 @@ internal sealed class CompanyBriefingContributionConfiguration : IEntityTypeConfi
+     }
+ }
+ 
++internal sealed class CompanyBriefingSeverityRuleConfiguration : IEntityTypeConfiguration<CompanyBriefingSeverityRule>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefingSeverityRule> builder)
++    {
++        builder.ToTable("company_briefing_severity_rules");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.RuleCode).HasColumnName("rule_code").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.SectionType).HasColumnName("section_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ConditionKey).HasColumnName("condition_key").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.ConditionValue).HasColumnName("condition_value").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.PriorityCategory)
++            .HasColumnName("priority_category")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.PriorityScore).HasColumnName("priority_score").IsRequired();
++        builder.Property(x => x.SortOrder).HasColumnName("sort_order").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => BriefingSeverityRuleStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .HasDefaultValue(BriefingSeverityRuleStatus.Active)
++            .HasSentinel((BriefingSeverityRuleStatus)0)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.RuleCode }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.SectionType, x.EntityType, x.ConditionKey, x.ConditionValue });
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<ApprovalRequest>
+ {
+     public void Configure(EntityTypeBuilder<ApprovalRequest> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 54c2ad6..77c401f 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -459,6 +459,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+     private async Task<BriefingAggregateResultDto> BuildAggregateResultAsync(Guid companyId, CompanyBriefingType type, BriefingWindow window, CancellationToken cancellationToken)
+     {
++        var severityRules = await LoadSeverityRulesAsync(companyId, cancellationToken);
+         var briefingType = type.ToStorageValue();
+ 
+         var approvalRows = await _dbContext.ApprovalRequests
+@@ -485,6 +486,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 x.CreatedUtc,
+                 [],
+                 [CreateApprovalReference(companyId, x.Id, x.ApprovalType, x.Status.ToStorageValue())]))
++            .ApplyPriority(ResolvePriority(severityRules, "pending_approvals", "approval", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AgentId == Guid.Empty ? null : x.AgentId,
+                 CompanyEntityId = x.TargetEntityId,
+@@ -493,6 +495,20 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             })
+             .ToList();
+ 
++        var overdueTaskRows = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId &&
++                        x.DueUtc.HasValue &&
++                        x.DueUtc.Value < window.EndUtc &&
++                        x.Status != WorkTaskStatus.Completed &&
++                        x.Status != WorkTaskStatus.Failed)
++            .Select(x => new { x.Id })
++            .ToListAsync(cancellationToken);
++
+         var taskRows = await _dbContext.WorkTasks
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -500,8 +516,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .OrderByDescending(x => x.UpdatedUtc)
+             .Take(25)
+-            .Select(x => new { x.Id, x.Title, x.Status, x.Priority, x.AssignedAgentId, x.WorkflowInstanceId, x.CorrelationId, x.RationaleSummary, x.ConfidenceScore, x.UpdatedUtc })
++            .Select(x => new { x.Id, x.Title, x.Status, x.Priority, x.AssignedAgentId, x.WorkflowInstanceId, x.CorrelationId, x.RationaleSummary, x.ConfidenceScore, x.DueUtc, x.UpdatedUtc })
+             .ToListAsync(cancellationToken);
++        var overdueTaskIds = overdueTaskRows.Select(x => x.Id).ToHashSet();
+         var kpiHighlights = taskRows
+             .Where(x => x.Status == WorkTaskStatus.Completed)
+             .Take(10)
+@@ -525,6 +542,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 },
+                 [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++            .ApplyPriority(ResolvePriority(severityRules, "kpi_highlights", "task", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AssignedAgentId,
+                 CompanyEntityId = x.Id,
+@@ -556,6 +574,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 },
+                 [CreateTaskReference(x.Id, x.Title, x.Status.ToStorageValue())]))
++            .ApplyPriority(overdueTaskIds.Contains(x.Id) ? ResolvePriority(severityRules, "anomalies", "task", "due", "overdue")
++                : ResolvePriority(severityRules, "anomalies", "task", "status", x.Status.ToStorageValue()))
+             {
+                 AgentId = x.AssignedAgentId,
+                 CompanyEntityId = x.Id,
+@@ -585,7 +605,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .OrderByDescending(x => x.OccurredUtc)
+             .Take(10)
+-            .Select(x => new { x.Id, x.WorkflowInstanceId, x.Title, x.Details, x.Status, x.ExceptionType, x.OccurredUtc })
++            .Select(x => new { x.Id, x.WorkflowInstanceId, x.Title, x.Details, x.Status, x.ExceptionType, x.OccurredUtc, x.WorkflowInstance.State })
+             .ToListAsync(cancellationToken);
+         var alerts = workflowExceptionRows
+             .Select(x => new BriefingAggregateItemDto(
+@@ -602,7 +622,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 {
+                     ["exceptionType"] = JsonValue.Create(x.ExceptionType.ToStorageValue())
+                 },
+-                [new BriefingSourceReferenceDto("workflow_exception", x.Id, x.Title, x.Status.ToStorageValue(), $"/workflows?companyId={companyId}")]))
++                [new BriefingSourceReferenceDto("workflow_instance", x.WorkflowInstanceId, x.Title, x.State.ToStorageValue(), $"/workflows?companyId={companyId}&workflowInstanceId={x.WorkflowInstanceId}")]))
++            .ApplyPriority(ResolvePriority(severityRules, "alerts", "workflow_instance", "status", x.State.ToStorageValue()))
+             {
+                 CompanyEntityId = x.Id,
+                 WorkflowInstanceId = x.WorkflowInstanceId,
+@@ -629,6 +650,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 },
+                 []))
++            .ApplyPriority(ResolvePriority(severityRules, "notable_agent_updates", "agent", "status", x.Key.Status.ToStorageValue()))
+             {
+                 AgentId = x.Key.AgentId,
+                 CompanyEntityId = x.Key.AgentId,
+@@ -642,15 +664,34 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .Take(10)
+             .ToList();
+ 
+-        var result = new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates);
++        alerts = OrderAggregateItems(alerts);
++        pendingApprovals = OrderAggregateItems(pendingApprovals);
++        anomalies = OrderAggregateItems(anomalies);
++        kpiHighlights = OrderAggregateItems(kpiHighlights);
++        notableAgentUpdates = OrderAggregateItems(notableAgentUpdates);
++
++        var result = new BriefingAggregateResultDto(companyId, briefingType, window.StartUtc, window.EndUtc, alerts, pendingApprovals, kpiHighlights, anomalies, notableAgentUpdates)
++        {
++            SummaryCounts = new BriefingSummaryCountsDto(
++                alerts.Count(x => x.PriorityCategory == BriefingSectionPriorityCategory.Critical),
++                pendingApprovals.Count,
++                alerts.Count(x => x.WorkflowInstanceId.HasValue),
++                overdueTaskIds.Count)
++        };
+         var insightPayload = _insightAggregationService.Aggregate(new BriefingInsightAggregationRequest(companyId, null, BuildInsightContributions(companyId, result)));
++        var structuredSections = await EnrichStructuredSectionsAsync(companyId, OrderStructuredSections(insightPayload.Sections, result), result, cancellationToken);
+         return result with
+         {
+             NarrativeText = insightPayload.NarrativeText,
+-            StructuredSections = insightPayload.Sections
++            StructuredSections = structuredSections
+         };
+     }
+ 
++    private static List<BriefingAggregateItemDto> OrderAggregateItems(IEnumerable<BriefingAggregateItemDto> items) =>
++        items
++            .OrderByDescending(x => x.PriorityScore)
++            .ThenByDescending(x => (int)x.PriorityCategory)
++            .ThenByDescending(x => x.OccurredUtc)
++            .ThenBy(x => x.Title, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++
+     private Task CacheAggregateAsync(BriefingAggregateResultDto aggregate, CancellationToken cancellationToken) =>
+         _aggregateCache.SetAsync(
+             new CachedExecutiveDashboardAggregateDto(
+@@ -709,12 +750,14 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 section.IsConflicting,
+                 section.IsConflicting ? section.Narrative : null,
+                 section.Contributions.Select(x => x.CompanyEntityId).FirstOrDefault(x => x.HasValue),
++                section.SectionType,
++                BriefingSectionPriorityCategoryValues.Parse(section.PriorityCategory),
++                section.PriorityScore,
++                section.PriorityRuleCode,
+                 section.Contributions.Select(x => x.WorkflowInstanceId).FirstOrDefault(x => x.HasValue),
+                 section.Contributions.Select(x => x.TaskId).FirstOrDefault(x => x.HasValue),
+                 section.Contributions.Select(x => x.EventCorrelationId).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+-                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+-                {
+-                    ["items"] = JsonSerializer.SerializeToNode(section.RelatedReferences, SerializerOptions)
+-                });
++                BuildSectionSourceReferences(section));
+ 
+             _dbContext.CompanyBriefingSections.Add(sectionEntity);
+ 
+@@ -774,7 +817,9 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return briefing.Sections
+             .Where(section => section.CompanyId == briefing.CompanyId)
+-            .OrderBy(section => section.CreatedUtc)
++            .OrderByDescending(section => section.PriorityScore)
++            .ThenByDescending(section => (int)section.PriorityCategory)
++            .ThenByDescending(section => section.CreatedUtc)
+             .ThenBy(section => section.SectionKey, StringComparer.OrdinalIgnoreCase)
+             .Select(section => ToStructuredSectionDto(briefing.CompanyId, section))
+             .ToList();
+@@ -831,6 +876,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["sourceReferences"] = JsonSerializer.SerializeToNode(aggregate.SourceReferences, SerializerOptions),
+             ["narrativeText"] = JsonValue.Create(aggregate.NarrativeText),
+-            ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions)
++            ["structuredSections"] = JsonSerializer.SerializeToNode(aggregate.StructuredSections, SerializerOptions),
++            ["summaryCounts"] = JsonSerializer.SerializeToNode(aggregate.SummaryCounts, SerializerOptions)
+         };
+ 
+     private static Dictionary<string, JsonNode?> BuildSourceReferences(IReadOnlyList<BriefingSourceReferenceDto> references) =>
+@@ -841,6 +887,15 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             ["items"] = JsonSerializer.SerializeToNode(references, SerializerOptions)
+         };
+ 
++    private static Dictionary<string, JsonNode?> BuildSectionSourceReferences(AggregatedBriefingSectionDto section) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["items"] = JsonSerializer.SerializeToNode(section.RelatedReferences, SerializerOptions),
++            ["linkedEntities"] = JsonSerializer.SerializeToNode(section.LinkedEntities, SerializerOptions),
++            ["priority"] = JsonSerializer.SerializeToNode(new BriefingPriorityDto(section.PriorityCategory, section.PriorityScore, section.PriorityRuleCode), SerializerOptions)
++        };
++
+     private static IReadOnlyList<BriefingSummaryPayloadItem> BuildSummaryItems(BriefingAggregate aggregate) =>
+         SectionItems("approvals", aggregate.Approvals)
+             .Concat(SectionItems("kpi_highlights", aggregate.KpiHighlights))
+@@ -949,6 +1004,10 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var structuredSections = briefing.StructuredPayload.TryGetValue("structuredSections", out var sectionsNode) && sectionsNode is not null
+             ? JsonSerializer.Deserialize<List<AggregatedBriefingSectionDto>>(sectionsNode.ToJsonString(), SerializerOptions) ?? []
+             : [];
++        var summaryCounts = briefing.StructuredPayload.TryGetValue("summaryCounts", out var countsNode) && countsNode is not null
++            ? JsonSerializer.Deserialize<BriefingSummaryCountsDto>(countsNode.ToJsonString(), SerializerOptions) ?? new BriefingSummaryCountsDto(0, 0, 0, 0)
++            : new BriefingSummaryCountsDto(0, 0, 0, 0);
+         structuredSections = ToStructuredSectionDtos(briefing).ToList() is { Count: > 0 } persistedSections ? persistedSections : structuredSections;
+ 
+         return new CompanyBriefingDto(
+@@ -966,7 +1025,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             briefing.GeneratedUtc)
+         {
+             NarrativeText = narrativeText,
+-            StructuredSections = structuredSections
++            StructuredSections = structuredSections,
++            SummaryCounts = summaryCounts
+         };
+     }
+ 
+@@ -1015,7 +1075,18 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                 : contributions.Select(contribution => contribution.SourceReference)
+                 .GroupBy(reference => new { EntityType = reference.EntityType.Trim().ToLowerInvariant(), reference.EntityId })
+                 .Select(group => group.First())
+-                .ToList();
++                .ToList();
++        var linkedEntities = section.SourceReferences.TryGetValue("linkedEntities", out var linkedNode) && linkedNode is not null
++            ? JsonSerializer.Deserialize<List<BriefingLinkedEntityReferenceDto>>(linkedNode.ToJsonString(), SerializerOptions) ?? []
++            : [];
+ 
+         return new AggregatedBriefingSectionDto(
+             section.SectionKey,
+@@ -1028,7 +1099,13 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             contributions,
+             section.IsConflicting ? viewpoints : [],
+-            relatedReferences);
++            relatedReferences)
++        {
++            SectionType = section.SectionType,
++            PriorityCategory = section.PriorityCategory.ToStorageValue(),
++            PriorityScore = section.PriorityScore,
++            PriorityRuleCode = section.PriorityRuleCode,
++            LinkedEntities = linkedEntities
++        };
+     }
+ 
+     private static CompanyBriefingDeliveryPreferenceDto ToDto(CompanyBriefingDeliveryPreference preference) =>
+@@ -1065,6 +1142,180 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         }
+     }
+ 
++    private async Task<IReadOnlyList<BriefingSeverityRuleProjection>> LoadSeverityRulesAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var persisted = await _dbContext.CompanyBriefingSeverityRules
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.Status == BriefingSeverityRuleStatus.Active)
++            .OrderByDescending(x => x.PriorityScore)
++            .ThenBy(x => x.SortOrder)
++            .ThenBy(x => x.RuleCode)
++            .Select(x => new BriefingSeverityRuleProjection(
++                x.RuleCode,
++                x.SectionType,
++                x.EntityType,
++                x.ConditionKey,
++                x.ConditionValue,
++                x.PriorityCategory,
++                x.PriorityScore))
++            .ToListAsync(cancellationToken);
++
++        return persisted.Count > 0 ? persisted : DefaultSeverityRules;
++    }
++
++    private static BriefingPriorityResolution ResolvePriority(
++        IReadOnlyList<BriefingSeverityRuleProjection> rules,
++        string sectionType,
++        string entityType,
++        string conditionKey,
++        string conditionValue)
++    {
++        var rule = rules.FirstOrDefault(x =>
++            string.Equals(x.SectionType, sectionType, StringComparison.OrdinalIgnoreCase) &&
++            string.Equals(x.EntityType, entityType, StringComparison.OrdinalIgnoreCase) &&
++            string.Equals(x.ConditionKey, conditionKey, StringComparison.OrdinalIgnoreCase) &&
++            string.Equals(x.ConditionValue, conditionValue, StringComparison.OrdinalIgnoreCase));
++
++        return rule is null
++            ? new BriefingPriorityResolution(BriefingSectionPriorityCategory.Informational, 10, "default_informational")
++            : new BriefingPriorityResolution(rule.PriorityCategory, rule.PriorityScore, rule.RuleCode);
++    }
++
++    private async Task<IReadOnlyList<AggregatedBriefingSectionDto>> EnrichStructuredSectionsAsync(
++        Guid companyId,
++        IReadOnlyList<AggregatedBriefingSectionDto> sections,
++        BriefingAggregateResultDto aggregate,
++        CancellationToken cancellationToken)
++    {
++        var priorityByKey = BuildPriorityMap(aggregate);
++        var linkedReferences = await BuildLinkedReferenceMapAsync(companyId, sections, cancellationToken);
++
++        return sections
++            .Select(section =>
++            {
++                var priority = priorityByKey.TryGetValue(section.SectionKey, out var resolved)
++                    ? resolved
++                    : ResolveSectionPriorityFromContributions(section, aggregate);
++                var links = section.RelatedReferences
++                    .Select(reference => NormalizeLinkedEntityReference(reference, linkedReferences))
++                    .Where(reference => reference is not null)
++                    .Cast<BriefingLinkedEntityReferenceDto>()
++                    .ToList();
++
++                return section with
++                {
++                    SectionType = section.Contributions.FirstOrDefault()?.SourceReference.EntityType ?? section.GroupingType,
++                    PriorityCategory = priority.Category.ToStorageValue(),
++                    PriorityScore = priority.Score,
++                    PriorityRuleCode = priority.RuleCode,
++                    LinkedEntities = links
++                };
++            })
++            .OrderByDescending(x => x.PriorityScore)
++            .ThenByDescending(x => BriefingSectionPriorityCategoryValues.Parse(x.PriorityCategory))
++            .ThenByDescending(x => x.Contributions.Select(contribution => contribution.TimestampUtc).DefaultIfEmpty(DateTime.MinValue).Max())
++            .ThenBy(x => x.SectionKey, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++    }
++
++    private static IReadOnlyList<AggregatedBriefingSectionDto> OrderStructuredSections(
++        IReadOnlyList<AggregatedBriefingSectionDto> sections,
++        BriefingAggregateResultDto aggregate)
++    {
++        var priorityByKey = BuildPriorityMap(aggregate);
++        return sections
++            .OrderByDescending(section => priorityByKey.TryGetValue(section.SectionKey, out var priority) ? priority.Score : 0)
++            .ThenBy(section => section.SectionKey, StringComparer.OrdinalIgnoreCase)
++            .ToList();
++    }
++
++    private static Dictionary<string, BriefingPriorityResolution> BuildPriorityMap(BriefingAggregateResultDto aggregate) =>
++        aggregate.Alerts
++            .Concat(aggregate.PendingApprovals)
++            .Concat(aggregate.KpiHighlights)
++            .Concat(aggregate.Anomalies)
++            .Concat(aggregate.NotableAgentUpdates)
++            .GroupBy(item => item.Title.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
++            .ToDictionary(
++                group => group.Key,
++                group => group.OrderByDescending(item => item.PriorityScore).Select(item => new BriefingPriorityResolution(item.PriorityCategory, item.PriorityScore, item.PriorityRuleCode)).First(),
++                StringComparer.OrdinalIgnoreCase);
++
++    private static BriefingPriorityResolution ResolveSectionPriorityFromContributions(AggregatedBriefingSectionDto section, BriefingAggregateResultDto aggregate)
++    {
++        var items = aggregate.Alerts
++            .Concat(aggregate.PendingApprovals)
++            .Concat(aggregate.KpiHighlights)
++            .Concat(aggregate.Anomalies)
++            .Concat(aggregate.NotableAgentUpdates)
++            .Where(item => section.Contributions.Any(contribution =>
++                (item.SourceEntityId.HasValue && contribution.SourceReference.EntityId == item.SourceEntityId.Value) ||
++                (item.TaskId.HasValue && contribution.TaskId == item.TaskId) ||
++                (item.WorkflowInstanceId.HasValue && contribution.WorkflowInstanceId == item.WorkflowInstanceId)));
++
++        return items
++            .OrderByDescending(item => item.PriorityScore)
++            .Select(item => new BriefingPriorityResolution(item.PriorityCategory, item.PriorityScore, item.PriorityRuleCode))
++            .FirstOrDefault() ?? new BriefingPriorityResolution(BriefingSectionPriorityCategory.Informational, 10, "default_informational");
++    }
++
++    private async Task<Dictionary<string, BriefingLinkedEntityReferenceDto>> BuildLinkedReferenceMapAsync(
++        Guid companyId,
++        IReadOnlyList<AggregatedBriefingSectionDto> sections,
++        CancellationToken cancellationToken)
++    {
++        var references = sections.SelectMany(section => section.RelatedReferences).ToList();
++        var taskIds = references.Where(x => string.Equals(x.EntityType, "task", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++        var workflowIds = references.Where(x => string.Equals(x.EntityType, "workflow_instance", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++        var approvalIds = references.Where(x => string.Equals(x.EntityType, "approval", StringComparison.OrdinalIgnoreCase)).Select(x => x.EntityId).Distinct().ToList();
++
++        var tasks = await _dbContext.WorkTasks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && taskIds.Contains(x.Id))
++            .Select(x => new BriefingLinkedEntityReferenceDto("task", x.Id, x.Title, x.Status.ToStorageValue(), true, null, null))
++            .ToListAsync(cancellationToken);
++        var workflows = await _dbContext.WorkflowInstances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && workflowIds.Contains(x.Id))
++            .Select(x => new BriefingLinkedEntityReferenceDto("workflow_instance", x.Id, x.Definition.Name, x.State.ToStorageValue(), true, null, $"/workflows?companyId={companyId}&workflowInstanceId={x.Id}"))
++            .ToListAsync(cancellationToken);
++        var approvals = await _dbContext.ApprovalRequests
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && approvalIds.Contains(x.Id))
++            .Select(x => new BriefingLinkedEntityReferenceDto("approval", x.Id, $"{x.ApprovalType} approval", x.Status.ToStorageValue(), true, null, $"/approvals?companyId={companyId}&approvalId={x.Id}"))
++            .ToListAsync(cancellationToken);
++
++        return tasks.Concat(workflows).Concat(approvals)
++            .ToDictionary(x => $"{x.EntityType}:{x.EntityId:N}", StringComparer.OrdinalIgnoreCase);
++    }
++
++    private static BriefingLinkedEntityReferenceDto? NormalizeLinkedEntityReference(
++        BriefingSourceReferenceDto reference,
++        IReadOnlyDictionary<string, BriefingLinkedEntityReferenceDto> availableReferences)
++    {
++        var entityType = reference.EntityType.Equals("approval_request", StringComparison.OrdinalIgnoreCase) ? "approval" : reference.EntityType;
++        if (entityType.Equals("workflow_exception", StringComparison.OrdinalIgnoreCase))
++        {
++            return null;
++        }
++
++        var key = $"{entityType}:{reference.EntityId:N}";
++        if (availableReferences.TryGetValue(key, out var resolved))
++        {
++            return resolved;
++        }
++
++        var label = entityType switch
++        {
++            "task" => "Unavailable task",
++            "workflow_instance" => "Unavailable workflow",
++            "approval" => "Unavailable approval",
++            _ => $"Unavailable {entityType}"
++        };
++
++        return new BriefingLinkedEntityReferenceDto(
++            entityType,
++            reference.EntityId,
++            label,
++            "unavailable",
++            false,
++            BriefingLinkedEntityPlaceholderReason.DeletedOrInaccessible.ToStorageValue(),
++            null);
++    }
++
+     private sealed record BriefingWindow(DateTime StartUtc, DateTime EndUtc);
+     private sealed record DueCompany(Guid Id, string Name, string? Timezone);
+     private sealed record BriefingItem(string Kind, string Text, Guid EntityId, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
+@@ -1076,5 +1327,50 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         string NarrativeText,
+-        IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections);
++        IReadOnlyList<AggregatedBriefingSectionDto> StructuredSections,
++        BriefingSummaryCountsDto SummaryCounts = null!)
++    {
++        public BriefingSummaryCountsDto SummaryCounts { get; init; } = SummaryCounts ?? new BriefingSummaryCountsDto(0, 0, 0, 0);
++    }
++
+     private sealed record BriefingSummaryPayloadItem(string Section, string Title, DateTime OccurredUtc, IReadOnlyList<BriefingSourceReferenceDto> References);
++    private sealed record BriefingSeverityRuleProjection(
++        string RuleCode,
++        string SectionType,
++        string EntityType,
++        string ConditionKey,
++        string ConditionValue,
++        BriefingSectionPriorityCategory PriorityCategory,
++        int PriorityScore);
++    private sealed record BriefingPriorityResolution(BriefingSectionPriorityCategory Category, int Score, string? RuleCode);
++
++    private static readonly IReadOnlyList<BriefingSeverityRuleProjection> DefaultSeverityRules =
++    [
++        new("critical_workflow_blocked", "alerts", "workflow_instance", "status", "blocked", BriefingSectionPriorityCategory.Critical, 100),
++        new("high_workflow_failed", "alerts", "workflow_instance", "status", "failed", BriefingSectionPriorityCategory.High, 90),
++        new("high_task_overdue", "anomalies", "task", "due", "overdue", BriefingSectionPriorityCategory.High, 85),
++        new("high_task_blocked", "anomalies", "task", "status", "blocked", BriefingSectionPriorityCategory.High, 80),
++        new("high_task_failed", "anomalies", "task", "status", "failed", BriefingSectionPriorityCategory.High, 75),
++        new("medium_approval_pending", "pending_approvals", "approval", "status", "pending", BriefingSectionPriorityCategory.Medium, 60),
++        new("medium_task_awaiting_approval", "anomalies", "task", "status", "awaiting_approval", BriefingSectionPriorityCategory.Medium, 55),
++        new("informational_task_completed", "kpi_highlights", "task", "status", "completed", BriefingSectionPriorityCategory.Informational, 20)
++    ];
+ }
++
++internal static class BriefingAggregateItemPriorityExtensions
++{
++    public static BriefingAggregateItemDto ApplyPriority(
++        this BriefingAggregateItemDto item,
++        object priority)
++    {
++        var category = (BriefingSectionPriorityCategory)priority.GetType().GetProperty("Category")!.GetValue(priority)!;
++        var score = (int)priority.GetType().GetProperty("Score")!.GetValue(priority)!;
++        var ruleCode = (string?)priority.GetType().GetProperty("RuleCode")!.GetValue(priority);
++        return item with
++        {
++            PriorityCategory = category,
++            PriorityScore = score,
++            PriorityRuleCode = ruleCode
++        };
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415043100_AddBriefingStructuredPriority.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415043100_AddBriefingStructuredPriority.cs
+new file mode 100644
+index 0000000..96508a8
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415043100_AddBriefingStructuredPriority.cs
+@@ -0,0 +1,110 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260415043100_AddBriefingStructuredPriority")]
++public partial class AddBriefingStructuredPriority : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
++        var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++
++        migrationBuilder.AddColumn<string>(
++            name: "section_type",
++            table: "company_briefing_sections",
++            type: string64Type,
++            maxLength: 64,
++            nullable: false,
++            defaultValue: "informational");
++
++        migrationBuilder.AddColumn<string>(
++            name: "priority_category",
++            table: "company_briefing_sections",
++            type: string32Type,
++            maxLength: 32,
++            nullable: false,
++            defaultValue: "informational");
++
++        migrationBuilder.AddColumn<int>(
++            name: "priority_score",
++            table: "company_briefing_sections",
++            nullable: false,
++            defaultValue: 0);
++
++        migrationBuilder.AddColumn<string>(
++            name: "priority_rule_code",
++            table: "company_briefing_sections",
++            type: string100Type,
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.CreateTable(
++            name: "company_briefing_severity_rules",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                rule_code = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                section_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                entity_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                condition_key = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                condition_value = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                priority_category = table.Column<string>(type: string32Type, maxLength: 32, nullable: false),
++                priority_score = table.Column<int>(nullable: false),
++                sort_order = table.Column<int>(nullable: false, defaultValue: 0),
++                status = table.Column<string>(type: string32Type, maxLength: 32, nullable: false, defaultValue: "active"),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                updated_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_briefing_severity_rules", x => x.id);
++                table.ForeignKey("FK_company_briefing_severity_rules_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_briefing_sections_company_id_priority_score_section_key",
++            table: "company_briefing_sections",
++            columns: new[] { "company_id", "priority_score", "section_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_briefing_severity_rules_company_id_rule_code",
++            table: "company_briefing_severity_rules",
++            columns: new[] { "company_id", "rule_code" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_company_briefing_severity_rules_match",
++            table: "company_briefing_severity_rules",
++            columns: new[] { "company_id", "status", "section_type", "entity_type", "condition_key", "condition_value" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "company_briefing_severity_rules");
++
++        migrationBuilder.DropIndex(
++            name: "IX_company_briefing_sections_company_id_priority_score_section_key",
++            table: "company_briefing_sections");
++
++        migrationBuilder.DropColumn(name: "section_type", table: "company_briefing_sections");
++        migrationBuilder.DropColumn(name: "priority_category", table: "company_briefing_sections");
++        migrationBuilder.DropColumn(name: "priority_score", table: "company_briefing_sections");
++        migrationBuilder.DropColumn(name: "priority_rule_code", table: "company_briefing_sections");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+index e1251bc..bb6ac27 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingAggregationIntegrationTests.cs
+@@ -67,6 +67,13 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.False(string.IsNullOrWhiteSpace(aggregate.NarrativeText));
+         Assert.Contains(aggregate.StructuredSections, section => section.Contributions.Any(contribution => contribution.TaskId == seed.CompletedTaskId));
++        Assert.True(aggregate.SummaryCounts.OpenApprovalsCount > 0);
++        Assert.True(aggregate.SummaryCounts.BlockedWorkflowsCount > 0);
++        Assert.All(aggregate.StructuredSections, section =>
++        {
++            Assert.False(string.IsNullOrWhiteSpace(section.PriorityCategory));
++            Assert.True(section.PriorityScore >= 0);
++        });
++        Assert.True(aggregate.StructuredSections.SequenceEqual(aggregate.StructuredSections.OrderByDescending(x => x.PriorityScore).ThenBy(x => x.SectionKey, StringComparer.OrdinalIgnoreCase)));
+         Assert.DoesNotContain(aggregate.PendingApprovals, x => x.SourceEntityId == seed.OtherCompanyApprovalId);
+         Assert.DoesNotContain(aggregate.NotableAgentUpdates, x => x.SourceEntityId == seed.OtherCompanyAgentId);
+     }
+@@ -109,6 +116,11 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryItems"));
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("narrativeText"));
+         Assert.True(result.Briefing.StructuredPayload.ContainsKey("structuredSections"));
++        Assert.True(result.Briefing.StructuredPayload.ContainsKey("summaryCounts"));
++        Assert.True(result.Briefing.SummaryCounts.OpenApprovalsCount > 0);
++        Assert.True(result.Briefing.SummaryCounts.BlockedWorkflowsCount > 0);
++        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "task" && reference.EntityId == seed.CompletedTaskId && reference.IsAccessible));
++        Assert.Contains(result.Briefing.StructuredSections, section => section.LinkedEntities.Any(reference => reference.EntityType == "approval" && reference.EntityId == seed.ApprovalId && reference.IsAccessible));
+         Assert.NotEmpty(result.Briefing.StructuredSections);
+         Assert.Contains(result.Briefing.SourceReferences, reference =>
+             reference.EntityType == "approval" &&
+@@ -599,6 +611,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         public List<BriefingAggregateItemResponse> NotableAgentUpdates { get; set; } = [];
+         public string NarrativeText { get; set; } = string.Empty;
+         public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
++        public BriefingSummaryCountsResponse SummaryCounts { get; set; } = new();
+     }
+ 
+     private sealed class BriefingAggregateItemResponse
+@@ -633,6 +646,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         public string NarrativeText { get; set; } = string.Empty;
+         public List<AggregatedBriefingSectionResponse> StructuredSections { get; set; } = [];
+         public List<BriefingSourceReferenceResponse> SourceReferences { get; set; } = [];
++        public BriefingSummaryCountsResponse SummaryCounts { get; set; } = new();
+     }
+ 
+     private sealed class BriefingSourceReferenceResponse
+@@ -652,7 +666,28 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebAp
+         public string GroupingKey { get; set; } = string.Empty;
+         public string Narrative { get; set; } = string.Empty;
+         public bool IsConflicting { get; set; }
++        public string SectionType { get; set; } = string.Empty;
++        public string PriorityCategory { get; set; } = string.Empty;
++        public int PriorityScore { get; set; }
++        public string? PriorityRuleCode { get; set; }
++        public List<BriefingLinkedEntityReferenceResponse> LinkedEntities { get; set; } = [];
+         public List<BriefingInsightContributionResponse> Contributions { get; set; } = [];
+     }
++
++    private sealed class BriefingLinkedEntityReferenceResponse
++    {
++        public string EntityType { get; set; } = string.Empty;
++        public Guid EntityId { get; set; }
++        public string DisplayLabel { get; set; } = string.Empty;
++        public string State { get; set; } = string.Empty;
++        public bool IsAccessible { get; set; }
++        public string? PlaceholderReason { get; set; }
++    }
++
++    private sealed class BriefingSummaryCountsResponse
++    {
++        public int CriticalAlertsCount { get; set; }
++        public int OpenApprovalsCount { get; set; }
++        public int BlockedWorkflowsCount { get; set; }
++        public int OverdueTasksCount { get; set; }
++    }
+ 
+     private sealed class BriefingInsightContributionResponse
+END_OF_PATCH

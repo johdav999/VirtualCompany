@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.3.2",
+  "promptPath": ".ai-design/prompts/TASK-13.3.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:07:43.080Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-07-43-080Z_TASK-13.3.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-07-43-080Z_TASK-13.3.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:10:25.316Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ".Api.Tests/WorkflowEventTriggerFoundationTests.cs\nindex c30be12..49e6402 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -55,6 +55,35 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Trigger_creation_rejects_invalid_condition_criteria_with_field_errors()\n+    {\n+        var seed = await SeedMembershipAsync(\"condition-trigger-invalid\", \"condition-trigger-invalid@example.com\", \"Condition Trigger Invalid\");\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var definition = await CreateEventDefinitionAsync(client, seed.CompanyId, \"invalid-condition-definition\");\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition.Id}/triggers\", new\n+        {\n+            eventName = SupportedPlatformEventTypeRegistry.TaskUpdated,\n+            criteriaJson = new Dictionary<string, JsonNode?>\n+            {\n+                [\"condition\"] = new JsonObject\n+                {\n+                    [\"target\"] = new JsonObject\n+                    {\n+                        [\"sourceType\"] = \"metric\"\n+                    },\n+                    [\"operator\"] = \"greaterThan\",\n+                    [\"valueType\"] = \"number\"\n+                }\n+            },\n+            isEnabled = true\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var content = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"CriteriaJson.condition.target.metricName\", content);\n+        Assert.Contains(\"CriteriaJson.condition.comparisonValue\", content);\n+    }\n+\n     [Fact]\n     public async Task Event_envelope_matches_enabled_same_tenant_triggers_only()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "ventTriggerFoundationTests.cs\nindex c30be12..49e6402 100644\n--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs\n@@ -55,6 +55,35 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA\n         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Trigger_creation_rejects_invalid_condition_criteria_with_field_errors()\n+    {\n+        var seed = await SeedMembershipAsync(\"condition-trigger-invalid\", \"condition-trigger-invalid@example.com\", \"Condition Trigger Invalid\");\n+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);\n+\n+        var definition = await CreateEventDefinitionAsync(client, seed.CompanyId, \"invalid-condition-definition\");\n+\n+        var response = await client.PostAsJsonAsync($\"/api/companies/{seed.CompanyId}/workflows/definitions/{definition.Id}/triggers\", new\n+        {\n+            eventName = SupportedPlatformEventTypeRegistry.TaskUpdated,\n+            criteriaJson = new Dictionary<string, JsonNode?>\n+            {\n+                [\"condition\"] = new JsonObject\n+                {\n+                    [\"target\"] = new JsonObject\n+                    {\n+                        [\"sourceType\"] = \"metric\"\n+                    },\n+                    [\"operator\"] = \"greaterThan\",\n+                    [\"valueType\"] = \"number\"\n+                }\n+            },\n+            isEnabled = true\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var content = await response.Content.ReadAsStringAsync();\n+        Assert.Contains(\"CriteriaJson.condition.target.metricName\", content);\n+        Assert.Contains(\"CriteriaJson.condition.comparisonValue\", content);\n+    }\n+\n     [Fact]\n     public async Task Event_envelope_matches_enabled_same_tenant_triggers_only()\n     {\nEND_OF_PATCH\ntokens used\n105,215\n",
+  "verbosityMode": "summary"
+}

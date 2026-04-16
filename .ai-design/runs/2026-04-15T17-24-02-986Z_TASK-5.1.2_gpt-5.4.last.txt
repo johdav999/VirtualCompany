@@ -1,0 +1,274 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 3cc02b1..6e6f2bb 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -1,5 +1,6 @@
+ using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ 
+ namespace VirtualCompany.Application.Activity;
+ 
+@@ -11,7 +12,7 @@ public sealed record PersistActivityEventCommand(
+     string Status,
+     string Summary,
+     string? CorrelationId,
+-    Dictionary<string, JsonNode?>? SourceMetadata);
++    [property: JsonPropertyName("source")] Dictionary<string, JsonNode?>? Source);
+ 
+ public sealed record ActivityFeedQuery(
+     string? Cursor,
+@@ -26,7 +27,7 @@ public sealed record ActivityEventDto(
+     string Status,
+     string Summary,
+     string? CorrelationId,
+-    Dictionary<string, JsonNode?> SourceMetadata);
++    [property: JsonPropertyName("source")] Dictionary<string, JsonNode?> Source);
+ 
+ public sealed record ActivityFeedPageDto(
+     IReadOnlyList<ActivityEventDto> Items,
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index 3cb0f06..e4a4d9f 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -50,12 +50,20 @@ public sealed class ActivityFeedController : ControllerBase
+     }
+ 
+     [HttpGet("/api/tenants/{tenantId:guid}/activity-feed")]
++    [HttpGet("/api/tenants/{tenantId:guid}/agent-activity")]
+     public Task<ActionResult<ActivityFeedPageDto>> ListTenantAliasAsync(
+         Guid tenantId,
+         [FromQuery] string? cursor,
+         [FromQuery] int? pageSize,
+         CancellationToken cancellationToken) =>
+         ListAsync(tenantId, cursor, pageSize, cancellationToken);
+ 
++    [HttpGet("/api/companies/{companyId:guid}/agent-activity")]
++    public Task<ActionResult<ActivityFeedPageDto>> ListAgentActivityAliasAsync(
++        Guid companyId,
++        [FromQuery] string? cursor,
++        [FromQuery] int? pageSize,
++        CancellationToken cancellationToken) =>
++        ListAsync(companyId, cursor, pageSize, cancellationToken);
++
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+         {
+diff --git a/src/VirtualCompany.Api/Program.cs b/src/VirtualCompany.Api/Program.cs
+index 2b628bd..9f322e2 100644
+--- a/src/VirtualCompany.Api/Program.cs
++++ b/src/VirtualCompany.Api/Program.cs
+@@ -76,7 +76,7 @@ using (var scope = app.Services.CreateScope())
+ app.MapVirtualCompanyHealthEndpoints();
+ app.MapControllers();
+-app.MapHub<ActivityFeedHub>(ActivityFeedHub.Route).RequireAuthorization(CompanyPolicies.CompanyMember);
++app.MapHub<ActivityFeedHub>(ActivityFeedHub.Route).RequireAuthorization(CompanyPolicies.AuthenticatedUser);
+ 
+ app.Run();
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs b/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
+index b8f5a2b..4bb7d5f 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
+@@ -1,8 +1,11 @@
++using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.SignalR;
+ using VirtualCompany.Application.Activity;
++using VirtualCompany.Application.Authorization;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+ namespace VirtualCompany.Infrastructure.Activity;
+ 
++[Authorize(Policy = CompanyPolicies.AuthenticatedUser)]
+ public sealed class ActivityFeedHub : Hub
+ {
+     public const string Route = "/hubs/activity-feed";
+@@ -34,6 +37,7 @@ public sealed class ActivityFeedHub : Hub
+ 
+     private bool TryReadTenantId(out Guid tenantId)
+     {
+-        var value = Context.GetHttpContext()?.Request.Query["tenantId"].FirstOrDefault();
++        var request = Context.GetHttpContext()?.Request;
++        var value = request?.Query["tenantId"].FirstOrDefault() ?? request?.Query["companyId"].FirstOrDefault();
+         return Guid.TryParse(value, out tenantId) && tenantId != Guid.Empty;
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 2b63e54..b6c7f84 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -1,6 +1,7 @@
+ using System.Text;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using Microsoft.Extensions.Logging;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Activity;
+ using VirtualCompany.Domain.Entities;
+@@ -16,16 +17,19 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IActivityEventPublisher _publisher;
++    private readonly ILogger<EfActivityEventStore> _logger;
+ 
+     public EfActivityEventStore(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+-        IActivityEventPublisher publisher)
++        IActivityEventPublisher publisher,
++        ILogger<EfActivityEventStore> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _publisher = publisher;
++        _logger = logger;
+     }
+ 
+     public async Task<ActivityEventDto> PersistAsync(Guid tenantId, PersistActivityEventCommand command, CancellationToken cancellationToken)
+@@ -37,7 +41,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         if (command.AgentId.HasValue)
+         {
+-            var agentExists = await _dbContext.Agents
++            var agentExists = await _dbContext.Agents.IgnoreQueryFilters()
+                 .AnyAsync(x => x.CompanyId == tenantId && x.Id == command.AgentId.Value, cancellationToken);
+             if (!agentExists)
+             {
+@@ -55,12 +59,20 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             command.Status,
+             command.Summary,
+             command.CorrelationId,
+-            command.SourceMetadata);
++            command.Source);
+ 
+         _dbContext.ActivityEvents.Add(activityEvent);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         var dto = ToDto(activityEvent);
++        _logger.LogInformation(
++            "Persisted activity event {ActivityEventId} for tenant {TenantId} with correlation {CorrelationId}.",
++            dto.EventId,
++            dto.TenantId,
++            dto.CorrelationId);
++
++        // Publish only after the database commit so subscribers never observe uncommitted activity.
+         await _publisher.PublishAsync(dto, cancellationToken);
+         return dto;
+     }
+@@ -69,7 +81,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         await RequireMembershipAsync(tenantId, cancellationToken);
+         var pageSize = Math.Clamp(query.PageSize ?? DefaultPageSize, 1, MaxPageSize);
+ 
+-        var events = _dbContext.ActivityEvents.AsNoTracking()
++        var events = _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
+             .Where(x => x.CompanyId == tenantId);
+ 
+         if (!string.IsNullOrWhiteSpace(query.Cursor))
+diff --git a/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs b/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
+index 4bb7d5f..be68e32 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/ActivityFeedHub.cs
+@@ -39,6 +39,22 @@ public sealed class ActivityFeedHub : Hub
+     {
+         var request = Context.GetHttpContext()?.Request;
+         var value = request?.Query["tenantId"].FirstOrDefault() ?? request?.Query["companyId"].FirstOrDefault();
+         return Guid.TryParse(value, out tenantId) && tenantId != Guid.Empty;
+     }
+ }
+ 
+ public sealed class SignalRActivityEventPublisher : IActivityEventPublisher
+ {
+     private readonly IHubContext<ActivityFeedHub> _hubContext;
++    private readonly ILogger<SignalRActivityEventPublisher> _logger;
+ 
+-    public SignalRActivityEventPublisher(IHubContext<ActivityFeedHub> hubContext)
++    public SignalRActivityEventPublisher(
++        IHubContext<ActivityFeedHub> hubContext,
++        ILogger<SignalRActivityEventPublisher> logger)
+     {
+         _hubContext = hubContext;
++        _logger = logger;
+     }
+ 
+-    public Task PublishAsync(ActivityEventDto activityEvent, CancellationToken cancellationToken) =>
+-        _hubContext.Clients
++    public async Task PublishAsync(ActivityEventDto activityEvent, CancellationToken cancellationToken)
++    {
++        await _hubContext.Clients
+             .Group(ActivityFeedHub.GroupName(activityEvent.TenantId))
+             .SendAsync(ActivityFeedHub.EventName, activityEvent, cancellationToken);
++
++        _logger.LogInformation(
++            "Published activity event {ActivityEventId} to tenant activity feed for tenant {TenantId} with correlation {CorrelationId}.",
++            activityEvent.EventId,
++            activityEvent.TenantId,
++            activityEvent.CorrelationId);
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+index e390ab0..16afc68 100644
+--- a/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
++++ b/src/VirtualCompany.Infrastructure/Tenancy/CompanyContextResolutionMiddleware.cs
+@@ -20,9 +20,13 @@ public sealed class CompanyContextResolutionMiddleware : IMiddleware
+ 
+     public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+     {
+         var requiresCompanyContext = context.GetEndpoint()?.Metadata.GetMetadata<RequireCompanyContextAttribute>() is not null;
+         var routeCompanyIdValue = context.Request.RouteValues.TryGetValue("companyId", out var routeCompanyId)
+             ? routeCompanyId?.ToString()
+             : null;
++        routeCompanyIdValue ??= context.Request.RouteValues.TryGetValue("tenantId", out var routeTenantId)
++            ? routeTenantId?.ToString()
++            : null;
+ 
+         var headerCompanyIdValue = context.Request.Headers[CompanyHeaderName].FirstOrDefault();
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+index 1ef95c0..3dc5b33 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+@@ -108,6 +108,22 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Tenant_alias_agent_activity_endpoint_is_tenant_scoped()
++    {
++        var seed = await SeedTenantAsync();
++        using var client = CreateAuthenticatedClient();
++        var persisted = await PersistAsync(
++            client,
++            seed.CompanyId,
++            seed.AgentId,
++            "task_completed",
++            DateTime.UtcNow,
++            "completed",
++            "Alias activity",
++            "corr-alias");
++
++        var result = await client.GetFromJsonAsync<ActivityFeedResponse>($"/api/tenants/{seed.CompanyId}/agent-activity?pageSize=10");
++
++        Assert.NotNull(result);
++        var item = Assert.Single(result!.Items);
++        Assert.Equal(persisted.EventId, item.EventId);
++    }
++
+     [Fact]
+     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()
+     {
+@@ -218,7 +234,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+                 status,
+                 summary,
+                 correlationId,
+-                sourceMetadata = new Dictionary<string, object?>
++                source = new Dictionary<string, object?>
+                 {
+                     ["sourceType"] = "task",
+                     ["sourceId"] = Guid.NewGuid()
+@@ -283,5 +299,5 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+         string Status,
+         string Summary,
+         string? CorrelationId,
+-        Dictionary<string, object?> SourceMetadata);
++        Dictionary<string, object?> Source);
+ }
+END_OF_PATCH

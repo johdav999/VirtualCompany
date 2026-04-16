@@ -1,0 +1,665 @@
+diff --git a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+index 9d3f3fd..f00d40a 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+@@ -1,4 +1,6 @@
+ using System.Diagnostics;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
++using System.Text.Json.Serialization;
+ using VirtualCompany.Application.Activity;
+ using VirtualCompany.Domain.Events;
+ using Xunit;
+@@ -9,35 +11,31 @@ public sealed class ActivitySummaryFormatterTests
+ {
+     private readonly DefaultActivityEventSummaryFormatter _formatter = new();
+ 
+-    public static IEnumerable<object[]> SupportedEventFixtures()
+-    {
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskCreated, "Alice", "Quarter close", "created task", "created", "Alice created task Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskUpdated, "Alice", "Quarter close", "updated task", "updated", "Alice updated task Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskAssigned, "Alice", "Quarter close", "assigned task", "assigned", "Alice assigned task Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskStatusChanged, "Alice", "Quarter close", "changed task status", "in_progress", "Alice changed task status Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskCompleted, "Alice", "Quarter close", "completed task", "completed", "Alice completed task Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskFailed, "Alice", "Quarter close", "failed task", "failed", "Alice failed task Quarter close");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStarted, "Alice", "Invoice workflow", "started workflow", "started", "Alice started workflow Invoice workflow");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStepCompleted, "Alice", "Approval step", "completed workflow step", "completed", "Alice completed workflow step Approval step");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowFailed, "Alice", "Invoice workflow", "failed workflow", "failed", "Alice failed workflow Invoice workflow");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, "Alice", "Invoice workflow", "changed workflow state", "waiting", "Alice changed workflow state Invoice workflow");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalRequested, "Alice", "Spend approval", "requested approval", "pending", "Alice requested approval Spend approval");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalApproved, "Alice", "Spend approval", "approved", "approved", "Alice approved Spend approval");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalRejected, "Alice", "Spend approval", "rejected", "rejected", "Alice rejected Spend approval");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentHired, "Alice", "Ops Agent", "hired agent", "active", "Alice hired agent Ops Agent");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentUpdated, "Alice", "Ops Agent", "updated agent", "updated", "Alice updated agent Ops Agent");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentPaused, "Alice", "Ops Agent", "paused agent", "paused", "Alice paused agent Ops Agent");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentArchived, "Alice", "Ops Agent", "archived agent", "archived", "Alice archived agent Ops Agent");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ToolExecutionAllowed, "Alice", "ERP lookup", "allowed tool execution", "allowed", "Alice allowed tool execution ERP lookup");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ToolExecutionDenied, "Alice", "ERP lookup", "denied tool execution", "denied", "Alice denied tool execution ERP lookup");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.DocumentUploaded, "Alice", "Runbook.pdf", "uploaded document", "uploaded", "Alice uploaded document Runbook.pdf");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.DocumentProcessed, "Alice", "Runbook.pdf", "processed document", "processed", "Alice processed document Runbook.pdf");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.MemoryItemCreated, "Alice", "Pricing note", "created memory item", "created", "Alice created memory item Pricing note");
+-        yield return Fixture(SupportedPlatformEventTypeRegistry.ConversationMessageSent, "Alice", "Finance channel", "sent conversation message", "sent", "Alice sent conversation message Finance channel");
+-    }
++    private const string FixtureFileName = "supported-event-summaries.json";
++    private static readonly JsonSerializerOptions FixtureJsonOptions = new(JsonSerializerDefaults.Web)
++    {
++        ReadCommentHandling = JsonCommentHandling.Skip,
++        AllowTrailingCommas = true
++    };
+ 
+     [Theory]
+     [MemberData(nameof(SupportedEventFixtures))]
+     public void Supported_event_types_return_deterministic_normalized_summaries(
+-        string eventType,
+-        Dictionary<string, JsonNode?> payload,
+-        string expectedAction,
+-        string expectedOutcome,
+-        string expectedText)
++        ActivitySummaryFixture fixture)
+     {
+-        var result = _formatter.Format(eventType, "ignored", "legacy text", payload);
++        var result = _formatter.Format(
++            fixture.EventType,
++            fixture.Status,
++            fixture.PersistedSummary,
++            fixture.RawPayload);
+ 
+-        Assert.Equal(eventType, result.EventType);
+-        Assert.Equal(eventType, result.FormatterKey);
+-        Assert.Equal("Alice", result.Actor);
+-        Assert.Equal(expectedAction, result.Action);
+-        Assert.Equal(expectedOutcome, result.Outcome);
+-        Assert.Equal(expectedText, result.SummaryText);
+-        Assert.Equal(expectedText, result.Text);
++        Assert.Contains(fixture.EventType, SupportedPlatformEventTypeRegistry.Instance.SupportedEventTypes);
++        Assert.Equal(fixture.EventType, result.EventType);
++        Assert.Equal(fixture.ExpectedSummary.FormatterKey, result.FormatterKey);
++        Assert.Equal(fixture.ExpectedSummary.Actor, result.Actor);
++        Assert.Equal(fixture.ExpectedSummary.Action, result.Action);
++        Assert.Equal(fixture.ExpectedSummary.Target, result.Target);
++        Assert.Equal(fixture.ExpectedSummary.Outcome, result.Outcome);
++        Assert.Equal(fixture.ExpectedSummary.SummaryText, result.SummaryText);
++        Assert.Equal(fixture.ExpectedSummary.SummaryText, result.Text);
+         Assert.DoesNotContain("null", result.Text, StringComparison.OrdinalIgnoreCase);
+         Assert.DoesNotContain("undefined", result.Text, StringComparison.OrdinalIgnoreCase);
+         Assert.DoesNotContain("  ", result.Text, StringComparison.Ordinal);
+@@ -45,6 +43,16 @@ public sealed class ActivitySummaryFormatterTests
+     }
+ 
+     [Fact]
++    public void Fixture_inventory_covers_at_least_20_real_supported_event_types()
++    {
++        var fixtures = LoadSupportedEventFixtures();
++        var eventTypes = fixtures.Select(x => x.EventType).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
++
++        Assert.True(eventTypes.Length >= 20, $"Expected at least 20 supported event type fixtures, found {eventTypes.Length}.");
++        Assert.All(eventTypes, eventType => Assert.Contains(eventType, SupportedPlatformEventTypeRegistry.Instance.SupportedEventTypes));
++    }
++
++    [Fact]
+     public void Missing_actor_is_omitted_without_dangling_text()
+     {
+         var result = _formatter.Format(
+@@ -147,18 +155,41 @@ public sealed class ActivitySummaryFormatterTests
+         Assert.True(median < 300, $"Median formatter time for a 200-item feed page was {median} ms.");
+     }
+ 
+-    private static object[] Fixture(
+-        string eventType,
+-        string actor,
+-        string target,
+-        string expectedAction,
+-        string expectedOutcome,
+-        string expectedText) =>
+-        [eventType, Payload(("actor", actor), ("targetName", target), ("outcome", expectedOutcome)), expectedAction, expectedOutcome, expectedText];
++    public static IEnumerable<object[]> SupportedEventFixtures() =>
++        LoadSupportedEventFixtures().Select(fixture => new object[] { fixture });
++
++    private static IReadOnlyList<ActivitySummaryFixture> LoadSupportedEventFixtures()
++    {
++        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "ActivitySummaries", FixtureFileName);
++        var json = File.ReadAllText(path);
++        var fixtures = JsonSerializer.Deserialize<IReadOnlyList<ActivitySummaryFixture>>(json, FixtureJsonOptions);
++
++        if (fixtures is null || fixtures.Count == 0)
++        {
++            throw new InvalidOperationException($"No activity summary fixtures were loaded from {path}.");
++        }
++
++        return fixtures;
++    }
+ 
+     private static Dictionary<string, JsonNode?> Payload(params (string Key, string? Value)[] values) =>
+         values.ToDictionary(
+             x => x.Key,
+             x => x.Value is null ? null : JsonValue.Create(x.Value),
+             StringComparer.OrdinalIgnoreCase);
++
++    private sealed record ActivitySummaryFixture(
++        string EventType,
++        string Status,
++        string? PersistedSummary,
++        Dictionary<string, JsonNode?> RawPayload,
++        ExpectedActivitySummary ExpectedSummary)
++    {
++        public override string ToString() => EventType;
++    }
++
++    private sealed record ExpectedActivitySummary(
++        string FormatterKey,
++        string? Actor,
++        string Action,
++        string? Target,
++        string? Outcome,
++        string SummaryText);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/Fixtures/ActivitySummaries/supported-event-summaries.json b/tests/VirtualCompany.Api.Tests/Fixtures/ActivitySummaries/supported-event-summaries.json
+new file mode 100644
+index 0000000..3f7001e
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/Fixtures/ActivitySummaries/supported-event-summaries.json
+@@ -0,0 +1,408 @@
++[
++  {
++    "eventType": "task_created",
++    "status": "created",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "taskTitle": "Quarter close",
++      "outcome": "created"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_created",
++      "actor": "Alice",
++      "action": "created task",
++      "target": "Quarter close",
++      "outcome": "created",
++      "summaryText": "Alice created task Quarter close"
++    }
++  },
++  {
++    "eventType": "task_updated",
++    "status": "updated",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "actorName": "Alice",
++      "taskName": "Quarter close",
++      "outcome": "updated"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_updated",
++      "actor": "Alice",
++      "action": "updated task",
++      "target": "Quarter close",
++      "outcome": "updated",
++      "summaryText": "Alice updated task Quarter close"
++    }
++  },
++  {
++    "eventType": "task_assigned",
++    "status": "assigned",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "userDisplayName": "Alice",
++      "title": "Quarter close",
++      "outcome": "assigned"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_assigned",
++      "actor": "Alice",
++      "action": "assigned task",
++      "target": "Quarter close",
++      "outcome": "assigned",
++      "summaryText": "Alice assigned task Quarter close"
++    }
++  },
++  {
++    "eventType": "task_status_changed",
++    "status": "in_progress",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "targetName": "Quarter close",
++      "status": "in_progress"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_status_changed",
++      "actor": "Alice",
++      "action": "changed task status",
++      "target": "Quarter close",
++      "outcome": "in_progress",
++      "summaryText": "Alice changed task status Quarter close"
++    }
++  },
++  {
++    "eventType": "task_completed",
++    "status": "completed",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "performedBy": "Alice",
++      "name": "Quarter close",
++      "outcome": "completed"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_completed",
++      "actor": "Alice",
++      "action": "completed task",
++      "target": "Quarter close",
++      "outcome": "completed",
++      "summaryText": "Alice completed task Quarter close"
++    }
++  },
++  {
++    "eventType": "task_failed",
++    "status": "failed",
++    "persistedSummary": "Legacy task summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "targetName": "Quarter close",
++      "result": "failed"
++    },
++    "expectedSummary": {
++      "formatterKey": "task_failed",
++      "actor": "Alice",
++      "action": "failed task",
++      "target": "Quarter close",
++      "outcome": "failed",
++      "summaryText": "Alice failed task Quarter close"
++    }
++  },
++  {
++    "eventType": "workflow_started",
++    "status": "started",
++    "persistedSummary": "Legacy workflow summary",
++    "rawPayload": {
++      "agentDisplayName": "Alice",
++      "workflowName": "Invoice workflow",
++      "outcome": "started"
++    },
++    "expectedSummary": {
++      "formatterKey": "workflow_started",
++      "actor": "Alice",
++      "action": "started workflow",
++      "target": "Invoice workflow",
++      "outcome": "started",
++      "summaryText": "Alice started workflow Invoice workflow"
++    }
++  },
++  {
++    "eventType": "workflow_step_completed",
++    "status": "completed",
++    "persistedSummary": "Legacy workflow summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "stepName": "Approval step",
++      "outcome": "completed"
++    },
++    "expectedSummary": {
++      "formatterKey": "workflow_step_completed",
++      "actor": "Alice",
++      "action": "completed workflow step",
++      "target": "Approval step",
++      "outcome": "completed",
++      "summaryText": "Alice completed workflow step Approval step"
++    }
++  },
++  {
++    "eventType": "workflow_failed",
++    "status": "failed",
++    "persistedSummary": "Legacy workflow summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "workflowTitle": "Invoice workflow",
++      "decision": "failed"
++    },
++    "expectedSummary": {
++      "formatterKey": "workflow_failed",
++      "actor": "Alice",
++      "action": "failed workflow",
++      "target": "Invoice workflow",
++      "outcome": "failed",
++      "summaryText": "Alice failed workflow Invoice workflow"
++    }
++  },
++  {
++    "eventType": "workflow_state_changed",
++    "status": "waiting",
++    "persistedSummary": "Legacy workflow summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "targetName": "Invoice workflow",
++      "outcome": "waiting"
++    },
++    "expectedSummary": {
++      "formatterKey": "workflow_state_changed",
++      "actor": "Alice",
++      "action": "changed workflow state",
++      "target": "Invoice workflow",
++      "outcome": "waiting",
++      "summaryText": "Alice changed workflow state Invoice workflow"
++    }
++  },
++  {
++    "eventType": "approval_requested",
++    "status": "pending",
++    "persistedSummary": "Legacy approval summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "approvalTitle": "Spend approval",
++      "outcome": "pending"
++    },
++    "expectedSummary": {
++      "formatterKey": "approval_requested",
++      "actor": "Alice",
++      "action": "requested approval",
++      "target": "Spend approval",
++      "outcome": "pending",
++      "summaryText": "Alice requested approval Spend approval"
++    }
++  },
++  {
++    "eventType": "approval_approved",
++    "status": "approved",
++    "persistedSummary": "Legacy approval summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "requestTitle": "Spend approval",
++      "outcome": "approved"
++    },
++    "expectedSummary": {
++      "formatterKey": "approval_approved",
++      "actor": "Alice",
++      "action": "approved",
++      "target": "Spend approval",
++      "outcome": "approved",
++      "summaryText": "Alice approved Spend approval"
++    }
++  },
++  {
++    "eventType": "approval_rejected",
++    "status": "rejected",
++    "persistedSummary": "Legacy approval summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "targetName": "Spend approval",
++      "outcome": "rejected"
++    },
++    "expectedSummary": {
++      "formatterKey": "approval_rejected",
++      "actor": "Alice",
++      "action": "rejected",
++      "target": "Spend approval",
++      "outcome": "rejected",
++      "summaryText": "Alice rejected Spend approval"
++    }
++  },
++  {
++    "eventType": "approval_decision",
++    "status": "approved",
++    "persistedSummary": "Legacy approval summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "title": "Spend approval",
++      "decision": "approved"
++    },
++    "expectedSummary": {
++      "formatterKey": "approval_decision",
++      "actor": "Alice",
++      "action": "recorded approval decision",
++      "target": "Spend approval",
++      "outcome": "approved",
++      "summaryText": "Alice recorded approval decision Spend approval"
++    }
++  },
++  {
++    "eventType": "approval_updated",
++    "status": "updated",
++    "persistedSummary": "Legacy approval summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "approvalTitle": "Spend approval",
++      "outcome": "updated"
++    },
++    "expectedSummary": {
++      "formatterKey": "approval_updated",
++      "actor": "Alice",
++      "action": "updated approval",
++      "target": "Spend approval",
++      "outcome": "updated",
++      "summaryText": "Alice updated approval Spend approval"
++    }
++  },
++  {
++    "eventType": "agent_hired",
++    "status": "active",
++    "persistedSummary": "Legacy agent summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "agentDisplayName": "Ops Agent",
++      "outcome": "active"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_hired",
++      "actor": "Alice",
++      "action": "hired agent",
++      "target": "Ops Agent",
++      "outcome": "active",
++      "summaryText": "Alice hired agent Ops Agent"
++    }
++  },
++  {
++    "eventType": "agent_updated",
++    "status": "updated",
++    "persistedSummary": "Legacy agent summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "agentName": "Ops Agent",
++      "outcome": "updated"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_updated",
++      "actor": "Alice",
++      "action": "updated agent",
++      "target": "Ops Agent",
++      "outcome": "updated",
++      "summaryText": "Alice updated agent Ops Agent"
++    }
++  },
++  {
++    "eventType": "agent_paused",
++    "status": "paused",
++    "persistedSummary": "Legacy agent summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "targetName": "Ops Agent",
++      "outcome": "paused"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_paused",
++      "actor": "Alice",
++      "action": "paused agent",
++      "target": "Ops Agent",
++      "outcome": "paused",
++      "summaryText": "Alice paused agent Ops Agent"
++    }
++  },
++  {
++    "eventType": "agent_archived",
++    "status": "archived",
++    "persistedSummary": "Legacy agent summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "name": "Ops Agent",
++      "outcome": "archived"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_archived",
++      "actor": "Alice",
++      "action": "archived agent",
++      "target": "Ops Agent",
++      "outcome": "archived",
++      "summaryText": "Alice archived agent Ops Agent"
++    }
++  },
++  {
++    "eventType": "agent_status_updated",
++    "status": "online",
++    "persistedSummary": "Legacy agent summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "agentDisplayName": "Ops Agent",
++      "status": "online"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_status_updated",
++      "actor": "Alice",
++      "action": "updated agent status",
++      "target": "Ops Agent",
++      "outcome": "online",
++      "summaryText": "Alice updated agent status Ops Agent"
++    }
++  },
++  {
++    "eventType": "agent_generated_alert",
++    "status": "raised",
++    "persistedSummary": "Legacy alert summary",
++    "rawPayload": {
++      "agentDisplayName": "Ops Agent",
++      "alertTitle": "SLA risk",
++      "outcome": "raised"
++    },
++    "expectedSummary": {
++      "formatterKey": "agent_generated_alert",
++      "actor": "Ops Agent",
++      "action": "raised alert",
++      "target": "SLA risk",
++      "outcome": "raised",
++      "summaryText": "Ops Agent raised alert SLA risk"
++    }
++  },
++  {
++    "eventType": "tool_execution_allowed",
++    "status": "allowed",
++    "persistedSummary": "Legacy tool summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "toolName": "ERP lookup",
++      "outcome": "allowed"
++    },
++    "expectedSummary": {
++      "formatterKey": "tool_execution_allowed",
++      "actor": "Alice",
++      "action": "allowed tool execution",
++      "target": "ERP lookup",
++      "outcome": "allowed",
++      "summaryText": "Alice allowed tool execution ERP lookup"
++    }
++  },
++  {
++    "eventType": "tool_execution_denied",
++    "status": "denied",
++    "persistedSummary": "Legacy tool summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "toolExecutionName": "ERP lookup",
++      "outcome": "denied"
++    },
++    "expectedSummary": {
++      "formatterKey": "tool_execution_denied",
++      "actor": "Alice",
++      "action": "denied tool execution",
++      "target": "ERP lookup",
++      "outcome": "denied",
++      "summaryText": "Alice denied tool execution ERP lookup"
++    }
++  },
++  {
++    "eventType": "document_uploaded",
++    "status": "uploaded",
++    "persistedSummary": "Legacy document summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "documentName": "Runbook.pdf",
++      "outcome": "uploaded"
++    },
++    "expectedSummary": {
++      "formatterKey": "document_uploaded",
++      "actor": "Alice",
++      "action": "uploaded document",
++      "target": "Runbook.pdf",
++      "outcome": "uploaded",
++      "summaryText": "Alice uploaded document Runbook.pdf"
++    }
++  },
++  {
++    "eventType": "document_processed",
++    "status": "processed",
++    "persistedSummary": "Legacy document summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "fileName": "Runbook.pdf",
++      "outcome": "processed"
++    },
++    "expectedSummary": {
++      "formatterKey": "document_processed",
++      "actor": "Alice",
++      "action": "processed document",
++      "target": "Runbook.pdf",
++      "outcome": "processed",
++      "summaryText": "Alice processed document Runbook.pdf"
++    }
++  },
++  {
++    "eventType": "memory_item_created",
++    "status": "created",
++    "persistedSummary": "Legacy memory summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "memoryTitle": "Pricing note",
++      "outcome": "created"
++    },
++    "expectedSummary": {
++      "formatterKey": "memory_item_created",
++      "actor": "Alice",
++      "action": "created memory item",
++      "target": "Pricing note",
++      "outcome": "created",
++      "summaryText": "Alice created memory item Pricing note"
++    }
++  },
++  {
++    "eventType": "conversation_message_sent",
++    "status": "sent",
++    "persistedSummary": "Legacy conversation summary",
++    "rawPayload": {
++      "actor": "Alice",
++      "conversationTitle": "Finance channel",
++      "outcome": "sent"
++    },
++    "expectedSummary": {
++      "formatterKey": "conversation_message_sent",
++      "actor": "Alice",
++      "action": "sent conversation message",
++      "target": "Finance channel",
++      "outcome": "sent",
++      "summaryText": "Alice sent conversation message Finance channel"
++    }
++  }
++]
+diff --git a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+index 6c2a9b8..cbbfa6d 100644
+--- a/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
++++ b/tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj
+@@ -22,4 +22,10 @@
+     <ProjectReference Include="..\..\src\VirtualCompany.Shared\VirtualCompany.Shared.csproj" />
+   </ItemGroup>
+ 
++  <ItemGroup>
++    <None Update="Fixtures\ActivitySummaries\*.json">
++      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
++    </None>
++  </ItemGroup>
++
+ </Project>
+END_OF_PATCH

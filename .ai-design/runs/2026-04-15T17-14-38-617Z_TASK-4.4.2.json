@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-4.4.2",
+  "promptPath": ".ai-design/prompts/TASK-4.4.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:14:38.617Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-14-38-617Z_TASK-4.4.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-14-38-617Z_TASK-4.4.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:17:19.580Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ng_approvals\", \"alerts\"], preference.IncludedFocusAreas);\n+        Assert.Equal(\"medium\", preference.PriorityThreshold);\n+        Assert.Equal(\"tenant_default\", preference.Source);\n+    }\n+\n     [Fact]\n     public async Task Invalid_focus_area_returns_descriptive_4xx_error()\n     {\n@@ -83,6 +108,25 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp\n         Assert.Contains(\"briefing_preferences.invalid_delivery_frequency\", problem!.Errors.SelectMany(x => x.Value));\n     }\n \n+    [Fact]\n+    public async Task Invalid_priority_threshold_returns_descriptive_4xx_error()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"daily\",\n+            includedFocusAreas = new[] { \"alerts\" },\n+            priorityThreshold = \"urgent\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.invalid_priority_threshold\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"informational\", StringComparison.OrdinalIgnoreCase));\n+    }\n+\n     [Fact]\n     public async Task Tenant_defaults_require_admin_authorization()\n     {\n@@ -230,6 +274,7 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp\n         public string DeliveryFrequency { get; set; } = string.Empty;\n         public List<string> IncludedFocusAreas { get; set; } = [];\n         public string PriorityThreshold { get; set; } = string.Empty;\n+        public string Source { get; set; } = string.Empty;\n     }\n \n     private sealed class BriefingGenerationResponse\nEND_OF_PATCH\n",
+  "stderrTail": "rts\"], preference.IncludedFocusAreas);\n+        Assert.Equal(\"medium\", preference.PriorityThreshold);\n+        Assert.Equal(\"tenant_default\", preference.Source);\n+    }\n+\n     [Fact]\n     public async Task Invalid_focus_area_returns_descriptive_4xx_error()\n     {\n@@ -83,6 +108,25 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp\n         Assert.Contains(\"briefing_preferences.invalid_delivery_frequency\", problem!.Errors.SelectMany(x => x.Value));\n     }\n \n+    [Fact]\n+    public async Task Invalid_priority_threshold_returns_descriptive_4xx_error()\n+    {\n+        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PutAsJsonAsync($\"/api/companies/{seed.CompanyId}/briefings/preferences/me\", new\n+        {\n+            deliveryFrequency = \"daily\",\n+            includedFocusAreas = new[] { \"alerts\" },\n+            priorityThreshold = \"urgent\"\n+        });\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();\n+        Assert.Contains(\"briefing_preferences.invalid_priority_threshold\", problem!.Errors.SelectMany(x => x.Value));\n+        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains(\"informational\", StringComparison.OrdinalIgnoreCase));\n+    }\n+\n     [Fact]\n     public async Task Tenant_defaults_require_admin_authorization()\n     {\n@@ -230,6 +274,7 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp\n         public string DeliveryFrequency { get; set; } = string.Empty;\n         public List<string> IncludedFocusAreas { get; set; } = [];\n         public string PriorityThreshold { get; set; } = string.Empty;\n+        public string Source { get; set; } = string.Empty;\n     }\n \n     private sealed class BriefingGenerationResponse\nEND_OF_PATCH\ntokens used\n83,556\n",
+  "verbosityMode": "summary"
+}

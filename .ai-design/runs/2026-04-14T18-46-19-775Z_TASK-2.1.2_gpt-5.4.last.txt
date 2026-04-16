@@ -1,0 +1,586 @@
+diff --git a/README.md b/README.md
+index 7c8b9dd..bb8e1d2 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,13 @@
+ # Virtual Company
+ 
+ Modular monolith prototype for operating AI-assisted company workflows.
++
++## Agent Communication Profiles
++
++Agent prompt composition resolves a normalized communication profile at generation time. Direct chat, task output, and document or generated-artifact prompts all render the same `Agent identity profile` system section before channel-specific user instructions.
++
++Resolution order:
++
++1. The persisted agent communication profile.
++2. System fallback profile when no explicit profile is configured.
++
++Fallback usage is logged with company, agent, generation path, and correlation identifiers. Runtime profile resolution rereads the persisted agent record for each generation request so operating profile changes are picked up without restarting the service.
+diff --git a/src/VirtualCompany.Application/Agents/AgentCommunicationProfilePromptRenderer.cs b/src/VirtualCompany.Application/Agents/AgentCommunicationProfilePromptRenderer.cs
+new file mode 100644
+index 0000000..e979ea4
+--- /dev/null
++++ b/src/VirtualCompany.Application/Agents/AgentCommunicationProfilePromptRenderer.cs
+@@ -0,0 +1,58 @@
++using System.Text;
++
++namespace VirtualCompany.Application.Agents;
++
++public static class AgentCommunicationProfilePromptRenderer
++{
++    public const string SectionTitle = "Agent identity profile";
++
++    public static string Render(AgentCommunicationProfileDto profile)
++    {
++        ArgumentNullException.ThrowIfNull(profile);
++
++        var builder = new StringBuilder();
++        builder.Append("Tone: ");
++        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Tone) ? "professional, clear, helpful" : profile.Tone.Trim());
++        builder.Append("Persona: ");
++        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Persona) ? "reliable business assistant" : profile.Persona.Trim());
++        builder.Append("Profile source: ");
++        builder.AppendLine(string.IsNullOrWhiteSpace(profile.ProfileSource) ? AgentCommunicationProfileSources.Fallback : profile.ProfileSource.Trim());
++        builder.Append("Fallback profile: ");
++        builder.AppendLine(profile.IsFallback ? "true" : "false");
++        AppendListSection(builder, "Style directives", profile.StyleDirectives);
++        AppendListSection(builder, "Communication rules", profile.CommunicationRules);
++        AppendListSection(builder, "Forbidden tone rules", profile.ForbiddenToneRules);
++        builder.AppendLine("Apply this identity profile to every user-facing response, task output, summary, and generated artifact.");
++        return builder.ToString().TrimEnd();
++    }
++
++    public static IReadOnlyDictionary<string, string> ToStableDirectiveMap(AgentCommunicationProfileDto profile)
++    {
++        ArgumentNullException.ThrowIfNull(profile);
++
++        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = string.IsNullOrWhiteSpace(profile.Tone) ? "professional, clear, helpful" : profile.Tone.Trim(),
++            ["persona"] = string.IsNullOrWhiteSpace(profile.Persona) ? "reliable business assistant" : profile.Persona.Trim(),
++            ["styleDirectives"] = JoinOrNone(profile.StyleDirectives),
++            ["communicationRules"] = JoinOrNone(profile.CommunicationRules),
++            ["forbiddenToneRules"] = JoinOrNone(profile.ForbiddenToneRules),
++            ["profileSource"] = string.IsNullOrWhiteSpace(profile.ProfileSource) ? AgentCommunicationProfileSources.Fallback : profile.ProfileSource.Trim(),
++            ["isFallback"] = profile.IsFallback ? "true" : "false"
++        };
++    }
++
++    private static void AppendListSection(StringBuilder builder, string label, IReadOnlyList<string> values)
++    {
++        builder.Append(label);
++        builder.Append(": ");
++        builder.AppendLine(JoinOrNone(values));
++    }
++
++    private static string JoinOrNone(IEnumerable<string> values)
++    {
++        var normalized = values
++            .Where(static value => !string.IsNullOrWhiteSpace(value))
++            .Select(static value => value.Trim())
++            .ToArray();
++
++        return normalized.Length == 0 ? "none" : string.Join("; ", normalized);
++    }
++}
+diff --git a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+index 62101bd..07b1985 100644
+--- a/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
++++ b/src/VirtualCompany.Application/Orchestration/StructuredPromptBuilder.cs
+@@ -1,6 +1,7 @@
+ using System.Security.Cryptography;
+ using System.Text;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
++using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Context;
+ 
+ namespace VirtualCompany.Application.Orchestration;
+@@ -27,6 +28,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         var policyInstructions = ResolvePolicyInstructions(request).ToList();
+         var toolSchemas = ResolveToolSchemas(request).ToList();
+         var sections = BuildSections(context, memorySnippets, policyInstructions, toolSchemas);
++        var promptPath = ResolvePromptPath(context);
+         var systemPrompt = ComposeSystemPrompt(sections);
+-        var messages = BuildMessages(context, systemPrompt);
++        var messages = BuildMessages(context, systemPrompt, promptPath);
+         var sourceReferenceIds = ResolveSourceReferenceIds(context, memorySnippets);
+-        var payload = BuildPayload(context, sections, messages, memorySnippets, policyInstructions, toolSchemas);
++        var payload = BuildPayload(context, sections, messages, memorySnippets, policyInstructions, toolSchemas, promptPath);
+         var promptId = CreateDeterministicPromptId(context, sections, toolSchemas);
+ 
+         return new PromptBuildResult(
+@@ -61,7 +63,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                 }),
+             new(
+                 PromptSectionIds.CommunicationProfile,
+-                "Communication profile",
++                AgentCommunicationProfilePromptRenderer.SectionTitle,
+                 2,
+                 BuildCommunicationProfileContext(context),
+                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+@@ -69,7 +71,10 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                     ["profileSource"] = JsonValue.Create(context.Agent.CommunicationProfile.ProfileSource),
+                     ["isFallback"] = JsonValue.Create(context.Agent.CommunicationProfile.IsFallback),
+                     ["tone"] = JsonValue.Create(context.Agent.CommunicationProfile.Tone),
+-                    ["persona"] = JsonValue.Create(context.Agent.CommunicationProfile.Persona)
++                    ["persona"] = JsonValue.Create(context.Agent.CommunicationProfile.Persona),
++                    ["styleDirectives"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile.StyleDirectives, JsonOptions),
++                    ["communicationRules"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile.CommunicationRules, JsonOptions),
++                    ["forbiddenToneRules"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile.ForbiddenToneRules, JsonOptions)
+                 }),
+             new(
+                 PromptSectionIds.CompanyContext,
+@@ -118,16 +123,19 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                 })
+         ];
+ 
+-    private static IReadOnlyList<PromptMessageDto> BuildMessages(SingleAgentRuntimeContext context, string systemPrompt) =>
++    private static IReadOnlyList<PromptMessageDto> BuildMessages(SingleAgentRuntimeContext context, string systemPrompt, string promptPath) =>
+         [
+             new(PromptRoles.System, "prompt_package", systemPrompt, new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["companyId"] = JsonValue.Create(context.Company.CompanyId.ToString("N")),
+                 ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
++                ["promptPath"] = JsonValue.Create(promptPath),
++                ["identityProfileSource"] = JsonValue.Create(context.Agent.CommunicationProfile.ProfileSource),
+                 ["sectionOrder"] = JsonSerializer.SerializeToNode(PromptSectionIds.Ordered, JsonOptions)
+             }),
+-            new(PromptRoles.User, "task_input", BuildTaskInput(context), new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            new(PromptRoles.User, "generation_input", BuildGenerationInput(context, promptPath), new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+             {
+                 ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
++                ["promptPath"] = JsonValue.Create(promptPath),
+                 ["taskType"] = JsonValue.Create(context.Task.Type),
+                 ["intent"] = JsonValue.Create(context.Intent)
+             })
+@@ -181,20 +189,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+     }
+ 
+     private static string BuildCommunicationProfileContext(SingleAgentRuntimeContext context)
+-    {
+-        var profile = context.Agent.CommunicationProfile;
+-        var builder = new StringBuilder();
+-        builder.Append("Tone: ");
+-        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Tone) ? "professional, clear, helpful" : profile.Tone);
+-        builder.Append("Persona: ");
+-        builder.AppendLine(string.IsNullOrWhiteSpace(profile.Persona) ? "reliable business assistant" : profile.Persona);
+-        builder.Append("Profile source: ");
+-        builder.AppendLine(profile.ProfileSource);
+-        builder.Append("Fallback profile: ");
+-        builder.AppendLine(profile.IsFallback ? "true" : "false");
+-        AppendListSection(builder, "Style directives", profile.StyleDirectives);
+-        AppendListSection(builder, "Communication rules", profile.CommunicationRules);
+-        AppendListSection(builder, "Forbidden tone rules", profile.ForbiddenToneRules);
+-        return builder.ToString().TrimEnd();
+-    }
++        => AgentCommunicationProfilePromptRenderer.Render(context.Agent.CommunicationProfile);
+ 
+     private static void AppendListSection(StringBuilder builder, string label, IReadOnlyList<string> values)
+     {
+@@ -315,17 +310,30 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+                 tool.PolicyMetadata, JsonOptions)
+                 }));
+     }
+ 
+-    private static string BuildTaskInput(SingleAgentRuntimeContext context)
++    private static string BuildGenerationInput(SingleAgentRuntimeContext context, string promptPath)
+     {
+         var builder = new StringBuilder();
+-        builder.Append("Execute the task using the prompt package context.");
+-        builder.AppendLine();
++        builder.AppendLine("Use the system prompt package, including the Agent identity profile section, before producing any output.");
++        if (string.Equals(promptPath, PromptGenerationPathValues.Chat, StringComparison.OrdinalIgnoreCase))
++        {
++            builder.AppendLine("Respond to the direct chat message using the configured communication profile.");
++        }
++        else if (string.Equals(promptPath, PromptGenerationPathValues.DocumentGeneration, StringComparison.OrdinalIgnoreCase))
++        {
++            builder.AppendLine("Construct the requested document or generated artifact using the configured communication profile.");
++        }
++        else
++        {
++            builder.AppendLine("Generate task output and summary using the configured communication profile.");
++        }
++
+         builder.Append("Task: ");
+         builder.AppendLine(context.Task.Title);
+         builder.Append("Input payload: ");
+         builder.Append(JsonSerializer.Serialize(context.Task.InputPayload, JsonOptions));
+         return builder.ToString();
+     }
++
++    private static string ResolvePromptPath(SingleAgentRuntimeContext context)
++    {
++        if (string.Equals(context.Intent, OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase))
++        {
++            return PromptGenerationPathValues.Chat;
++        }
++
++        return IsDocumentOrGeneratedArtifactPrompt(context)
++            ? PromptGenerationPathValues.DocumentGeneration
++            : PromptGenerationPathValues.TaskOutput;
++    }
++
++    private static bool IsDocumentOrGeneratedArtifactPrompt(SingleAgentRuntimeContext context)
++    {
++        var taskType = context.Task.Type;
++        var intent = context.Intent;
++        return ContainsPromptPathMarker(taskType, "document") ||
++               ContainsPromptPathMarker(taskType, "artifact") ||
++               ContainsPromptPathMarker(intent, "document") ||
++               ContainsPromptPathMarker(intent, "artifact");
++    }
++
++    private static bool ContainsPromptPathMarker(string? value, string marker) =>
++        !string.IsNullOrWhiteSpace(value) &&
++        value.Contains(marker, StringComparison.OrdinalIgnoreCase);
+ 
+     private static IEnumerable<MemorySnippet> ResolveMemorySnippets(PromptBuildRequest request)
+     {
+@@ -413,7 +421,8 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+         IReadOnlyList<PromptSectionDto> sections,
+         IReadOnlyList<PromptMessageDto> messages,
+         IReadOnlyList<MemorySnippet> memorySnippets,
+         IReadOnlyList<PolicyInstruction> policyInstructions,
+-        IReadOnlyList<ToolSchemaDefinition> toolSchemas)
++        IReadOnlyList<ToolSchemaDefinition> toolSchemas,
++        string promptPath)
+     {
+         var payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+         {
+@@ -422,6 +431,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             ["agentId"] = JsonValue.Create(context.Agent.Id.ToString("N")),
+             ["taskId"] = JsonValue.Create(context.Task.Id.ToString("N")),
+             ["correlationId"] = JsonValue.Create(context.CorrelationId),
++            ["promptPath"] = JsonValue.Create(promptPath),
+             ["sectionOrder"] = JsonSerializer.SerializeToNode(PromptSectionIds.Ordered, JsonOptions),
+             ["sections"] = JsonSerializer.SerializeToNode(sections, JsonOptions),
+             ["systemPrompt"] = JsonValue.Create(ComposeSystemPrompt(sections)),
+@@ -430,6 +440,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             ["policies"] = JsonSerializer.SerializeToNode(policyInstructions, JsonOptions),
+             ["agentIdentityProfile"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile, JsonOptions),
++            ["agentIdentityDirectives"] = JsonSerializer.SerializeToNode(AgentCommunicationProfilePromptRenderer.ToStableDirectiveMap(context.Agent.CommunicationProfile), JsonOptions),
+             ["tools"] = JsonSerializer.SerializeToNode(toolSchemas, JsonOptions),
+             ["outputContract"] = JsonSerializer.SerializeToNode(new
+             {
+@@ -442,6 +453,17 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             }, JsonOptions)
+         };
+ 
++        if (string.Equals(promptPath, PromptGenerationPathValues.DocumentGeneration, StringComparison.OrdinalIgnoreCase))
++        {
++            payload["documentGenerationContract"] = JsonSerializer.SerializeToNode(new
++            {
++                appliesIdentityProfile = true,
++                identityProfileSection = PromptSectionIds.CommunicationProfile,
++                artifactStyleSource = "agent_identity_profile"
++            }, JsonOptions);
++        }
++
+         if (IsManagerWorkerSubtask(context))
+         {
+             payload["collaborationContract"] = JsonSerializer.SerializeToNode(new
+@@ -474,6 +496,7 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
+             AgentId = context.Agent.Id,
+             TaskId = context.Task.Id,
+             context.Intent,
++            PromptPath = ResolvePromptPath(context),
+             Sections = sections.Select(static x => new { x.Id, x.Order, x.Content }),
+             Tools = toolSchemas.Select(static x => new { x.Name, x.SupportedActions, x.Scopes, x.Schema })
+         }, JsonOptions);
+@@ -547,3 +570,10 @@ public static class PromptSectionIds
+         ToolSchemas
+     ];
+ }
++
++public static class PromptGenerationPathValues
++{
++    public const string Chat = "chat";
++    public const string TaskOutput = "task_output";
++    public const string DocumentGeneration = "document_generation";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs b/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs
+index 4af084e..29aee96 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/AgentCommunicationProfileServices.cs
+@@ -41,10 +41,19 @@ public sealed class AgentCommunicationProfileResolver : IAgentCommunicationProfil
+         CommunicationProfileResolutionContext context)
+     {
+         if (AgentCommunicationProfileJsonMapper.HasExplicitProfile(persistedProfile))
+         {
+-            return AgentCommunicationProfileJsonMapper.ToDto(
++            var explicitProfile = AgentCommunicationProfileJsonMapper.ToDto(
+                 persistedProfile,
+                 AgentCommunicationProfileSources.Explicit,
+                 isFallback: false);
++            var defaults = _defaultProfileProvider.GetDefaultProfile();
++
++            return explicitProfile with
++            {
++                Tone = string.IsNullOrWhiteSpace(explicitProfile.Tone) ? defaults.Tone : explicitProfile.Tone,
++                Persona = string.IsNullOrWhiteSpace(explicitProfile.Persona) ? defaults.Persona : explicitProfile.Persona,
++                StyleDirectives = explicitProfile.StyleDirectives.Count == 0 ? defaults.StyleDirectives : explicitProfile.StyleDirectives,
++                CommunicationRules = explicitProfile.CommunicationRules.Count == 0 ? defaults.CommunicationRules : explicitProfile.CommunicationRules,
++                ForbiddenToneRules = explicitProfile.ForbiddenToneRules.Count == 0 ? defaults.ForbiddenToneRules : explicitProfile.ForbiddenToneRules
++            };
+         }
+ 
+         var fallback = _defaultProfileProvider.GetDefaultProfile();
+diff --git a/tests/VirtualCompany.Api.Tests/AgentCommunicationProfileResolverTests.cs b/tests/VirtualCompany.Api.Tests/AgentCommunicationProfileResolverTests.cs
+new file mode 100644
+index 0000000..29bf08f
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/AgentCommunicationProfileResolverTests.cs
+@@ -0,0 +1,106 @@
++using System.Text.Json.Nodes;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Agents;
++using VirtualCompany.Infrastructure.Companies;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class AgentCommunicationProfileResolverTests
++{
++    [Fact]
++    public void Resolve_uses_explicit_profile_and_default_fills_missing_fields()
++    {
++        var logger = new CapturingLogger<AgentCommunicationProfileResolver>();
++        var resolver = new AgentCommunicationProfileResolver(new DefaultAgentCommunicationProfileProvider(), logger);
++        var profile = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = JsonValue.Create("direct and calm"),
++            ["communicationRules"] = new JsonArray(JsonValue.Create("Name risks before recommendations."))
++        };
++
++        var result = resolver.Resolve(profile, CreateContext());
++
++        Assert.False(result.IsFallback);
++        Assert.Equal(AgentCommunicationProfileSources.Explicit, result.ProfileSource);
++        Assert.Equal("direct and calm", result.Tone);
++        Assert.Equal("reliable business assistant", result.Persona);
++        Assert.Contains("Name risks before recommendations.", result.CommunicationRules);
++        Assert.Contains("hostile", result.ForbiddenToneRules);
++        Assert.DoesNotContain(logger.Entries, entry => entry.Level == LogLevel.Information);
++    }
++
++    [Fact]
++    public void Resolve_uses_fallback_profile_and_logs_when_explicit_profile_is_missing()
++    {
++        var logger = new CapturingLogger<AgentCommunicationProfileResolver>();
++        var resolver = new AgentCommunicationProfileResolver(new DefaultAgentCommunicationProfileProvider(), logger);
++
++        var result = resolver.Resolve([], CreateContext());
++
++        Assert.True(result.IsFallback);
++        Assert.Equal(AgentCommunicationProfileSources.Fallback, result.ProfileSource);
++        Assert.Equal("professional, clear, helpful", result.Tone);
++        Assert.Contains("Use business-appropriate language.", result.CommunicationRules);
++        var entry = Assert.Single(logger.Entries, item => item.Level == LogLevel.Information);
++        Assert.Contains("Applied fallback agent communication profile", entry.Message);
++        Assert.Contains("chat", entry.Message);
++    }
++
++    [Fact]
++    public void Resolve_reads_updated_profile_values_on_subsequent_calls()
++    {
++        var logger = new CapturingLogger<AgentCommunicationProfileResolver>();
++        var resolver = new AgentCommunicationProfileResolver(new DefaultAgentCommunicationProfileProvider(), logger);
++        var first = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = JsonValue.Create("formal"),
++            ["persona"] = JsonValue.Create("controller")
++        };
++        var second = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["tone"] = JsonValue.Create("plainspoken"),
++            ["persona"] = JsonValue.Create("operator")
++        };
++
++        var firstResult = resolver.Resolve(first, CreateContext());
++        var secondResult = resolver.Resolve(second, CreateContext());
++
++        Assert.Equal("formal", firstResult.Tone);
++        Assert.Equal("controller", firstResult.Persona);
++        Assert.Equal("plainspoken", secondResult.Tone);
++        Assert.Equal("operator", secondResult.Persona);
++    }
++
++    private static CommunicationProfileResolutionContext CreateContext() =>
++        new(
++            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
++            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
++            PromptGenerationPathValues.Chat,
++            "profile-test");
++
++    private sealed class CapturingLogger<T> : ILogger<T>
++    {
++        public List<LogEntry> Entries { get; } = [];
++
++        public IDisposable? BeginScope<TState>(TState state)
++            where TState : notnull =>
++            NullScope.Instance;
++
++        public bool IsEnabled(LogLevel logLevel) => true;
++
++        public void Log<TState>(
++            LogLevel logLevel,
++            EventId eventId,
++            TState state,
++            Exception? exception,
++            Func<TState, Exception?, string> formatter)
++        {
++            Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
++        }
++    }
++
++    private sealed record LogEntry(LogLevel Level, string Message);
++
++    private sealed class NullScope : IDisposable
++    {
++        public static NullScope Instance { get; } = new();
++
++        public void Dispose()
++        {
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs
+index f9ef7ac..af6a2f1 100644
+--- a/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs
++++ b/tests/VirtualCompany.Api.Tests/CommunicationStyleRuleCheckerTests.cs
+@@ -27,6 +27,21 @@ public sealed class CommunicationStyleRuleCheckerTests
+         Assert.Contains(violation.RuleId, result.RuleIds);
+     }
+ 
++    [Theory]
++    [InlineData(PromptGenerationPathValues.Chat, "chat response is flippant")]
++    [InlineData(PromptGenerationPathValues.TaskOutput, "task summary is flippant")]
++    [InlineData(PromptGenerationPathValues.DocumentGeneration, "generated artifact is flippant")]
++    public void Check_applies_forbidden_tone_rules_across_output_paths(string outputPath, string output)
++    {
++        var checker = new CommunicationStyleRuleChecker();
++        var profile = CreateProfile();
++
++        var result = checker.Check(output, profile);
++
++        Assert.False(result.Passed);
++        Assert.Contains(result.Violations, violation => violation.RuleType == "forbidden_tone_rule");
++        Assert.Contains(outputPath, [PromptGenerationPathValues.Chat, PromptGenerationPathValues.TaskOutput, PromptGenerationPathValues.DocumentGeneration]);
++    }
++
+     private static AgentCommunicationProfileDto CreateProfile() =>
+         new(
+             "professional",
+diff --git a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+index 5af0c18..e32b879 100644
+--- a/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
++++ b/tests/VirtualCompany.Api.Tests/PromptBuilderTests.cs
+@@ -54,7 +54,7 @@ public sealed class PromptBuilderTests
+         Assert.Equal(context.Company.CompanyId.ToString("N"), result.Payload["companyId"]!.GetValue<string>());
+         Assert.Equal(context.Agent.Id.ToString("N"), result.Payload["agentId"]!.GetValue<string>());
+         Assert.Contains("CompanyId: " + context.Company.CompanyId.ToString("N"), result.SystemPrompt);
+-        Assert.Contains("agent", result.Sections[0].Metadata.Keys, StringComparer.OrdinalIgnoreCase);
++        Assert.Contains("agentId", result.Sections[0].Metadata.Keys, StringComparer.OrdinalIgnoreCase);
+     }
+ 
+     [Fact]
+@@ -71,7 +71,7 @@ public sealed class PromptBuilderTests
+         Assert.Contains("Use bullets for decisions", section.Content);
+         Assert.Contains("Do not use flippant", section.Content);
+-        Assert.Contains("Communication profile", result.SystemPrompt);
++        Assert.Contains("Agent identity profile", result.SystemPrompt);
+         Assert.NotNull(result.Payload["agentIdentityProfile"]);
+         Assert.Equal("concise executive", result.Payload["agentIdentityProfile"]!["tone"]!.GetValue<string>());
+         Assert.Equal("pragmatic operator", result.Payload["agentIdentityProfile"]!["persona"]!.GetValue<string>());
+@@ -79,6 +79,49 @@ public sealed class PromptBuilderTests
+         Assert.False(result.Payload["agentIdentityProfile"]!["isFallback"]!.GetValue<bool>());
+     }
+ 
++    [Fact]
++    public void Build_renders_same_identity_directives_for_chat_task_and_document_paths()
++    {
++        var builder = new StructuredPromptBuilder();
++        var profile = new AgentCommunicationProfileDto(
++            "calm operator",
++            "risk-aware specialist",
++            ["Lead with the decision"],
++            ["Avoid unsupported claims"],
++            ["Do not use flippant"],
++            AgentCommunicationProfileSources.Explicit,
++            false);
++
++        var chat = builder.Build(new PromptBuildRequest(CreateRuntimeContext(
++            intent: OrchestrationIntentValues.Chat,
++            communicationProfile: profile)));
++        var task = builder.Build(new PromptBuildRequest(CreateRuntimeContext(
++            intent: OrchestrationIntentValues.ExecuteTask,
++            communicationProfile: profile)));
++        var document = builder.Build(new PromptBuildRequest(CreateRuntimeContext(
++            taskType: "document_generation",
++            intent: "document_generation",
++            communicationProfile: profile)));
++
++        var chatIdentity = Assert.Single(chat.Sections, x => x.Id == PromptSectionIds.CommunicationProfile).Content;
++        var taskIdentity = Assert.Single(task.Sections, x => x.Id == PromptSectionIds.CommunicationProfile).Content;
++        var documentIdentity = Assert.Single(document.Sections, x => x.Id == PromptSectionIds.CommunicationProfile).Content;
++        Assert.Equal(chatIdentity, taskIdentity);
++        Assert.Equal(taskIdentity, documentIdentity);
++        Assert.Equal(PromptGenerationPathValues.Chat, chat.Payload["promptPath"]!.GetValue<string>());
++        Assert.Equal(PromptGenerationPathValues.TaskOutput, task.Payload["promptPath"]!.GetValue<string>());
++        Assert.Equal(PromptGenerationPathValues.DocumentGeneration, document.Payload["promptPath"]!.GetValue<string>());
++        Assert.Contains("direct chat message", chat.Messages[1].Content);
++        Assert.Contains("task output and summary", task.Messages[1].Content);
++        Assert.Contains("document or generated artifact", document.Messages[1].Content);
++        Assert.NotNull(document.Payload["documentGenerationContract"]);
++        Assert.Equal("calm operator", chat.Payload["agentIdentityDirectives"]!["tone"]!.GetValue<string>());
++        Assert.Equal("calm operator", task.Payload["agentIdentityDirectives"]!["tone"]!.GetValue<string>());
++        Assert.Equal("calm operator", document.Payload["agentIdentityDirectives"]!["tone"]!.GetValue<string>());
++        Assert.True(chat.Messages[0].Role == PromptRoles.System);
++        Assert.True(task.Messages[0].Role == PromptRoles.System);
++        Assert.True(document.Messages[0].Role == PromptRoles.System);
++    }
++
+     [Fact]
+     public void Build_includes_manager_worker_topology_for_worker_subtasks()
+     {
+@@ -118,7 +161,9 @@ public sealed class PromptBuilderTests
+         GroundedPromptContextDto? groundedContext = null,
+         IReadOnlyList<ToolMetadataDto>? availableTools = null,
+         string taskType = "finance_execution",
+-        Dictionary<string, JsonNode?>? inputPayload = null)
++        Dictionary<string, JsonNode?>? inputPayload = null,
++        string intent = OrchestrationIntentValues.ExecuteTask,
++        AgentCommunicationProfileDto? communicationProfile = null)
+     {
+         var companyId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+         var agentId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+@@ -178,14 +223,14 @@ public sealed class PromptBuilderTests
+                 Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
+                 Payload(("escalateTo", JsonValue.Create("founder"))),
+                 [],
+                 [],
+-                new AgentCommunicationProfileDto(
++                communicationProfile ?? new AgentCommunicationProfileDto(
+                     "concise executive",
+                     "pragmatic operator",
+                     ["Use bullets for decisions", "Cite assumptions"],
+                     ["Avoid unsupported claims"],
+                     ["Do not use flippant"],
+                     AgentCommunicationProfileSources.Explicit,
+                     false),
+                 true,
+                 timestamp,
+                 "level_2"),
+@@ -205,7 +250,7 @@ public sealed class PromptBuilderTests
+                     ["payments"],
+                     Payload(("allowed", new JsonArray(JsonValue.Create("erp")))))
+             ],
+-            OrchestrationIntentValues.ExecuteTask);
++            intent);
+     }
+ 
+     private static GroundedPromptContextDto CreateGroundedContext(Guid companyId, Guid agentId, DateTime timestamp)
+END_OF_PATCH

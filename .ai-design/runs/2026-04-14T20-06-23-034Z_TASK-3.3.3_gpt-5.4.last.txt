@@ -1,0 +1,505 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 3c0d7a1..f0fd2d7 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -12,13 +12,16 @@ public sealed class ExecutiveCockpitController : ControllerBase
+ {
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
+     private readonly IExecutiveCockpitKpiQueryService _kpiQueryService;
++    private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+ 
+     public ExecutiveCockpitController(
+         IExecutiveCockpitDashboardService dashboardService,
+-        IExecutiveCockpitKpiQueryService kpiQueryService)
++        IExecutiveCockpitKpiQueryService kpiQueryService,
++        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService)
+     {
+         _dashboardService = dashboardService;
+         _kpiQueryService = kpiQueryService;
++        _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+     }
+ 
+     [HttpGet]
+@@ -81,26 +84,4 @@ public sealed class ExecutiveCockpitController : ControllerBase
+             return NotFound();
+         }
+     }
+-
+-    [HttpGet("kpis")]
+-    public async Task<ActionResult<ExecutiveCockpitKpiDashboardDto>> GetKpisAsync(
+-        Guid companyId,
+-        [FromQuery] string? department,
+-        [FromQuery] DateTime? startUtc,
+-        [FromQuery] DateTime? endUtc,
+-        CancellationToken cancellationToken)
+-    {
+-        try
+-        {
+-            return Ok(await _kpiQueryService.GetAsync(
+-                new GetExecutiveCockpitKpiDashboardQuery(companyId, department, startUtc, endUtc),
+-                cancellationToken));
+-        }
+-        catch (UnauthorizedAccessException)
+-        {
+-            return Forbid();
+-        }
+-        catch (KeyNotFoundException)
+-        {
+-            return NotFound();
+-        }
+-    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 27a0736..dc28a8a 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -256,6 +256,7 @@ public static class DependencyInjection
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
++        services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<ExecutionExceptionService>();
+diff --git a/src/VirtualCompany.Web/Components/AnomalyList.razor b/src/VirtualCompany.Web/Components/AnomalyList.razor
+new file mode 100644
+index 0000000..f6fa8a3
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/AnomalyList.razor
+@@ -0,0 +1,75 @@
++@using VirtualCompany.Web.Services
++
++@if (Items.Count == 0)
++{
++    <p class="text-body-secondary mb-0">@EmptyText</p>
++}
++else
++{
++    <div class="activity-list">
++        @foreach (var anomaly in Items)
++        {
++            <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(anomaly.Route, FallbackRoute)">
++                <span class="@SeverityBadgeClass(anomaly.Severity)">@anomaly.Severity</span>
++                <strong class="d-block mt-2">@anomaly.Label</strong>
++                <div class="text-body-secondary">@anomaly.Department | @FormatReason(anomaly.Reason)</div>
++                <p class="mb-1">@anomaly.Summary</p>
++                <dl class="cockpit-kpi-list anomaly-list__details mb-1 mt-2">
++                    <div>
++                        <dt>Current</dt>
++                        <dd>@FormatMetric(anomaly.CurrentValue)</dd>
++                    </div>
++                    @if (anomaly.BaselineValue is not null)
++                    {
++                        <div>
++                            <dt>Baseline</dt>
++                            <dd>@FormatMetric(anomaly.BaselineValue.Value)</dd>
++                        </div>
++                    }
++                    @if (anomaly.ThresholdValue is not null)
++                    {
++                        <div>
++                            <dt>Threshold</dt>
++                            <dd>@FormatMetric(anomaly.ThresholdValue.Value)</dd>
++                        </div>
++                    }
++                    @if (anomaly.DeviationPercentage is not null)
++                    {
++                        <div>
++                            <dt>Deviation</dt>
++                            <dd>@anomaly.DeviationPercentage.Value.ToString("+0.#;-0.#;0")%</dd>
++                        </div>
++                    }
++                </dl>
++                <small>@anomaly.OccurredUtc.ToLocalTime():g</small>
++            </a>
++        }
++    </div>
++}
++
++@code {
++    [Parameter]
++    public IReadOnlyList<ExecutiveCockpitAnomalyViewModel> Items { get; set; } = [];
++
++    [Parameter]
++    public string EmptyText { get; set; } = "No anomalies match the current filters.";
++
++    [Parameter]
++    public string FallbackRoute { get; set; } = "/dashboard";
++
++    private static bool HasDrillRoute(string? route) =>
++        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
++
++    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
++        HasDrillRoute(route) ? route! : fallbackRoute;
++
++    private static string FormatReason(string reason) =>
++        string.Join(
++            ", ",
++            reason.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
++                .Select(x => x.Replace("_", " ")));
++
++    private static string FormatMetric(decimal value) =>
++        value % 1 == 0 ? value.ToString("0") : value.ToString("0.##");
++
++    private static string SeverityBadgeClass(string severity) =>
++        severity.Trim().ToLowerInvariant() switch
++        {
++            "critical" => "badge text-bg-danger",
++            "warning" => "badge text-bg-warning",
++            _ => "badge text-bg-secondary"
++        };
++}
+diff --git a/src/VirtualCompany.Web/Components/KpiTile.razor b/src/VirtualCompany.Web/Components/KpiTile.razor
+new file mode 100644
+index 0000000..8d2f8b7
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/KpiTile.razor
+@@ -0,0 +1,70 @@
++@using Microsoft.AspNetCore.Components
++@using VirtualCompany.Web.Services
++
++<a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(Item.Route, FallbackRoute)" aria-label="@($"Open {Item.Label}")">
++    <div class="cockpit-card__header">
++        <strong>@Item.Label</strong>
++        <span class="@TrendClass(Item.TrendDirection)">@TrendGlyph(Item.TrendDirection)</span>
++    </div>
++    <div class="text-body-secondary">@Item.Department</div>
++    <dl class="cockpit-kpi-list mb-0 mt-3">
++        <div>
++            <dt>Current</dt>
++            <dd>@FormatMetric(Item.CurrentValue, Item.Unit)</dd>
++        </div>
++        <div>
++            <dt>Baseline</dt>
++            <dd>@FormatMetric(Item.BaselineValue, Item.Unit)</dd>
++        </div>
++        <div>
++            <dt>Delta</dt>
++            <dd>@FormatDelta(Item)</dd>
++        </div>
++    </dl>
++</a>
++
++@code {
++    [Parameter, EditorRequired]
++    public ExecutiveCockpitKpiTileViewModel Item { get; set; } = default!;
++
++    [Parameter]
++    public string FallbackRoute { get; set; } = "/dashboard";
++
++    private static bool HasDrillRoute(string? route) =>
++        !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
++
++    private static string SafeDrillRoute(string? route, string fallbackRoute) =>
++        HasDrillRoute(route) ? route! : fallbackRoute;
++
++    private static string TrendClass(string trendDirection) =>
++        $"cockpit-summary-kpi__trend cockpit-summary-kpi__trend--{NormalizeCssToken(trendDirection)}";
++
++    private static string NormalizeCssToken(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
++
++    private static string TrendGlyph(string? direction) =>
++        string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
++        string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? "Down" :
++        string.Equals(direction, "flat", StringComparison.OrdinalIgnoreCase) ? "Flat" :
++        "Trend";
++
++    private static string FormatMetric(decimal? value, string? unit)
++    {
++        if (value is null)
++        {
++            return "n/a";
++        }
++
++        var formatted = value.Value % 1 == 0
++            ? value.Value.ToString("0")
++            : value.Value.ToString("0.##");
++        return string.IsNullOrWhiteSpace(unit) ? formatted : $"{formatted} {unit}";
++    }
++
++    private static string FormatDelta(ExecutiveCockpitKpiTileViewModel kpi)
++    {
++        if (kpi.DeltaValue is null)
++        {
++            return "n/a";
++        }
++
++        var value = kpi.DeltaValue.Value > 0 ? $"+{kpi.DeltaValue.Value:0.##}" : kpi.DeltaValue.Value.ToString("0.##");
++        return kpi.DeltaPercentage is null
++            ? value
++            : $"{value} ({kpi.DeltaPercentage.Value:+0.#;-0.#;0}%)";
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 247d8bc..cc1162d 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -185,7 +185,7 @@
+                 <div class="row g-3 mt-1 align-items-end">
+                     <div class="col-12 col-md-4">
+                         <label class="form-label" for="kpi-department-filter">Department</label>
+-                        <select id="kpi-department-filter" class="form-select" @bind="selectedKpiDepartment">
++                        <select id="kpi-department-filter" class="form-select" @bind="selectedKpiDepartment" @bind:after="OnKpiFilterChangedAsync" disabled="@isKpiLoading">
+                             <option value="">All departments</option>
+                             @foreach (var department in AvailableKpiDepartments)
+                             {
+@@ -195,14 +195,13 @@
+                     </div>
+                     <div class="col-12 col-md-3">
+                         <label class="form-label" for="kpi-range-filter">Time range</label>
+-                        <select id="kpi-range-filter" class="form-select" @bind="selectedKpiRange">
++                        <select id="kpi-range-filter" class="form-select" @bind="selectedKpiRange" @bind:after="OnKpiFilterChangedAsync" disabled="@isKpiLoading">
+                             <option value="7">Last 7 days</option>
+                             <option value="14">Last 14 days</option>
+                             <option value="30">Last 30 days</option>
+                             <option value="90">Last 90 days</option>
+                         </select>
+                     </div>
+-                    <div class="col-12 col-md-auto">
+-                        <button type="button" class="btn btn-primary" @onclick="ReloadKpisAsync" disabled="@isKpiLoading">Apply filters</button>
++                    <div class="col-12 col-md-auto text-body-secondary">
++                        <span>@(isKpiLoading ? "Updating filters..." : "Filters update automatically.")</span>
+                     </div>
+                 </div>
+ 
+@@ -222,23 +221,7 @@
+                     <div class="cockpit-kpi-grid mt-3">
+                         @foreach (var kpi in kpiDashboard.Kpis)
+                         {
+-                            <a class="summary-pill text-decoration-none text-reset" href="@SafeDrillRoute(kpi.Route, TasksPath)" aria-label="@($"Open {kpi.Label}")">
+-                                <div class="cockpit-card__header">
+-                                    <strong>@kpi.Label</strong>
+-                                    <span class="@SummaryKpiTrendClass(kpi.TrendDirection)">@TrendGlyph(kpi.TrendDirection)</span>
+-                                </div>
+-                                <div class="text-body-secondary">@kpi.Department</div>
+-                                <dl class="cockpit-kpi-list mb-0 mt-3">
+-                                    <div><dt>Current</dt><dd>@FormatMetric(kpi.CurrentValue, kpi.Unit)</dd></div>
+-                                    <div><dt>Baseline</dt><dd>@FormatMetric(kpi.BaselineValue, kpi.Unit)</dd></div>
+-                                    <div><dt>Delta</dt><dd>@FormatDelta(kpi)</dd></div>
+-                                </dl>
+-                            </a>
++                            <KpiTile Item="kpi" FallbackRoute="TasksPath" />
+                         }
+                     </div>
+                 }
+@@ -246,24 +229,7 @@
+                 <div class="mt-4">
+                     <h4 class="h6">Anomalies</h4>
+                     @if (kpiDashboard is null || kpiDashboard.Anomalies.Count == 0)
+-                    {
+-                        <p class="text-body-secondary mb-0">No anomalies match the current filters.</p>
+-                    }
+-                    else
+-                    {
+-                        <div class="activity-list">
+-                            @foreach (var anomaly in kpiDashboard.Anomalies)
+-                            {
+-                                <a class="activity-item text-decoration-none text-reset" href="@SafeDrillRoute(anomaly.Route, DashboardPath)">
+-                                    <span class="@SeverityBadgeClass(anomaly.Severity)">@anomaly.Severity</span>
+-                                    <strong class="d-block mt-2">@anomaly.Label</strong>
+-                                    <div class="text-body-secondary">@anomaly.Department | @FormatReason(anomaly.Reason)</div>
+-                                    <p class="mb-1">@anomaly.Summary</p>
+-                                    <small>@anomaly.OccurredUtc.ToLocalTime():g</small>
+-                                </a>
+-                            }
+-                        </div>
+-                    }
++                    <AnomalyList Items="kpiDashboard?.Anomalies ?? []" FallbackRoute="DashboardPath" />
+                 </div>
+             </article>
+         }
+@@ -412,7 +378,10 @@
+         "Trend";
+ 
+     private async Task ReloadKpisAsync()
++        => await ReloadKpisCoreAsync();
++
++    private async Task ReloadKpisCoreAsync()
+     {
+         isKpiLoading = true;
+         kpiErrorMessage = null;
+@@ -438,33 +407,8 @@
+         }
+     }
+ 
+-    private static string FormatMetric(decimal? value, string? unit)
+-    {
+-        if (value is null)
+-        {
+-            return "n/a";
+-        }
+-
+-        var formatted = value.Value % 1 == 0
+-            ? value.Value.ToString("0")
+-            : value.Value.ToString("0.##");
+-        return string.IsNullOrWhiteSpace(unit) ? formatted : $"{formatted} {unit}";
+-    }
+-
+-    private static string FormatDelta(ExecutiveCockpitKpiTileViewModel kpi)
+-    {
+-        if (kpi.DeltaValue is null)
+-        {
+-            return "n/a";
+-        }
+-
+-        var value = kpi.DeltaValue.Value > 0 ? $"+{kpi.DeltaValue.Value:0.##}" : kpi.DeltaValue.Value.ToString("0.##");
+-        return kpi.DeltaPercentage is null
+-            ? value
+-            : $"{value} ({kpi.DeltaPercentage.Value:+0.#;-0.#;0}%)";
+-    }
+-
+-    private static string FormatReason(string reason) =>
+-        string.Join(
+-            ", ",
+-            reason.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+-                .Select(x => x.Replace("_", " ")));
++    private async Task OnKpiFilterChangedAsync()
++    {
++        await ReloadKpisCoreAsync();
++    }
+ 
+     private static string SeverityBadgeClass(string severity) =>
+         severity.Trim().ToLowerInvariant() switch
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 4d59380..7d3b8b3 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -117,48 +117,6 @@ public sealed class ExecutiveCockpitApiClient
+         }
+     }
+ 
+-    private async Task<ExecutiveCockpitKpiDashboardViewModel?> GetKpisCoreAsync(
+-        Guid companyId,
+-        string? department,
+-        DateTime? startUtc,
+-        DateTime? endUtc,
+-        CancellationToken cancellationToken)
+-    {
+-        try
+-        {
+-            var query = new List<string>();
+-            if (!string.IsNullOrWhiteSpace(department))
+-            {
+-                query.Add($"department={Uri.EscapeDataString(department)}");
+-            }
+-
+-            if (startUtc is not null)
+-            {
+-                query.Add($"startUtc={Uri.EscapeDataString(startUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
+-            }
+-
+-            if (endUtc is not null)
+-            {
+-                query.Add($"endUtc={Uri.EscapeDataString(endUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
+-            }
+-
+-            var route = $"api/companies/{companyId}/executive-cockpit/kpis{(query.Count == 0 ? string.Empty : "?" + string.Join("&", query))}";
+-            using var response = await _httpClient.GetAsync(route, cancellationToken);
+-            if (response.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
+-            {
+-                return null;
+-            }
+-
+-            if (response.IsSuccessStatusCode)
+-            {
+-                return await response.Content.ReadFromJsonAsync<ExecutiveCockpitKpiDashboardViewModel>(SerializerOptions, cancellationToken);
+-            }
+-
+-            throw await CreateExceptionAsync(response, cancellationToken);
+-        }
+-        catch (HttpRequestException ex)
+-        {
+-            throw CreateNetworkException(ex);
+-        }
+-    }
+-
+     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+     {
+         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 8bb2560..d2efb72 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -672,6 +672,10 @@ code {
+     padding: 1rem;
+ }
+ 
++.anomaly-list__details {
++    max-width: 28rem;
++}
++
+ .agent-analytics-placeholder-card {
+     background: #f8fafc;
+     border: 1px dashed rgba(15, 23, 42, 0.18);
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs
+index a792c1f..a1f8793 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiCalculatorTests.cs
+@@ -115,6 +115,26 @@ public sealed class ExecutiveCockpitKpiCalculatorTests
+         Assert.Equal(expectedSeverity, anomaly?.Severity);
+     }
+ 
++    [Theory]
++    [InlineData(14, 10, "warning")]
++    [InlineData(18, 10, "critical")]
++    public void Severity_mapping_respects_baseline_deviation_boundaries(
++        decimal current,
++        decimal baseline,
++        string expectedSeverity)
++    {
++        var definition = ExecutiveCockpitKpiMetricCatalog.Find("open_tasks") with
++        {
++            WarningThreshold = null,
++            CriticalThreshold = null,
++            WarningDeviationPercentage = 40,
++            CriticalDeviationPercentage = 80
++        };
++        var metric = Metric("open_tasks", current, baseline, definition);
++
++        var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
++
++        Assert.Equal(expectedSeverity, anomaly?.Severity);
++    }
++
+     private static ExecutiveCockpitKpiMetricValue Metric(
+         string key,
+         decimal current,
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs
+index 025e30a..e1d8121 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitKpiDashboardIntegrationTests.cs
+@@ -58,6 +58,30 @@ public sealed class ExecutiveCockpitKpiDashboardIntegrationTests : IClassFixture<
+         Assert.DoesNotContain(salesDashboard.Anomalies, item => item.Department == "Operations");
+     }
+ 
++    [Fact]
++    public async Task Kpis_filter_by_time_range()
++    {
++        var seed = await SeedKpiCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var currentStartUtc = DateTime.UtcNow.AddDays(-7);
++        var currentEndUtc = DateTime.UtcNow.AddDays(1);
++        var currentResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(currentStartUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(currentEndUtc.ToString("O"))}");
++
++        Assert.Equal(HttpStatusCode.OK, currentResponse.StatusCode);
++        var currentDashboard = await currentResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();
++        Assert.NotNull(currentDashboard);
++        Assert.Contains(currentDashboard!.Kpis, tile => tile.Key == "blocked_tasks" && tile.CurrentValue == 3);
++
++        var historicalStartUtc = DateTime.UtcNow.AddDays(-30);
++        var historicalEndUtc = DateTime.UtcNow.AddDays(-20);
++        var historicalResponse = await client.GetAsync($"/api/companies/{seed.CompanyId}/executive-cockpit/kpis?department=Operations&startUtc={Uri.EscapeDataString(historicalStartUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(historicalEndUtc.ToString("O"))}");
++
++        Assert.Equal(HttpStatusCode.OK, historicalResponse.StatusCode);
++        var historicalDashboard = await historicalResponse.Content.ReadFromJsonAsync<KpiDashboardResponse>();
++        Assert.NotNull(historicalDashboard);
++        Assert.Contains(historicalDashboard!.Kpis, tile => tile.Key == "blocked_tasks" && tile.CurrentValue == 0);
++        Assert.DoesNotContain(historicalDashboard.Anomalies, item => item.KpiKey == "blocked_tasks");
++    }
++
+     [Fact]
+     public async Task Kpis_are_tenant_scoped()
+     {
+END_OF_PATCH

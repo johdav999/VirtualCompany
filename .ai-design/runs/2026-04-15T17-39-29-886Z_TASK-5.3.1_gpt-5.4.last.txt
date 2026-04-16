@@ -1,0 +1,669 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 7c7b27d..6932f34 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -14,6 +14,14 @@ public sealed record PersistActivityEventCommand(
+     string? CorrelationId,
+     [property: JsonPropertyName("source")] Dictionary<string, JsonNode?>? Source);
+ 
++public sealed record ActivitySummaryDto(
++    string EventType,
++    string FormatterKey,
++    string? Actor,
++    string Action,
++    string? Target,
++    string? Outcome,
++    string Text);
++
+ public sealed record ActivityFeedQuery(
+     string? Cursor,
+     int? PageSize);
+@@ -27,7 +35,9 @@ public sealed record ActivityEventDto(
+     string Status,
+     string Summary,
+     string? CorrelationId,
+-    [property: JsonPropertyName("source")] Dictionary<string, JsonNode?> Source);
++    [property: JsonPropertyName("source")] Dictionary<string, JsonNode?> Source,
++    Dictionary<string, JsonNode?> RawPayload,
++    ActivitySummaryDto NormalizedSummary);
+ 
+ public sealed record ActivityEntityReferenceDto(
+     string EntityType,
+@@ -78,6 +88,11 @@ public interface IActivityEventStore
+     Task<ActivityLinkedEntitiesDto> QueryLinkedEntitiesAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken);
+ }
+ 
++public interface IActivityEventSummaryFormatter
++{
++    ActivitySummaryDto Format(string eventType, string status, string? persistedSummary, IReadOnlyDictionary<string, JsonNode?>? rawPayload);
++}
++
+ public interface IEntityLinkResolutionService
+ {
+     Task<IReadOnlyDictionary<string, ActivityLinkedEntityDto>> ResolveAsync(Guid tenantId, IEnumerable<ActivityEntityReferenceDto> references, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Application/Activity/DefaultActivityEventSummaryFormatter.cs b/src/VirtualCompany.Application/Activity/DefaultActivityEventSummaryFormatter.cs
+new file mode 100644
+index 0000000..8242a1f
+--- /dev/null
++++ b/src/VirtualCompany.Application/Activity/DefaultActivityEventSummaryFormatter.cs
+@@ -0,0 +1,260 @@
++using System.Text;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Events;
++
++namespace VirtualCompany.Application.Activity;
++
++public sealed class DefaultActivityEventSummaryFormatter : IActivityEventSummaryFormatter
++{
++    private static readonly IReadOnlyDictionary<string, EventTemplate> Templates =
++        new Dictionary<string, EventTemplate>(StringComparer.OrdinalIgnoreCase)
++        {
++            [SupportedPlatformEventTypeRegistry.TaskCreated] = new("task_created", "created task", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.TaskUpdated] = new("task_updated", "updated task", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.TaskAssigned] = new("task_assigned", "assigned task", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.TaskStatusChanged] = new("task_status_changed", "changed task status", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.TaskCompleted] = new("task_completed", "completed task", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.TaskFailed] = new("task_failed", "failed task", ["taskTitle", "taskName", "title", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.WorkflowStarted] = new("workflow_started", "started workflow", ["workflowName", "workflowTitle", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.WorkflowStepCompleted] = new("workflow_step_completed", "completed workflow step", ["stepName", "workflowStepName", "targetName", "workflowName"]),
++            [SupportedPlatformEventTypeRegistry.WorkflowFailed] = new("workflow_failed", "failed workflow", ["workflowName", "workflowTitle", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.WorkflowStateChanged] = new("workflow_state_changed", "changed workflow state", ["workflowName", "workflowTitle", "name", "targetName"]),
++            [SupportedPlatformEventTypeRegistry.ApprovalRequested] = new("approval_requested", "requested approval", ["approvalTitle", "requestTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.ApprovalApproved] = new("approval_approved", "approved", ["approvalTitle", "requestTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.ApprovalRejected] = new("approval_rejected", "rejected", ["approvalTitle", "requestTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.ApprovalDecision] = new("approval_decision", "recorded approval decision", ["approvalTitle", "requestTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.ApprovalUpdated] = new("approval_updated", "updated approval", ["approvalTitle", "requestTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.AgentHired] = new("agent_hired", "hired agent", ["agentDisplayName", "agentName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.AgentUpdated] = new("agent_updated", "updated agent", ["agentDisplayName", "agentName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.AgentPaused] = new("agent_paused", "paused agent", ["agentDisplayName", "agentName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.AgentArchived] = new("agent_archived", "archived agent", ["agentDisplayName", "agentName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.AgentStatusUpdated] = new("agent_status_updated", "updated agent status", ["agentDisplayName", "agentName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.AgentGeneratedAlert] = new("agent_generated_alert", "raised alert", ["alertTitle", "targetName", "title"]),
++            [SupportedPlatformEventTypeRegistry.ToolExecutionAllowed] = new("tool_execution_allowed", "allowed tool execution", ["toolName", "toolExecutionName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.ToolExecutionDenied] = new("tool_execution_denied", "denied tool execution", ["toolName", "toolExecutionName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.DocumentUploaded] = new("document_uploaded", "uploaded document", ["documentName", "fileName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.DocumentProcessed] = new("document_processed", "processed document", ["documentName", "fileName", "targetName", "name"]),
++            [SupportedPlatformEventTypeRegistry.MemoryItemCreated] = new("memory_item_created", "created memory item", ["memoryTitle", "targetName", "title", "name"]),
++            [SupportedPlatformEventTypeRegistry.ConversationMessageSent] = new("conversation_message_sent", "sent conversation message", ["conversationTitle", "channelName", "targetName", "title"])
++        };
++
++    public ActivitySummaryDto Format(
++        string eventType,
++        string status,
++        string? persistedSummary,
++        IReadOnlyDictionary<string, JsonNode?>? rawPayload)
++    {
++        var normalizedEventType = Normalize(eventType);
++        var payload = rawPayload ?? EmptyPayload.Value;
++        var template = Templates.TryGetValue(normalizedEventType, out var registered)
++            ? registered
++            : new EventTemplate("fallback", HumanizeAction(normalizedEventType), ["targetName", "name", "title", "entityName"]);
++
++        var actor = ReadFirstText(payload, "actor", "actorName", "userName", "userDisplayName", "agentName", "agentDisplayName", "performedBy");
++        var target = ReadFirstText(payload, template.TargetKeys)
++            ?? ReadFirstText(payload, "target", "targetName", "entityName", "sourceName", "sourceId", "targetId", "entityId");
++        var outcome = ReadFirstText(payload, "outcome", "result", "decision", "status") ?? Clean(status);
++        var action = ReadFirstText(payload, "actionText", "action") ?? template.Action;
++
++        var text = BuildSummaryText(actor, action, target);
++        if (string.IsNullOrWhiteSpace(text))
++        {
++            text = Clean(persistedSummary) ?? BuildFallbackText(normalizedEventType);
++        }
++
++        return new ActivitySummaryDto(
++            normalizedEventType,
++            template.FormatterKey,
++            actor,
++            action,
++            target,
++            outcome,
++            text);
++    }
++
++    public static IReadOnlyCollection<string> SupportedFormatterKeys => Templates.Keys.ToArray();
++
++    private static string Normalize(string eventType)
++    {
++        if (string.IsNullOrWhiteSpace(eventType))
++        {
++            return "unknown_event";
++        }
++
++        return eventType.Trim();
++    }
++
++    private static string BuildSummaryText(string? actor, string action, string? target)
++    {
++        var parts = new[] { actor, Clean(action), target }
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Select(x => x!.Trim());
++
++        return string.Join(' ', parts);
++    }
++
++    private static string BuildFallbackText(string eventType) =>
++        string.Join(' ', new[] { "Recorded", HumanizeEventType(eventType) }.Where(x => !string.IsNullOrWhiteSpace(x)));
++
++    private static string HumanizeAction(string eventType) =>
++        string.Join(' ', new[] { "recorded", HumanizeEventType(eventType) }.Where(x => !string.IsNullOrWhiteSpace(x)));
++
++    private static string HumanizeEventType(string eventType)
++    {
++        var cleaned = Clean(eventType);
++        if (cleaned is null)
++        {
++            return "activity";
++        }
++
++        return cleaned.Replace('_', ' ').Replace('-', ' ');
++    }
++
++    private static string? ReadFirstText(IReadOnlyDictionary<string, JsonNode?> payload, IEnumerable<string> keys)
++    {
++        foreach (var key in keys)
++        {
++            var value = ReadText(payload, key);
++            if (value is not null)
++            {
++                return value;
++            }
++        }
++
++        return null;
++    }
++
++    private static string? ReadFirstText(IReadOnlyDictionary<string, JsonNode?> payload, params string[] keys) =>
++        ReadFirstText(payload, (IEnumerable<string>)keys);
++
++    private static string? ReadText(IReadOnlyDictionary<string, JsonNode?> payload, string key)
++    {
++        if (!payload.TryGetValue(key, out var node))
++        {
++            return null;
++        }
++
++        return ReadText(node);
++    }
++
++    private static string? ReadText(JsonNode? node)
++    {
++        if (node is null)
++        {
++            return null;
++        }
++
++        if (node is JsonValue value)
++        {
++            return Clean(ReadJsonValue(value));
++        }
++
++        if (node is JsonObject jsonObject)
++        {
++            return ReadFirstText(jsonObject, "displayName", "name", "title", "id");
++        }
++
++        return Clean(node.ToJsonString());
++    }
++
++    private static string? ReadJsonValue(JsonValue value)
++    {
++        try
++        {
++            return value.GetValue<string>();
++        }
++        catch (InvalidOperationException)
++        {
++            try
++            {
++                return value.GetValue<object?>()?.ToString();
++            }
++            catch (InvalidOperationException)
++            {
++                return value.ToJsonString().Trim('"');
++            }
++        }
++    }
++
++    private static string? Clean(string? value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var builder = new StringBuilder(value.Trim().Length);
++        var previousWasWhiteSpace = false;
++        foreach (var ch in value.Trim())
++        {
++            if (char.IsWhiteSpace(ch))
++            {
++                if (!previousWasWhiteSpace)
++                {
++                    builder.Append(' ');
++                    previousWasWhiteSpace = true;
++                }
++
++                continue;
++            }
++
++            builder.Append(ch);
++            previousWasWhiteSpace = false;
++        }
++
++        var cleaned = builder.ToString().Trim();
++        if (cleaned.Length == 0 ||
++            string.Equals(cleaned, "null", StringComparison.OrdinalIgnoreCase) ||
++            string.Equals(cleaned, "undefined", StringComparison.OrdinalIgnoreCase))
++        {
++            return null;
++        }
++
++        return cleaned;
++    }
++
++    private sealed record EventTemplate(string FormatterKey, string Action, IReadOnlyList<string> TargetKeys);
++
++    private static class EmptyPayload
++    {
++        public static readonly IReadOnlyDictionary<string, JsonNode?> Value =
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index 72403d5..a4574c7 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -13,6 +13,23 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     public const string TaskUpdated = "task_updated";
+     public const string DocumentUploaded = "document_uploaded";
+     public const string TaskStatusChanged = "task_status_changed";
++    public const string TaskAssigned = "task_assigned";
++    public const string TaskCompleted = "task_completed";
++    public const string TaskFailed = "task_failed";
++    public const string WorkflowStarted = "workflow_started";
++    public const string WorkflowStepCompleted = "workflow_step_completed";
++    public const string WorkflowFailed = "workflow_failed";
++    public const string ApprovalApproved = "approval_approved";
++    public const string ApprovalRejected = "approval_rejected";
++    public const string AgentHired = "agent_hired";
++    public const string AgentUpdated = "agent_updated";
++    public const string AgentPaused = "agent_paused";
++    public const string AgentArchived = "agent_archived";
++    public const string ToolExecutionAllowed = "tool_execution_allowed";
++    public const string ToolExecutionDenied = "tool_execution_denied";
++    public const string DocumentProcessed = "document_processed";
++    public const string MemoryItemCreated = "memory_item_created";
++    public const string ConversationMessageSent = "conversation_message_sent";
+     public const string ApprovalRequested = "approval_requested";
+     public const string ApprovalDecision = "approval_decision";
+     public const string AgentGeneratedAlert = "agent_generated_alert";
+@@ -25,9 +42,26 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     [
+         TaskCreated,
+         TaskUpdated,
++        TaskAssigned,
+         TaskStatusChanged,
++        TaskCompleted,
++        TaskFailed,
+         DocumentUploaded,
++        DocumentProcessed,
++        WorkflowStarted,
++        WorkflowStepCompleted,
++        WorkflowFailed,
+         WorkflowStateChanged,
++        ApprovalApproved,
++        ApprovalRejected,
+         ApprovalRequested,
+         ApprovalDecision,
+         ApprovalUpdated,
++        AgentHired,
++        AgentUpdated,
++        AgentPaused,
++        AgentArchived,
+         AgentGeneratedAlert,
+-        AgentStatusUpdated
++        AgentStatusUpdated,
++        ToolExecutionAllowed,
++        ToolExecutionDenied,
++        MemoryItemCreated,
++        ConversationMessageSent
+     ];
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 72aa62d..9a29113 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -21,6 +21,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
+     private readonly IEntityLinkResolutionService _entityLinkResolver;
++    private readonly IActivityEventSummaryFormatter _summaryFormatter;
+     private readonly IActivityEventPublisher _publisher;
+     private readonly ILogger<EfActivityEventStore> _logger;
+ 
+@@ -29,12 +30,14 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
+         IEntityLinkResolutionService entityLinkResolver,
++        IActivityEventSummaryFormatter summaryFormatter,
+         IActivityEventPublisher publisher,
+         ILogger<EfActivityEventStore> logger)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
+         _entityLinkResolver = entityLinkResolver;
++        _summaryFormatter = summaryFormatter;
+         _publisher = publisher;
+         _logger = logger;
+     }
+@@ -68,7 +71,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         _dbContext.ActivityEvents.Add(activityEvent);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+-        var dto = ToDto(activityEvent);
++        var dto = ToDto(activityEvent);
+         _logger.LogInformation(
+             "Persisted activity event {ActivityEventId} for tenant {TenantId} with correlation {CorrelationId}.",
+             dto.EventId,
+@@ -109,7 +112,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             .Take(pageSize + 1)
+             .ToListAsync(cancellationToken);
+ 
+-        var items = page.Take(pageSize).Select(ToDto).ToList();
++        var items = page.Take(pageSize).Select(ToDto).ToList();
+         var nextCursor = page.Count > pageSize
+             ? EncodeCursor(items[^1].OccurredAt, items[^1].EventId)
+             : null;
+@@ -162,7 +165,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+                 .ToList();
+ 
+             return new ActivityTimelineItemDto(
+-                ToDto(activityEvent),
++                ToDto(activityEvent),
+                 references.FirstOrDefault(),
+                 links);
+         }).ToList();
+@@ -281,8 +284,11 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private static ActivityFeedValidationException BuildValidationException(string key, string message) =>
+         new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [key] = [message] });
+ 
+-    private static ActivityEventDto ToDto(ActivityEvent activityEvent) =>
+-        new(
++    private ActivityEventDto ToDto(ActivityEvent activityEvent)
++    {
++        var source = CloneNodes(activityEvent.SourceMetadata);
++        var rawPayload = CloneNodes(activityEvent.SourceMetadata);
++        return new ActivityEventDto(
+             activityEvent.Id,
+             activityEvent.CompanyId,
+             activityEvent.AgentId,
+@@ -291,7 +297,11 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             activityEvent.Status,
+             activityEvent.Summary,
+             activityEvent.CorrelationId,
+-            CloneNodes(activityEvent.SourceMetadata));
++            source,
++            rawPayload,
++            _summaryFormatter.Format(activityEvent.EventType, activityEvent.Status, activityEvent.Summary, rawPayload));
++    }
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> source) =>
+         source.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 4e86776..2400fce 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -184,6 +184,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
+         services.AddScoped<ICompanyNotificationDispatcher, CompanyNotificationDispatcher>();
+         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
++        services.AddSingleton<IActivityEventSummaryFormatter, DefaultActivityEventSummaryFormatter>();
+         services.AddScoped<IActivityEventStore, EfActivityEventStore>();
+         services.AddScoped<IEntityLinkResolutionService, EfEntityLinkResolutionService>();
+         services.AddScoped<IAuditEventWriter, AuditEventWriter>();
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+index a6e8c78..d7c8011 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs
+@@ -1,4 +1,5 @@
+ using System.Net;
++using System.Text.Json;
+ using System.Net.Http.Json;
+ using Microsoft.AspNetCore.SignalR.Client;
+ using VirtualCompany.Domain.Entities;
+@@ -137,6 +138,32 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+         Assert.Equal(persisted.EventId, item.EventId);
+     }
+ 
++    [Fact]
++    public async Task Feed_returns_raw_payload_and_normalized_summary()
++    {
++        var seed = await SeedTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PostAsJsonAsync(
++            $"/internal/companies/{seed.CompanyId}/activity-events",
++            new
++            {
++                tenantId = seed.CompanyId,
++                agentId = seed.AgentId,
++                eventType = "task_completed",
++                occurredAt = DateTime.UtcNow,
++                status = "completed",
++                summary = "Legacy summary",
++                correlationId = "corr-summary-contract",
++                source = new Dictionary<string, object?>
++                {
++                    ["actor"] = "Ops Agent",
++                    ["taskTitle"] = "Invoice Review"
++                }
++            });
++
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++        var payload = await response.Content.ReadFromJsonAsync<ActivityEventResponse>();
++        Assert.NotNull(payload);
++        Assert.Equal("Invoice Review", payload!.RawPayload["taskTitle"].GetString());
++        Assert.Equal("Ops Agent completed task Invoice Review", payload.NormalizedSummary.Text);
++    }
++
+     [Fact]
+     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()
+     {
+@@ -299,5 +326,18 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
+         string Summary,
+         string? CorrelationId,
+-        Dictionary<string, object?> Source);
++        Dictionary<string, object?> Source,
++        Dictionary<string, JsonElement> RawPayload,
++        ActivitySummaryResponse NormalizedSummary);
++
++    private sealed record ActivitySummaryResponse(
++        string EventType,
++        string FormatterKey,
++        string? Actor,
++        string Action,
++        string? Target,
++        string? Outcome,
++        string Text);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+new file mode 100644
+index 0000000..3f6fead
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ActivitySummaryFormatterTests.cs
+@@ -0,0 +1,166 @@
++using System.Diagnostics;
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Activity;
++using VirtualCompany.Domain.Events;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ActivitySummaryFormatterTests
++{
++    private readonly DefaultActivityEventSummaryFormatter _formatter = new();
++
++    public static IEnumerable<object[]> SupportedEventFixtures()
++    {
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskCreated, "Alice", "Quarter close", "created task", "created", "Alice created task Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskUpdated, "Alice", "Quarter close", "updated task", "updated", "Alice updated task Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskAssigned, "Alice", "Quarter close", "assigned task", "assigned", "Alice assigned task Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskStatusChanged, "Alice", "Quarter close", "changed task status", "in_progress", "Alice changed task status Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskCompleted, "Alice", "Quarter close", "completed task", "completed", "Alice completed task Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.TaskFailed, "Alice", "Quarter close", "failed task", "failed", "Alice failed task Quarter close");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStarted, "Alice", "Invoice workflow", "started workflow", "started", "Alice started workflow Invoice workflow");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStepCompleted, "Alice", "Approval step", "completed workflow step", "completed", "Alice completed workflow step Approval step");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowFailed, "Alice", "Invoice workflow", "failed workflow", "failed", "Alice failed workflow Invoice workflow");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, "Alice", "Invoice workflow", "changed workflow state", "waiting", "Alice changed workflow state Invoice workflow");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalRequested, "Alice", "Spend approval", "requested approval", "pending", "Alice requested approval Spend approval");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalApproved, "Alice", "Spend approval", "approved", "approved", "Alice approved Spend approval");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ApprovalRejected, "Alice", "Spend approval", "rejected", "rejected", "Alice rejected Spend approval");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentHired, "Alice", "Ops Agent", "hired agent", "active", "Alice hired agent Ops Agent");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentUpdated, "Alice", "Ops Agent", "updated agent", "updated", "Alice updated agent Ops Agent");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentPaused, "Alice", "Ops Agent", "paused agent", "paused", "Alice paused agent Ops Agent");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.AgentArchived, "Alice", "Ops Agent", "archived agent", "archived", "Alice archived agent Ops Agent");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ToolExecutionAllowed, "Alice", "ERP lookup", "allowed tool execution", "allowed", "Alice allowed tool execution ERP lookup");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ToolExecutionDenied, "Alice", "ERP lookup", "denied tool execution", "denied", "Alice denied tool execution ERP lookup");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.DocumentUploaded, "Alice", "Runbook.pdf", "uploaded document", "uploaded", "Alice uploaded document Runbook.pdf");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.DocumentProcessed, "Alice", "Runbook.pdf", "processed document", "processed", "Alice processed document Runbook.pdf");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.MemoryItemCreated, "Alice", "Pricing note", "created memory item", "created", "Alice created memory item Pricing note");
++        yield return Fixture(SupportedPlatformEventTypeRegistry.ConversationMessageSent, "Alice", "Finance channel", "sent conversation message", "sent", "Alice sent conversation message Finance channel");
++    }
++
++    [Theory]
++    [MemberData(nameof(SupportedEventFixtures))]
++    public void Supported_event_types_return_deterministic_normalized_summaries(
++        string eventType,
++        Dictionary<string, JsonNode?> payload,
++        string expectedAction,
++        string expectedOutcome,
++        string expectedText)
++    {
++        var result = _formatter.Format(eventType, "ignored", "legacy text", payload);
++
++        Assert.Equal(eventType, result.EventType);
++        Assert.Equal(eventType, result.FormatterKey);
++        Assert.Equal("Alice", result.Actor);
++        Assert.Equal(expectedAction, result.Action);
++        Assert.Equal(expectedOutcome, result.Outcome);
++        Assert.Equal(expectedText, result.Text);
++        Assert.DoesNotContain("null", result.Text, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain("undefined", result.Text, StringComparison.OrdinalIgnoreCase);
++        Assert.DoesNotContain("  ", result.Text, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Missing_actor_is_omitted_without_dangling_text()
++    {
++        var result = _formatter.Format(
++            SupportedPlatformEventTypeRegistry.TaskCompleted,
++            "completed",
++            null,
++            Payload(("taskTitle", "Invoice Review")));
++
++        Assert.Null(result.Actor);
++        Assert.Equal("completed task Invoice Review", result.Text);
++    }
++
++    [Fact]
++    public void Missing_target_is_omitted_without_empty_parentheses_or_separators()
++    {
++        var result = _formatter.Format(
++            SupportedPlatformEventTypeRegistry.ApprovalApproved,
++            "approved",
++            null,
++            Payload(("actor", "Alice")));
++
++        Assert.Null(result.Target);
++        Assert.Equal("Alice approved", result.Text);
++        Assert.DoesNotContain("()", result.Text, StringComparison.Ordinal);
++    }
++
++    [Fact]
++    public void Missing_outcome_uses_status_without_leaking_null_payload_values()
++    {
++        var result = _formatter.Format(
++            SupportedPlatformEventTypeRegistry.DocumentProcessed,
++            "processed",
++            null,
++            Payload(("actor", "Alice"), ("documentName", "Runbook.pdf"), ("outcome", null)));
++
++        Assert.Equal("processed", result.Outcome);
++        Assert.Equal("Alice processed document Runbook.pdf", result.Text);
++    }
++
++    [Fact]
++    public void Unknown_event_type_uses_safe_fallback_formatter()
++    {
++        var result = _formatter.Format(
++            "vendor_custom_event",
++            "succeeded",
++            null,
++            Payload(("actor", "Alice"), ("targetName", "Integration job")));
++
++        Assert.Equal("vendor_custom_event", result.EventType);
++        Assert.Equal("fallback", result.FormatterKey);
++        Assert.Equal("recorded vendor custom event", result.Action);
++        Assert.Equal("Alice recorded vendor custom event Integration job", result.Text);
++    }
++
++    [Fact]
++    public void Malformed_payload_values_do_not_break_formatting()
++    {
++        var result = _formatter.Format(
++            SupportedPlatformEventTypeRegistry.TaskUpdated,
++            "updated",
++            "Legacy summary",
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["actor"] = new JsonObject { ["displayName"] = "Alice" },
++                ["taskTitle"] = new JsonArray(JsonValue.Create("unexpected")),
++                ["outcome"] = JsonValue.Create("updated")
++            });
++
++        Assert.Equal("Alice updated task [\"unexpected\"]", result.Text);
++        Assert.DoesNotContain("undefined", result.Text, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public void Formatter_keeps_representative_feed_page_generation_under_300_ms_median()
++    {
++        var durations = new List<double>();
++        var payloads = Enumerable.Range(0, 200)
++            .Select(i => Payload(("actor", $"Agent {i}"), ("taskTitle", $"Task {i}"), ("outcome", "completed")))
++            .ToArray();
++
++        for (var sample = 0; sample < 9; sample++)
++        {
++            var stopwatch = Stopwatch.StartNew();
++            foreach (var payload in payloads)
++            {
++                _formatter.Format(SupportedPlatformEventTypeRegistry.TaskCompleted, "completed", null, payload);
++            }
++
++            stopwatch.Stop();
++            durations.Add(stopwatch.Elapsed.TotalMilliseconds);
++        }
++
++        var median = durations.OrderBy(x => x).ElementAt(durations.Count / 2);
++        Assert.True(median < 300, $"Median formatter time for a 200-item feed page was {median} ms.");
++    }
++
++    private static object[] Fixture(
++        string eventType,
++        string actor,
++        string target,
++        string expectedAction,
++        string expectedOutcome,
++        string expectedText) =>
++        [eventType, Payload(("actor", actor), ("targetName", target), ("outcome", expectedOutcome)), expectedAction, expectedOutcome, expectedText];
++
++    private static Dictionary<string, JsonNode?> Payload(params (string Key, string? Value)[] values) =>
++        values.ToDictionary(
++            x => x.Key,
++            x => x.Value is null ? null : JsonValue.Create(x.Value),
++            StringComparer.OrdinalIgnoreCase);
++}
+END_OF_PATCH

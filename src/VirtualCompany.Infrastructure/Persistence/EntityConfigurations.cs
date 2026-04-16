@@ -166,6 +166,75 @@ internal sealed class CompanySetupTemplateConfiguration : IEntityTypeConfigurati
     }
 }
 
+internal sealed class DashboardDepartmentConfigConfiguration : IEntityTypeConfiguration<DashboardDepartmentConfig>
+{
+    public void Configure(EntityTypeBuilder<DashboardDepartmentConfig> builder)
+    {
+        builder.ToTable("dashboard_department_configs");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.DisplayName).HasColumnName("display_name").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.DisplayOrder).HasColumnName("display_order").IsRequired();
+        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.Icon).HasColumnName("icon").HasMaxLength(64);
+        builder.Property(x => x.Navigation)
+            .HasColumnName("navigation_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Visibility)
+            .HasColumnName("visibility_roles_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.EmptyState)
+            .HasColumnName("empty_state_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => x.CompanyId);
+        builder.HasIndex(x => new { x.CompanyId, x.Department }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.DisplayOrder, x.Department });
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.Widgets).WithOne(x => x.DepartmentConfig).HasForeignKey(x => x.DepartmentConfigId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class DashboardWidgetConfigConfiguration : IEntityTypeConfiguration<DashboardWidgetConfig>
+{
+    public void Configure(EntityTypeBuilder<DashboardWidgetConfig> builder)
+    {
+        builder.ToTable("dashboard_widget_configs");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.DepartmentConfigId).HasColumnName("department_config_id").IsRequired();
+        builder.Property(x => x.WidgetKey).HasColumnName("widget_key").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(160).IsRequired();
+        builder.Property(x => x.WidgetType).HasColumnName("widget_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.DisplayOrder).HasColumnName("display_order").IsRequired();
+        builder.Property(x => x.IsEnabled).HasColumnName("is_enabled").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.SummaryBinding).HasColumnName("summary_binding").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.Navigation).HasColumnName("navigation_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
+        builder.Property(x => x.Visibility).HasColumnName("visibility_roles_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
+        builder.Property(x => x.EmptyState).HasColumnName("empty_state_json").HasJsonConversion<Dictionary<string, JsonNode?>>().HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => x.CompanyId);
+        builder.HasIndex(x => new { x.CompanyId, x.DepartmentConfigId, x.DisplayOrder, x.WidgetKey });
+        builder.HasIndex(x => new { x.CompanyId, x.DepartmentConfigId, x.WidgetKey }).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.NoAction);
+    }
+}
+
 internal sealed class AgentTemplateConfiguration : IEntityTypeConfiguration<AgentTemplate>
 {
     public void Configure(EntityTypeBuilder<AgentTemplate> builder)
@@ -499,6 +568,14 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEv
         builder.Property(x => x.RationaleSummary).HasMaxLength(512);
         builder.Property(x => x.CorrelationId).HasMaxLength(128);
         builder.Property(x => x.OccurredUtc).IsRequired();
+        builder.Property(x => x.PayloadDiffJson).HasColumnName("payload_diff_json").HasMaxLength(16000);
+        builder.Property(x => x.AgentName).HasColumnName("agent_name").HasMaxLength(200);
+        builder.Property(x => x.AgentRole).HasColumnName("agent_role").HasMaxLength(128);
+        builder.Property(x => x.ResponsibilityDomain).HasColumnName("responsibility_domain").HasMaxLength(128);
+        builder.Property(x => x.PromptProfileVersion).HasColumnName("prompt_profile_version").HasMaxLength(64);
+        builder.Property(x => x.BoundaryDecisionOutcome).HasColumnName("boundary_decision_outcome").HasMaxLength(64);
+        builder.Property(x => x.IdentityReasonCode).HasColumnName("identity_reason_code").HasMaxLength(128);
+        builder.Property(x => x.BoundaryReasonCode).HasColumnName("boundary_reason_code").HasMaxLength(128);
         builder.Property(x => x.DataSources)
             .HasColumnName("data_sources_json")
             .HasJsonConversion<List<string>>()
@@ -524,6 +601,7 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEv
         builder.HasIndex(x => new { x.CompanyId, x.ActorType, x.ActorId });
         builder.HasIndex(x => new { x.CompanyId, x.TargetType, x.TargetId, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.RelatedAgentId, x.OccurredUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.RelatedAgentId, x.BoundaryDecisionOutcome, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.RelatedTaskId, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.RelatedWorkflowInstanceId, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.RelatedApprovalRequestId, x.OccurredUtc });
@@ -596,6 +674,7 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
         builder.ToTable("agents");
 
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id }).HasName("AK_agents_company_id_id");
         builder.Property(x => x.TemplateId).HasMaxLength(100).IsRequired();
         builder.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
         builder.Property(x => x.RoleName).HasMaxLength(100).IsRequired();
@@ -660,6 +739,16 @@ internal sealed class AgentConfiguration : IEntityTypeConfiguration<Agent>
             .IsRequired();
         builder.Property(x => x.WorkingHours)
             .HasColumnName("working_hours_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CommunicationProfile)
+            .HasColumnName("communication_profile_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CommunicationProfile)
+            .HasColumnName("communication_profile_json")
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
@@ -1200,6 +1289,11 @@ internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<Co
             .HasJsonConversion<Dictionary<string, JsonNode?>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
+        builder.Property(x => x.PreferenceSnapshot)
+            .HasColumnName("preference_snapshot_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
         builder.Property(x => x.Status)
             .HasColumnName("status")
             .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingStatusValues.Parse(value))
@@ -1215,6 +1309,178 @@ internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<Co
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Message).WithMany().HasForeignKey(x => x.MessageId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class CompanyBriefingSectionConfiguration : IEntityTypeConfiguration<CompanyBriefingSection>
+{
+    public void Configure(EntityTypeBuilder<CompanyBriefingSection> builder)
+    {
+        builder.ToTable("company_briefing_sections");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.BriefingId).HasColumnName("briefing_id").IsRequired();
+        builder.Property(x => x.SectionKey).HasColumnName("section_key").HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.GroupingType).HasColumnName("grouping_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.GroupingKey).HasColumnName("grouping_key").HasMaxLength(256).IsRequired();
+        builder.Property(x => x.CompanyEntityId).HasColumnName("company_entity_id");
+        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
+        builder.Property(x => x.TaskId).HasColumnName("task_id");
+        builder.Property(x => x.SectionType).HasColumnName("section_type").HasMaxLength(64).HasDefaultValue("informational").IsRequired();
+        builder.Property(x => x.PriorityCategory)
+            .HasColumnName("priority_category")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(BriefingSectionPriorityCategory.Informational)
+            .HasSentinel((BriefingSectionPriorityCategory)0)
+            .IsRequired();
+        builder.Property(x => x.PriorityScore).HasColumnName("priority_score").HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.PriorityRuleCode).HasColumnName("priority_rule_code").HasMaxLength(100);
+        builder.Property(x => x.EventCorrelationId).HasColumnName("event_correlation_id").HasMaxLength(128);
+        builder.Property(x => x.Narrative).HasColumnName("narrative").IsRequired();
+        builder.Property(x => x.IsConflicting).HasColumnName("is_conflicting").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.ConflictSummary).HasColumnName("conflict_summary").HasMaxLength(2000);
+        builder.Property(x => x.SourceReferences)
+            .HasColumnName("source_refs_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.BriefingId });
+        builder.HasIndex(x => new { x.BriefingId, x.SectionKey }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.GroupingType, x.GroupingKey });
+        builder.HasIndex(x => new { x.CompanyId, x.CompanyEntityId });
+        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
+        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
+        builder.HasIndex(x => new { x.CompanyId, x.EventCorrelationId });
+        builder.HasIndex(x => new { x.CompanyId, x.PriorityScore, x.SectionKey });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.Briefing)
+            .WithMany(x => x.Sections)
+            .HasForeignKey(x => x.BriefingId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class CompanyBriefingContributionConfiguration : IEntityTypeConfiguration<CompanyBriefingContribution>
+{
+    public void Configure(EntityTypeBuilder<CompanyBriefingContribution> builder)
+    {
+        builder.ToTable("company_briefing_contributions");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.SectionId).HasColumnName("section_id").IsRequired();
+        builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
+        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").IsRequired();
+        builder.Property(x => x.SourceLabel).HasColumnName("source_label").HasMaxLength(300).IsRequired();
+        builder.Property(x => x.SourceStatus).HasColumnName("source_status").HasMaxLength(100);
+        builder.Property(x => x.SourceRoute).HasColumnName("source_route").HasMaxLength(2048);
+        builder.Property(x => x.TimestampUtc).HasColumnName("contributed_at").IsRequired();
+        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasPrecision(5, 4);
+        builder.Property(x => x.ConfidenceMetadata)
+            .HasColumnName("confidence_metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CompanyEntityId).HasColumnName("company_entity_id");
+        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
+        builder.Property(x => x.TaskId).HasColumnName("task_id");
+        builder.Property(x => x.EventCorrelationId).HasColumnName("event_correlation_id").HasMaxLength(128);
+        builder.Property(x => x.Topic).HasColumnName("topic").HasMaxLength(300).IsRequired();
+        builder.Property(x => x.Narrative).HasColumnName("narrative").IsRequired();
+        builder.Property(x => x.Assessment).HasColumnName("assessment").HasMaxLength(200);
+        builder.Property(x => x.Metadata)
+            .HasColumnName("metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.SectionId });
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.TimestampUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
+        builder.HasIndex(x => new { x.CompanyId, x.CompanyEntityId });
+        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
+        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
+        builder.HasIndex(x => new { x.CompanyId, x.EventCorrelationId });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.Section)
+            .WithMany(x => x.Contributions)
+            .HasForeignKey(x => x.SectionId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class CompanyBriefingUpdateJobConfiguration : IEntityTypeConfiguration<CompanyBriefingUpdateJob>
+{
+    public void Configure(EntityTypeBuilder<CompanyBriefingUpdateJob> builder)
+    {
+        builder.ToTable("company_briefing_update_jobs");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.TriggerType)
+            .HasColumnName("trigger_type")
+            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingUpdateJobTriggerTypeValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.BriefingType)
+            .HasColumnName("briefing_type")
+            .HasConversion(
+                value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : CompanyBriefingTypeValues.Parse(value))
+            .HasMaxLength(32);
+        builder.Property(x => x.EventType).HasColumnName("event_type").HasMaxLength(100);
+        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(300).IsRequired();
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingUpdateJobStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.MaxAttempts).HasColumnName("max_attempts").HasDefaultValue(5).IsRequired();
+        builder.Property(x => x.NextAttemptAt).HasColumnName("next_attempt_at");
+        builder.Property(x => x.LastErrorCode).HasColumnName("last_error_code").HasMaxLength(256);
+        builder.Property(x => x.LastError).HasColumnName("last_error").HasMaxLength(4000);
+        builder.Property(x => x.LastErrorDetails).HasColumnName("last_error_details").HasMaxLength(12000);
+        builder.Property(x => x.LastFailureAt).HasColumnName("last_failure_at");
+        builder.Property(x => x.StartedAt).HasColumnName("started_at");
+        builder.Property(x => x.CompletedAt).HasColumnName("completed_at");
+        builder.Property(x => x.FinalFailedAt).HasColumnName("final_failed_at");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.SourceMetadata)
+            .HasColumnName("source_metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
+        builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.StartedAt, x.CreatedAt });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedAt });
+        builder.HasIndex(x => new { x.CompanyId, x.EventType, x.CreatedAt });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -1241,6 +1507,72 @@ internal sealed class CompanyBriefingDeliveryPreferenceConfiguration : IEntityTy
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class UserBriefingPreferenceConfiguration : IEntityTypeConfiguration<UserBriefingPreference>
+{
+    public void Configure(EntityTypeBuilder<UserBriefingPreference> builder)
+    {
+        builder.ToTable("user_briefing_preferences");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(x => x.DeliveryFrequency)
+            .HasColumnName("delivery_frequency")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingDeliveryFrequencyValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.IncludedFocusAreas)
+            .HasColumnName("included_focus_areas_json")
+            .HasJsonConversion<List<string>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
+            .IsRequired();
+        builder.Property(x => x.PriorityThreshold)
+            .HasColumnName("priority_threshold")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.UserId }).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class TenantBriefingDefaultConfiguration : IEntityTypeConfiguration<TenantBriefingDefault>
+{
+    public void Configure(EntityTypeBuilder<TenantBriefingDefault> builder)
+    {
+        builder.ToTable("tenant_briefing_defaults");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.DeliveryFrequency)
+            .HasColumnName("delivery_frequency")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingDeliveryFrequencyValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.IncludedFocusAreas)
+            .HasColumnName("included_focus_areas_json")
+            .HasJsonConversion<List<string>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
+            .IsRequired();
+        builder.Property(x => x.PriorityThreshold)
+            .HasColumnName("priority_threshold")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => x.CompanyId).IsUnique();
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -1474,7 +1806,7 @@ internal sealed class ProcessedWorkflowTriggerEventConfiguration : IEntityTypeCo
         builder.HasIndex(x => new { x.CompanyId, x.ProcessedUtc });
         builder.HasIndex(x => x.WorkflowTriggerId);
         builder.HasIndex(x => x.CreatedWorkflowInstanceId)
-            .HasFilter("[created_workflow_instance_id] IS NOT NULL");
+            .HasFilter("created_workflow_instance_id IS NOT NULL");
 
         builder.HasOne(x => x.Company)
             .WithMany()
@@ -1520,7 +1852,8 @@ internal sealed class ConditionTriggerEvaluationConfiguration : IEntityTypeConfi
             .HasColumnName("value_type")
             .HasConversion(
                 value => value.HasValue ? value.Value.ToStorageValue() : null,
-                value => string.IsNullOrWhiteSpace(value) ? null : ConditionTriggerStorageValues.ParseValueType(value));
+                value => string.IsNullOrWhiteSpace(value) ? null : ConditionTriggerStorageValues.ParseValueType(value))
+            .HasMaxLength(32);
         builder.Property(x => x.RepeatFiringMode)
             .HasColumnName("repeat_firing_mode")
             .HasConversion(value => value.ToStorageValue(), value => ConditionTriggerStorageValues.ParseRepeatFiringMode(value))
@@ -1676,6 +2009,8 @@ internal sealed class ProactiveMessagePolicyDecisionConfiguration : IEntityTypeC
             .IsRequired();
         builder.Property(x => x.RecipientUserId).HasColumnName("recipient_user_id").IsRequired();
         builder.Property(x => x.Recipient).HasColumnName("recipient").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Subject).HasColumnName("subject").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Body).HasColumnName("body").IsRequired();
         builder.Property(x => x.SourceEntityType)
             .HasColumnName("source_entity_type")
             .HasConversion(value => value.ToStorageValue(), value => ProactiveMessageSourceEntityTypeValues.Parse(value))
@@ -1711,6 +2046,46 @@ internal sealed class ProactiveMessagePolicyDecisionConfiguration : IEntityTypeC
         builder.HasOne(x => x.ProactiveMessage).WithMany().HasForeignKey(x => x.ProactiveMessageId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(x => x.RecipientUser).WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.OriginatingAgent).WithMany().HasForeignKey(x => x.OriginatingAgentId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class CompanyBriefingSeverityRuleConfiguration : IEntityTypeConfiguration<CompanyBriefingSeverityRule>
+{
+    public void Configure(EntityTypeBuilder<CompanyBriefingSeverityRule> builder)
+    {
+        builder.ToTable("company_briefing_severity_rules");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.RuleCode).HasColumnName("rule_code").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.SectionType).HasColumnName("section_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.ConditionKey).HasColumnName("condition_key").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.ConditionValue).HasColumnName("condition_value").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.PriorityCategory)
+            .HasColumnName("priority_category")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingSectionPriorityCategoryValues.Parse(value))
+            .HasMaxLength(32)
+            .IsRequired();
+        builder.Property(x => x.PriorityScore).HasColumnName("priority_score").IsRequired();
+        builder.Property(x => x.SortOrder).HasColumnName("sort_order").HasDefaultValue(0).IsRequired();
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion(value => value.ToStorageValue(), value => BriefingSeverityRuleStatusValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(BriefingSeverityRuleStatus.Active)
+            .HasSentinel((BriefingSeverityRuleStatus)0)
+            .IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.RuleCode }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.SectionType, x.EntityType, x.ConditionKey, x.ConditionValue });
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -1811,6 +2186,7 @@ internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfigurat
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id }).HasName("AK_agent_scheduled_triggers_company_id_id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
@@ -1843,11 +2219,13 @@ internal sealed class AgentScheduledTriggerConfiguration : IEntityTypeConfigurat
             .OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.Agent)
             .WithMany()
-            .HasForeignKey(x => x.AgentId)
+            .HasForeignKey(x => new { x.CompanyId, x.AgentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.Cascade);
         builder.HasMany(x => x.EnqueueWindows)
             .WithOne(x => x.ScheduledTrigger)
-            .HasForeignKey(x => x.ScheduledTriggerId)
+            .HasForeignKey(x => new { x.CompanyId, x.ScheduledTriggerId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
@@ -1871,7 +2249,7 @@ internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityT
         builder.HasIndex(x => new { x.CompanyId, x.ScheduledTriggerId, x.WindowStartUtc, x.WindowEndUtc }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.EnqueuedUtc });
         builder.HasIndex(x => x.ExecutionRequestId)
-            .HasFilter("[execution_request_id] IS NOT NULL");
+            .HasFilter("execution_request_id IS NOT NULL");
 
         builder.HasCheckConstraint(
             "CK_agent_scheduled_trigger_enqueue_windows_window_order",
@@ -1883,7 +2261,8 @@ internal sealed class AgentScheduledTriggerEnqueueWindowConfiguration : IEntityT
             .OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.ScheduledTrigger)
             .WithMany(x => x.EnqueueWindows)
-            .HasForeignKey(x => x.ScheduledTriggerId)
+            .HasForeignKey(x => new { x.CompanyId, x.ScheduledTriggerId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
@@ -1986,9 +2365,9 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
         builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
 
         builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
-        builder.HasIndex(x => new { x.CompanyId, x.Type });
-        builder.HasIndex(x => new { x.CompanyId, x.Severity });
-        builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.Type, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Severity, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Fingerprint });
         builder.HasIndex(x => new { x.CompanyId, x.Fingerprint })
             .HasFilter("\"status\" IN ('open', 'acknowledged')")
@@ -1996,6 +2375,52 @@ internal sealed class AlertConfiguration : IEntityTypeConfiguration<Alert>
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.SourceAgent).WithMany().HasForeignKey(x => x.SourceAgentId).OnDelete(DeleteBehavior.NoAction);
+    }
+}
+
+internal sealed class ActivityEventConfiguration : IEntityTypeConfiguration<ActivityEvent>
+{
+    public void Configure(EntityTypeBuilder<ActivityEvent> builder)
+    {
+        builder.ToTable("activity_events");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.AgentId).HasColumnName("agent_id");
+        builder.Property(x => x.EventType).HasColumnName("event_type").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(500).IsRequired();
+        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+        builder.Property(x => x.SourceMetadata)
+            .HasColumnName("source_metadata_json")
+            .HasJsonConversion<Dictionary<string, JsonNode?>>()
+            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+            .IsRequired();
+        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(100);
+        builder.Property(x => x.TaskId).HasColumnName("task_id");
+        builder.Property(x => x.AuditEventId).HasColumnName("audit_event_id");
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc, x.Id }).IsDescending(false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.Department, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.TaskId, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.EventType, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.CompanyId, x.AuditEventId });
+        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId, x.OccurredUtc, x.Id });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Agent)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.AgentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -2035,6 +2460,32 @@ internal sealed class EscalationConfiguration : IEntityTypeConfiguration<Escalat
             .WithMany()
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class InsightAcknowledgmentConfiguration : IEntityTypeConfiguration<InsightAcknowledgment>
+{
+    public void Configure(EntityTypeBuilder<InsightAcknowledgment> builder)
+    {
+        builder.ToTable("insight_acknowledgments");
+
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(x => x.InsightKey).HasColumnName("insight_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.AcknowledgedUtc).HasColumnName("acknowledged_at").IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+
+        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.InsightKey }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.AcknowledgedUtc });
+
+        builder.HasOne(x => x.Company)
+            .WithMany()
+            .HasForeignKey(x => x.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 

@@ -1,0 +1,1245 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 9e6a9a1..4bfc3d8 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -30,8 +30,15 @@ public sealed record ActivitySummaryDto(
+ }
+ 
+ public sealed record ActivityFeedQuery(
+-    string? Cursor,
+-    int? PageSize);
++    string? Cursor = null,
++    int? PageSize = null,
++    Guid? AgentId = null,
++    string? Department = null,
++    Guid? TaskId = null,
++    string? EventType = null,
++    string? Status = null,
++    DateTime? FromUtc = null,
++    DateTime? ToUtc = null);
+ 
+ public sealed record ActivityEventDto(
+     Guid EventId,
+@@ -46,8 +53,13 @@ public sealed record ActivityEventDto(
+     string? CorrelationId,
+     [property: JsonPropertyName("source")] Dictionary<string, JsonNode?> Source,
+     Dictionary<string, JsonNode?> RawPayload,
+-    ActivitySummaryDto NormalizedSummary);
++    ActivitySummaryDto NormalizedSummary,
++    string? Department,
++    Guid? TaskId,
++    ActivityAuditLinkDto? AuditLink);
+ 
++public sealed record ActivityAuditLinkDto(Guid AuditEventId, string Href);
++
+ public sealed record ActivityEntityReferenceDto(
+     string EntityType,
+     Guid EntityId);
+diff --git a/src/VirtualCompany.Domain/Entities/ActivityEvent.cs b/src/VirtualCompany.Domain/Entities/ActivityEvent.cs
+index 4dcbf90..d058dd3 100644
+--- a/src/VirtualCompany.Domain/Entities/ActivityEvent.cs
++++ b/src/VirtualCompany.Domain/Entities/ActivityEvent.cs
+@@ -9,6 +9,7 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
+     private const int StatusMaxLength = 64;
+     private const int SummaryMaxLength = 500;
+     private const int CorrelationIdMaxLength = 128;
++    private const int DepartmentMaxLength = 100;
+ 
+     private ActivityEvent()
+     {
+@@ -23,7 +24,10 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
+         DateTime occurredUtc,
+         string status,
+         string summary,
+         string? correlationId,
+-        IReadOnlyDictionary<string, JsonNode?>? sourceMetadata)
++        IReadOnlyDictionary<string, JsonNode?>? sourceMetadata,
++        string? department = null,
++        Guid? taskId = null,
++        Guid? auditEventId = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -51,6 +55,9 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
+         Status = NormalizeRequired(status, nameof(status), StatusMaxLength);
+         Summary = NormalizeRequired(summary, nameof(summary), SummaryMaxLength);
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        Department = NormalizeOptional(department, nameof(department), DepartmentMaxLength);
++        TaskId = taskId == Guid.Empty ? throw new ArgumentException("TaskId cannot be empty.", nameof(taskId)) : taskId;
++        AuditEventId = auditEventId == Guid.Empty ? throw new ArgumentException("AuditEventId cannot be empty.", nameof(auditEventId)) : auditEventId;
+         SourceMetadata = CloneNodes(sourceMetadata);
+         CreatedUtc = DateTime.UtcNow;
+     }
+@@ -64,6 +71,9 @@ public sealed class ActivityEvent : ICompanyOwnedEntity
+     public string Summary { get; private set; } = null!;
+     public string? CorrelationId { get; private set; }
+     public Dictionary<string, JsonNode?> SourceMetadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public string? Department { get; private set; }
++    public Guid? TaskId { get; private set; }
++    public Guid? AuditEventId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Agent? Agent { get; private set; }
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 0d3df30..c3a25d4 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -45,13 +45,24 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             ValidateTenant(tenantId, command.TenantId);
+         Validate(command);
+ 
++        string? agentDepartment = null;
+         if (command.AgentId.HasValue)
+         {
+-            var agentExists = await _dbContext.Agents.IgnoreQueryFilters()
+-                .AnyAsync(x => x.CompanyId == tenantId && x.Id == command.AgentId.Value, cancellationToken);
+-            if (!agentExists)
++            agentDepartment = await _dbContext.Agents.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == tenantId && x.Id == command.AgentId.Value)
++                .Select(x => x.Department)
++                .SingleOrDefaultAsync(cancellationToken);
++            if (agentDepartment is null)
+             {
+                 throw BuildValidationException(nameof(command.AgentId), "AgentId must reference an agent in the requested tenant.");
+             }
+         }
+ 
++        var taskId = ExtractTaskId(command.Source);
++        var auditEventId = await ResolveTenantAuditEventIdAsync(tenantId, ExtractAuditEventId(command.Source), cancellationToken);
++
+         var activityEvent = new ActivityEvent(
+             Guid.NewGuid(),
+             tenantId,
+@@ -61,7 +72,10 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             command.Status,
+             command.Summary,
+             command.CorrelationId,
+-            command.Source);
++            command.Source,
++            ReadString(command.Source ?? new Dictionary<string, JsonNode?>(), "department", "agentDepartment") ?? agentDepartment,
++            taskId,
++            auditEventId);
+ 
+         _dbContext.ActivityEvents.Add(activityEvent);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -85,11 +99,12 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         await RequireMembershipAsync(tenantId, cancellationToken);
++        ValidateQuery(query);
+         var pageSize = Math.Clamp(query.PageSize ?? DefaultPageSize, 1, MaxPageSize);
+ 
+         var events = _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
+             .Where(x => x.CompanyId == tenantId);
+ 
++        events = ApplyFilters(events, query);
+         if (!string.IsNullOrWhiteSpace(query.Cursor))
+         {
+             var cursor = DecodeCursor(query.Cursor);
+@@ -105,7 +120,8 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             .Take(pageSize + 1)
+             .ToListAsync(cancellationToken);
+ 
+-        var items = page.Take(pageSize).Select(ToDto).ToList();
++        var auditEventIds = await ResolveLinkedAuditIdsAsync(tenantId, page.Take(pageSize), cancellationToken);
++        var items = page.Take(pageSize).Select(x => ToDto(x, auditEventIds)).ToList();
+         var nextCursor = page.Count > pageSize
+             ? EncodeCursor(items[^1].OccurredAt, items[^1].EventId)
+             : null;
+@@ -150,7 +166,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+                 .ToList();
+ 
+             return new ActivityTimelineItemDto(
+-                ToDto(activityEvent),
++                ToDto(activityEvent, []),
+                 references.FirstOrDefault(),
+                 links);
+         }).ToList();
+@@ -205,6 +221,62 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             throw new ActivityFeedValidationException(errors);
+         }
+     }
++
++    private static void ValidateQuery(ActivityFeedQuery query)
++    {
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        AddOptional(errors, nameof(query.Department), query.Department, 100);
++        AddOptional(errors, nameof(query.EventType), query.EventType, 100);
++        AddOptional(errors, nameof(query.Status), query.Status, 64);
++
++        if (query.AgentId == Guid.Empty)
++        {
++            errors[nameof(query.AgentId)] = ["AgentId cannot be empty."];
++        }
++
++        if (query.TaskId == Guid.Empty)
++        {
++            errors[nameof(query.TaskId)] = ["TaskId cannot be empty."];
++        }
++
++        if (query.FromUtc is DateTime fromUtc && query.ToUtc is DateTime toUtc && fromUtc > toUtc)
++        {
++            errors["dateRange"] = ["Activity feed from date must be on or before the to date."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new ActivityFeedValidationException(errors);
++        }
++    }
++
++    private static IQueryable<ActivityEvent> ApplyFilters(IQueryable<ActivityEvent> events, ActivityFeedQuery query)
++    {
++        // Activity feed filters are AND-combined. ToUtc is exclusive so adjacent ranges do not overlap.
++        if (query.AgentId is Guid agentId)
++        {
++            events = events.Where(x => x.AgentId == agentId);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Department))
++        {
++            var department = query.Department.Trim();
++            events = events.Where(x => x.Department == department);
++        }
++
++        if (query.TaskId is Guid taskId)
++        {
++            events = events.Where(x => x.TaskId == taskId);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.EventType))
++        {
++            var eventType = query.EventType.Trim();
++            events = events.Where(x => x.EventType == eventType);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Status))
++        {
++            var status = query.Status.Trim();
++            events = events.Where(x => x.Status == status);
++        }
++
++        if (query.FromUtc is DateTime fromUtc)
++        {
++            events = events.Where(x => x.OccurredUtc >= NormalizeQueryUtc(fromUtc));
++        }
++
++        if (query.ToUtc is DateTime toUtc)
++        {
++            events = events.Where(x => x.OccurredUtc < NormalizeQueryUtc(toUtc));
++        }
++
++        return events;
++    }
+ 
+     private static void ValidateCorrelationQuery(ActivityCorrelationTimelineQuery query)
+     {
+@@ -263,7 +335,7 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private static ActivityFeedValidationException BuildValidationException(string key, string message) =>
+         new(new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [key] = [message] });
+ 
+-    private ActivityEventDto ToDto(ActivityEvent activityEvent)
++    private ActivityEventDto ToDto(ActivityEvent activityEvent, IReadOnlySet<Guid> tenantAuditEventIds)
+     {
+         var source = CloneNodes(activityEvent.SourceMetadata);
+         var rawPayload = CloneNodes(activityEvent.SourceMetadata);
+@@ -277,7 +349,27 @@ public sealed class EfActivityEventStore : IActivityEventStore
+             activityEvent.CorrelationId,
+             source,
+             rawPayload,
+-            _summaryFormatter.Format(activityEvent.EventType, activityEvent.Status, activityEvent.Summary, rawPayload));
++            _summaryFormatter.Format(activityEvent.EventType, activityEvent.Status, activityEvent.Summary, rawPayload),
++            activityEvent.Department,
++            activityEvent.TaskId,
++            activityEvent.AuditEventId is Guid auditEventId && tenantAuditEventIds.Contains(auditEventId)
++                ? new ActivityAuditLinkDto(auditEventId, $"/audit/{auditEventId}?companyId={activityEvent.CompanyId}")
++                : null);
++    }
++
++    private async Task<Guid?> ResolveTenantAuditEventIdAsync(Guid tenantId, Guid? auditEventId, CancellationToken cancellationToken)
++    {
++        if (auditEventId is not Guid id)
++        {
++            return null;
++        }
++
++        return await _dbContext.AuditEvents.IgnoreQueryFilters().AsNoTracking()
++            .AnyAsync(x => x.CompanyId == tenantId && x.Id == id, cancellationToken)
++            ? id
++            : null;
+     }
++
++    private async Task<IReadOnlySet<Guid>> ResolveLinkedAuditIdsAsync(Guid tenantId, IEnumerable<ActivityEvent> activityEvents, CancellationToken cancellationToken)
++    {
++        var ids = activityEvents.Select(x => x.AuditEventId).OfType<Guid>().Distinct().ToList();
++        if (ids.Count == 0)
++        {
++            return new HashSet<Guid>();
++        }
++
++        var tenantIds = await _dbContext.AuditEvents.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == tenantId && ids.Contains(x.Id))
++            .Select(x => x.Id)
++            .ToListAsync(cancellationToken);
++        return tenantIds.ToHashSet();
++    }
+ 
+     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?> source) =>
+         source.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+@@ -411,6 +503,46 @@ public sealed class EfActivityEventStore : IActivityEventStore
+ 
+     private static Guid? ReadGuid(JsonObject source, params string[] keys) =>
+         Guid.TryParse(ReadString(source, keys), out var id) ? id : null;
++
++    private static Guid? ExtractAuditEventId(IReadOnlyDictionary<string, JsonNode?>? source) =>
++        source is null ? null : ReadGuid(source, "auditEventId", "auditId");
++
++    private static Guid? ExtractTaskId(IReadOnlyDictionary<string, JsonNode?>? source)
++    {
++        if (source is null)
++        {
++            return null;
++        }
++
++        var direct = ReadGuid(source, "taskId", "workTaskId");
++        if (direct is not null)
++        {
++            return direct;
++        }
++
++        var sourceType = ReadString(source, "sourceType", "targetEntityType", "entityType");
++        return sourceType is not null &&
++               (sourceType.Equals("task", StringComparison.OrdinalIgnoreCase) ||
++                sourceType.Equals(ActivityEntityTypes.Task, StringComparison.OrdinalIgnoreCase) ||
++                sourceType.Equals("work_task", StringComparison.OrdinalIgnoreCase))
++            ? ReadGuid(source, "sourceId", "targetEntityId", "entityId")
++            : null;
++    }
++
++    private static DateTime NormalizeQueryUtc(DateTime value) =>
++        value.Kind switch
++        {
++            DateTimeKind.Utc => value,
++            DateTimeKind.Local => value.ToUniversalTime(),
++            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
++        };
+ 
+     private static string EncodeCursor(DateTime occurredAt, Guid eventId)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 71c49cc..f86f1b1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -2083,12 +2083,20 @@ internal sealed class ActivityEventConfiguration : IEntityTypeConfiguration<Acti
+         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+         builder.Property(x => x.SourceMetadata)
+             .HasColumnName("source_metadata_json")
+             .HasJsonConversion<Dictionary<string, JsonNode?>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
++        builder.Property(x => x.Department).HasColumnName("department").HasMaxLength(100);
++        builder.Property(x => x.TaskId).HasColumnName("task_id");
++        builder.Property(x => x.AuditEventId).HasColumnName("audit_event_id");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.OccurredUtc, x.Id }).IsDescending(false, true, true);
+         builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
++        builder.HasIndex(x => new { x.CompanyId, x.Department, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
++        builder.HasIndex(x => new { x.CompanyId, x.EventType, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.OccurredUtc, x.Id }).IsDescending(false, false, true, true);
++        builder.HasIndex(x => new { x.CompanyId, x.AuditEventId });
+         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId, x.OccurredUtc, x.Id });
+ 
+         builder.HasOne(x => x.Company)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415193000_AddActivityFeedFilterIndexes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415193000_AddActivityFeedFilterIndexes.cs
+new file mode 100644
+index 0000000..ef8b6e4
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415193000_AddActivityFeedFilterIndexes.cs
+@@ -0,0 +1,151 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260415193000_AddActivityFeedFilterIndexes")]
++public partial class AddActivityFeedFilterIndexes : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++
++        migrationBuilder.AddColumn<string>(
++            name: "department",
++            table: "activity_events",
++            type: string100Type,
++            maxLength: 100,
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "task_id",
++            table: "activity_events",
++            type: guidType,
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "audit_event_id",
++            table: "activity_events",
++            type: guidType,
++            nullable: true);
++
++        if (isPostgres)
++        {
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_department_occurred_at_id"
++                ON "activity_events" ("company_id", "department", "occurred_at" DESC, "id" DESC);
++                """);
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_task_id_occurred_at_id"
++                ON "activity_events" ("company_id", "task_id", "occurred_at" DESC, "id" DESC);
++                """);
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_event_type_occurred_at_id"
++                ON "activity_events" ("company_id", "event_type", "occurred_at" DESC, "id" DESC);
++                """);
++            migrationBuilder.Sql("""
++                CREATE INDEX "IX_activity_events_company_id_status_occurred_at_id"
++                ON "activity_events" ("company_id", "status", "occurred_at" DESC, "id" DESC);
++                """);
++        }
++        else
++        {
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_department_occurred_at_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "department", "occurred_at", "id" },
++                descending: new[] { false, false, true, true });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_task_id_occurred_at_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "task_id", "occurred_at", "id" },
++                descending: new[] { false, false, true, true });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_event_type_occurred_at_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "event_type", "occurred_at", "id" },
++                descending: new[] { false, false, true, true });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_activity_events_company_id_status_occurred_at_id",
++                table: "activity_events",
++                columns: new[] { "company_id", "status", "occurred_at", "id" },
++                descending: new[] { false, false, true, true });
++        }
++
++        migrationBuilder.CreateIndex(
++            name: "IX_activity_events_company_id_audit_event_id",
++            table: "activity_events",
++            columns: new[] { "company_id", "audit_event_id" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_audit_event_id",
++            table: "activity_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_department_occurred_at_id",
++            table: "activity_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_task_id_occurred_at_id",
++            table: "activity_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_event_type_occurred_at_id",
++            table: "activity_events");
++
++        migrationBuilder.DropIndex(
++            name: "IX_activity_events_company_id_status_occurred_at_id",
++            table: "activity_events");
++
++        migrationBuilder.DropColumn(
++            name: "audit_event_id",
++            table: "activity_events");
++
++        migrationBuilder.DropColumn(
++            name: "task_id",
++            table: "activity_events");
++
++        migrationBuilder.DropColumn(
++            name: "department",
++            table: "activity_events");
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index 7d8808a..6e0641c 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -21,12 +21,19 @@ public sealed class ActivityFeedController : ControllerBase
+     public async Task<ActionResult<ActivityFeedPageDto>> ListAsync(
+         Guid companyId,
+         [FromQuery] string? cursor,
+         [FromQuery] int? pageSize,
++        [FromQuery] Guid? agentId,
++        [FromQuery] string? department,
++        [FromQuery] Guid? taskId,
++        [FromQuery] string? eventType,
++        [FromQuery] string? status,
++        [FromQuery(Name = "from")] DateTime? fromUtc,
++        [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _activityEvents.QueryFeedAsync(companyId, new ActivityFeedQuery(cursor, pageSize), cancellationToken));
++            return Ok(await _activityEvents.QueryFeedAsync(companyId, new ActivityFeedQuery(cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc), cancellationToken));
+         }
+         catch (ActivityFeedValidationException ex)
+         {
+@@ -123,11 +130,18 @@ public sealed class ActivityFeedController : ControllerBase
+     public Task<ActionResult<ActivityFeedPageDto>> ListTenantAliasAsync(
+         Guid tenantId,
+         [FromQuery] string? cursor,
+         [FromQuery] int? pageSize,
++        [FromQuery] Guid? agentId,
++        [FromQuery] string? department,
++        [FromQuery] Guid? taskId,
++        [FromQuery] string? eventType,
++        [FromQuery] string? status,
++        [FromQuery(Name = "from")] DateTime? fromUtc,
++        [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken) =>
+-        ListAsync(tenantId, cursor, pageSize, cancellationToken);
++        ListAsync(tenantId, cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc, cancellationToken);
+ 
+     [HttpGet("/api/companies/{companyId:guid}/agent-activity")]
+     public Task<ActionResult<ActivityFeedPageDto>> ListAgentActivityAliasAsync(
+         Guid companyId,
+         [FromQuery] string? cursor,
+         [FromQuery] int? pageSize,
++        [FromQuery] Guid? agentId,
++        [FromQuery] string? department,
++        [FromQuery] Guid? taskId,
++        [FromQuery] string? eventType,
++        [FromQuery] string? status,
++        [FromQuery(Name = "from")] DateTime? fromUtc,
++        [FromQuery(Name = "to")] DateTime? toUtc,
+         CancellationToken cancellationToken) =>
+-        ListAsync(companyId, cursor, pageSize, cancellationToken);
++        ListAsync(companyId, cursor, pageSize, agentId, department, taskId, eventType, status, fromUtc, toUtc, cancellationToken);
+ 
+     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+         ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
+diff --git a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+index 5b806de..b63a50a 100644
+--- a/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ActivityFeedApiClient.cs
+@@ -22,7 +22,8 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+     public Task<ActivityFeedPageViewModel> ListAsync(
+         Guid companyId,
+         string? cursor = null,
+         int pageSize = 25,
++        ActivityFeedFilterViewModel? filters = null,
+         CancellationToken cancellationToken = default)
+     {
+         if (_useOfflineMode)
+@@ -37,6 +38,34 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+             query["cursor"] = cursor;
+         }
+ 
++        if (filters is not null)
++        {
++            if (!string.IsNullOrWhiteSpace(filters.AgentId))
++            {
++                query["agentId"] = filters.AgentId.Trim();
++            }
++
++            if (!string.IsNullOrWhiteSpace(filters.Department))
++            {
++                query["department"] = filters.Department.Trim();
++            }
++
++            if (!string.IsNullOrWhiteSpace(filters.TaskId))
++            {
++                query["taskId"] = filters.TaskId.Trim();
++            }
++
++            if (!string.IsNullOrWhiteSpace(filters.EventType))
++            {
++                query["eventType"] = filters.EventType.Trim();
++            }
++
++            if (!string.IsNullOrWhiteSpace(filters.Status))
++            {
++                query["status"] = filters.Status.Trim();
++            }
++
++            AddDateQuery(query, "from", filters.FromUtc);
++            AddDateQuery(query, "to", filters.ToUtc);
++        }
++
+         return GetAsync<ActivityFeedPageViewModel>(
+             $"api/companies/{companyId}/activity-feed?{query}",
+             cancellationToken);
+@@ -132,6 +161,16 @@ public sealed class ActivityFeedApiClient : IAsyncDisposable
+         var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
+         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+     }
++
++    private static void AddDateQuery(System.Collections.Specialized.NameValueCollection query, string name, DateTime? value)
++    {
++        if (value is null)
++        {
++            return;
++        }
++
++        query[name] = value.Value.ToUniversalTime().ToString("O");
++    }
+ 
+     private static ActivityFeedPageViewModel OfflinePage(Guid companyId)
+     {
+@@ -274,6 +313,17 @@ public sealed class ActivityFeedPageViewModel
+     public string? NextCursor { get; set; }
+ }
+ 
++public sealed class ActivityFeedFilterViewModel
++{
++    public string? AgentId { get; set; }
++    public string? Department { get; set; }
++    public string? TaskId { get; set; }
++    public string? EventType { get; set; }
++    public string? Status { get; set; }
++    public DateTime? FromUtc { get; set; }
++    public DateTime? ToUtc { get; set; }
++}
++
+ public sealed class ActivityFeedItemViewModel
+ {
+     public Guid EventId { get; set; }
+@@ -286,9 +336,23 @@ public sealed class ActivityFeedItemViewModel
+     public string Summary { get; set; } = string.Empty;
+     public string? CorrelationId { get; set; }
++    public string? Department { get; set; }
++    public Guid? TaskId { get; set; }
++    public ActivityAuditLinkViewModel? AuditLink { get; set; }
+ 
+     // Current API payloads use source; sourceMetadata is kept for the task contract and forward compatibility.
+     public Dictionary<string, JsonElement> Source { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+     public Dictionary<string, JsonElement> SourceMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Dictionary<string, JsonElement> RawPayload { get; set; } = new(StringComparer.OrdinalIgnoreCase);
++    public ActivitySummaryViewModel? NormalizedSummary { get; set; }
++}
++
++public sealed class ActivityAuditLinkViewModel
++{
++    public Guid AuditEventId { get; set; }
++    public string Href { get; set; } = string.Empty;
++}
++
++public sealed class ActivitySummaryViewModel
++{
++    public string SummaryText { get; set; } = string.Empty;
+ }
+ 
+ public sealed class ActivityCorrelationTimelineViewModel
+diff --git a/src/VirtualCompany.Web/Pages/ActivityFeed.razor b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+index 10d061b..d5ae646 100644
+--- a/src/VirtualCompany.Web/Pages/ActivityFeed.razor
++++ b/src/VirtualCompany.Web/Pages/ActivityFeed.razor
+@@ -43,6 +43,54 @@ else
+             </div>
+         </div>
+ 
++        <div class="wizard-card wizard-card--compact mt-4">
++            <div class="row g-3 align-items-end">
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-agent-filter">Agent</label>
++                    <input id="activity-agent-filter" class="form-control" @bind="agentIdFilter" placeholder="Agent id" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-department-filter">Department</label>
++                    <input id="activity-department-filter" class="form-control" @bind="departmentFilter" placeholder="Operations" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-task-filter">Task</label>
++                    <input id="activity-task-filter" class="form-control" @bind="taskIdFilter" placeholder="Task id" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-event-filter">Event type</label>
++                    <input id="activity-event-filter" class="form-control" @bind="eventTypeFilter" placeholder="task_completed" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-status-filter">Status</label>
++                    <input id="activity-status-filter" class="form-control" @bind="statusFilter" placeholder="completed" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-from-filter">From</label>
++                    <input id="activity-from-filter" class="form-control" type="datetime-local" @bind="fromFilter" />
++                </div>
++                <div class="col-md-4 col-lg-2">
++                    <label class="form-label" for="activity-to-filter">To</label>
++                    <input id="activity-to-filter" class="form-control" type="datetime-local" @bind="toFilter" />
++                </div>
++                <div class="col-md-8 col-lg-4 d-flex gap-2">
++                    <button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">Apply filters</button>
++                    <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">Clear</button>
++                </div>
++            </div>
++        </div>
++
+         @if (!string.IsNullOrWhiteSpace(errorMessage))
+         {
+             <div class="alert alert-danger mt-3 mb-0">@errorMessage</div>
+@@ -97,11 +145,32 @@ else
+                                             }
+                                             <button class="btn btn-sm btn-outline-primary mt-2"
+                                                     type="button"
+                                                     disabled="@correlationIsLoading"
+                                                     @onclick="() => SelectActivityAsync(item)">
+-                                                @(isSelected && correlationIsLoading ? "Loading..." : "Inspect correlation")
++                                                @(isSelected && correlationIsLoading ? "Loading..." : "Inspect details")
+                                             </button>
++                                            @if (isSelected)
++                                            {
++                                                <div class="activity-feed-detail mt-3">
++                                                    <h4 class="h6">Summary</h4>
++                                                    <p class="text-body-secondary">@(!string.IsNullOrWhiteSpace(item.NormalizedSummary?.SummaryText) ? item.NormalizedSummary.SummaryText : item.Summary)</p>
++                                                    @if (item.RawPayload.Count > 0)
++                                                    {
++                                                        <h4 class="h6">Raw payload</h4>
++                                                        <pre class="activity-feed-raw">@JsonSerializer.Serialize(item.RawPayload, new JsonSerializerOptions { WriteIndented = true })</pre>
++                                                    }
++                                                    @if (!string.IsNullOrWhiteSpace(item.CorrelationId))
++                                                    {
++                                                        <h4 class="h6">Correlation</h4>
++                                                        <button class="btn btn-sm btn-outline-secondary" type="button" disabled="@correlationIsLoading" @onclick="() => SelectActivityAsync(item)">Open correlation timeline</button>
++                                                    }
++                                                    @if (item.AuditLink is not null)
++                                                    {
++                                                        <h4 class="h6 mt-3">Audit</h4>
++                                                        <a class="btn btn-sm btn-outline-secondary" href="@item.AuditLink.Href">Open audit record</a>
++                                                    }
++                                                </div>
++                                            }
+                                         </div>
+                                     </article>
+                                 }
+@@ -139,12 +208,34 @@ else
+     [SupplyParameterFromQuery(Name = "companyId")]
+     public Guid? CompanyId { get; set; }
+ 
++    [SupplyParameterFromQuery(Name = "agentId")]
++    public string? AgentIdQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "department")]
++    public string? DepartmentQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "taskId")]
++    public string? TaskIdQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "eventType")]
++    public string? EventTypeQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "status")]
++    public string? StatusQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "from")]
++    public DateTime? FromQuery { get; set; }
++
++    [SupplyParameterFromQuery(Name = "to")]
++    public DateTime? ToQuery { get; set; }
++
+     private readonly List<ActivityFeedItemViewModel> items = [];
+     private readonly HashSet<Guid> seenEventIds = [];
++    private string? loadedQuerySignature;
+     private Guid? loadedCompanyId;
+     private string? companyName;
+     private string? nextCursor;
+     private string? errorMessage;
++    private string? agentIdFilter;
++    private string? departmentFilter;
++    private string? taskIdFilter;
++    private string? eventTypeFilter;
++    private string? statusFilter;
++    private DateTime? fromFilter;
++    private DateTime? toFilter;
+     private bool isLoading = true;
+     private bool isLoadingMore;
+     private bool isLive;
+@@ -161,7 +252,10 @@ else
+             return;
+         }
+ 
+-        if (loadedCompanyId == CompanyId)
++        HydrateFiltersFromQuery();
++        var querySignature = BuildQuerySignature();
++
++        if (loadedCompanyId == CompanyId && loadedQuerySignature == querySignature)
+         {
+             return;
+         }
+@@ -169,6 +263,7 @@ else
+         await ActivityFeedClient.DisconnectAsync();
+         loadedCompanyId = CompanyId;
++        loadedQuerySignature = querySignature;
+         items.Clear();
+         seenEventIds.Clear();
+         nextCursor = null;
+@@ -226,7 +321,7 @@ else
+ 
+     private async Task LoadPageAsync(string? cursor, bool replace)
+     {
+-        var page = await ActivityFeedClient.ListAsync(CompanyId!.Value, cursor, PageSize);
++        var page = await ActivityFeedClient.ListAsync(CompanyId!.Value, cursor, PageSize, BuildFilters());
+ 
+         if (replace)
+         {
+@@ -243,6 +338,13 @@ else
+ 
+     private Task ReceiveLiveEventAsync(ActivityFeedItemViewModel item)
+     {
++        if (HasActiveFilters)
++        {
++            _ = InvokeAsync(() => LoadPageAsync(null, replace: true));
++            return Task.CompletedTask;
++        }
++
+         AddOrUpdate(item);
+         SortItems();
+         return InvokeAsync(StateHasChanged);
+@@ -370,6 +472,74 @@ else
+             _ => value.GetRawText()
+         };
+ 
++    private bool HasActiveFilters =>
++        !string.IsNullOrWhiteSpace(agentIdFilter) ||
++        !string.IsNullOrWhiteSpace(departmentFilter) ||
++        !string.IsNullOrWhiteSpace(taskIdFilter) ||
++        !string.IsNullOrWhiteSpace(eventTypeFilter) ||
++        !string.IsNullOrWhiteSpace(statusFilter) ||
++        fromFilter.HasValue ||
++        toFilter.HasValue;
++
++    private ActivityFeedFilterViewModel BuildFilters() =>
++        new()
++        {
++            AgentId = agentIdFilter,
++            Department = departmentFilter,
++            TaskId = taskIdFilter,
++            EventType = eventTypeFilter,
++            Status = statusFilter,
++            FromUtc = fromFilter,
++            ToUtc = toFilter
++        };
++
++    private void HydrateFiltersFromQuery()
++    {
++        agentIdFilter = AgentIdQuery;
++        departmentFilter = DepartmentQuery;
++        taskIdFilter = TaskIdQuery;
++        eventTypeFilter = EventTypeQuery;
++        statusFilter = StatusQuery;
++        fromFilter = FromQuery;
++        toFilter = ToQuery;
++    }
++
++    private async Task ApplyFiltersAsync()
++    {
++        NavigateWithFilters();
++        await Task.CompletedTask;
++    }
++
++    private async Task ClearFiltersAsync()
++    {
++        agentIdFilter = null;
++        departmentFilter = null;
++        taskIdFilter = null;
++        eventTypeFilter = null;
++        statusFilter = null;
++        fromFilter = null;
++        toFilter = null;
++        NavigateWithFilters();
++        await Task.CompletedTask;
++    }
++
++    private void NavigateWithFilters()
++    {
++        var values = new Dictionary<string, object?>
++        {
++            ["companyId"] = CompanyId,
++            ["agentId"] = EmptyToNull(agentIdFilter),
++            ["department"] = EmptyToNull(departmentFilter),
++            ["taskId"] = EmptyToNull(taskIdFilter),
++            ["eventType"] = EmptyToNull(eventTypeFilter),
++            ["status"] = EmptyToNull(statusFilter),
++            ["from"] = fromFilter,
++            ["to"] = toFilter
++        };
++
++        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(values));
++    }
++
++    private string BuildQuerySignature() =>
++        string.Join("|", CompanyId, AgentIdQuery, DepartmentQuery, TaskIdQuery, EventTypeQuery, StatusQuery, FromQuery?.ToUniversalTime().ToString("O"), ToQuery?.ToUniversalTime().ToString("O"));
++
++    private static string? EmptyToNull(string? value) =>
++        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
++
+     public async ValueTask DisposeAsync() =>
+         await ActivityFeedClient.DisposeAsync();
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+new file mode 100644
+index 0000000..5539d8c
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+@@ -0,0 +1,278 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ActivityFeedFilteringIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Feed_applies_top_filter_combinations_with_and_semantics()
++    {
++        var seed = await SeedFilterTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var agentAndTime = await GetFeedAsync(client, seed.CompanyId, $"agentId={seed.FinanceAgentId}&from={Escape(seed.BaseTime.AddMinutes(-1))}&to={Escape(seed.BaseTime.AddMinutes(2))}");
++        Assert.Equal([seed.FinanceStartedId, seed.FinanceCompletedId], agentAndTime.Items.Select(x => x.EventId).ToArray());
++        Assert.All(agentAndTime.Items, item =>
++        {
++            Assert.Equal(seed.FinanceAgentId, item.AgentId);
++            Assert.InRange(item.OccurredAt, seed.BaseTime.AddMinutes(-1), seed.BaseTime.AddMinutes(2).AddTicks(-1));
++        });
++
++        var departmentAndEventType = await GetFeedAsync(client, seed.CompanyId, "department=Finance&eventType=task_completed");
++        var financeCompleted = Assert.Single(departmentAndEventType.Items);
++        Assert.Equal(seed.FinanceCompletedId, financeCompleted.EventId);
++        Assert.Equal("Finance", financeCompleted.Department);
++        Assert.Equal("task_completed", financeCompleted.EventType);
++
++        var taskAndStatus = await GetFeedAsync(client, seed.CompanyId, $"taskId={seed.OpsTaskId}&status=failed");
++        var opsFailed = Assert.Single(taskAndStatus.Items);
++        Assert.Equal(seed.OpsFailedId, opsFailed.EventId);
++        Assert.Equal(seed.OpsTaskId, opsFailed.TaskId);
++        Assert.Equal("failed", opsFailed.Status);
++
++        var agentDepartmentStatus = await GetFeedAsync(client, seed.CompanyId, $"agentId={seed.FinanceAgentId}&department=Finance&status=running");
++        var financeRunning = Assert.Single(agentDepartmentStatus.Items);
++        Assert.Equal(seed.FinanceStartedId, financeRunning.EventId);
++
++        var eventStatusTime = await GetFeedAsync(client, seed.CompanyId, $"eventType=tool_execution_started&status=running&from={Escape(seed.BaseTime.AddMinutes(1))}&to={Escape(seed.BaseTime.AddMinutes(5))}");
++        var toolStarted = Assert.Single(eventStatusTime.Items);
++        Assert.Equal(seed.OpsToolStartedId, toolStarted.EventId);
++        Assert.Equal("tool_execution_started", toolStarted.EventType);
++        Assert.Equal("running", toolStarted.Status);
++    }
++
++    [Fact]
++    public async Task Feed_clear_filters_returns_broader_result_set()
++    {
++        var seed = await SeedFilterTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var filtered = await GetFeedAsync(client, seed.CompanyId, "department=Finance&eventType=task_completed");
++        var unfiltered = await GetFeedAsync(client, seed.CompanyId, "pageSize=20");
++
++        Assert.Single(filtered.Items);
++        Assert.True(unfiltered.Items.Count > filtered.Items.Count);
++        Assert.Contains(unfiltered.Items, item => item.EventId == filtered.Items[0].EventId);
++    }
++
++    [Fact]
++    public async Task Feed_rejects_invalid_date_ranges()
++    {
++        var seed = await SeedFilterTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/activity-feed?from={Escape(seed.BaseTime.AddMinutes(5))}&to={Escape(seed.BaseTime)}");
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Activity_audit_deep_link_is_tenant_scoped_and_resolves_to_audit_detail()
++    {
++        var seed = await SeedAuditLinkTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var feed = await GetFeedAsync(client, seed.CompanyId, "pageSize=20");
++        var linked = Assert.Single(feed.Items.Where(x => x.EventId == seed.LinkedActivityId));
++        Assert.NotNull(linked.AuditLink);
++        Assert.Equal(seed.AuditEventId, linked.AuditLink!.AuditEventId);
++        Assert.Equal($"/audit/{seed.AuditEventId}?companyId={seed.CompanyId}", linked.AuditLink.Href);
++
++        var detail = await client.GetFromJsonAsync<AuditDetailResponse>($"/api/companies/{seed.CompanyId}/audit/{linked.AuditLink.AuditEventId}");
++        Assert.NotNull(detail);
++        Assert.Equal(seed.AuditEventId, detail!.Id);
++        Assert.Equal(seed.CompanyId, detail.CompanyId);
++
++        var crossTenant = Assert.Single(feed.Items.Where(x => x.EventId == seed.CrossTenantActivityId));
++        Assert.Null(crossTenant.AuditLink);
++    }
++
++    private async Task<FilterSeed> SeedFilterTenantAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var financeAgentId = Guid.NewGuid();
++        var opsAgentId = Guid.NewGuid();
++        var financeTaskId = Guid.NewGuid();
++        var opsTaskId = Guid.NewGuid();
++        var baseTime = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc);
++        var financeStartedId = Guid.NewGuid();
++        var financeCompletedId = Guid.NewGuid();
++        var opsFailedId = Guid.NewGuid();
++        var opsToolStartedId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "activity-filter-owner@example.com", "Activity Filter Owner", "dev-header", "activity-filter-owner"));
++            dbContext.Companies.AddRange(new Company(companyId, "Activity Filter Tenant"), new Company(otherCompanyId, "Other Activity Filter Tenant"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.AddRange(
++                new Agent(financeAgentId, companyId, "finance", "Finance Agent", "Finance Agent", "Finance", null, AgentSeniority.Mid),
++                new Agent(opsAgentId, companyId, "ops", "Ops Agent", "Operations Agent", "Operations", null, AgentSeniority.Mid));
++            dbContext.WorkTasks.AddRange(
++                new WorkTask(financeTaskId, companyId, "finance", "Review invoice", null, WorkTaskPriority.Normal, financeAgentId, null, "user", userId),
++                new WorkTask(opsTaskId, companyId, "ops", "Recover deployment", null, WorkTaskPriority.High, opsAgentId, null, "user", userId));
++            dbContext.ActivityEvents.AddRange(
++                new ActivityEvent(
++                    financeStartedId,
++                    companyId,
++                    financeAgentId,
++                    "task_started",
++                    baseTime,
++                    "running",
++                    "Finance started invoice review",
++                    "filter-corr-1",
++                    Source(financeTaskId, "Finance"),
++                    "Finance",
++                    financeTaskId),
++                new ActivityEvent(
++                    financeCompletedId,
++                    companyId,
++                    financeAgentId,
++                    "task_completed",
++                    baseTime.AddMinutes(1),
++                    "completed",
++                    "Finance completed invoice review",
++                    "filter-corr-1",
++                    Source(financeTaskId, "Finance"),
++                    "Finance",
++                    financeTaskId),
++                new ActivityEvent(
++                    opsFailedId,
++                    companyId,
++                    opsAgentId,
++                    "task_failed",
++                    baseTime.AddMinutes(2),
++                    "failed",
++                    "Ops failed deployment recovery",
++                    "filter-corr-2",
++                    Source(opsTaskId, "Operations"),
++                    "Operations",
++                    opsTaskId),
++                new ActivityEvent(
++                    opsToolStartedId,
++                    companyId,
++                    opsAgentId,
++                    "tool_execution_started",
++                    baseTime.AddMinutes(3),
++                    "running",
++                    "Ops started rollback tool",
++                    "filter-corr-2",
++                    Source(opsTaskId, "Operations"),
++                    "Operations",
++                    opsTaskId),
++                new ActivityEvent(
++                    Guid.NewGuid(),
++                    otherCompanyId,
++                    null,
++                    "task_completed",
++                    baseTime.AddMinutes(4),
++                    "completed",
++                    "Other tenant event",
++                    "filter-corr-other",
++                    Source(Guid.NewGuid(), "Finance"),
++                    "Finance",
++                    Guid.NewGuid()));
++            return Task.CompletedTask;
++        });
++
++        return new FilterSeed(companyId, financeAgentId, opsAgentId, financeTaskId, opsTaskId, baseTime, financeStartedId, financeCompletedId, opsFailedId, opsToolStartedId);
++    }
++
++    private async Task<AuditLinkSeed> SeedAuditLinkTenantAsync()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var agentId = Guid.NewGuid();
++        var auditEventId = Guid.NewGuid();
++        var otherAuditEventId = Guid.NewGuid();
++        var linkedActivityId = Guid.NewGuid();
++        var crossTenantActivityId = Guid.NewGuid();
++        var occurred = new DateTime(2026, 4, 15, 13, 0, 0, DateTimeKind.Utc);
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "activity-filter-owner@example.com", "Activity Filter Owner", "dev-header", "activity-filter-owner"));
++            dbContext.Companies.AddRange(new Company(companyId, "Activity Audit Tenant"), new Company(otherCompanyId, "Other Activity Audit Tenant"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Ops Agent", "Operations Agent", "Operations", null, AgentSeniority.Mid));
++            dbContext.AuditEvents.AddRange(
++                new AuditEvent(
++                    auditEventId,
++                    companyId,
++                    AuditActorTypes.Agent,
++                    agentId,
++                    AuditEventActions.AgentToolExecutionExecuted,
++                    AuditTargetTypes.Agent,
++                    agentId.ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Tool execution was approved.",
++                    occurredUtc: occurred),
++                new AuditEvent(
++                    otherAuditEventId,
++                    otherCompanyId,
++                    AuditActorTypes.System,
++                    null,
++                    AuditEventActions.AgentToolExecutionExecuted,
++                    AuditTargetTypes.Agent,
++                    Guid.NewGuid().ToString(),
++                    AuditEventOutcomes.Succeeded,
++                    "Other tenant audit.",
++                    occurredUtc: occurred));
++            dbContext.ActivityEvents.AddRange(
++                new ActivityEvent(
++                    linkedActivityId,
++                    companyId,
++                    agentId,
++                    "tool_execution_completed",
++                    occurred,
++                    "completed",
++                    "Ops completed tool execution",
++                    "audit-link-corr",
++                    SourceWithAudit(auditEventId),
++                    "Operations",
++                    null,
++                    auditEventId),
++                new ActivityEvent(
++                    crossTenantActivityId,
++                    companyId,
++                    agentId,
++                    "tool_execution_completed",
++                    occurred.AddMinutes(-1),
++                    "completed",
++                    "Ops completed unlinked tool execution",
++                    "audit-link-corr",
++                    SourceWithAudit(otherAuditEventId),
++                    "Operations",
++                    null,
++                    otherAuditEventId));
++            return Task.CompletedTask;
++        });
++
++        return new AuditLinkSeed(companyId, auditEventId, linkedActivityId, crossTenantActivityId);
++    }
++
++    private async Task<ActivityFeedResponse> GetFeedAsync(HttpClient client, Guid companyId, string query)
++    {
++        var separator = string.IsNullOrWhiteSpace(query) ? string.Empty : $"&{query}";
++        var result = await client.GetFromJsonAsync<ActivityFeedResponse>($"/api/companies/{companyId}/activity-feed?pageSize=20{separator}");
++        Assert.NotNull(result);
++        return result!;
++    }
++
++    private HttpClient CreateAuthenticatedClient()
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "activity-filter-owner");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "activity-filter-owner@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Activity Filter Owner");
++        return client;
++    }
++
++    private static Dictionary<string, JsonNode?> Source(Guid taskId, string department) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["sourceType"] = JsonValue.Create("task"),
++            ["sourceId"] = JsonValue.Create(taskId),
++            ["taskId"] = JsonValue.Create(taskId),
++            ["department"] = JsonValue.Create(department)
++        };
++
++    private static Dictionary<string, JsonNode?> SourceWithAudit(Guid auditEventId) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["sourceType"] = JsonValue.Create("tool_execution"),
++            ["auditEventId"] = JsonValue.Create(auditEventId)
++        };
++
++    private static string Escape(DateTime value) =>
++        Uri.EscapeDataString(value.ToString("O"));
++
++    private sealed record FilterSeed(
++        Guid CompanyId,
++        Guid FinanceAgentId,
++        Guid OpsAgentId,
++        Guid FinanceTaskId,
++        Guid OpsTaskId,
++        DateTime BaseTime,
++        Guid FinanceStartedId,
++        Guid FinanceCompletedId,
++        Guid OpsFailedId,
++        Guid OpsToolStartedId);
++
++    private sealed record AuditLinkSeed(Guid CompanyId, Guid AuditEventId, Guid LinkedActivityId, Guid CrossTenantActivityId);
++
++    private sealed record ActivityFeedResponse(IReadOnlyList<ActivityEventResponse> Items, string? NextCursor);
++
++    private sealed record ActivityEventResponse(
++        Guid EventId,
++        Guid TenantId,
++        Guid? AgentId,
++        string EventType,
++        DateTime OccurredAt,
++        string Status,
++        string Summary,
++        string? CorrelationId,
++        string? Department,
++        Guid? TaskId,
++        ActivityAuditLinkResponse? AuditLink,
++        Dictionary<string, JsonElement> RawPayload);
++
++    private sealed record ActivityAuditLinkResponse(Guid AuditEventId, string Href);
++
++    private sealed record AuditDetailResponse(Guid Id, Guid CompanyId);
++}
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.3.1",
+  "promptPath": ".ai-design/prompts/TASK-1.3.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:31:01.477Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-31-01-477Z_TASK-1.3.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-31-01-477Z_TASK-1.3.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:32:36.878Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "mary.Results.Count);\n+        Assert.All(summary.Results, result => Assert.True(result.EscalationCreated));\n+        Assert.Equal(2, repository.Escalations.Count);\n+    }\n+\n     [Fact]\n     public async Task Evaluate_does_not_create_escalation_when_threshold_condition_is_not_met()\n     {\n@@ -130,6 +158,37 @@ public sealed class EscalationPolicyEvaluatorTests\n         Assert.True(result.EscalationCreated);\n     }\n \n+    [Fact]\n+    public async Task Evaluate_uses_case_insensitive_string_matching_for_rules()\n+    {\n+        var repository = new InMemoryEscalationRepository();\n+        var service = CreateService(repository, new CapturingAuditEventWriter());\n+\n+        var summary = await service.EvaluateAsync(\n+            new EvaluateEscalationPoliciesCommand(\n+                TaskInput(\n+                    new Dictionary<string, JsonNode?>\n+                    {\n+                        [\"severity\"] = JsonValue.Create(\"Critical\")\n+                    },\n+                    new Dictionary<string, JsonNode?>\n+                    {\n+                        [\"tags\"] = new JsonArray(\"Customer\", \"SLA\")\n+                    }),\n+                [\n+                    Policy(new EscalationLevelDefinition(\n+                        1,\n+                        \"Critical SLA task needs review.\",\n+                        [\n+                            new EscalationConditionDefinition(EscalationConditionType.Rule, \"severity\", \"eq\", \"critical\"),\n+                            new EscalationConditionDefinition(EscalationConditionType.Rule, \"tags\", \"contains\", \"sla\")\n+                        ]))\n+                ]),\n+            CancellationToken.None);\n+\n+        var result = Assert.Single(summary.Results);\n+        Assert.True(result.ConditionsMet);\n+        Assert.True(result.EscalationCreated);\n+        Assert.Single(repository.Escalations);\n+    }\n+\n     [Fact]\n     public async Task Evaluate_skips_duplicate_escalation_for_same_policy_level_and_lifecycle()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": ";\n+        Assert.All(summary.Results, result => Assert.True(result.EscalationCreated));\n+        Assert.Equal(2, repository.Escalations.Count);\n+    }\n+\n     [Fact]\n     public async Task Evaluate_does_not_create_escalation_when_threshold_condition_is_not_met()\n     {\n@@ -130,6 +158,37 @@ public sealed class EscalationPolicyEvaluatorTests\n         Assert.True(result.EscalationCreated);\n     }\n \n+    [Fact]\n+    public async Task Evaluate_uses_case_insensitive_string_matching_for_rules()\n+    {\n+        var repository = new InMemoryEscalationRepository();\n+        var service = CreateService(repository, new CapturingAuditEventWriter());\n+\n+        var summary = await service.EvaluateAsync(\n+            new EvaluateEscalationPoliciesCommand(\n+                TaskInput(\n+                    new Dictionary<string, JsonNode?>\n+                    {\n+                        [\"severity\"] = JsonValue.Create(\"Critical\")\n+                    },\n+                    new Dictionary<string, JsonNode?>\n+                    {\n+                        [\"tags\"] = new JsonArray(\"Customer\", \"SLA\")\n+                    }),\n+                [\n+                    Policy(new EscalationLevelDefinition(\n+                        1,\n+                        \"Critical SLA task needs review.\",\n+                        [\n+                            new EscalationConditionDefinition(EscalationConditionType.Rule, \"severity\", \"eq\", \"critical\"),\n+                            new EscalationConditionDefinition(EscalationConditionType.Rule, \"tags\", \"contains\", \"sla\")\n+                        ]))\n+                ]),\n+            CancellationToken.None);\n+\n+        var result = Assert.Single(summary.Results);\n+        Assert.True(result.ConditionsMet);\n+        Assert.True(result.EscalationCreated);\n+        Assert.Single(repository.Escalations);\n+    }\n+\n     [Fact]\n     public async Task Evaluate_skips_duplicate_escalation_for_same_policy_level_and_lifecycle()\n     {\nEND_OF_PATCH\ntokens used\n72,638\n",
+  "verbosityMode": "summary"
+}

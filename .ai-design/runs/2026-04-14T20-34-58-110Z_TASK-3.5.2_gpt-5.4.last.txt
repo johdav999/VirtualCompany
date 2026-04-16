@@ -1,0 +1,513 @@
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 6d57ff1..4a0bd7b 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -1,4 +1,5 @@
+ using System.Diagnostics;
++using System.Diagnostics.Metrics;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+@@ -13,6 +14,9 @@ public sealed class ExecutiveCockpitController : ControllerBase
+ {
++    private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit.Api");
++    private static readonly Histogram<double> EndpointLatency = Meter.CreateHistogram<double>("executive_cockpit_endpoint_latency_ms", "ms");
++
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
+     private readonly IExecutiveCockpitKpiQueryService _kpiQueryService;
+     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+@@ -125,6 +129,9 @@ public sealed class ExecutiveCockpitController : ControllerBase
+ 
+     private void LogEndpointLatency(string endpoint, TimeSpan elapsed)
+     {
++        EndpointLatency.Record(
++            elapsed.TotalMilliseconds,
++            new KeyValuePair<string, object?>("endpoint", endpoint));
+         _logger.LogInformation(
+             "Executive cockpit endpoint {Endpoint} completed in {ElapsedMilliseconds} ms.",
+             endpoint,
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 4a15c48..f459913 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -251,6 +251,13 @@ public interface IExecutiveCockpitDashboardCacheInvalidator
+         CancellationToken cancellationToken);
+ }
+ 
++public sealed record ExecutiveCockpitCacheInvalidationEvent(
++    Guid CompanyId,
++    string TriggerType,
++    string? EntityType,
++    Guid? EntityId,
++    DateTime OccurredAtUtc);
++
+ public sealed record ExecutiveCockpitCacheScope(
+     Guid CompanyId,
+     string EffectiveRole,
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index 4b7ff1b..f1cbdf1 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -18,6 +18,8 @@ public static class CompanyOutboxTopics
+     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
+     public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
+     public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
++    public const string ApprovalUpdated = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
++    public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index b6e28a7..fd86406 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -13,6 +13,8 @@ public sealed class SupportedPlatformEventTypeRegistry
+     public const string TaskUpdated = "task_updated";
+     public const string DocumentUploaded = "document_uploaded";
+     public const string WorkflowStateChanged = "workflow_state_changed";
++    public const string ApprovalUpdated = "approval_updated";
++    public const string AgentStatusUpdated = "agent_status_updated";
+ 
+     private static readonly string[] EventTypes =
+     [
+@@ -20,7 +22,9 @@ public sealed class SupportedPlatformEventTypeRegistry
+         TaskUpdated,
+         DocumentUploaded,
+-        WorkflowStateChanged
++        WorkflowStateChanged,
++        ApprovalUpdated,
++        AgentStatusUpdated
+     ];
+ 
+     private static readonly HashSet<string> EventTypeSet =
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+index 5909d92..a3e3e23 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentService.cs
+@@ -6,10 +6,12 @@ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -30,14 +32,17 @@ public sealed class CompanyAgentService
+     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
+     private readonly IAuditEventWriter _auditEventWriter;
+     private readonly ICorrelationContextAccessor _correlationContextAccessor;
++    private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+ 
+     public CompanyAgentService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver companyMembershipContextResolver,
+         IAuditEventWriter auditEventWriter,
+-        ICorrelationContextAccessor correlationContextAccessor)
++        ICorrelationContextAccessor correlationContextAccessor,
++        ICompanyOutboxEnqueuer outboxEnqueuer)
+     {
+         _dbContext = dbContext;
+         _companyMembershipContextResolver = companyMembershipContextResolver;
+         _auditEventWriter = auditEventWriter;
+         _correlationContextAccessor = correlationContextAccessor;
++        _outboxEnqueuer = outboxEnqueuer;
+     }
+@@ -340,6 +345,7 @@ public sealed class CompanyAgentService
+         if (changed)
+         {
+             await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
++            EnqueueAgentStatusUpdatedEvent(companyId, agent, beforeSnapshot.Status);
+ 
+             await _dbContext.SaveChangesAsync(cancellationToken);
+         }
+@@ -386,6 +392,7 @@ public sealed class CompanyAgentService
+             companyId, membership, agent, template.TemplateId,
+             cancellationToken);
+ 
++        EnqueueAgentStatusUpdatedEvent(companyId, agent, null);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return new CreateAgentFromTemplateResultDto(ToSummaryDto(agent));
+@@ -605,6 +612,39 @@ public sealed class CompanyAgentService
+         "communicationProfile" => "communication profile",
+         _ => field
+     };
++
++    private void EnqueueAgentStatusUpdatedEvent(Guid companyId, Agent agent, string? previousStatus)
++    {
++        var currentStatus = agent.Status.ToStorageValue();
++        if (!string.IsNullOrWhiteSpace(previousStatus) &&
++            string.Equals(previousStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        var eventType = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;
++        var occurredAtUtc = agent.UpdatedUtc.Kind == DateTimeKind.Utc
++            ? agent.UpdatedUtc
++            : agent.UpdatedUtc.ToUniversalTime();
++        var eventId = $"{eventType}:{agent.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}";
++        var correlationId = CreateCorrelationId();
++
++        _outboxEnqueuer.Enqueue(
++            companyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc,
++                companyId,
++                correlationId,
++                "agent",
++                agent.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["agentId"] = JsonValue.Create(agent.Id.ToString("N")),
++                    ["department"] = JsonValue.Create(agent.Department),
++                    ["previousStatus"] = JsonValue.Create(previousStatus),
++                    ["status"] = JsonValue.Create(currentStatus)
++                }),
++            correlationId,
++            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
++            causationId: agent.Id.ToString("N"));
++    }
+ 
+     private static AgentOperatingProfileVisibilityDto BuildProfileVisibility(CompanyMembershipRole role) =>
+         role switch
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 3e6f375..45d9767 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -1,12 +1,14 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.DependencyInjection;
+ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
++using VirtualCompany.Domain.Events;
+ using VirtualCompany.Infrastructure.Persistence;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -105,6 +107,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             cancellationToken);
+ 
+         EnqueueApprovalNotification(approval);
++        EnqueueApprovalUpdatedEvent(approval, "created");
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+@@ -178,6 +181,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             EnqueueApprovalNotification(approval);
+         }
+ 
++        EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+@@ -717,6 +721,42 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             idempotencyKey: $"notification:approval:{approval.Id:N}:{approval.UpdatedUtc:yyyyMMddHHmmssfffffff}",
+             causationId: approval.Id.ToString("N"));
+     }
++
++    private void EnqueueApprovalUpdatedEvent(ApprovalRequest approval, string reason)
++    {
++        var eventType = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
++        var occurredAtUtc = approval.UpdatedUtc.Kind == DateTimeKind.Utc
++            ? approval.UpdatedUtc
++            : approval.UpdatedUtc.ToUniversalTime();
++        var eventId = $"{eventType}:{approval.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}:{reason}";
++
++        _outboxEnqueuer.Enqueue(
++            approval.CompanyId,
++            eventType,
++            new PlatformEventEnvelope(
++                eventId,
++                eventType,
++                occurredAtUtc,
++                approval.CompanyId,
++                eventId,
++                "approval_request",
++                approval.Id.ToString("N"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["approvalRequestId"] = JsonValue.Create(approval.Id.ToString("N")),
++                    ["agentId"] = approval.AgentId.HasValue
++                        ? JsonValue.Create(approval.AgentId.Value.ToString("N"))
++                        : null,
++                    ["targetEntityType"] = JsonValue.Create(approval.TargetEntityType),
++                    ["targetEntityId"] = JsonValue.Create(approval.TargetEntityId.ToString("N")),
++                    ["status"] = JsonValue.Create(approval.Status.ToStorageValue()),
++                    ["reason"] = JsonValue.Create(reason)
++                }),
++            eventId,
++            idempotencyKey: $"platform-event:{approval.CompanyId:N}:{eventId}",
++            causationId: approval.Id.ToString("N"));
++    }
+ 
+     private static void Validate(CreateApprovalRequestCommand command)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index d423eac..bb7745a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -457,15 +457,6 @@ public sealed class CompanyExecutiveCockpitDashboardService
+     private static string NormalizeDepartment(string? department) =>
+         string.IsNullOrWhiteSpace(department) ? "Unassigned" : department.Trim();
+ 
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+-    {
+-        var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
+-        if (membership is null)
+-        {
+-            throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+-        }
+-    }
+-
+     private static string FirstParagraph(string value, int maxLength)
+     {
+         var paragraph = value.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? value;
+@@ -499,3 +490,6 @@ public sealed class CompanyExecutiveCockpitDashboardService
+ 
+         return membership;
+     }
++}
++
++internal sealed record AgentDashboardRow(Guid Id, string Department, AgentStatus Status);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 84f508a..7806615 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -1,3 +1,5 @@
++using System.Diagnostics;
++using System.Diagnostics.Metrics;
+ using System.Text.Json;
+ using System.Text.Json.Serialization;
+ using Microsoft.EntityFrameworkCore;
+@@ -6,6 +8,7 @@ using Microsoft.Extensions.Hosting;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
+@@ -150,6 +153,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+ {
+     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
++    private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit.Outbox");
++    private static readonly Counter<long> CockpitInvalidationEvents = Meter.CreateCounter<long>("executive_cockpit_invalidation_events");
++    private static readonly Histogram<double> CockpitInvalidationDuration = Meter.CreateHistogram<double>("executive_cockpit_invalidation_duration_ms", "ms");
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+@@ -157,6 +163,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
+     private readonly ITriggerExecutionService _triggerExecutionService;
++    private readonly IExecutiveCockpitDashboardCacheInvalidator _cockpitCacheInvalidator;
+     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
+     private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+     private readonly ILogger<CompanyOutboxProcessor> _logger;
+@@ -178,6 +185,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         ICompanyInvitationDeliveryDispatcher invitationDeliveryDispatcher,
+         ICompanyNotificationDispatcher notificationDispatcher,
+         ITriggerExecutionService triggerExecutionService,
+         IInternalWorkflowEventTriggerService workflowEventTriggerService,
++        IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
+         IOptions<CompanyOutboxDispatcherOptions> options,
+         IBackgroundJobExecutor backgroundJobExecutor,
+         IBackgroundExecutionRecorder backgroundExecutionRecorder,
+@@ -193,6 +201,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _notificationDispatcher = notificationDispatcher;
+         _triggerExecutionService = triggerExecutionService;
+         _workflowEventTriggerService = workflowEventTriggerService;
++        _cockpitCacheInvalidator = cockpitCacheInvalidator;
+         _options = options;
+         _backgroundJobExecutor = backgroundJobExecutor;
+         _backgroundExecutionRecorder = backgroundExecutionRecorder;
+@@ -378,6 +387,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 await _workflowEventTriggerService.HandleAsync(
+                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                     cancellationToken);
++                await InvalidateCockpitAsync(message.CompanyId, message.Topic, cancellationToken);
+                 break;
+             }
++            case CompanyOutboxTopics.ApprovalUpdated:
++            case CompanyOutboxTopics.AgentStatusUpdated:
++            {
++                var payload = Deserialize<PlatformEventEnvelope>(message);
++                if (payload.CompanyId != message.CompanyId)
++                {
++                    throw new CompanyOutboxPermanentException("Cockpit invalidation event payload tenant does not match the outbox message tenant.");
++                }
++
++                if (!string.Equals(payload.EventType, message.Topic, StringComparison.OrdinalIgnoreCase))
++                {
++                    throw new CompanyOutboxPermanentException($"Cockpit invalidation event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
++                }
++
++                await InvalidateCockpitAsync(message.CompanyId, message.Topic, cancellationToken);
++                break;
++            }
+             case CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested:
+             {
+                 var payload = Deserialize<AgentScheduledTriggerExecutionRequestMessage>(message);
+@@ -407,6 +417,23 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         }
+     }
+ 
++    private async Task InvalidateCockpitAsync(Guid companyId, string trigger, CancellationToken cancellationToken)
++    {
++        var stopwatch = Stopwatch.StartNew();
++        await _cockpitCacheInvalidator.InvalidateAsync(companyId, cancellationToken);
++        CockpitInvalidationEvents.Add(
++            1,
++            new KeyValuePair<string, object?>("trigger", trigger));
++        CockpitInvalidationDuration.Record(
++            stopwatch.Elapsed.TotalMilliseconds,
++            new KeyValuePair<string, object?>("trigger", trigger));
++        _logger.LogInformation(
++            "Processed executive cockpit cache invalidation for company {CompanyId} from trigger {Trigger} in {ElapsedMilliseconds} ms.",
++            companyId,
++            trigger,
++            stopwatch.Elapsed.TotalMilliseconds);
++    }
++
+     private static T Deserialize<T>(CompanyOutboxMessage message)
+     {
+         try
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index 8e2d0fa..84f7d6d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -764,8 +764,8 @@ public sealed class CompanyWorkflowService
+         }
+         EnqueueWorkflowStateChangedEvent(instance, state, command.OutputPayload);
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+-
++        
+         return ToInstanceDto(instance);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+index a6d35df..4a67552 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+@@ -83,7 +83,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+     }
+ 
+     [Fact]
+-    public async Task Cache_invalidation_removes_only_the_target_tenant()
++    public async Task Cache_invalidation_versions_only_the_target_tenant_namespace()
+     {
+         var distributedCache = new RecordingDistributedCache();
+         var cache = CreateCache(distributedCache);
+@@ -107,6 +107,9 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+         var keyA = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+             companyId,
+             "Owner",
++            ["Sales", " finance ", "sales"],
++            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
++            "widget:kpis"));
++        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++            companyId,
++            "owner",
+             ["Sales", " finance ", "sales"],
+             new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+             new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
+-            "widget:kpis"));
+-        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+-            companyId,
+-            "owner",
+-            ["finance", "SALES"],
+-            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
+-            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
+             "widget:kpis"));
+         var keyC = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
+             companyId,
+@@ -121,8 +124,36 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+ 
+         Assert.Equal(keyA, keyB);
+         Assert.NotEqual(keyA, keyC);
+     }
+ 
++    [Fact]
++    public void Cache_key_generation_scopes_departments_time_range_and_widget_identity()
++    {
++        var companyId = Guid.NewGuid();
++        var baseline = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++            companyId,
++            "owner",
++            ["finance", "sales"],
++            new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
++            "widget:summary-kpis"));
++
++        Assert.NotEqual(
++            baseline,
++            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++                companyId, "owner", ["finance"], new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), "widget:summary-kpis")));
++        Assert.NotEqual(
++            baseline,
++            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++                companyId, "owner", ["finance", "sales"], new DateTime(2026, 4, 2, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc), "widget:summary-kpis")));
++        Assert.NotEqual(
++            baseline,
++            ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++                companyId, "owner", ["finance", "sales"], new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc), "widget:alerts")));
++    }
++
++    [Fact]
++    public async Task Versioned_invalidation_forces_miss_without_wildcard_key_deletes()
++    {
++        var distributedCache = new RecordingDistributedCache();
++        var cache = CreateCache(distributedCache);
++        var companyId = Guid.NewGuid();
++
++        await cache.SetAsync(CreateSnapshot(companyId, "Tenant A"), CancellationToken.None);
++        Assert.NotNull(await cache.TryGetAsync(companyId, CancellationToken.None));
++
++        await cache.InvalidateAsync(companyId, CancellationToken.None);
++
++        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));
++        Assert.Empty(distributedCache.RemovedKeys);
++    }
++
+     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>
+         new(
+             distributedCache,
+@@ -187,6 +218,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+         private readonly ConcurrentDictionary<string, byte[]> _entries = new(StringComparer.Ordinal);
+         private readonly ConcurrentQueue<string> _setKeys = new();
++        private readonly ConcurrentQueue<string> _removedKeys = new();
+ 
+         public bool ThrowOnGet { get; init; }
+         public bool ThrowOnSet { get; init; }
+@@ -194,6 +226,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+         public bool ThrowOnRemove { get; init; }
+         public IReadOnlyList<string> SetKeys => _setKeys.ToArray();
++        public IReadOnlyList<string> RemovedKeys => _removedKeys.ToArray();
+ 
+         public byte[]? Get(string key)
+         {
+@@ -250,6 +283,7 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+             }
+ 
+             _entries.TryRemove(key, out _);
++            _removedKeys.Enqueue(key);
+         }
+ 
+         public Task RemoveAsync(string key, CancellationToken token = default)
+END_OF_PATCH

@@ -1,0 +1,219 @@
+diff --git a/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
++++ b/src/VirtualCompany.Domain/Entities/TriggerExecutionAttempt.cs
+@@ -80,6 +80,8 @@ public sealed class TriggerExecutionAttempt : ICompanyOwnedEntity
+         RetryAttemptCount = Math.Max(RetryAttemptCount + 1, retryAttempt);
+         Status = TriggerExecutionAttemptStatus.Retried;
+         UpdatedUtc = DateTime.UtcNow;
++        FailureDetails = null;
++        DenialReason = null;
+         CompletedUtc = null;
+         NextRetryUtc = null;
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/TriggerExecutionInfrastructure.cs
+@@ -685,12 +685,6 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+     {
+         var normalizedDueAtUtc = dueAtUtc.Kind == DateTimeKind.Utc ? dueAtUtc : dueAtUtc.ToUniversalTime();
+         var effectiveBatchSize = Math.Max(1, batchSize);
+-        var scheduled = await _dbContext.AgentScheduledTriggers
+-            .IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .Where(x => x.IsEnabled && x.NextRunUtc.HasValue && x.NextRunUtc <= normalizedDueAtUtc && (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
+-            .OrderBy(x => x.NextRunUtc)
+-            .ThenBy(x => x.Id)
+-            .Take(effectiveBatchSize)
+-            .ToListAsync(cancellationToken);
+ 
+         var scheduledEvaluated = 0;
+         var conditionEvaluated = 0;
+@@ -701,8 +695,43 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+         var retried = 0;
+         var deadLettered = 0;
+ 
++        var retryAttempts = await _dbContext.TriggerExecutionAttempts
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.Status == TriggerExecutionAttemptStatus.RetryScheduled &&
++                x.NextRetryUtc.HasValue &&
++                x.NextRetryUtc <= normalizedDueAtUtc)
++            .OrderBy(x => x.NextRetryUtc)
++            .ThenBy(x => x.UpdatedUtc)
++            .ThenBy(x => x.Id)
++            .Take(effectiveBatchSize)
++            .ToListAsync(cancellationToken);
++
++        foreach (var retryAttempt in retryAttempts)
++        {
++            if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
++            {
++                scheduledEvaluated++;
++            }
++            else if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.WorkflowCondition, StringComparison.OrdinalIgnoreCase))
++            {
++                conditionEvaluated++;
++            }
++
++            var outcome = await ProcessRetryAttemptAsync(
++                retryAttempt,
++                normalizedDueAtUtc,
++                maxRetryAttempts,
++                retryBackoffSeconds,
++                cancellationToken);
++            Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
++        }
++
++        var remainingForScheduled = Math.Max(0, effectiveBatchSize - scheduledEvaluated - conditionEvaluated);
++        var scheduled = remainingForScheduled == 0
++            ? []
++            : await _dbContext.AgentScheduledTriggers
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.IsEnabled && x.NextRunUtc.HasValue && x.NextRunUtc <= normalizedDueAtUtc && (!x.DisabledUtc.HasValue || normalizedDueAtUtc <= x.DisabledUtc.Value))
++                .OrderBy(x => x.NextRunUtc)
++                .ThenBy(x => x.Id)
++                .Take(remainingForScheduled)
++                .ToListAsync(cancellationToken);
++
+         foreach (var trigger in scheduled)
+         {
+             scheduledEvaluated++;
+@@ -739,7 +768,7 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+             Increment(outcome, ref dispatched, ref blocked, ref duplicateSkipped, ref failed, ref retried, ref deadLettered);
+         }
+ 
+-        var remaining = Math.Max(0, effectiveBatchSize - scheduledEvaluated);
++        var remaining = Math.Max(0, effectiveBatchSize - scheduledEvaluated - conditionEvaluated);
+         if (remaining > 0)
+         {
+             var conditionTriggers = await _dbContext.WorkflowTriggers
+@@ -843,6 +872,106 @@ public sealed class TriggerEvaluationWorker : ITriggerEvaluationWorker
+         return new TriggerExecutionRunResult(scheduledEvaluated, conditionEvaluated, dispatched, blocked, duplicateSkipped, failed, retried, deadLettered);
+     }
+ 
++    private async Task<TriggerExecutionAttemptStatus> ProcessRetryAttemptAsync(
++        TriggerExecutionAttempt retryAttempt,
++        DateTime dueAtUtc,
++        int maxRetryAttempts,
++        int retryBackoffSeconds,
++        CancellationToken cancellationToken)
++    {
++        var workItem = await BuildRetryWorkItemAsync(retryAttempt, cancellationToken);
++        TriggerExecutionAttemptStatus outcome;
++        try
++        {
++            outcome = await _executionService.EvaluateAndDispatchAsync(
++                workItem,
++                maxRetryAttempts,
++                cancellationToken,
++                retryBackoffSeconds);
++        }
++        catch (Exception ex) when (ex is not OperationCanceledException)
++        {
++            _logger.LogWarning(
++                ex,
++                "Retry for trigger execution attempt {AttemptId} failed and remains eligible for retry or dead-letter handling.",
++                retryAttempt.Id);
++            outcome = TriggerExecutionAttemptStatus.RetryScheduled;
++        }
++
++        if (outcome != TriggerExecutionAttemptStatus.RetryScheduled &&
++            string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
++        {
++            var trigger = await _dbContext.AgentScheduledTriggers
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .SingleOrDefaultAsync(x => x.CompanyId == retryAttempt.CompanyId && x.Id == retryAttempt.TriggerId, cancellationToken);
++
++            if (trigger is not null)
++            {
++                var nextRunUtc = _nextRunCalculator.GetNextRunUtc(
++                    trigger.CronExpression,
++                    trigger.TimeZoneId,
++                    retryAttempt.OccurrenceUtc);
++                await AdvanceScheduledTriggerAsync(trigger.CompanyId, trigger.Id, dueAtUtc, nextRunUtc, cancellationToken);
++            }
++        }
++
++        return outcome;
++    }
++
++    private async Task<TriggerExecutionWorkItem> BuildRetryWorkItemAsync(
++        TriggerExecutionAttempt retryAttempt,
++        CancellationToken cancellationToken)
++    {
++        Dictionary<string, JsonNode?> payload;
++        Guid? agentId = retryAttempt.AgentId;
++
++        if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.AgentScheduled, StringComparison.OrdinalIgnoreCase))
++        {
++            var trigger = await _dbContext.AgentScheduledTriggers
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .SingleOrDefaultAsync(x => x.CompanyId == retryAttempt.CompanyId && x.Id == retryAttempt.TriggerId, cancellationToken);
++
++            agentId = trigger?.AgentId ?? agentId;
++            payload = trigger is null
++                ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                : new Dictionary<string, JsonNode?>(
++                    trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                    StringComparer.OrdinalIgnoreCase)
++                {
++                    ["triggerCode"] = JsonValue.Create(trigger.Code),
++                    ["cronExpression"] = JsonValue.Create(trigger.CronExpression),
++                    ["timeZoneId"] = JsonValue.Create(trigger.TimeZoneId)
++                };
++        }
++        else
++        {
++            payload = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
++        }
++
++        payload["triggerId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
++        payload["triggerType"] = JsonValue.Create(retryAttempt.TriggerType);
++        payload["companyId"] = JsonValue.Create(retryAttempt.CompanyId.ToString("N"));
++        payload["agentId"] = agentId.HasValue ? JsonValue.Create(agentId.Value.ToString("N")) : null;
++        payload["scheduledAtUtc"] = JsonValue.Create(retryAttempt.OccurrenceUtc);
++        payload["evaluatedAtUtc"] = JsonValue.Create(retryAttempt.OccurrenceUtc);
++        payload["correlationId"] = JsonValue.Create(retryAttempt.CorrelationId);
++        payload["idempotencyKey"] = JsonValue.Create(retryAttempt.IdempotencyKey);
++        payload["retryAttemptId"] = JsonValue.Create(retryAttempt.Id.ToString("N"));
++        payload["retryAttemptCount"] = JsonValue.Create(retryAttempt.RetryAttemptCount);
++
++        if (string.Equals(retryAttempt.TriggerType, TriggerExecutionTypes.WorkflowCondition, StringComparison.OrdinalIgnoreCase))
++        {
++            payload["workflowTriggerId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
++            payload["conditionDefinitionId"] = JsonValue.Create(retryAttempt.TriggerId.ToString("N"));
++        }
++
++        return new TriggerExecutionWorkItem(
++            retryAttempt.CompanyId,
++            retryAttempt.TriggerId,
++            retryAttempt.TriggerType,
++            agentId,
++            retryAttempt.OccurrenceUtc,
++            retryAttempt.CorrelationId,
++            retryAttempt.IdempotencyKey,
++            payload);
++    }
++
+     private async Task WriteEvaluationStartedAsync(
+         Guid companyId,
+         Guid triggerId,
+diff --git a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
++++ b/tests/VirtualCompany.Api.Tests/TestWebApplicationFactory.cs
+@@ -39,6 +39,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:Enabled"] = "false",
+                 [$"{WorkflowSchedulerOptions.SectionName}:Enabled"] = "false",
+                 [$"{WorkflowProgressionOptions.SectionName}:Enabled"] = "false",
++                [$"{TriggerWorkerOptions.SectionName}:Enabled"] = "false",
+                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
+                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+END_OF_PATCH

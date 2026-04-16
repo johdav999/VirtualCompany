@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.2.2",
+  "promptPath": ".ai-design/prompts/TASK-1.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:26:52.664Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-26-52-664Z_TASK-1.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-26-52-664Z_TASK-1.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:29:12.633Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "icated);\n+        Assert.Equal(\"fp-normalized\", deduplicated.Alert.Fingerprint);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?status=open&page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        Assert.Single(list!.Items.Where(alert => alert.Fingerprint == \"fp-normalized\"));\n+    }\n+\n     [Fact]\n     public async Task Alert_creation_accepts_required_classifications()\n     {\n@@ -279,6 +306,22 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.NotEqual(created.Alert.Id, reopened.Alert.Id);\n     }\n \n+    [Fact]\n+    public async Task Create_rejects_source_agent_from_another_company()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.OtherCompanyId}/alerts/detections\",\n+            CreatePayload(seed.OtherCompanyId, \"risk\", \"high\", \"open\", \"fp-wrong-agent-company\", seed.AgentId));\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(problem);\n+        Assert.Contains(\"SourceAgentId\", problem!.Errors.Keys);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\n@@ -365,6 +408,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         public string Summary { get; set; } = string.Empty;\n         public string Status { get; set; } = string.Empty;\n         public string CorrelationId { get; set; } = string.Empty;\n+        public string Fingerprint { get; set; } = string.Empty;\n         public int OccurrenceCount { get; set; }\n         public Dictionary<string, JsonElement> Evidence { get; set; } = [];\n         public DateTime CreatedAt { get; set; }\nEND_OF_PATCH\n",
+  "stderrTail": "ssert.Equal(\"fp-normalized\", deduplicated.Alert.Fingerprint);\n+\n+        var list = await client.GetFromJsonAsync<AlertListResponse>(\n+            $\"/api/companies/{seed.CompanyId}/alerts?status=open&page=1&pageSize=10\");\n+\n+        Assert.NotNull(list);\n+        Assert.Single(list!.Items.Where(alert => alert.Fingerprint == \"fp-normalized\"));\n+    }\n+\n     [Fact]\n     public async Task Alert_creation_accepts_required_classifications()\n     {\n@@ -279,6 +306,22 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         Assert.NotEqual(created.Alert.Id, reopened.Alert.Id);\n     }\n \n+    [Fact]\n+    public async Task Create_rejects_source_agent_from_another_company()\n+    {\n+        var seed = await SeedCompanyAsync();\n+        using var client = CreateAuthenticatedClient();\n+\n+        var response = await client.PostAsJsonAsync(\n+            $\"/api/companies/{seed.OtherCompanyId}/alerts/detections\",\n+            CreatePayload(seed.OtherCompanyId, \"risk\", \"high\", \"open\", \"fp-wrong-agent-company\", seed.AgentId));\n+\n+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);\n+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n+        Assert.NotNull(problem);\n+        Assert.Contains(\"SourceAgentId\", problem!.Errors.Keys);\n+    }\n+\n     private HttpClient CreateAuthenticatedClient()\n     {\n         var client = _factory.CreateClient();\n@@ -365,6 +408,7 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact\n         public string Summary { get; set; } = string.Empty;\n         public string Status { get; set; } = string.Empty;\n         public string CorrelationId { get; set; } = string.Empty;\n+        public string Fingerprint { get; set; } = string.Empty;\n         public int OccurrenceCount { get; set; }\n         public Dictionary<string, JsonElement> Evidence { get; set; } = [];\n         public DateTime CreatedAt { get; set; }\nEND_OF_PATCH\ntokens used\n47,256\n",
+  "verbosityMode": "summary"
+}

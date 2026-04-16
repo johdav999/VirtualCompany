@@ -286,8 +286,8 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
 
     private static bool MatchesPolicyEvaluationFilter(AuditEvent auditEvent, PolicyEvaluationHistoryFilter filter) =>
         MatchesMetadataGuid(auditEvent, "policyId", filter.PolicyId) &&
-        MatchesMetadataGuid(auditEvent, "sourceEntityId", filter.SourceEntityId) &&
-        MatchesMetadataText(auditEvent, "sourceEntityType", filter.SourceEntityType);
+        MatchesMetadataOrTargetGuid(auditEvent, "sourceEntityId", filter.SourceEntityId) &&
+        MatchesMetadataOrDataSourceText(auditEvent, "sourceEntityType", filter.SourceEntityType);
 
     private static bool MatchesMetadataGuid(AuditEvent auditEvent, string key, Guid? expected)
     {
@@ -301,6 +301,23 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
             parsed == expected.Value;
     }
 
+    private static bool MatchesMetadataOrTargetGuid(AuditEvent auditEvent, string key, Guid? expected)
+    {
+        if (!expected.HasValue)
+        {
+            return true;
+        }
+
+        if (auditEvent.Metadata.TryGetValue(key, out var value) &&
+            Guid.TryParse(value, out var parsed) &&
+            parsed == expected.Value)
+        {
+            return true;
+        }
+
+        return Guid.TryParse(auditEvent.TargetId, out var targetId) && targetId == expected.Value;
+    }
+
     private static bool MatchesMetadataText(AuditEvent auditEvent, string key, string? expected)
     {
         if (string.IsNullOrWhiteSpace(expected))
@@ -310,6 +327,23 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
 
         return auditEvent.Metadata.TryGetValue(key, out var value) &&
             string.Equals(value, expected.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesMetadataOrDataSourceText(AuditEvent auditEvent, string key, string? expected)
+    {
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            return true;
+        }
+
+        if (auditEvent.Metadata.TryGetValue(key, out var value) &&
+            string.Equals(value, expected.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var expectedValue = expected.Trim();
+        return auditEvent.DataSources.Any(value => string.Equals(value, expectedValue, StringComparison.OrdinalIgnoreCase));
     }
 
     private static EscalationRecordDto MapEscalationRecord(Escalation escalation) =>
@@ -330,8 +364,8 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
     private static PolicyEvaluationHistoryItemDto MapPolicyEvaluationHistoryItem(AuditEvent auditEvent)
     {
         var policyId = TryGetGuid(auditEvent.Metadata, "policyId");
-        var sourceEntityId = TryGetGuid(auditEvent.Metadata, "sourceEntityId");
-        var sourceEntityType = TryGetValue(auditEvent.Metadata, "sourceEntityType");
+        var sourceEntityId = TryGetGuid(auditEvent.Metadata, "sourceEntityId") ?? TryParseGuid(auditEvent.TargetId);
+        var sourceEntityType = TryGetValue(auditEvent.Metadata, "sourceEntityType") ?? TryGetSourceEntityType(auditEvent);
         var escalationLevel = TryGetInt(auditEvent.Metadata, "escalationLevel");
         var conditionsMet = TryGetBool(auditEvent.Metadata, "conditionsMet");
         var escalationRecordId = TryGetGuid(auditEvent.Metadata, "escalationId");
@@ -372,6 +406,11 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
             ? parsed
             : null;
 
+    private static Guid? TryParseGuid(string? value) =>
+        Guid.TryParse(value, out var parsed)
+            ? parsed
+            : null;
+
     private static int? TryGetInt(IReadOnlyDictionary<string, string?> metadata, string key) =>
         metadata.TryGetValue(key, out var value) && int.TryParse(value, out var parsed)
             ? parsed
@@ -386,4 +425,12 @@ public sealed class EfEscalationQueryService : IEscalationQueryService
         metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
             ? value
             : null;
+
+    private static string? TryGetSourceEntityType(AuditEvent auditEvent) =>
+        auditEvent.DataSources
+            .FirstOrDefault(value =>
+                !string.Equals(value, "escalation_policy", StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(value, EscalationSourceEntityTypes.WorkTask, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(value, EscalationSourceEntityTypes.Alert, StringComparison.OrdinalIgnoreCase) ||
+                 value.EndsWith("_task", StringComparison.OrdinalIgnoreCase)));
 }

@@ -1,0 +1,1302 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 6a7c2d1..31cb05a 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -3,7 +3,14 @@ namespace VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Enums;
+ 
+ public sealed record GetExecutiveCockpitDashboardQuery(Guid CompanyId);
+ 
++public sealed record GetExecutiveCockpitWidgetPayloadQuery(
++    Guid CompanyId,
++    string WidgetKey,
++    string? Department,
++    DateTime? StartUtc,
++    DateTime? EndUtc);
++
+ public sealed record ExecutiveCockpitDashboardDto(
+     Guid CompanyId,
+     string CompanyName,
+@@ -37,6 +44,23 @@ public sealed record ExecutiveCockpitSummaryKpiDto(
+     string? StatusHint,
+     bool IsEmpty);
+ 
++public static class ExecutiveCockpitWidgetKeys
++{
++    public const string SummaryKpis = "summary-kpis";
++    public const string DailyBriefing = "daily-briefing";
++    public const string PendingApprovals = "pending-approvals";
++    public const string Alerts = "alerts";
++    public const string DepartmentKpis = "department-kpis";
++    public const string DepartmentSections = "department-sections";
++    public const string RecentActivity = "recent-activity";
++    public const string Kpis = "kpis";
++
++    public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++    {
++        SummaryKpis, DailyBriefing, PendingApprovals, Alerts, DepartmentKpis, DepartmentSections, RecentActivity, Kpis
++    };
++}
++
+ public static class ExecutiveCockpitTrendDirections
+ {
+     public const string Up = "up";
+@@ -169,25 +193,79 @@ public interface IExecutiveCockpitDashboardService
+     Task<ExecutiveCockpitDashboardDto> GetAsync(
+         GetExecutiveCockpitDashboardQuery query,
+         CancellationToken cancellationToken);
++
++    Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
++        GetExecutiveCockpitWidgetPayloadQuery query,
++        CancellationToken cancellationToken);
+ }
+ 
++public sealed record ExecutiveCockpitWidgetPayloadDto(
++    Guid CompanyId,
++    string WidgetKey,
++    DateTime GeneratedAtUtc,
++    DateTime? CacheTimestampUtc,
++    object? Payload);
++
+ public interface IExecutiveCockpitDashboardCache
+ {
+     Task<CachedExecutiveCockpitDashboardDto?> TryGetAsync(
+         Guid companyId,
+         CancellationToken cancellationToken);
+ 
++    Task<CachedExecutiveCockpitDashboardDto?> TryGetDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken);
++
+     Task SetAsync(
+         CachedExecutiveCockpitDashboardDto snapshot,
+         CancellationToken cancellationToken);
+ 
++    Task SetDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitDashboardDto snapshot,
++        CancellationToken cancellationToken);
++
++    Task<CachedExecutiveCockpitKpiDashboardDto?> TryGetKpiDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken);
++
++    Task SetKpiDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitKpiDashboardDto snapshot,
++        CancellationToken cancellationToken);
++
++    Task<CachedExecutiveCockpitWidgetDto<TPayload>?> TryGetWidgetAsync<TPayload>(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken);
++
++    Task SetWidgetAsync<TPayload>(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitWidgetDto<TPayload> snapshot,
++        CancellationToken cancellationToken);
++
+     Task InvalidateAsync(
+         Guid companyId,
+         CancellationToken cancellationToken);
+ }
+ 
++public interface IExecutiveCockpitDashboardCacheInvalidator
++{
++    Task InvalidateAsync(
++        Guid companyId,
++        CancellationToken cancellationToken);
++}
++
++public sealed record ExecutiveCockpitCacheScope(
++    Guid CompanyId,
++    string EffectiveRole,
++    IReadOnlyList<string> DepartmentFilters,
++    DateTime? StartUtc,
++    DateTime? EndUtc,
++    string Identity);
++
+ public sealed record CachedExecutiveCockpitDashboardDto(
+     Guid CompanyId,
+     DateTime CachedAtUtc,
+     ExecutiveCockpitDashboardDto Dashboard);
++
++public sealed record CachedExecutiveCockpitKpiDashboardDto(
++    Guid CompanyId,
++    DateTime CachedAtUtc,
++    ExecutiveCockpitKpiDashboardDto Dashboard);
++
++public sealed record CachedExecutiveCockpitWidgetDto<TPayload>(
++    Guid CompanyId,
++    string WidgetKey,
++    DateTime CachedAtUtc,
++    TPayload Payload);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs
+index 54d56c0..ed4e2f4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCacheOptions.cs
+@@ -8,9 +8,15 @@ public sealed class ExecutiveCockpitDashboardCacheOptions
+     public string KeyPrefix { get; set; } = "vc:executive-cockpit";
+     public string KeyVersion { get; set; } = "v1";
+     public int TtlSeconds { get; set; } = 60;
++    public int WidgetTtlSeconds { get; set; } = 60;
++    public int VersionTokenTtlSeconds { get; set; } = 86400;
+ 
+     public TimeSpan GetTtl() =>
+         TimeSpan.FromSeconds(Math.Clamp(TtlSeconds, 1, 300));
++
++    public TimeSpan GetWidgetTtl() =>
++        TimeSpan.FromSeconds(Math.Clamp(WidgetTtlSeconds, 1, 300));
++
++    public TimeSpan GetVersionTokenTtl() =>
++        TimeSpan.FromSeconds(Math.Clamp(VersionTokenTtlSeconds, 60, 604800));
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitCacheKeyBuilder.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitCacheKeyBuilder.cs
+new file mode 100644
+index 0000000..b9448f5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitCacheKeyBuilder.cs
+@@ -0,0 +1,97 @@
++using System.Globalization;
++using System.Security.Cryptography;
++using System.Text;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Cockpit;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++public sealed class ExecutiveCockpitCacheKeyBuilder
++{
++    private readonly ExecutiveCockpitDashboardCacheOptions _options;
++
++    public ExecutiveCockpitCacheKeyBuilder(IOptions<ExecutiveCockpitDashboardCacheOptions> options)
++    {
++        _options = options.Value;
++    }
++
++    public string BuildDataKey(ExecutiveCockpitCacheScope scope, string versionToken)
++    {
++        var prefix = Prefix();
++        var normalizedDepartments = NormalizeDepartments(scope.DepartmentFilters);
++        var role = NormalizeSegment(scope.EffectiveRole);
++        var identity = NormalizeSegment(scope.Identity);
++        var range = NormalizeRange(scope.StartUtc, scope.EndUtc);
++        var filterHash = Hash(string.Join("|", normalizedDepartments));
++
++        return $"{prefix}:data:{versionToken}:company:{scope.CompanyId:N}:role:{role}:filters:{filterHash}:range:{range}:id:{identity}";
++    }
++
++    public string BuildVersionKey(Guid companyId)
++    {
++        return $"{Prefix()}:version:company:{companyId:N}";
++    }
++
++    public string BuildLegacyCompanyKey(Guid companyId)
++    {
++        return $"{Prefix()}:company:{companyId:N}";
++    }
++
++    public static IReadOnlyList<string> NormalizeDepartments(IEnumerable<string>? departments) =>
++        (departments ?? [])
++            .Where(x => !string.IsNullOrWhiteSpace(x))
++            .Select(x => x.Trim().ToLowerInvariant())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++    public static ExecutiveCockpitCacheScope DashboardScope(Guid companyId, string role) =>
++        new(companyId, role, [], null, null, "dashboard");
++
++    public static ExecutiveCockpitCacheScope WidgetScope(
++        Guid companyId,
++        string role,
++        string widgetKey,
++        IEnumerable<string>? departments = null,
++        DateTime? startUtc = null,
++        DateTime? endUtc = null) =>
++        new(
++            companyId,
++            role,
++            NormalizeDepartments(departments),
++            NormalizeUtc(startUtc),
++            NormalizeUtc(endUtc),
++            $"widget:{widgetKey}");
++
++    public static ExecutiveCockpitCacheScope KpiScope(
++        Guid companyId,
++        string role,
++        string? department,
++        DateTime startUtc,
++        DateTime endUtc) =>
++        new(
++            companyId,
++            role,
++            string.IsNullOrWhiteSpace(department) ? [] : [department],
++            NormalizeUtc(startUtc),
++            NormalizeUtc(endUtc),
++            "kpis");
++
++    private string Prefix() =>
++        $"{_options.KeyPrefix.Trim().TrimEnd(':')}:{_options.KeyVersion.Trim().ToLowerInvariant()}";
++
++    private static string NormalizeRange(DateTime? startUtc, DateTime? endUtc) =>
++        $"{FormatDateTime(startUtc)}-{FormatDateTime(endUtc)}";
++
++    private static string FormatDateTime(DateTime? value) =>
++        value is null
++            ? "all"
++            : NormalizeUtc(value).Value.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
++
++    private static DateTime? NormalizeUtc(DateTime? value) =>
++        value is null
++            ? null
++            : value.Value.Kind == DateTimeKind.Utc
++                ? value.Value
++                : value.Value.ToUniversalTime();
++
++    private static string NormalizeSegment(string value) =>
++        string.IsNullOrWhiteSpace(value) ? "none" : value.Trim().ToLowerInvariant().Replace(" ", "-");
++
++    private static string Hash(string value) =>
++        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant()[..16];
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+index 7c5682d..1a7fd93 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -1,45 +1,67 @@
++using System.Diagnostics.Metrics;
+ using System.Text.Json;
+ using Microsoft.Extensions.Caching.Distributed;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Cockpit;
+ using Microsoft.Extensions.Options;
+ 
+ namespace VirtualCompany.Infrastructure.Companies;
+ 
+-public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCache
++public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCache, IExecutiveCockpitDashboardCacheInvalidator
+ {
++    private const string DefaultVersionToken = "0";
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit");
++    private static readonly Counter<long> CacheHits = Meter.CreateCounter<long>("executive_cockpit_cache_hits");
++    private static readonly Counter<long> CacheMisses = Meter.CreateCounter<long>("executive_cockpit_cache_misses");
++    private static readonly Counter<long> CacheErrors = Meter.CreateCounter<long>("executive_cockpit_cache_errors");
++    private static readonly Counter<long> CacheInvalidations = Meter.CreateCounter<long>("executive_cockpit_cache_invalidations");
+ 
+     private readonly IDistributedCache _distributedCache;
++    private readonly ExecutiveCockpitCacheKeyBuilder _keyBuilder;
+     private readonly ExecutiveCockpitDashboardCacheOptions _options;
+     private readonly ILogger<ExecutiveCockpitDashboardCache> _logger;
+ 
+     public ExecutiveCockpitDashboardCache(
+         IDistributedCache distributedCache,
++        ExecutiveCockpitCacheKeyBuilder keyBuilder,
+         IOptions<ExecutiveCockpitDashboardCacheOptions> options,
+         ILogger<ExecutiveCockpitDashboardCache> logger)
+     {
+         _distributedCache = distributedCache;
++        _keyBuilder = keyBuilder;
+         _options = options.Value;
+         _logger = logger;
+     }
+ 
+     public async Task<CachedExecutiveCockpitDashboardDto?> TryGetAsync(
+         Guid companyId,
+-        CancellationToken cancellationToken)
++        CancellationToken cancellationToken) =>
++        await TryGetDashboardAsync(ExecutiveCockpitCacheKeyBuilder.DashboardScope(companyId, "member"), cancellationToken);
++
++    public async Task<CachedExecutiveCockpitDashboardDto?> TryGetDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken)
+     {
+-        if (!_options.Enabled)
+-        {
+-            return null;
+-        }
++        return await TryGetCoreAsync<CachedExecutiveCockpitDashboardDto>(scope, "dashboard", ValidateDashboard, cancellationToken);
++    }
++
++    public async Task SetAsync(CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken) =>
++        await SetDashboardAsync(ExecutiveCockpitCacheKeyBuilder.DashboardScope(snapshot.CompanyId, "member"), snapshot, cancellationToken);
+ 
+-        var cacheKey = BuildCacheKey(companyId, _options);
+-        byte[]? payload;
++    public async Task SetDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitDashboardDto snapshot,
++        CancellationToken cancellationToken)
++    {
++        if (snapshot.CompanyId == Guid.Empty ||
++            snapshot.Dashboard.CompanyId != snapshot.CompanyId ||
++            snapshot.CompanyId != scope.CompanyId)
++        {
++            return;
++        }
++
++        await SetCoreAsync(scope, snapshot, "dashboard", _options.GetTtl(), cancellationToken);
++    }
++
++    public async Task<CachedExecutiveCockpitKpiDashboardDto?> TryGetKpiDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken)
++    {
++        return await TryGetCoreAsync<CachedExecutiveCockpitKpiDashboardDto>(scope, "kpis", ValidateKpis, cancellationToken);
++    }
++
++    public async Task SetKpiDashboardAsync(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitKpiDashboardDto snapshot,
++        CancellationToken cancellationToken)
++    {
++        if (snapshot.CompanyId == Guid.Empty ||
++            snapshot.Dashboard.CompanyId != snapshot.CompanyId ||
++            snapshot.CompanyId != scope.CompanyId)
++        {
++            return;
++        }
++
++        await SetCoreAsync(scope, snapshot, "kpis", _options.GetTtl(), cancellationToken);
++    }
++
++    public async Task<CachedExecutiveCockpitWidgetDto<TPayload>?> TryGetWidgetAsync<TPayload>(
++        ExecutiveCockpitCacheScope scope,
++        CancellationToken cancellationToken)
++    {
++        return await TryGetCoreAsync<CachedExecutiveCockpitWidgetDto<TPayload>>(scope, "widget", snapshot =>
++            snapshot is not null &&
++            snapshot.CompanyId == scope.CompanyId &&
++            scope.Identity.EndsWith(snapshot.WidgetKey, StringComparison.OrdinalIgnoreCase), cancellationToken);
++    }
++
++    public async Task SetWidgetAsync<TPayload>(
++        ExecutiveCockpitCacheScope scope,
++        CachedExecutiveCockpitWidgetDto<TPayload> snapshot,
++        CancellationToken cancellationToken)
++    {
++        if (snapshot.CompanyId == Guid.Empty ||
++            snapshot.CompanyId != scope.CompanyId ||
++            string.IsNullOrWhiteSpace(snapshot.WidgetKey))
++        {
++            return;
++        }
++
++        await SetCoreAsync(scope, snapshot, "widget", _options.GetWidgetTtl(), cancellationToken);
++    }
++
++    public async Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        if (!_options.Enabled || companyId == Guid.Empty)
++        {
++            return;
++        }
++
+         try
+         {
+-            payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++            var version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
++            await _distributedCache.SetStringAsync(
++                _keyBuilder.BuildVersionKey(companyId),
++                version,
++                new DistributedCacheEntryOptions
++                {
++                    AbsoluteExpirationRelativeToNow = _options.GetVersionTokenTtl()
++                },
++                cancellationToken);
++            CacheInvalidations.Add(1);
++            _logger.LogInformation("Invalidated executive cockpit cache namespace for company {CompanyId}.", companyId);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            _logger.LogWarning(ex, "Executive cockpit dashboard cache read failed for company {CompanyId}; falling back to database.", companyId);
+-            return null;
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("operation", "invalidate"));
++            _logger.LogWarning(ex, "Failed to invalidate executive cockpit cache namespace for company {CompanyId}.", companyId);
+         }
++    }
+ 
+-            if (payload is null || payload.Length == 0)
+-            {
+-            _logger.LogDebug("Executive cockpit dashboard cache miss for company {CompanyId}.", companyId);
+-                return null;
+-            }
++    private async Task<TSnapshot?> TryGetCoreAsync<TSnapshot>(
++        ExecutiveCockpitCacheScope scope,
++        string cacheArea,
++        Func<TSnapshot?, bool> validate,
++        CancellationToken cancellationToken)
++        where TSnapshot : class
++    {
++        if (!_options.Enabled)
++        {
++            return null;
++        }
++
++        var cacheKey = _keyBuilder.BuildDataKey(scope, await GetVersionTokenAsync(scope.CompanyId, cancellationToken));
++        byte[]? payload;
++        try
++        {
++            payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
++        }
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "read"));
++            _logger.LogWarning(ex, "Executive cockpit cache read failed for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
++            return null;
++        }
++
++        if (payload is null || payload.Length == 0)
++        {
++            CacheMisses.Add(1, new KeyValuePair<string, object?>("area", cacheArea));
++            return null;
++        }
+ 
+         try
+         {
+-            var snapshot = JsonSerializer.Deserialize<CachedExecutiveCockpitDashboardDto>(payload, SerializerOptions);
+-            if (snapshot is null ||
+-                snapshot.CompanyId != companyId ||
+-                snapshot.Dashboard.CompanyId != companyId)
++            var snapshot = JsonSerializer.Deserialize<TSnapshot>(payload, SerializerOptions);
++            if (!validate(snapshot))
+             {
+-                await SafeRemoveAsync(cacheKey, companyId, cancellationToken);
++                await SafeRemoveAsync(cacheKey, scope.CompanyId, cancellationToken);
++                CacheMisses.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("reason", "invalid"));
+                 return null;
+             }
+ 
+-            _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", companyId);
++            CacheHits.Add(1, new KeyValuePair<string, object?>("area", cacheArea));
++            _logger.LogDebug("Executive cockpit cache hit for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+             return snapshot;
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            _logger.LogWarning(ex, "Ignoring malformed executive cockpit dashboard cache entry for company {CompanyId}.", companyId);
+-            await SafeRemoveAsync(cacheKey, companyId, cancellationToken);
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "deserialize"));
++            _logger.LogWarning(ex, "Ignoring malformed executive cockpit cache entry for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
++            await SafeRemoveAsync(cacheKey, scope.CompanyId, cancellationToken);
+             return null;
+         }
+     }
+ 
+-    public async Task SetAsync(CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken)
++    private async Task SetCoreAsync<TSnapshot>(
++        ExecutiveCockpitCacheScope scope,
++        TSnapshot snapshot,
++        string cacheArea,
++        TimeSpan ttl,
++        CancellationToken cancellationToken)
+     {
+-        if (!_options.Enabled ||
+-            snapshot.CompanyId == Guid.Empty ||
+-            snapshot.Dashboard.CompanyId != snapshot.CompanyId)
++        if (!_options.Enabled)
+         {
+             return;
+         }
+@@ -47,69 +69,63 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+         try
+         {
+             await _distributedCache.SetAsync(
+-                BuildCacheKey(snapshot.CompanyId, _options),
++                _keyBuilder.BuildDataKey(scope, await GetVersionTokenAsync(scope.CompanyId, cancellationToken)),
+                 JsonSerializer.SerializeToUtf8Bytes(snapshot, SerializerOptions),
+                 new DistributedCacheEntryOptions
+                 {
+-                    AbsoluteExpirationRelativeToNow = _options.GetTtl()
++                    AbsoluteExpirationRelativeToNow = ttl
+                 },
+                 cancellationToken);
+-            _logger.LogDebug("Cached executive cockpit dashboard for company {CompanyId}.", snapshot.CompanyId);
++            _logger.LogDebug("Cached executive cockpit payload for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            _logger.LogWarning(ex, "Failed to cache executive cockpit dashboard for company {CompanyId}.", snapshot.CompanyId);
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "write"));
++            _logger.LogWarning(ex, "Failed to cache executive cockpit payload for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+         }
+     }
+ 
+-    public async Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<string> GetVersionTokenAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+-        if (!_options.Enabled || companyId == Guid.Empty)
++        try
+         {
+-            return;
++            return await _distributedCache.GetStringAsync(_keyBuilder.BuildVersionKey(companyId), cancellationToken)
++                ?? DefaultVersionToken;
+         }
+-
+-        await SafeRemoveAsync(BuildCacheKey(companyId, _options), companyId, cancellationToken);
++        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
++        {
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("operation", "version-read"));
++            _logger.LogWarning(ex, "Failed to read executive cockpit cache version for company {CompanyId}; using default namespace.", companyId);
++            return DefaultVersionToken;
++        }
+     }
+ 
+     private async Task SafeRemoveAsync(string cacheKey, Guid companyId, CancellationToken cancellationToken)
+     {
+         try
+         {
+             await _distributedCache.RemoveAsync(cacheKey, cancellationToken);
+-            _logger.LogDebug("Invalidated executive cockpit dashboard cache for company {CompanyId}.", companyId);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            _logger.LogWarning(ex, "Failed to invalidate executive cockpit dashboard cache for company {CompanyId}.", companyId);
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("operation", "remove"));
++            _logger.LogWarning(ex, "Failed to remove malformed executive cockpit cache entry for company {CompanyId}.", companyId);
+         }
+     }
+ 
+     public static string BuildCacheKey(Guid companyId) =>
+-        BuildCacheKey(companyId, new ExecutiveCockpitDashboardCacheOptions());
++        new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions()))
++            .BuildLegacyCompanyKey(companyId);
+ 
+-    private static string BuildCacheKey(Guid companyId, ExecutiveCockpitDashboardCacheOptions options) =>
+-        $"{options.KeyPrefix.Trim().TrimEnd(':')}:{options.KeyVersion.Trim().ToLowerInvariant()}:company:{companyId:N}";
++    public static string BuildCacheKey(ExecutiveCockpitCacheScope scope, string versionToken = "0") =>
++        new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions()))
++            .BuildDataKey(scope, versionToken);
++
++    private static bool ValidateDashboard(CachedExecutiveCockpitDashboardDto? snapshot) =>
++        snapshot is not null &&
++        snapshot.CompanyId != Guid.Empty &&
++        snapshot.Dashboard.CompanyId == snapshot.CompanyId;
++
++    private static bool ValidateKpis(CachedExecutiveCockpitKpiDashboardDto? snapshot) =>
++        snapshot is not null &&
++        snapshot.CompanyId != Guid.Empty &&
++        snapshot.Dashboard.CompanyId == snapshot.CompanyId;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+index a6734b7..ff6fb42 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitDashboardService.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -40,12 +41,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         {
+             throw new ArgumentException("Company id is required.", nameof(query));
+         }
+ 
+-        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var scope = ExecutiveCockpitCacheKeyBuilder.DashboardScope(query.CompanyId, membership.MembershipRole.ToStorageValue());
+ 
+         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+-        var cached = await _cache.TryGetAsync(query.CompanyId, cancellationToken);
++        var cached = await _cache.TryGetDashboardAsync(scope, cancellationToken);
+         if (cached is not null)
+         {
+             _logger.LogDebug("Executive cockpit dashboard cache hit for company {CompanyId}.", query.CompanyId);
+             var visibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
+             return cached.Dashboard with
+@@ -63,10 +66,64 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+         var dashboard = await BuildAsync(query.CompanyId, nowUtc, cancellationToken);
+         var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+         var visibleSections = await GetVisibleDepartmentSectionsAsync(query.CompanyId, cancellationToken);
+         var cacheableDashboard = dashboard with { CacheTimestampUtc = null, DepartmentSections = [] };
+-        await _cache.SetAsync(new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
++        await _cache.SetDashboardAsync(scope, new CachedExecutiveCockpitDashboardDto(query.CompanyId, cachedAtUtc, cacheableDashboard), cancellationToken);
+         return cacheableDashboard with { DepartmentSections = visibleSections };
+     }
+ 
++    public async Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(
++        GetExecutiveCockpitWidgetPayloadQuery query,
++        CancellationToken cancellationToken)
++    {
++        if (query.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("Company id is required.", nameof(query));
++        }
++
++        if (!ExecutiveCockpitWidgetKeys.All.Contains(query.WidgetKey))
++        {
++            throw new KeyNotFoundException("Dashboard widget not found.");
++        }
++
++        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var scope = ExecutiveCockpitCacheKeyBuilder.WidgetScope(
++            query.CompanyId,
++            membership.MembershipRole.ToStorageValue(),
++            query.WidgetKey,
++            string.IsNullOrWhiteSpace(query.Department) ? [] : [query.Department],
++            query.StartUtc,
++            query.EndUtc);
++
++        var cached = await _cache.TryGetWidgetAsync<object>(scope, cancellationToken);
++        if (cached is not null)
++        {
++            return new ExecutiveCockpitWidgetPayloadDto(
++                query.CompanyId,
++                query.WidgetKey,
++                _timeProvider.GetUtcNow().UtcDateTime,
++                cached.CachedAtUtc,
++                cached.Payload);
++        }
++
++        var dashboard = await GetAsync(new GetExecutiveCockpitDashboardQuery(query.CompanyId), cancellationToken);
++        var payload = query.WidgetKey.Trim().ToLowerInvariant() switch
++        {
++            ExecutiveCockpitWidgetKeys.SummaryKpis => dashboard.SummaryKpis,
++            ExecutiveCockpitWidgetKeys.DailyBriefing => dashboard.DailyBriefing,
++            ExecutiveCockpitWidgetKeys.PendingApprovals => dashboard.PendingApprovals,
++            ExecutiveCockpitWidgetKeys.Alerts => dashboard.Alerts,
++            ExecutiveCockpitWidgetKeys.DepartmentKpis => dashboard.DepartmentKpis,
++            ExecutiveCockpitWidgetKeys.DepartmentSections => dashboard.DepartmentSections,
++            ExecutiveCockpitWidgetKeys.RecentActivity => dashboard.RecentActivity,
++            _ => throw new KeyNotFoundException("Dashboard widget not found.")
++        };
++
++        var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        await _cache.SetWidgetAsync(
++            scope,
++            new CachedExecutiveCockpitWidgetDto<object>(query.CompanyId, query.WidgetKey, cachedAtUtc, payload),
++            cancellationToken);
++
++        return new ExecutiveCockpitWidgetPayloadDto(query.CompanyId, query.WidgetKey, cachedAtUtc, null, payload);
++    }
++
+     private async Task<ExecutiveCockpitDashboardDto> BuildAsync(
+         Guid companyId,
+         DateTime nowUtc,
+         CancellationToken cancellationToken)
+@@ -433,12 +490,14 @@ public sealed class CompanyExecutiveCockpitDashboardService : IExecutiveCockpitDa
+             _ => null
+         };
+     }
+ 
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+         {
+             throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+         }
++
++        return membership;
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs
+index 30152fa..d2316ac 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyExecutiveCockpitKpiQueryService.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -19,13 +20,16 @@ public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKp
+     ];
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IExecutiveCockpitDashboardCache _cache;
+     private readonly TimeProvider _timeProvider;
+ 
+     public CompanyExecutiveCockpitKpiQueryService(
+         VirtualCompanyDbContext dbContext,
+         ICompanyMembershipContextResolver membershipContextResolver,
++        IExecutiveCockpitDashboardCache cache,
+         TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
++        _cache = cache;
+         _timeProvider = timeProvider;
+     }
+ 
+@@ -37,7 +41,7 @@ public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKp
+             throw new ArgumentException("Company id is required.", nameof(query));
+         }
+ 
+-        await RequireMembershipAsync(query.CompanyId, cancellationToken);
++        var membership = await RequireMembershipAsync(query.CompanyId, cancellationToken);
+ 
+         var (startUtc, endUtc) = NormalizeRange(query.StartUtc, query.EndUtc);
+         var period = endUtc - startUtc;
+@@ -45,6 +49,17 @@ public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKp
+         var baselineEndUtc = startUtc;
+         var selectedDepartment = NormalizeOptionalDepartment(query.Department);
+ 
++        var scope = ExecutiveCockpitCacheKeyBuilder.KpiScope(
++            query.CompanyId,
++            membership.MembershipRole.ToStorageValue(),
++            selectedDepartment,
++            startUtc,
++            endUtc);
++        var cached = await _cache.TryGetKpiDashboardAsync(scope, cancellationToken);
++        if (cached is not null)
++        {
++            return cached.Dashboard with { GeneratedAtUtc = _timeProvider.GetUtcNow().UtcDateTime };
++        }
++
+         var agents = await _dbContext.Agents
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -156,15 +171,19 @@ public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKp
+             .ThenBy(x => x.Department, StringComparer.OrdinalIgnoreCase)
+             .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
+             .ToList();
+ 
+-        return new ExecutiveCockpitKpiDashboardDto(
++        var dashboard = new ExecutiveCockpitKpiDashboardDto(
+             query.CompanyId,
+             _timeProvider.GetUtcNow().UtcDateTime,
+             startUtc,
+             endUtc,
+             selectedDepartment,
+             departments,
+             tiles,
+             anomalies);
++
++        await _cache.SetKpiDashboardAsync(
++            scope,
++            new CachedExecutiveCockpitKpiDashboardDto(query.CompanyId, dashboard.GeneratedAtUtc, dashboard),
++            cancellationToken);
++        return dashboard;
+     }
+@@ -358,13 +377,14 @@ public sealed class CompanyExecutiveCockpitKpiQueryService : IExecutiveCockpitKp
+             _ => 0
+         };
+ 
+-    private async Task RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
++    private async Task<ResolvedCompanyMembershipContext> RequireMembershipAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var membership = await _membershipContextResolver.ResolveAsync(companyId, cancellationToken);
+         if (membership is null)
+         {
+             throw new UnauthorizedAccessException("The current user does not have an active membership in the requested company.");
+         }
++
++        return membership;
+     }
+ 
+     private sealed record AgentKpiRow(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 66ef86b..8451caa 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -1,16 +1,20 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Cockpit;
+ using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Infrastructure.Persistence;
+ 
+ public sealed class VirtualCompanyDbContext : DbContext
+ {
+     private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly IExecutiveCockpitDashboardCacheInvalidator? _dashboardCacheInvalidator;
+ 
+     public VirtualCompanyDbContext(
+         DbContextOptions<VirtualCompanyDbContext> options,
+-        ICompanyContextAccessor? companyContextAccessor = null)
++        ICompanyContextAccessor? companyContextAccessor = null,
++        IExecutiveCockpitDashboardCacheInvalidator? dashboardCacheInvalidator = null)
+         : base(options)
+     {
+         _companyContextAccessor = companyContextAccessor;
++        _dashboardCacheInvalidator = dashboardCacheInvalidator;
+     }
+@@ -70,6 +74,41 @@ public sealed class VirtualCompanyDbContext : DbContext
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
++    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
++    {
++        var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
++        var result = await base.SaveChangesAsync(cancellationToken);
++
++        if (_dashboardCacheInvalidator is not null)
++        {
++            foreach (var companyId in companiesToInvalidate)
++            {
++                await _dashboardCacheInvalidator.InvalidateAsync(companyId, cancellationToken);
++            }
++        }
++
++        return result;
++    }
++
++    private IReadOnlyList<Guid> CaptureDashboardInvalidationCompanies() =>
++        ChangeTracker.Entries()
++            .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
++            .Where(entry =>
++                entry.Entity is WorkTask ||
++                entry.Entity is ApprovalRequest ||
++                entry.Entity is Agent ||
++                entry.Entity is ToolExecutionAttempt ||
++                entry.Entity is TriggerExecutionAttempt ||
++                entry.Entity is WorkflowDefinition ||
++                entry.Entity is WorkflowInstance ||
++                entry.Entity is WorkflowException)
++            .Select(entry =>
++            {
++                var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
++                return property?.CurrentValue is Guid companyId ? companyId : Guid.Empty;
++            })
++            .Where(companyId => companyId != Guid.Empty)
++            .Distinct()
++            .ToArray();
++
+     protected override void OnModelCreating(ModelBuilder modelBuilder)
+     {
+         base.OnModelCreating(modelBuilder);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 3203500..58d2627 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -91,7 +91,7 @@ public static class DependencyInjection
+             });
+ 
+         services.AddOptions<ExecutiveCockpitDashboardCacheOptions>()
+             .Bind(configuration.GetSection(ExecutiveCockpitDashboardCacheOptions.SectionName))
+-            .Validate(options => options.TtlSeconds > 0, "Executive cockpit dashboard cache TTL must be positive.")
++            .Validate(options => options.TtlSeconds > 0 && options.WidgetTtlSeconds > 0, "Executive cockpit cache TTL values must be positive.")
+             .PostConfigure(options =>
+             {
+                 options.KeyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix)
+@@ -226,6 +226,7 @@ public static class DependencyInjection
+ 
+         services.AddSingleton<GroundedContextRetrievalCacheKeyBuilder>();
+         services.AddSingleton<IGroundedContextRetrievalSectionCache, GroundedContextRetrievalSectionCache>();
++        services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
+         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+         services.AddVirtualCompanyObservability(configuration);
+@@ -351,6 +352,7 @@ public static class DependencyInjection
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
+         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
++        services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
+         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 40df4c8..4bc5d02 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -1,3 +1,4 @@
++using System.Diagnostics;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+@@ -10,17 +11,20 @@ namespace VirtualCompany.Api.Controllers;
+ public sealed class ExecutiveCockpitController : ControllerBase
+ {
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
+     private readonly IExecutiveCockpitKpiQueryService _kpiQueryService;
+     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
++    private readonly ILogger<ExecutiveCockpitController> _logger;
+ 
+     public ExecutiveCockpitController(
+         IExecutiveCockpitDashboardService dashboardService,
+         IExecutiveCockpitKpiQueryService kpiQueryService,
+-        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService)
++        IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
++        ILogger<ExecutiveCockpitController> logger)
+     {
+         _dashboardService = dashboardService;
+         _kpiQueryService = kpiQueryService;
+         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
++        _logger = logger;
+     }
+ 
+     [HttpGet]
+     public async Task<ActionResult<ExecutiveCockpitDashboardDto>> GetAsync(
+@@ -28,7 +32,10 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+-            return Ok(await _dashboardService.GetAsync(new GetExecutiveCockpitDashboardQuery(companyId), cancellationToken));
++            var stopwatch = Stopwatch.StartNew();
++            var result = await _dashboardService.GetAsync(new GetExecutiveCockpitDashboardQuery(companyId), cancellationToken);
++            LogEndpointLatency("dashboard", stopwatch.Elapsed);
++            return Ok(result);
+         }
+         catch (UnauthorizedAccessException)
+         {
+@@ -69,6 +76,32 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         }
+     }
+ 
++    [HttpGet("widgets/{widgetKey}")]
++    public async Task<ActionResult<ExecutiveCockpitWidgetPayloadDto>> GetWidgetAsync(
++        Guid companyId,
++        string widgetKey,
++        [FromQuery] string? department,
++        [FromQuery] DateTime? startUtc,
++        [FromQuery] DateTime? endUtc,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            var stopwatch = Stopwatch.StartNew();
++            var result = await _dashboardService.GetWidgetAsync(
++                new GetExecutiveCockpitWidgetPayloadQuery(companyId, widgetKey, department, startUtc, endUtc),
++                cancellationToken);
++            LogEndpointLatency($"widget:{widgetKey}", stopwatch.Elapsed);
++            return Ok(result);
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++
+     [HttpGet("kpis")]
+     public async Task<ActionResult<ExecutiveCockpitKpiDashboardDto>> GetKpisAsync(
+         Guid companyId,
+@@ -80,10 +113,17 @@ public sealed class ExecutiveCockpitController : ControllerBase
+     {
+         try
+         {
+-            return Ok(await _kpiQueryService.GetAsync(
++            var stopwatch = Stopwatch.StartNew();
++            var result = await _kpiQueryService.GetAsync(
+                 new GetExecutiveCockpitKpiDashboardQuery(companyId, department, startUtc, endUtc),
+-                cancellationToken));
++                cancellationToken);
++            LogEndpointLatency("kpis", stopwatch.Elapsed);
++            return Ok(result);
+         }
+@@ -96,4 +136,12 @@ public sealed class ExecutiveCockpitController : ControllerBase
+             return NotFound();
+         }
+     }
++
++    private void LogEndpointLatency(string endpoint, TimeSpan elapsed)
++    {
++        _logger.LogInformation(
++            "Executive cockpit endpoint {Endpoint} completed in {ElapsedMilliseconds} ms.",
++            endpoint,
++            elapsed.TotalMilliseconds);
++    }
+ }
+diff --git a/src/VirtualCompany.Api/appsettings.json b/src/VirtualCompany.Api/appsettings.json
+index 167a9ef..24b73d2 100644
+--- a/src/VirtualCompany.Api/appsettings.json
++++ b/src/VirtualCompany.Api/appsettings.json
+@@ -38,7 +38,9 @@
+     "Enabled": true,
+     "KeyPrefix": "vc:executive-cockpit",
+     "KeyVersion": "v1",
+-    "TtlSeconds": 60
++    "TtlSeconds": 60,
++    "WidgetTtlSeconds": 60,
++    "VersionTokenTtlSeconds": 86400
+   },
+   "CompanyOutboxDispatcher": {
+     "Enabled": true,
+diff --git a/src/VirtualCompany.Api/appsettings.Development.json b/src/VirtualCompany.Api/appsettings.Development.json
+index 7979bc7..7e1390c 100644
+--- a/src/VirtualCompany.Api/appsettings.Development.json
++++ b/src/VirtualCompany.Api/appsettings.Development.json
+@@ -38,7 +38,9 @@
+     "Enabled": true,
+     "KeyPrefix": "vc:executive-cockpit",
+     "KeyVersion": "v1",
+-    "TtlSeconds": 60
++    "TtlSeconds": 60,
++    "WidgetTtlSeconds": 60,
++    "VersionTokenTtlSeconds": 86400
+   },
+ 
+   "CompanyOutboxDispatcher": {
+diff --git a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+index 6b21630..35c53ed 100644
+--- a/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
++++ b/src/VirtualCompany.Web/Services/ExecutiveCockpitApiClient.cs
+@@ -31,6 +31,39 @@ public sealed class ExecutiveCockpitApiClient
+         return GetKpisCoreAsync(companyId, department, startUtc, endUtc, cancellationToken);
+     }
+ 
++    public async Task<ExecutiveCockpitWidgetPayloadViewModel<TPayload>?> GetWidgetAsync<TPayload>(
++        Guid companyId,
++        string widgetKey,
++        string? department = null,
++        DateTime? startUtc = null,
++        DateTime? endUtc = null,
++        CancellationToken cancellationToken = default)
++    {
++        if (_useOfflineMode)
++        {
++            return null;
++        }
++
++        var query = new List<string>();
++        if (!string.IsNullOrWhiteSpace(department))
++        {
++            query.Add($"department={Uri.EscapeDataString(department)}");
++        }
++
++        if (startUtc is not null)
++        {
++            query.Add($"startUtc={Uri.EscapeDataString(startUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
++        }
++
++        if (endUtc is not null)
++        {
++            query.Add($"endUtc={Uri.EscapeDataString(endUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
++        }
++
++        var route = $"api/companies/{companyId}/executive-cockpit/widgets/{Uri.EscapeDataString(widgetKey)}{(query.Count == 0 ? string.Empty : "?" + string.Join("&", query))}";
++        using var response = await _httpClient.GetAsync(route, cancellationToken);
++        return response.IsSuccessStatusCode
++            ? await response.Content.ReadFromJsonAsync<ExecutiveCockpitWidgetPayloadViewModel<TPayload>>(SerializerOptions, cancellationToken)
++            : throw await CreateExceptionAsync(response, cancellationToken);
++    }
++
+     private async Task<ExecutiveCockpitDashboardViewModel?> GetCoreAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         try
+@@ -267,6 +300,15 @@ public sealed class ExecutiveCockpitKpiDashboardViewModel
+     public List<ExecutiveCockpitAnomalyViewModel> Anomalies { get; set; } = [];
+ }
+ 
++public sealed class ExecutiveCockpitWidgetPayloadViewModel<TPayload>
++{
++    public Guid CompanyId { get; set; }
++    public string WidgetKey { get; set; } = string.Empty;
++    public DateTime GeneratedAtUtc { get; set; }
++    public DateTime? CacheTimestampUtc { get; set; }
++    public TPayload? Payload { get; set; }
++}
++
+ public sealed class ExecutiveCockpitKpiTileViewModel
+ {
+     public string Key { get; set; } = string.Empty;
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 5ed5a2e..5240316 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -1,4 +1,6 @@
++@using System.Diagnostics
+ @inject ExecutiveCockpitApiClient ApiClient
++@inject ILogger<ExecutiveCockpitDashboard> Logger
+ 
+ <section class="cockpit-panel">
+@@ -47,6 +49,7 @@
+                         <h3 class="h5 mb-1">Summary KPIs</h3>
+                         <p class="text-body-secondary mb-0">Current operating signals for this company.</p>
+                     </div>
++                    <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitSummaryKpiViewModel>>("summary-kpis")' disabled="@IsWidgetLoading("summary-kpis")">Refresh</button>
+                 </div>
+                 <div class="cockpit-summary-kpi-grid mt-3">
+@@ -105,7 +108,11 @@
+         }
+ 
+         <article class="wizard-card wizard-card--compact cockpit-card">
+-            <h3 class="h5">Daily briefing</h3>
++            <div class="cockpit-card__header">
++                <h3 class="h5 mb-0">Daily briefing</h3>
++                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitDailyBriefingViewModel?>("daily-briefing")' disabled="@IsWidgetLoading("daily-briefing")">Refresh</button>
++            </div>
++            @WidgetStatus("daily-briefing")
+             @if (dashboard.DailyBriefing is null)
+             {
+                 <p class="text-body-secondary mb-0">No daily briefing has been generated yet. Generate a briefing after agents, workflows, or approvals start producing activity.</p>
+@@ -126,8 +133,10 @@
+             <div class="cockpit-card__header">
+                 <h3 class="h5 mb-0">Pending approvals</h3>
+                 <a href="@SafeDrillRoute(dashboard.PendingApprovals.Route, ApprovalsPath)">Open approvals</a>
++                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<ExecutiveCockpitPendingApprovalsViewModel>("pending-approvals")' disabled="@IsWidgetLoading("pending-approvals")">Refresh</button>
+             </div>
++            @WidgetStatus("pending-approvals")
+             @if (dashboard.EmptyStateFlags.NoPendingApprovals)
+             {
+                 <p class="text-body-secondary mb-0">No approvals are waiting. New guarded actions appear here when they need a decision.</p>
+@@ -150,7 +159,11 @@
+         </article>
+ 
+         <article class="wizard-card wizard-card--compact cockpit-card">
+-            <h3 class="h5">Alerts</h3>
++            <div class="cockpit-card__header">
++                <h3 class="h5 mb-0">Alerts</h3>
++                <button class="btn btn-outline-secondary btn-sm" @onclick='() => RefreshWidgetAsync<List<ExecutiveCockpitAlertViewModel>>("alerts")' disabled="@IsWidgetLoading("alerts")">Refresh</button>
++            </div>
++            @WidgetStatus("alerts")
+             @if (dashboard.EmptyStateFlags.NoAlerts)
+             {
+                 <p class="text-body-secondary mb-0">No active alerts. Blocked tasks and workflow exceptions will surface here.</p>
+@@ -202,6 +215,7 @@
+                     <div class="col-12 col-md-auto text-body-secondary">
+                         <span>@(isKpiLoading ? "Updating filters..." : "Filters update automatically.")</span>
+                     </div>
+                 </div>
++                @WidgetStatus("kpis")
+ 
+                 @if (isKpiLoading)
+                 {
+@@ -300,6 +314,8 @@
+     private bool isKpiLoading;
+     private string? kpiErrorMessage;
+     private string? selectedKpiDepartment;
+     private string selectedKpiRange = "7";
++    private readonly HashSet<string> loadingWidgets = new(StringComparer.OrdinalIgnoreCase);
++    private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
+ 
+@@ -387,6 +403,75 @@
+         await ReloadKpisCoreAsync();
+     }
+ 
++    private bool IsWidgetLoading(string widgetKey) => loadingWidgets.Contains(widgetKey);
++
++    private RenderFragment WidgetStatus(string widgetKey) => builder =>
++    {
++        if (loadingWidgets.Contains(widgetKey))
++        {
++            builder.OpenElement(0, "p");
++            builder.AddAttribute(1, "class", "text-body-secondary mt-2 mb-0");
++            builder.AddContent(2, "Refreshing...");
++            builder.CloseElement();
++        }
++        else if (widgetErrors.TryGetValue(widgetKey, out var message))
++        {
++            builder.OpenElement(3, "div");
++            builder.AddAttribute(4, "class", "alert alert-warning mt-2 mb-0");
++            builder.AddContent(5, message);
++            builder.CloseElement();
++        }
++    };
++
++    private async Task RefreshWidgetAsync<TPayload>(string widgetKey)
++    {
++        if (dashboard is null)
++        {
++            return;
++        }
++
++        loadingWidgets.Add(widgetKey);
++        widgetErrors.Remove(widgetKey);
++        var stopwatch = Stopwatch.StartNew();
++
++        try
++        {
++            var result = await ApiClient.GetWidgetAsync<TPayload>(CompanyId, widgetKey);
++            ApplyWidgetPayload(widgetKey, result?.Payload);
++            Logger.LogInformation(
++                "Executive cockpit widget {WidgetKey} rendered in {ElapsedMilliseconds} ms.",
++                widgetKey,
++                stopwatch.Elapsed.TotalMilliseconds);
++        }
++        catch (OnboardingApiException ex)
++        {
++            widgetErrors[widgetKey] = ex.Message;
++        }
++        finally
++        {
++            loadingWidgets.Remove(widgetKey);
++        }
++    }
++
++    private void ApplyWidgetPayload<TPayload>(string widgetKey, TPayload? payload)
++    {
++        if (dashboard is null || payload is null)
++        {
++            return;
++        }
++
++        switch (widgetKey)
++        {
++            case "summary-kpis" when payload is List<ExecutiveCockpitSummaryKpiViewModel> summaryKpis:
++                dashboard.SummaryKpis = summaryKpis;
++                break;
++            case "daily-briefing" when payload is ExecutiveCockpitDailyBriefingViewModel dailyBriefing:
++                dashboard.DailyBriefing = dailyBriefing;
++                break;
++            case "pending-approvals" when payload is ExecutiveCockpitPendingApprovalsViewModel approvals:
++                dashboard.PendingApprovals = approvals;
++                dashboard.EmptyStateFlags.NoPendingApprovals = approvals.TotalCount == 0;
++                break;
++            case "alerts" when payload is List<ExecutiveCockpitAlertViewModel> alerts:
++                dashboard.Alerts = alerts;
++                dashboard.EmptyStateFlags.NoAlerts = alerts.Count == 0;
++                break;
++        }
++    }
++
+     private static string SeverityBadgeClass(string severity) =>
+         severity.Trim().ToLowerInvariant() switch
+         {
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+index 782f9a2..4f43ded 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+@@ -81,15 +81,43 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+         Assert.Null(await cache.TryGetAsync(companyA, CancellationToken.None));
+         Assert.NotNull(await cache.TryGetAsync(companyB, CancellationToken.None));
+     }
+ 
++    [Fact]
++    public void Cache_key_generation_normalizes_role_filters_time_range_and_identity()
++    {
++        var companyId = Guid.NewGuid();
++        var keyA = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++            companyId,
++            "Owner",
++            ["Sales", " finance ", "sales"],
++            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
++            "widget:kpis"));
++        var keyB = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++            companyId,
++            "owner",
++            ["finance", "SALES"],
++            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
++            "widget:kpis"));
++        var keyC = ExecutiveCockpitDashboardCache.BuildCacheKey(new ExecutiveCockpitCacheScope(
++            companyId,
++            "manager",
++            ["finance", "SALES"],
++            new DateTime(2026, 4, 1, 12, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 4, 8, 12, 0, 0, DateTimeKind.Utc),
++            "widget:kpis"));
++
++        Assert.Equal(keyA, keyB);
++        Assert.NotEqual(keyA, keyC);
++    }
++
+     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>
+         new(
+             distributedCache,
++            new ExecutiveCockpitCacheKeyBuilder(Options.Create(new ExecutiveCockpitDashboardCacheOptions
++            {
++                Enabled = true,
++                KeyPrefix = "vc:executive-cockpit",
++                KeyVersion = "tests-v1",
++                TtlSeconds = 60
++            })),
+             Options.Create(new ExecutiveCockpitDashboardCacheOptions
+             {
+                 Enabled = true,
+                 KeyPrefix = "vc:executive-cockpit",
+END_OF_PATCH

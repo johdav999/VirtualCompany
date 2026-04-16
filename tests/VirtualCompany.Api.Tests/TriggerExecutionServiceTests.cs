@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Domain.Entities;
@@ -82,7 +83,7 @@ public sealed class TriggerExecutionServiceTests
         Assert.Equal(companyId, duplicateAudit.CompanyId);
         Assert.Equal(workItem.CorrelationId, duplicateAudit.CorrelationId);
         Assert.Equal(workItem.IdempotencyKey, duplicateAudit.Metadata["idempotencyKey"]);
-        Assert.Equal(TriggerExecutionAttemptStatus.Dispatched.ToStorageValue(), duplicateAudit.Metadata["executionStatus"]);
+        Assert.Equal(TriggerExecutionAttemptStatus.DuplicateSkipped.ToStorageValue(), duplicateAudit.Metadata["executionStatus"]);
 
         var auditActions = await dbContext.AuditEvents
             .IgnoreQueryFilters()
@@ -136,6 +137,16 @@ public sealed class TriggerExecutionServiceTests
         var retryDeferred = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
         Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled, retryDeferred);
         Assert.Equal(1, dispatcher.DispatchCount);
+        var retryDeferredAudit = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.Action == AuditEventActions.TriggerExecutionAttemptRetryDeferred);
+        Assert.Equal(companyId, retryDeferredAudit.CompanyId);
+        Assert.Equal(AuditEventOutcomes.Pending, retryDeferredAudit.Outcome);
+        Assert.Equal(workItem.CorrelationId, retryDeferredAudit.CorrelationId);
+        Assert.Equal(workItem.TriggerId.ToString("N"), retryDeferredAudit.Metadata["triggerId"]);
+        Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled.ToStorageValue(), retryDeferredAudit.Metadata["executionStatus"]);
+        Assert.Equal(workItem.IdempotencyKey, retryDeferredAudit.Metadata["idempotencyKey"]);
+        Assert.Equal("true", retryDeferredAudit.Metadata["retryDeferred"]);
 
         failedAttempt.MarkRetried(failedAttempt.RetryAttemptCount + 1);
         await dbContext.SaveChangesAsync();
@@ -192,6 +203,45 @@ public sealed class TriggerExecutionServiceTests
         Assert.Equal(AuditEventOutcomes.Failed, audit.Outcome);
         Assert.Equal(TriggerExecutionAttemptStatus.DeadLettered.ToStorageValue(), audit.Metadata["executionStatus"]);
         Assert.Equal("true", audit.Metadata["deadLettered"]);
+    }
+
+    [Fact]
+    public async Task Worker_keeps_due_scheduled_trigger_retryable_when_execution_service_throws()
+    {
+        await using var connection = CreateOpenConnection();
+        await using var dbContext = await CreateDbContextAsync(connection);
+        var companyId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        var triggerId = Guid.NewGuid();
+        var dueAtUtc = new DateTime(2026, 4, 13, 8, 0, 0, DateTimeKind.Utc);
+        await SeedCompanyAndAgentAsync(dbContext, companyId, agentId);
+        dbContext.AgentScheduledTriggers.Add(new AgentScheduledTrigger(
+            triggerId,
+            companyId,
+            agentId,
+            "Retryable daily operations",
+            "retryable-daily-operations",
+            "* * * * *",
+            "UTC",
+            dueAtUtc));
+        await dbContext.SaveChangesAsync();
+        var executionService = new ThrowingTriggerExecutionService();
+        var worker = new TriggerEvaluationWorker(
+            dbContext,
+            executionService,
+            new NoOpConditionTriggerEvaluationService(),
+            new FixedNextRunCalculator(dueAtUtc.AddHours(1)),
+            new TriggerAuditEventWriter(new AuditEventWriter(dbContext)),
+            NullLogger<TriggerEvaluationWorker>.Instance);
+
+        var result = await worker.RunOnceAsync(dueAtUtc, batchSize: 5, maxRetryAttempts: 3, CancellationToken.None, retryBackoffSeconds: 1);
+
+        Assert.Equal(1, result.ScheduledTriggersEvaluated);
+        Assert.Equal(1, result.Retried);
+        Assert.Equal(1, executionService.ScheduledCalls);
+        var trigger = await dbContext.AgentScheduledTriggers.IgnoreQueryFilters().SingleAsync(x => x.Id == triggerId);
+        Assert.Equal(dueAtUtc, trigger.NextRunUtc);
+        Assert.Null(trigger.LastEvaluatedUtc);
     }
 
     private static TriggerExecutionService CreateService(
@@ -301,5 +351,44 @@ public sealed class TriggerExecutionServiceTests
                 AuditTargetTypes.WorkTask,
                 Guid.NewGuid().ToString("N")));
         }
+    }
+
+    private sealed class ThrowingTriggerExecutionService : ITriggerExecutionService
+    {
+        public int ScheduledCalls { get; private set; }
+
+        public Task<TriggerExecutionAttemptStatus> EvaluateAndDispatchAsync(
+            TriggerExecutionWorkItem workItem,
+            int maxRetryAttempts,
+            CancellationToken cancellationToken,
+            int retryBackoffSeconds = 0) =>
+            throw new InvalidOperationException("Worker execution outage.");
+
+        public Task<TriggerExecutionAttemptStatus> ProcessScheduledTriggerAsync(
+            AgentScheduledTriggerExecutionRequestMessage message,
+            int maxRetryAttempts,
+            CancellationToken cancellationToken,
+            int retryBackoffSeconds = 0)
+        {
+            ScheduledCalls++;
+            throw new InvalidOperationException("Worker execution outage.");
+        }
+    }
+
+    private sealed class NoOpConditionTriggerEvaluationService : IConditionTriggerEvaluationService
+    {
+        public Task<ConditionEvaluationResultDto> EvaluateAndPersistAsync(
+            EvaluateConditionTriggerCommand command,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Condition evaluation should not run for this test.");
+    }
+
+    private sealed class FixedNextRunCalculator : IScheduledTriggerNextRunCalculator
+    {
+        private readonly DateTime? _nextRunUtc;
+
+        public FixedNextRunCalculator(DateTime? nextRunUtc) => _nextRunUtc = nextRunUtc;
+
+        public DateTime? GetNextRunUtc(string cronExpression, string timeZoneId, DateTime referenceUtc) => _nextRunUtc;
     }
 }

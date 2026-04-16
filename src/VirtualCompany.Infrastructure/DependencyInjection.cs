@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Application.Activity;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Alerts;
 using VirtualCompany.Application.Cockpit;
@@ -19,6 +20,7 @@ using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Application.Escalations;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Insights;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Application.Documents;
@@ -29,6 +31,7 @@ using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Application.ProactiveMessaging;
 using VirtualCompany.Domain.Events;
+using VirtualCompany.Infrastructure.Activity;
 using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Auth;
@@ -101,7 +104,7 @@ public static class DependencyInjection
 
         services.AddOptions<ExecutiveCockpitDashboardCacheOptions>()
             .Bind(configuration.GetSection(ExecutiveCockpitDashboardCacheOptions.SectionName))
-            .Validate(options => options.TtlSeconds > 0, "Executive cockpit dashboard cache TTL must be positive.")
+            .Validate(options => options.TtlSeconds > 0 && options.WidgetTtlSeconds > 0, "Executive cockpit cache TTL values must be positive.")
             .PostConfigure(options =>
             {
                 options.KeyPrefix = string.IsNullOrWhiteSpace(options.KeyPrefix)
@@ -153,6 +156,7 @@ public static class DependencyInjection
 
         services.AddSingleton<GroundedContextRetrievalCacheKeyBuilder>();
         services.AddSingleton<IGroundedContextRetrievalSectionCache, GroundedContextRetrievalSectionCache>();
+        services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
         services.AddVirtualCompanyObservability(configuration);
@@ -169,8 +173,10 @@ public static class DependencyInjection
         services.AddScoped<IWorkflowProgressionCoordinator, WorkflowProgressionCoordinator>();
         services.AddScoped<IWorkflowProgressionService, WorkflowProgressionService>();
         services.AddOptions<BriefingSchedulerOptions>().Bind(configuration.GetSection(BriefingSchedulerOptions.SectionName));
+        services.AddOptions<BriefingUpdateJobWorkerOptions>().Bind(configuration.GetSection(BriefingUpdateJobWorkerOptions.SectionName));
         services.AddScoped<BriefingSchedulerCoordinator>();
         services.AddHostedService<BriefingSchedulerBackgroundService>();
+        services.AddHostedService<BriefingUpdateJobBackgroundService>();
         services.AddHostedService<WorkflowProgressionBackgroundService>();
         services.AddHostedService<TriggerEvaluationBackgroundService>();
 
@@ -192,6 +198,9 @@ public static class DependencyInjection
         services.AddScoped<ICompanyInvitationDeliveryDispatcher, CompanyInvitationDeliveryDispatcher>();
         services.AddScoped<ICompanyNotificationDispatcher, CompanyNotificationDispatcher>();
         services.AddScoped<ICompanyInvitationSender, LoggingCompanyInvitationSender>();
+        services.AddSingleton<IActivityEventSummaryFormatter, DefaultActivityEventSummaryFormatter>();
+        services.AddScoped<IActivityEventStore, EfActivityEventStore>();
+        services.AddScoped<IEntityLinkResolutionService, EfEntityLinkResolutionService>();
         services.AddScoped<IAuditEventWriter, AuditEventWriter>();
         services.AddScoped<IAuditQueryService, CompanyAuditQueryService>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
@@ -216,8 +225,11 @@ public static class DependencyInjection
         services.AddScoped<IGroundedContextRetrievalService, GroundedContextRetrievalService>();
         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
         services.AddTransient<IClaimsTransformation, UserClaimsTransformation>();
+        services.AddSingleton<IDefaultAgentCommunicationProfileProvider, DefaultAgentCommunicationProfileProvider>();
+        services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+        services.AddScoped<IAgentStatusAggregationService, AgentStatusAggregationService>();
         services.AddScoped<CompanyMemoryService>();
         services.AddScoped<CompanyTaskService>();
         services.AddScoped<ICompanyTaskService, CompanyTaskService>();
@@ -237,6 +249,7 @@ public static class DependencyInjection
         services.AddScoped<ITriggerOrchestrationDispatcher, SingleAgentTriggerOrchestrationDispatcher>();
         services.AddScoped<ITriggerAuditEventWriter, TriggerAuditEventWriter>();
         services.AddScoped<ITriggerExecutionService, TriggerExecutionService>();
+        services.AddScoped<ITriggerInitiatedOrchestrationService>(provider => provider.GetRequiredService<ITriggerExecutionService>());
         services.AddScoped<ITriggerEvaluationWorker, TriggerEvaluationWorker>();
         services.AddHostedService<AgentScheduledTriggerSchedulerBackgroundService>();
         services.AddSingleton<IConditionTriggerEvaluator, ConditionTriggerEvaluator>();
@@ -248,7 +261,12 @@ public static class DependencyInjection
         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
         services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
+        services.AddSingleton<ICommunicationStyleRuleChecker, CommunicationStyleRuleChecker>();
         services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();
+        services.AddSingleton<IResponsibilityPolicyEvaluator, ResponsibilityPolicyEvaluator>();
+        services.AddSingleton<IRequestedDomainClassifier, RequestedDomainClassifier>();
+        services.AddSingleton<IResponsibilityPolicyEvaluator, ResponsibilityPolicyEvaluator>();
+        services.AddSingleton<IRequestedDomainClassifier, RequestedDomainClassifier>();
         services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
         services.AddScoped<ISingleAgentOrchestrationResolver, SingleAgentOrchestrationResolver>();
         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
@@ -258,12 +276,19 @@ public static class DependencyInjection
         services.AddScoped<INotificationInboxService, CompanyNotificationService>();
         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
         services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
+        services.AddScoped<IBriefingUpdateJobProducer, BriefingUpdateJobProducer>();
+        services.AddScoped<IBriefingInsightAggregationService, BriefingInsightAggregationService>();
+        services.AddScoped<IBriefingGenerationPipeline, CompanyBriefingGenerationPipeline>();
+        services.AddScoped<IBriefingUpdateJobRunner, CompanyBriefingUpdateJobRunner>();
         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
         services.AddScoped<CompanyWorkflowService>();
         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
+        services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+        services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
+        services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
         services.AddScoped<ExecutionExceptionService>();
         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
@@ -282,6 +307,9 @@ public static class DependencyInjection
         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();
+        services.AddSingleton<IInsightScoringService, DefaultInsightScoringService>();
+        services.AddSingleton<IActionDeepLinkResolver, DefaultActionDeepLinkResolver>();
+        services.AddScoped<IActionInsightService, CompanyActionInsightService>();
         services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
         services.AddScoped<CompanyContextResolutionMiddleware>();

@@ -1,0 +1,807 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+index 5c1b1e2..d4ad7ab 100644
+--- a/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
++++ b/src/VirtualCompany.Application/Cockpit/ExecutiveCockpitContracts.cs
+@@ -267,7 +267,10 @@ public interface IExecutiveCockpitDashboardCache
+ 
+     Task InvalidateAsync(
+         Guid companyId,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken);
++
++    Task InvalidateAsync(
++        ExecutiveCockpitCacheInvalidationEvent invalidationEvent,
++        CancellationToken cancellationToken);
+ }
+ 
+ public interface IExecutiveCockpitDashboardCacheInvalidator
+@@ -275,7 +278,10 @@ public interface IExecutiveCockpitDashboardCacheInvalidator
+     Task InvalidateAsync(
+         Guid companyId,
+-        CancellationToken cancellationToken);
++        CancellationToken cancellationToken);
++
++    Task InvalidateAsync(
++        ExecutiveCockpitCacheInvalidationEvent invalidationEvent,
++        CancellationToken cancellationToken);
+ }
+ 
+ public sealed record ExecutiveCockpitCacheInvalidationEvent(
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+index 6a038e3..31acbd4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ExecutiveCockpitDashboardCache.cs
+@@ -1,3 +1,4 @@
++using System.Diagnostics;
+ using System.Diagnostics.Metrics;
+ using System.Text.Json;
+ using Microsoft.Extensions.Caching.Distributed;
+@@ -12,10 +13,14 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+ {
+     private const string DefaultVersionToken = "0";
+     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly ActivitySource ActivitySource = new("VirtualCompany.ExecutiveCockpit.Cache");
+     private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit");
+     private static readonly Counter<long> CacheHits = Meter.CreateCounter<long>("executive_cockpit_cache_hits");
+     private static readonly Counter<long> CacheMisses = Meter.CreateCounter<long>("executive_cockpit_cache_misses");
++    private static readonly Counter<long> CacheSets = Meter.CreateCounter<long>("executive_cockpit_cache_sets");
+     private static readonly Counter<long> CacheErrors = Meter.CreateCounter<long>("executive_cockpit_cache_errors");
+     private static readonly Counter<long> CacheInvalidations = Meter.CreateCounter<long>("executive_cockpit_cache_invalidations");
++    private static readonly Histogram<double> CacheLookupDuration = Meter.CreateHistogram<double>("executive_cockpit_cache_lookup_duration_ms", "ms");
++    private static readonly Histogram<double> CacheInvalidationLag = Meter.CreateHistogram<double>("executive_cockpit_cache_invalidation_lag_ms", "ms");
+ 
+     private readonly IDistributedCache _distributedCache;
+     private readonly ExecutiveCockpitCacheKeyBuilder _keyBuilder;
+@@ -112,16 +117,37 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+         await SetCoreAsync(scope, snapshot, "widget", _options.GetWidgetTtl(), cancellationToken);
+     }
+ 
+-    public async Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken)
++    public Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken) =>
++        InvalidateAsync(
++            new ExecutiveCockpitCacheInvalidationEvent(
++                companyId,
++                "direct",
++                null,
++                null,
++                DateTime.UtcNow),
++            cancellationToken);
++
++    public async Task InvalidateAsync(
++        ExecutiveCockpitCacheInvalidationEvent invalidationEvent,
++        CancellationToken cancellationToken)
+     {
+-        if (!_options.Enabled || companyId == Guid.Empty)
++        if (!_options.Enabled || invalidationEvent.CompanyId == Guid.Empty)
+         {
+             return;
+         }
+ 
++        using var activity = ActivitySource.StartActivity("executive_cockpit.cache.invalidate");
++        activity?.SetTag("vc.cockpit.cache.trigger", NormalizeTag(invalidationEvent.TriggerType));
++        activity?.SetTag("vc.cockpit.cache.entity_type", NormalizeTag(invalidationEvent.EntityType));
++
+         try
+         {
+             var version = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
++            var completedUtc = DateTime.UtcNow;
++            var lag = completedUtc - NormalizeUtc(invalidationEvent.OccurredAtUtc);
++
+             await _distributedCache.SetStringAsync(
+-                _keyBuilder.BuildVersionKey(companyId),
++                _keyBuilder.BuildVersionKey(invalidationEvent.CompanyId),
+                 version,
+                 new DistributedCacheEntryOptions
+                 {
+@@ -129,20 +155,44 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+                 },
+                 cancellationToken);
+-            CacheInvalidations.Add(1);
+-            _logger.LogInformation("Invalidated executive cockpit cache namespace for company {CompanyId}.", companyId);
++            CacheInvalidations.Add(
++                1,
++                new KeyValuePair<string, object?>("trigger", NormalizeTag(invalidationEvent.TriggerType)),
++                new KeyValuePair<string, object?>("entity_type", NormalizeTag(invalidationEvent.EntityType)));
++            CacheInvalidationLag.Record(
++                Math.Max(0, lag.TotalMilliseconds),
++                new KeyValuePair<string, object?>("trigger", NormalizeTag(invalidationEvent.TriggerType)),
++                new KeyValuePair<string, object?>("entity_type", NormalizeTag(invalidationEvent.EntityType)));
++            _logger.LogInformation(
++                "Invalidated executive cockpit cache namespace for company {CompanyId} from trigger {TriggerType}; lag {InvalidationLagMilliseconds} ms.",
++                invalidationEvent.CompanyId,
++                invalidationEvent.TriggerType,
++                Math.Max(0, lag.TotalMilliseconds));
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            CacheErrors.Add(1, new KeyValuePair<string, object?>("operation", "invalidate"));
+-            _logger.LogWarning(ex, "Failed to invalidate executive cockpit cache namespace for company {CompanyId}.", companyId);
++            CacheErrors.Add(
++                1,
++                new KeyValuePair<string, object?>("operation", "invalidate"),
++                new KeyValuePair<string, object?>("trigger", NormalizeTag(invalidationEvent.TriggerType)));
++            _logger.LogWarning(
++                ex,
++                "Failed to invalidate executive cockpit cache namespace for company {CompanyId} from trigger {TriggerType}.",
++                invalidationEvent.CompanyId,
++                invalidationEvent.TriggerType);
+         }
+     }
+ 
+     private async Task<TSnapshot?> TryGetCoreAsync<TSnapshot>(
+@@ -158,18 +208,30 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+             return null;
+         }
+ 
++        using var activity = ActivitySource.StartActivity("executive_cockpit.cache.lookup");
++        activity?.SetTag("vc.cockpit.cache.area", cacheArea);
++        activity?.SetTag("vc.cockpit.cache.identity", NormalizeTag(scope.Identity));
++
+         var cacheKey = _keyBuilder.BuildDataKey(scope, await GetVersionTokenAsync(scope.CompanyId, cancellationToken));
+         byte[]? payload;
++        var stopwatch = Stopwatch.StartNew();
+         try
+         {
+             payload = await _distributedCache.GetAsync(cacheKey, cancellationToken);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+-            CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "read"));
++            CacheLookupDuration.Record(stopwatch.Elapsed.TotalMilliseconds, CacheTags(cacheArea, "error"));
++            CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "read"));
++            activity?.SetTag("vc.cockpit.cache.outcome", "error");
+             _logger.LogWarning(ex, "Executive cockpit cache read failed for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+             return null;
+         }
+ 
+         if (payload is null || payload.Length == 0)
+         {
+-            CacheMisses.Add(1, new KeyValuePair<string, object?>("area", cacheArea));
++            CacheLookupDuration.Record(stopwatch.Elapsed.TotalMilliseconds, CacheTags(cacheArea, "miss"));
++            CacheMisses.Add(1, CacheTags(cacheArea, "miss"));
++            activity?.SetTag("vc.cockpit.cache.outcome", "miss");
+             return null;
+         }
+ 
+@@ -180,7 +242,9 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+             if (!validate(snapshot))
+             {
+                 await SafeRemoveAsync(cacheKey, scope.CompanyId, cancellationToken);
+-                CacheMisses.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("reason", "invalid"));
++                CacheLookupDuration.Record(stopwatch.Elapsed.TotalMilliseconds, CacheTags(cacheArea, "invalid"));
++                CacheMisses.Add(1, CacheTags(cacheArea, "invalid"));
++                activity?.SetTag("vc.cockpit.cache.outcome", "invalid");
+                 return null;
+             }
+ 
+-            CacheHits.Add(1, new KeyValuePair<string, object?>("area", cacheArea));
++            CacheLookupDuration.Record(stopwatch.Elapsed.TotalMilliseconds, CacheTags(cacheArea, "hit"));
++            CacheHits.Add(1, CacheTags(cacheArea, "hit"));
++            activity?.SetTag("vc.cockpit.cache.outcome", "hit");
+             _logger.LogDebug("Executive cockpit cache hit for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+             return snapshot;
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
++            CacheLookupDuration.Record(stopwatch.Elapsed.TotalMilliseconds, CacheTags(cacheArea, "deserialize_error"));
+             CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "deserialize"));
++            activity?.SetTag("vc.cockpit.cache.outcome", "deserialize_error");
+             _logger.LogWarning(ex, "Ignoring malformed executive cockpit cache entry for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+             await SafeRemoveAsync(cacheKey, scope.CompanyId, cancellationToken);
+             return null;
+@@ -201,6 +265,10 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+             return;
+         }
+ 
++        using var activity = ActivitySource.StartActivity("executive_cockpit.cache.set");
++        activity?.SetTag("vc.cockpit.cache.area", cacheArea);
++        activity?.SetTag("vc.cockpit.cache.identity", NormalizeTag(scope.Identity));
++
+         try
+         {
+             await _distributedCache.SetAsync(
+@@ -214,10 +282,13 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+                 },
+                 cancellationToken);
++            CacheSets.Add(1, new KeyValuePair<string, object?>("area", cacheArea));
++            activity?.SetTag("vc.cockpit.cache.outcome", "set");
+             _logger.LogDebug("Cached executive cockpit payload for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+         }
+         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+         {
+             CacheErrors.Add(1, new KeyValuePair<string, object?>("area", cacheArea), new KeyValuePair<string, object?>("operation", "write"));
++            activity?.SetTag("vc.cockpit.cache.outcome", "write_error");
+             _logger.LogWarning(ex, "Failed to cache executive cockpit payload for company {CompanyId}, area {CacheArea}.", scope.CompanyId, cacheArea);
+         }
+@@ -270,4 +341,19 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardCa
+         snapshot is not null &&
+         snapshot.CompanyId != Guid.Empty &&
+         snapshot.Dashboard.CompanyId == snapshot.CompanyId;
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static string NormalizeTag(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "none"
++            : value.Trim().ToLowerInvariant().Replace(" ", "-").Replace("_", "-");
++
++    private static KeyValuePair<string, object?>[] CacheTags(string cacheArea, string outcome) =>
++    [
++        new("area", cacheArea),
++        new("outcome", outcome)
++    ];
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 2438b1f..935a7b7 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -170,6 +170,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private static readonly Counter<long> CockpitInvalidationEvents = Meter.CreateCounter<long>("executive_cockpit_invalidation_events");
+     private static readonly Histogram<double> CockpitInvalidationDuration = Meter.CreateHistogram<double>("executive_cockpit_invalidation_duration_ms", "ms");
++    private static readonly Histogram<double> CockpitInvalidationLag = Meter.CreateHistogram<double>("executive_cockpit_invalidation_lag_ms", "ms");
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyInvitationDeliveryDispatcher _invitationDeliveryDispatcher;
+@@ -364,7 +365,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 await _workflowEventTriggerService.HandleAsync(
+                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                     cancellationToken);
+-                await InvalidateCockpitAsync(message.CompanyId, message.Topic, cancellationToken);
++                await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
+                 break;
+             }
+             case CompanyOutboxTopics.ApprovalUpdated:
+@@ -383,7 +384,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     throw new CompanyOutboxPermanentException($"Cockpit invalidation event payload type '{payload.EventType}' does not match outbox topic '{message.Topic}'.");
+                 }
+ 
+-                await InvalidateCockpitAsync(message.CompanyId, message.Topic, cancellationToken);
++                await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
+                 break;
+             }
+             case CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested:
+@@ -419,10 +420,20 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         }
+     }
+ 
+-    private async Task InvalidateCockpitAsync(Guid companyId, string trigger, CancellationToken cancellationToken)
++    private async Task InvalidateCockpitAsync(
++        CompanyOutboxMessage message,
++        string? entityType,
++        Guid? entityId,
++        CancellationToken cancellationToken)
+     {
+         var stopwatch = Stopwatch.StartNew();
+-        await _cockpitCacheInvalidator.InvalidateAsync(companyId, cancellationToken);
++        await _cockpitCacheInvalidator.InvalidateAsync(
++            new ExecutiveCockpitCacheInvalidationEvent(
++                message.CompanyId,
++                message.Topic,
++                entityType,
++                entityId,
++                message.CreatedUtc),
++            cancellationToken);
+         CockpitInvalidationEvents.Add(
+             1,
+             new KeyValuePair<string, object?>("trigger", trigger));
+@@ -430,13 +441,19 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             stopwatch.Elapsed.TotalMilliseconds,
+             new KeyValuePair<string, object?>("trigger", trigger));
++        CockpitInvalidationLag.Record(
++            Math.Max(0, (DateTime.UtcNow - message.CreatedUtc).TotalMilliseconds),
++            new KeyValuePair<string, object?>("trigger", message.Topic));
+         _logger.LogInformation(
+             "Processed executive cockpit cache invalidation for company {CompanyId} from trigger {Trigger} in {ElapsedMilliseconds} ms.",
+-            companyId,
+-            trigger,
++            message.CompanyId,
++            message.Topic,
+             stopwatch.Elapsed.TotalMilliseconds);
+     }
+ 
++    private static Guid? TryParseGuid(string? value) =>
++        Guid.TryParse(value, out var parsed) ? parsed : null;
++
+     private static T Deserialize<T>(CompanyOutboxMessage message)
+     {
+         try
+diff --git a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+index 6d07110..a1d686d 100644
+--- a/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
++++ b/src/VirtualCompany.Api/Controllers/ExecutiveCockpitController.cs
+@@ -1,5 +1,6 @@
+ using System.Diagnostics;
+ using System.Diagnostics.Metrics;
++using System.Text.Json;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
+@@ -14,7 +15,9 @@ public sealed class ExecutiveCockpitController : ControllerBase
+ {
++    private static readonly ActivitySource ActivitySource = new("VirtualCompany.ExecutiveCockpit.Api");
+     private static readonly Meter Meter = new("VirtualCompany.ExecutiveCockpit.Api");
+     private static readonly Histogram<double> EndpointLatency = Meter.CreateHistogram<double>("executive_cockpit_endpoint_latency_ms", "ms");
++    private static readonly Histogram<long> EndpointPayloadSize = Meter.CreateHistogram<long>("executive_cockpit_endpoint_payload_bytes", "By");
+ 
+     private readonly IExecutiveCockpitDashboardService _dashboardService;
+@@ -41,10 +44,17 @@ public sealed class ExecutiveCockpitController : ControllerBase
+     {
++        using var activity = ActivitySource.StartActivity("executive_cockpit.endpoint.dashboard");
+         try
+         {
+             var stopwatch = Stopwatch.StartNew();
+             var result = await _dashboardService.GetAsync(new GetExecutiveCockpitDashboardQuery(companyId), cancellationToken);
+-            LogEndpointLatency("dashboard", stopwatch.Elapsed);
++            var cacheOutcome = result.CacheTimestampUtc is null ? "miss" : "hit";
++            LogEndpointTelemetry("dashboard", stopwatch.Elapsed, "success", cacheOutcome, result);
++            activity?.SetTag("vc.cockpit.endpoint", "dashboard");
++            activity?.SetTag("vc.cockpit.cache.outcome", cacheOutcome);
++            activity?.SetTag("vc.cockpit.status", "success");
+             return Ok(result);
+         }
+         catch (UnauthorizedAccessException)
+         {
++            LogEndpointTelemetry("dashboard", TimeSpan.Zero, "forbidden", "unknown", null);
+             return Forbid();
+         }
+         catch (KeyNotFoundException)
+@@ -81,10 +91,17 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         CancellationToken cancellationToken)
+     {
++        using var activity = ActivitySource.StartActivity("executive_cockpit.endpoint.widget");
+         try
+         {
+             var stopwatch = Stopwatch.StartNew();
+             var result = await _dashboardService.GetWidgetAsync(
+                 new GetExecutiveCockpitWidgetPayloadQuery(companyId, widgetKey, department, startUtc, endUtc),
+                 cancellationToken);
+-            LogEndpointLatency($"widget:{widgetKey}", stopwatch.Elapsed);
++            var normalizedWidget = NormalizeTag(widgetKey);
++            var cacheOutcome = result.CacheTimestampUtc is null ? "miss" : "hit";
++            LogEndpointTelemetry("widget", stopwatch.Elapsed, "success", cacheOutcome, result, normalizedWidget);
++            activity?.SetTag("vc.cockpit.endpoint", "widget");
++            activity?.SetTag("vc.cockpit.widget", normalizedWidget);
++            activity?.SetTag("vc.cockpit.cache.outcome", cacheOutcome);
+             return Ok(result);
+         }
+         catch (UnauthorizedAccessException)
+@@ -112,10 +129,15 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         CancellationToken cancellationToken)
+     {
++        using var activity = ActivitySource.StartActivity("executive_cockpit.endpoint.kpis");
+         try
+         {
+             var stopwatch = Stopwatch.StartNew();
+             var result = await _kpiQueryService.GetAsync(
+                 new GetExecutiveCockpitKpiDashboardQuery(companyId, department, startUtc, endUtc),
+                 cancellationToken);
+-            LogEndpointLatency("kpis", stopwatch.Elapsed);
++            var cacheOutcome = result.CacheTimestampUtc is null ? "miss" : "hit";
++            LogEndpointTelemetry("kpis", stopwatch.Elapsed, "success", cacheOutcome, result);
++            activity?.SetTag("vc.cockpit.endpoint", "kpis");
++            activity?.SetTag("vc.cockpit.cache.outcome", cacheOutcome);
+             return Ok(result);
+         }
+         catch (UnauthorizedAccessException)
+@@ -130,17 +152,41 @@ public sealed class ExecutiveCockpitController : ControllerBase
+         }
+     }
+ 
+-    private void LogEndpointLatency(string endpoint, TimeSpan elapsed)
++    private void LogEndpointTelemetry(
++        string endpoint,
++        TimeSpan elapsed,
++        string status,
++        string cacheOutcome,
++        object? payload,
++        string widget = "none")
+     {
++        var tags = new KeyValuePair<string, object?>[]
++        {
++            new("endpoint", endpoint),
++            new("status", status),
++            new("cache_outcome", cacheOutcome),
++            new("widget", widget)
++        };
+         EndpointLatency.Record(
+             elapsed.TotalMilliseconds,
+-            new KeyValuePair<string, object?>("endpoint", endpoint));
++            tags);
++        if (payload is not null)
++        {
++            EndpointPayloadSize.Record(JsonSerializer.SerializeToUtf8Bytes(payload).LongLength, tags);
++        }
++
+         _logger.LogInformation(
+-            "Executive cockpit endpoint {Endpoint} completed in {ElapsedMilliseconds} ms.",
++            "Executive cockpit endpoint {Endpoint} completed with {Status} in {ElapsedMilliseconds} ms using cache outcome {CacheOutcome}.",
+             endpoint,
+-            elapsed.TotalMilliseconds);
++            status,
++            elapsed.TotalMilliseconds,
++            cacheOutcome);
+     }
++
++    private static string NormalizeTag(string? value) =>
++        string.IsNullOrWhiteSpace(value)
++            ? "none"
++            : value.Trim().ToLowerInvariant().Replace(" ", "-").Replace("_", "-");
+ }
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 56516d4..7175bbd 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -271,7 +271,10 @@
+ 
+                 <div class="mt-4">
+                     <h4 class="h6">Anomalies</h4>
+-                    @if (kpiDashboard is null || kpiDashboard.Anomalies.Count == 0)
++                    @if (kpiDashboard is null || kpiDashboard.Anomalies.Count == 0)
++                    {
++                        <p class="text-body-secondary mb-0">No anomalies detected for this range.</p>
++                    }
+                     <AnomalyList Items="kpiDashboard?.Anomalies ?? []" FallbackRoute="DashboardPath" />
+                 </div>
+             </article>
+@@ -348,7 +351,10 @@
+     private readonly HashSet<string> loadingWidgets = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, string> widgetErrors = new(StringComparer.OrdinalIgnoreCase);
+     private readonly Dictionary<string, DateTime> widgetSuccessUtc = new(StringComparer.OrdinalIgnoreCase);
+-    private static readonly Histogram<double> WidgetRenderTiming = new Meter("VirtualCompany.ExecutiveCockpit.Web").CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
++    private readonly Dictionary<string, DateTime> pendingWidgetRenderStartUtc = new(StringComparer.OrdinalIgnoreCase);
++    private static readonly Meter WebMeter = new("VirtualCompany.ExecutiveCockpit.Web");
++    private static readonly Histogram<double> WidgetFetchTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_fetch_ms", "ms");
++    private static readonly Histogram<double> WidgetRenderTiming = WebMeter.CreateHistogram<double>("executive_cockpit_widget_render_ms", "ms");
+ 
+     private string DashboardPath => $"/dashboard?companyId={CompanyId}";
+@@ -396,6 +402,18 @@
+         }
+     }
+ 
++    protected override Task OnAfterRenderAsync(bool firstRender)
++    {
++        foreach (var item in pendingWidgetRenderStartUtc.ToArray())
++        {
++            WidgetRenderTiming.Record(
++                Math.Max(0, (DateTime.UtcNow - item.Value).TotalMilliseconds),
++                WidgetTags(item.Key, "success"));
++            pendingWidgetRenderStartUtc.Remove(item.Key);
++        }
++
++        return Task.CompletedTask;
++    }
++
+     private static bool HasDrillRoute(string? route) =>
+         !string.IsNullOrWhiteSpace(route) && route.StartsWith("/", StringComparison.Ordinal);
+@@ -513,11 +531,9 @@
+             var result = await ApiClient.GetWidgetAsync<TPayload>(CompanyId, widgetKey);
+             ApplyWidgetPayload(widgetKey, result?.Payload);
+             Logger.LogInformation(
+-                "Executive cockpit widget {WidgetKey} rendered in {ElapsedMilliseconds} ms.",
++                "Executive cockpit widget {WidgetKey} fetched in {ElapsedMilliseconds} ms.",
+                 widgetKey,
+                 stopwatch.Elapsed.TotalMilliseconds);
+-            WidgetRenderTiming.Record(stopwatch.Elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("widget", widgetKey));
++            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "success"));
++            pendingWidgetRenderStartUtc[widgetKey] = DateTime.UtcNow;
+             widgetSuccessUtc[widgetKey] = result?.GeneratedAtUtc ?? DateTime.UtcNow;
+         }
+         catch (OnboardingApiException ex)
+         {
+             widgetErrors[widgetKey] = ex.Message;
++            WidgetFetchTiming.Record(stopwatch.Elapsed.TotalMilliseconds, WidgetTags(widgetKey, "failure"));
+             Logger.LogWarning(ex, "Executive cockpit widget {WidgetKey} refresh failed.", widgetKey);
+         }
+@@ -642,6 +658,14 @@
+             builder.CloseElement();
+         }
+     };
++
++    private static KeyValuePair<string, object?>[] WidgetTags(string widgetKey, string status) =>
++    [
++        new("widget", NormalizeCssToken(widgetKey)),
++        new("status", status)
++    ];
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+index e89cb4a..1b0ad4e 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardCacheTests.cs
+@@ -158,6 +158,24 @@ public sealed class ExecutiveCockpitDashboardCacheTests
+         Assert.Empty(distributedCache.RemovedKeys);
+     }
+ 
++    [Fact]
++    public async Task Invalidation_event_records_versioned_namespace_without_global_flush()
++    {
++        var distributedCache = new RecordingDistributedCache();
++        var cache = CreateCache(distributedCache);
++        var companyId = Guid.NewGuid();
++
++        await cache.SetAsync(CreateSnapshot(companyId, "Tenant A"), CancellationToken.None);
++        await cache.InvalidateAsync(
++            new ExecutiveCockpitCacheInvalidationEvent(
++                companyId,
++                "TaskUpdated",
++                "work_task",
++                Guid.NewGuid(),
++                DateTime.UtcNow.AddSeconds(-5)),
++            CancellationToken.None);
++
++        Assert.Null(await cache.TryGetAsync(companyId, CancellationToken.None));
++        Assert.Empty(distributedCache.RemovedKeys);
++    }
++
+     private static ExecutiveCockpitDashboardCache CreateCache(RecordingDistributedCache distributedCache) =>
+         new(
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitPerformanceTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitPerformanceTests.cs
+new file mode 100644
+index 0000000..db5b8c6
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitPerformanceTests.cs
+@@ -0,0 +1,131 @@
++using System.Diagnostics;
++using System.Net.Http.Headers;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ExecutiveCockpitPerformanceTests
++{
++    private const double CachedRequestP95TargetMilliseconds = 2500;
++    private const double InvalidationLagTargetMilliseconds = 60000;
++
++    [Fact]
++    public async Task Staging_cockpit_cached_requests_meet_p95_target_when_perf_endpoint_is_configured()
++    {
++        var settings = ExecutiveCockpitPerformanceSettings.FromEnvironment();
++        if (settings is null)
++        {
++            return;
++        }
++
++        using var client = CreateClient(settings);
++        await WarmCacheAsync(client, settings);
++
++        var dashboardSamples = await MeasureAsync(
++            settings.SampleCount,
++            () => client.GetAsync($"/api/companies/{settings.CompanyId}/executive-cockpit"));
++        var widgetSamples = await MeasureAsync(
++            settings.SampleCount,
++            () => client.GetAsync($"/api/companies/{settings.CompanyId}/executive-cockpit/widgets/summary-kpis"));
++
++        var dashboardP95 = Percentile(dashboardSamples, 0.95);
++        var widgetP95 = Percentile(widgetSamples, 0.95);
++
++        Assert.True(
++            dashboardP95 <= CachedRequestP95TargetMilliseconds,
++            $"Executive cockpit cached dashboard p95 was {dashboardP95:0.0} ms; target is {CachedRequestP95TargetMilliseconds:0.0} ms.");
++        Assert.True(
++            widgetP95 <= CachedRequestP95TargetMilliseconds,
++            $"Executive cockpit cached widget p95 was {widgetP95:0.0} ms; target is {CachedRequestP95TargetMilliseconds:0.0} ms.");
++    }
++
++    [Fact]
++    public async Task Staging_cockpit_invalidation_is_visible_within_sla_when_probe_is_configured()
++    {
++        var settings = ExecutiveCockpitPerformanceSettings.FromEnvironment();
++        if (settings is null || string.IsNullOrWhiteSpace(settings.InvalidationProbePath))
++        {
++            return;
++        }
++
++        using var client = CreateClient(settings);
++        var stopwatch = Stopwatch.StartNew();
++        using var response = await client.PostAsync(settings.InvalidationProbePath, content: null);
++        response.EnsureSuccessStatusCode();
++
++        while (stopwatch.Elapsed.TotalMilliseconds <= InvalidationLagTargetMilliseconds)
++        {
++            using var dashboardResponse = await client.GetAsync($"/api/companies/{settings.CompanyId}/executive-cockpit");
++            dashboardResponse.EnsureSuccessStatusCode();
++            if (dashboardResponse.Headers.TryGetValues("X-Executive-Cockpit-Cache", out var values) &&
++                values.Any(value => string.Equals(value, "miss", StringComparison.OrdinalIgnoreCase)))
++            {
++                return;
++            }
++
++            await Task.Delay(TimeSpan.FromSeconds(1));
++        }
++
++        Assert.Fail($"Executive cockpit invalidation was not visible within {InvalidationLagTargetMilliseconds:0} ms.");
++    }
++
++    private static async Task WarmCacheAsync(HttpClient client, ExecutiveCockpitPerformanceSettings settings)
++    {
++        using var dashboardResponse = await client.GetAsync($"/api/companies/{settings.CompanyId}/executive-cockpit");
++        dashboardResponse.EnsureSuccessStatusCode();
++        using var widgetResponse = await client.GetAsync($"/api/companies/{settings.CompanyId}/executive-cockpit/widgets/summary-kpis");
++        widgetResponse.EnsureSuccessStatusCode();
++    }
++
++    private static async Task<IReadOnlyList<double>> MeasureAsync(int sampleCount, Func<Task<HttpResponseMessage>> request)
++    {
++        var samples = new List<double>(sampleCount);
++        for (var index = 0; index < sampleCount; index++)
++        {
++            var stopwatch = Stopwatch.StartNew();
++            using var response = await request();
++            stopwatch.Stop();
++            response.EnsureSuccessStatusCode();
++            samples.Add(stopwatch.Elapsed.TotalMilliseconds);
++        }
++
++        return samples;
++    }
++
++    private static double Percentile(IReadOnlyList<double> samples, double percentile)
++    {
++        var ordered = samples.OrderBy(x => x).ToArray();
++        var index = Math.Clamp((int)Math.Ceiling(percentile * ordered.Length) - 1, 0, ordered.Length - 1);
++        return ordered[index];
++    }
++
++    private static HttpClient CreateClient(ExecutiveCockpitPerformanceSettings settings)
++    {
++        var client = new HttpClient
++        {
++            BaseAddress = settings.BaseAddress,
++            Timeout = TimeSpan.FromSeconds(30)
++        };
++
++        if (!string.IsNullOrWhiteSpace(settings.BearerToken))
++        {
++            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.BearerToken);
++        }
++
++        if (!string.IsNullOrWhiteSpace(settings.DevSubject))
++        {
++            client.DefaultRequestHeaders.Add("X-Dev-User-Subject", settings.DevSubject);
++            client.DefaultRequestHeaders.Add("X-Dev-User-Email", settings.DevEmail ?? $"{settings.DevSubject}@example.com");
++            client.DefaultRequestHeaders.Add("X-Dev-User-DisplayName", settings.DevDisplayName ?? "Cockpit Perf User");
++        }
++
++        return client;
++    }
++
++    private sealed record ExecutiveCockpitPerformanceSettings(
++        Uri BaseAddress,
++        Guid CompanyId,
++        int SampleCount,
++        string? BearerToken,
++        string? DevSubject,
++        string? DevEmail,
++        string? DevDisplayName,
++        string? InvalidationProbePath)
++    {
++        public static ExecutiveCockpitPerformanceSettings? FromEnvironment()
++        {
++            var baseUrl = Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_BASE_URL");
++            var companyIdValue = Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_COMPANY_ID");
++            if (string.IsNullOrWhiteSpace(baseUrl) || !Guid.TryParse(companyIdValue, out var companyId))
++            {
++                return null;
++            }
++
++            var sampleCount = int.TryParse(Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_SAMPLE_COUNT"), out var parsedSampleCount)
++                ? Math.Clamp(parsedSampleCount, 5, 500)
++                : 30;
++
++            return new ExecutiveCockpitPerformanceSettings(
++                new Uri(baseUrl, UriKind.Absolute),
++                companyId,
++                sampleCount,
++                Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_BEARER_TOKEN"),
++                Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_DEV_SUBJECT"),
++                Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_DEV_EMAIL"),
++                Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_DEV_DISPLAY_NAME"),
++                Environment.GetEnvironmentVariable("EXECUTIVE_COCKPIT_PERF_INVALIDATION_PROBE_PATH"));
++        }
++    }
++}
+diff --git a/docs/executive-cockpit-observability.md b/docs/executive-cockpit-observability.md
+new file mode 100644
+index 0000000..ba58043
+--- /dev/null
++++ b/docs/executive-cockpit-observability.md
+@@ -0,0 +1,63 @@
++# Executive Cockpit Performance And Observability
++
++TASK-3.5.4 uses low-cardinality metrics and structured logs for the executive cockpit endpoint, cache, invalidation, and widget refresh paths. Do not add raw tenant ids or user ids as metric labels; tenant-specific investigation should use correlated logs and traces.
++
++## Metrics
++
++| Metric | Unit | Dimensions | Purpose |
++| --- | --- | --- | --- |
++| `executive_cockpit_endpoint_latency_ms` | ms | `endpoint`, `status`, `cache_outcome`, `widget` | Derive endpoint p95 for dashboard, KPI, and widget calls. |
++| `executive_cockpit_endpoint_payload_bytes` | bytes | `endpoint`, `status`, `cache_outcome`, `widget` | Detect payload growth that can affect render and network latency. |
++| `executive_cockpit_cache_hits` | count | `area`, `outcome` | Cache effectiveness numerator. |
++| `executive_cockpit_cache_misses` | count | `area`, `outcome` | Cache effectiveness denominator and stale namespace detection. |
++| `executive_cockpit_cache_sets` | count | `area` | Confirms cache population after misses. |
++| `executive_cockpit_cache_lookup_duration_ms` | ms | `area`, `outcome` | Redis lookup cost and cache error impact. |
++| `executive_cockpit_cache_invalidations` | count | `trigger`, `entity_type` | Invalidation volume by low-cardinality trigger. |
++| `executive_cockpit_cache_invalidation_lag_ms` | ms | `trigger`, `entity_type` | Update-to-invalidation lag. |
++| `executive_cockpit_invalidation_duration_ms` | ms | `trigger` | Outbox invalidation handler execution time. |
++| `executive_cockpit_invalidation_lag_ms` | ms | `trigger` | Outbox-created-to-processed lag. |
++| `executive_cockpit_widget_fetch_ms` | ms | `widget`, `status` | Blazor widget API fetch timing for partial refresh. |
++| `executive_cockpit_widget_render_ms` | ms | `widget`, `status` | Blazor render completion timing after widget payload application. |
++
++## Example PromQL
++
++Endpoint p95:
++
++```promql
++histogram_quantile(
++  0.95,
++  sum by (le, endpoint, cache_outcome) (
++    rate(executive_cockpit_endpoint_latency_ms_bucket{endpoint=~"dashboard|kpis|widget"}[5m])
++  )
++)
++```
++
++Cache hit rate:
++
++```promql
++sum(rate(executive_cockpit_cache_hits[5m]))
++/
++(sum(rate(executive_cockpit_cache_hits[5m])) + sum(rate(executive_cockpit_cache_misses[5m])))
++```
++
++Invalidation lag p95:
++
++```promql
++histogram_quantile(
++  0.95,
++  sum by (le, trigger) (
++    rate(executive_cockpit_cache_invalidation_lag_ms_bucket[5m])
++  )
++)
++```
++
++Widget render p95:
++
++```promql
++histogram_quantile(
++  0.95,
++  sum by (le, widget) (
++    rate(executive_cockpit_widget_render_ms_bucket[5m])
++  )
++)
++```
++
++## Performance Harness
++
++The staging-style performance checks are in `tests/VirtualCompany.Api.Tests/ExecutiveCockpitPerformanceTests.cs`. They are no-op unless `EXECUTIVE_COCKPIT_PERF_BASE_URL` and `EXECUTIVE_COCKPIT_PERF_COMPANY_ID` are set.
++
++Run:
++
++```bash
++EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com \
++EXECUTIVE_COCKPIT_PERF_COMPANY_ID=00000000-0000-0000-0000-000000000000 \
++EXECUTIVE_COCKPIT_PERF_SAMPLE_COUNT=50 \
++dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests
++```
++
++Optional authentication inputs are `EXECUTIVE_COCKPIT_PERF_BEARER_TOKEN` for bearer auth or `EXECUTIVE_COCKPIT_PERF_DEV_SUBJECT`, `EXECUTIVE_COCKPIT_PERF_DEV_EMAIL`, and `EXECUTIVE_COCKPIT_PERF_DEV_DISPLAY_NAME` for a staging dev-header profile.
++
++The cached dashboard and widget p95 target is 2.5 seconds. Invalidation should be visible within 60 seconds. If an environment exposes a safe mutation probe, set `EXECUTIVE_COCKPIT_PERF_INVALIDATION_PROBE_PATH` to a company-scoped POST endpoint that triggers a task, workflow, approval, or agent-status update.
+diff --git a/README.md b/README.md
+index 7f8c2d9..17485a7 100644
+--- a/README.md
++++ b/README.md
+@@ -160,3 +160,12 @@ Run the API and web projects locally, then use the seeded development identity he
+ - `X-Dev-User-Subject`
+ - `X-Dev-User-Email`
+ - `X-Dev-User-DisplayName`
++
++## Executive Cockpit Performance
++
++The executive cockpit uses scoped Redis-backed cache keys for tenant, role, department filters, time range, and widget/query identity. Dashboard invalidation is version-token based so task, workflow, approval, and agent-status updates avoid wildcard Redis scans while making prior namespace entries stale.
++
++Observability details, metric names, example queries, and staging-style performance commands are documented in `docs/executive-cockpit-observability.md`.
++
++The perf harness is disabled unless staging inputs are provided:
++
++`EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com EXECUTIVE_COCKPIT_PERF_COMPANY_ID=<company-guid> dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests`
+END_OF_PATCH

@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-3.5.3",
+  "promptPath": ".ai-design/prompts/TASK-3.5.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T20:38:58.772Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T20-38-58-772Z_TASK-3.5.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T20-38-58-772Z_TASK-3.5.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T20:41:18.771Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain(seed.OtherCompanyApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     [Fact]\n     public void Dashboard_cache_keys_are_tenant_scoped()\n     {\n@@ -362,5 +385,12 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes\n         public bool NoPendingApprovals { get; set; }\n         public bool NoAlerts { get; set; }\n     }\n+\n+    private sealed class ExecutiveCockpitWidgetResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public string WidgetKey { get; set; } = string.Empty;\n+        public JsonNode? Payload { get; set; }\n+    }\n }\ndiff --git a/README.md b/README.md\nindex 7f06c4b..1b90442 100644\n--- a/README.md\n+++ b/README.md\n@@ -126,6 +126,17 @@ seed data and local secrets are intentionally lightweight.\n \n Use `dotnet test` from the solution root for the API and infrastructure regression suite.\n \n+### Executive cockpit performance validation\n+\n+The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under\n+`/api/companies/{companyId}/executive-cockpit/widgets/{widgetKey}`. Redis cache keys are scoped by company,\n+effective membership role, normalized department filters, time range, and widget/query identity. Dashboard\n+cache invalidation is version-token based, so task, workflow, approval, briefing, alert, and agent status\n+updates move the company cache namespace without requiring wildcard Redis deletes.\n+\n+For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,\n+`executive_cockpit_cache_hits`, `executive_cockpit_cache_misses`, and\n+`executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.\n+Cached dashboard and widget requests should remain below the 2.5 second p95 target.\n+\n ## Architecture notes\n \n The solution follows a modular monolith shape:\nEND_OF_PATCH\n",
+  "stderrTail": ".ToJsonString(), StringComparison.OrdinalIgnoreCase);\n+        Assert.DoesNotContain(seed.OtherCompanyApprovalId.ToString(), widget.Payload!.ToJsonString(), StringComparison.OrdinalIgnoreCase);\n+    }\n+\n     [Fact]\n     public void Dashboard_cache_keys_are_tenant_scoped()\n     {\n@@ -362,5 +385,12 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Tes\n         public bool NoPendingApprovals { get; set; }\n         public bool NoAlerts { get; set; }\n     }\n+\n+    private sealed class ExecutiveCockpitWidgetResponse\n+    {\n+        public Guid CompanyId { get; set; }\n+        public string WidgetKey { get; set; } = string.Empty;\n+        public JsonNode? Payload { get; set; }\n+    }\n }\ndiff --git a/README.md b/README.md\nindex 7f06c4b..1b90442 100644\n--- a/README.md\n+++ b/README.md\n@@ -126,6 +126,17 @@ seed data and local secrets are intentionally lightweight.\n \n Use `dotnet test` from the solution root for the API and infrastructure regression suite.\n \n+### Executive cockpit performance validation\n+\n+The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under\n+`/api/companies/{companyId}/executive-cockpit/widgets/{widgetKey}`. Redis cache keys are scoped by company,\n+effective membership role, normalized department filters, time range, and widget/query identity. Dashboard\n+cache invalidation is version-token based, so task, workflow, approval, briefing, alert, and agent status\n+updates move the company cache namespace without requiring wildcard Redis deletes.\n+\n+For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,\n+`executive_cockpit_cache_hits`, `executive_cockpit_cache_misses`, and\n+`executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.\n+Cached dashboard and widget requests should remain below the 2.5 second p95 target.\n+\n ## Architecture notes\n \n The solution follows a modular monolith shape:\nEND_OF_PATCH\ntokens used\n65,813\n",
+  "verbosityMode": "summary"
+}

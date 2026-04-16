@@ -74,6 +74,21 @@ builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new ActionInsightApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new ActionInsightApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new ActivityFeedApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 
 var app = builder.Build();
 

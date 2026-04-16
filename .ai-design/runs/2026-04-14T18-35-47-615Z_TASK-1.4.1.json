@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-1.4.1",
+  "promptPath": ".ai-design/prompts/TASK-1.4.1.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T18:35:47.615Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T18-35-47-615Z_TASK-1.4.1_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T18-35-47-615Z_TASK-1.4.1.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T18:37:36.952Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ation\" => CompanyNotificationType.Escalation,\n             \"workflow_failure\" => CompanyNotificationType.WorkflowFailure,\n             \"briefing_available\" => CompanyNotificationType.BriefingAvailable,\n+            \"proactive_message\" => CompanyNotificationType.ProactiveMessage,\n             _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,\n             _ => throw new ArgumentOutOfRangeException(nameof(value), value, \"Unsupported notification type value.\")\n         };\ndiff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\nindex 66b3d8f..f1bbd5c 100644\n--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n@@ -39,6 +39,16 @@ public sealed class NotificationInboxTests\n         Assert.Throws<InvalidOperationException>(notification.MarkUnread);\n     }\n \n+    [Fact]\n+    public void Proactive_message_notification_uses_supported_storage_value()\n+    {\n+        var notification = CreateNotification(CompanyNotificationType.ProactiveMessage, CompanyNotificationPriority.Normal);\n+\n+        Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);\n+        Assert.Equal(\"proactive_message\", notification.Type.ToStorageValue());\n+        Assert.Equal(\"proactive_message\", notification.RelatedEntityType);\n+    }\n+\n     [Fact]\n     public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()\n     {\n@@ -168,7 +178,7 @@ public sealed class NotificationInboxTests\n             type,\n             type.ToStorageValue(),\n             \"Notification body.\",\n-            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n+            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : type.ToStorageValue(),\n             Guid.NewGuid(),\n             \"/inbox\",\n             \"{}\",\nEND_OF_PATCH\n",
+  "stderrTail": "ificationType.Escalation,\n             \"workflow_failure\" => CompanyNotificationType.WorkflowFailure,\n             \"briefing_available\" => CompanyNotificationType.BriefingAvailable,\n+            \"proactive_message\" => CompanyNotificationType.ProactiveMessage,\n             _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,\n             _ => throw new ArgumentOutOfRangeException(nameof(value), value, \"Unsupported notification type value.\")\n         };\ndiff --git a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\nindex 66b3d8f..f1bbd5c 100644\n--- a/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/NotificationInboxTests.cs\n@@ -39,6 +39,16 @@ public sealed class NotificationInboxTests\n         Assert.Throws<InvalidOperationException>(notification.MarkUnread);\n     }\n \n+    [Fact]\n+    public void Proactive_message_notification_uses_supported_storage_value()\n+    {\n+        var notification = CreateNotification(CompanyNotificationType.ProactiveMessage, CompanyNotificationPriority.Normal);\n+\n+        Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);\n+        Assert.Equal(\"proactive_message\", notification.Type.ToStorageValue());\n+        Assert.Equal(\"proactive_message\", notification.RelatedEntityType);\n+    }\n+\n     [Fact]\n     public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()\n     {\n@@ -168,7 +178,7 @@ public sealed class NotificationInboxTests\n             type,\n             type.ToStorageValue(),\n             \"Notification body.\",\n-            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : \"approval_request\",\n+            type == CompanyNotificationType.BriefingAvailable ? \"company_briefing\" : type.ToStorageValue(),\n             Guid.NewGuid(),\n             \"/inbox\",\n             \"{}\",\nEND_OF_PATCH\ntokens used\n179,605\n",
+  "verbosityMode": "summary"
+}

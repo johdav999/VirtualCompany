@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-13.1.3",
+  "promptPath": ".ai-design/prompts/TASK-13.1.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-14T17:58:29.941Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-14T17-58-29-941Z_TASK-13.1.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-14T17-58-29-941Z_TASK-13.1.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-14T17:59:57.021Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "      AgentScheduledTrigger trigger,\n+        DateTime scheduledAtUtc,\n+        DateTime windowEndUtc,\n+        DateTime enqueuedAtUtc,\n+        CancellationToken cancellationToken)\n+    {\n+        var idempotencyKey = $\"agent-scheduled-trigger:{trigger.CompanyId:N}:{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}\";\n+        var executionRequestId = $\"{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}\";\n+        var window = new AgentScheduledTriggerEnqueueWindow(\n+            Guid.NewGuid(),\n+            trigger.CompanyId,\n+            trigger.Id,\n+            scheduledAtUtc,\n+            windowEndUtc,\n+            enqueuedAtUtc,\n+            executionRequestId);\n+\n+        if (!await _repository.TryRecordEnqueueWindowAsync(window, cancellationToken))\n+        {\n+            return false;\n+        }\n+\n         _outboxEnqueuer.Enqueue(\n             trigger.CompanyId,\n             CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested,\n@@ -742,15 +788,16 @@ public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTrigger\n                 trigger.CronExpression,\n                 trigger.TimeZoneId,\n                 trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),\n-                correlationId,\n+                idempotencyKey,\n                 idempotencyKey),\n-            correlationId,\n-            availableAtUtc: dueAtUtc,\n+            idempotencyKey,\n+            availableAtUtc: enqueuedAtUtc,\n             idempotencyKey: idempotencyKey,\n             causationId: trigger.Id.ToString(\"N\"));\n \n-        trigger.MarkEnqueued(dueAtUtc, nextRunUtc);\n-        await _repository.SaveChangesAsync(cancellationToken);\n         return true;\n     }\n+\n+    private static DateTime NormalizeUtc(DateTime value) =>\n+        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();\n \n     private async Task<IReadOnlyList<Guid>> ResolveDueCompanyIdsAsync(\n         DateTime dueAtUtc,\nEND_OF_PATCH\n",
+  "stderrTail": "dTrigger trigger,\n+        DateTime scheduledAtUtc,\n+        DateTime windowEndUtc,\n+        DateTime enqueuedAtUtc,\n+        CancellationToken cancellationToken)\n+    {\n+        var idempotencyKey = $\"agent-scheduled-trigger:{trigger.CompanyId:N}:{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}\";\n+        var executionRequestId = $\"{trigger.Id:N}:{scheduledAtUtc:yyyyMMddHHmmss}\";\n+        var window = new AgentScheduledTriggerEnqueueWindow(\n+            Guid.NewGuid(),\n+            trigger.CompanyId,\n+            trigger.Id,\n+            scheduledAtUtc,\n+            windowEndUtc,\n+            enqueuedAtUtc,\n+            executionRequestId);\n+\n+        if (!await _repository.TryRecordEnqueueWindowAsync(window, cancellationToken))\n+        {\n+            return false;\n+        }\n+\n         _outboxEnqueuer.Enqueue(\n             trigger.CompanyId,\n             CompanyOutboxTopics.AgentScheduledTriggerExecutionRequested,\n@@ -742,15 +788,16 @@ public sealed class AgentScheduledTriggerPollingService : IAgentScheduledTrigger\n                 trigger.CronExpression,\n                 trigger.TimeZoneId,\n                 trigger.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),\n-                correlationId,\n+                idempotencyKey,\n                 idempotencyKey),\n-            correlationId,\n-            availableAtUtc: dueAtUtc,\n+            idempotencyKey,\n+            availableAtUtc: enqueuedAtUtc,\n             idempotencyKey: idempotencyKey,\n             causationId: trigger.Id.ToString(\"N\"));\n \n-        trigger.MarkEnqueued(dueAtUtc, nextRunUtc);\n-        await _repository.SaveChangesAsync(cancellationToken);\n         return true;\n     }\n+\n+    private static DateTime NormalizeUtc(DateTime value) =>\n+        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();\n \n     private async Task<IReadOnlyList<Guid>> ResolveDueCompanyIdsAsync(\n         DateTime dueAtUtc,\nEND_OF_PATCH\ntokens used\n70,493\n",
+  "verbosityMode": "summary"
+}

@@ -77,7 +77,6 @@ public sealed class BriefingSchedulerCoordinatorTests
         public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)
         {
             CallCount++;
-            LastBatchSize = command.BatchSize;
             return Task.FromResult(_result);
         }
 

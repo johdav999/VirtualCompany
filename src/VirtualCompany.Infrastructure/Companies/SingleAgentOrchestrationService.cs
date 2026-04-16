@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Hosting;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
@@ -23,6 +25,12 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
     private readonly IPromptBuilder _promptBuilder;
     private readonly IToolExecutor _toolExecutor;
     private readonly IOrchestrationAuditWriter _auditWriter;
+    private readonly IResponsibilityPolicyEvaluator _responsibilityPolicyEvaluator;
+    private readonly IRequestedDomainClassifier _requestedDomainClassifier;
+    private readonly IAuditEventWriter _auditEventWriter;
+    private readonly ICommunicationStyleRuleChecker _styleRuleChecker;
+    private readonly ILogger<SingleAgentOrchestrationService> _logger;
+    private readonly IHostEnvironment _environment;
 
     public SingleAgentOrchestrationService(
         VirtualCompanyDbContext dbContext,
@@ -30,7 +38,13 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
         IGroundedPromptContextService groundedPromptContextService,
         IPromptBuilder promptBuilder,
         IToolExecutor toolExecutor,
-        IOrchestrationAuditWriter auditWriter)
+        IOrchestrationAuditWriter auditWriter,
+        IResponsibilityPolicyEvaluator responsibilityPolicyEvaluator,
+        IRequestedDomainClassifier requestedDomainClassifier,
+        IAuditEventWriter auditEventWriter,
+        ICommunicationStyleRuleChecker styleRuleChecker,
+        ILogger<SingleAgentOrchestrationService> logger,
+        IHostEnvironment environment)
     {
         _dbContext = dbContext;
         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
@@ -38,6 +52,12 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
         _promptBuilder = promptBuilder;
         _toolExecutor = toolExecutor;
         _auditWriter = auditWriter;
+        _responsibilityPolicyEvaluator = responsibilityPolicyEvaluator;
+        _requestedDomainClassifier = requestedDomainClassifier;
+        _auditEventWriter = auditEventWriter;
+        _styleRuleChecker = styleRuleChecker;
+        _logger = logger;
+        _environment = environment;
     }
 
     public async Task<OrchestrationResult> ExecuteAsync(
@@ -88,9 +108,38 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
                 ? await GetTaskAsync(request.CompanyId, request.TaskId.Value, cancellationToken)
                 : null;
             var agentId = ResolveAgentId(request, persistedTask);
-            var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(request.CompanyId, agentId, cancellationToken);
+            var generationPath = NormalizeIntent(request.IntentHint, request.ConversationId);
+            var agent = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(
+                request.CompanyId,
+                agentId,
+                cancellationToken,
+                generationPath,
+                correlationId);
             var company = await GetCompanyAsync(request.CompanyId, cancellationToken);
             var task = persistedTask ?? CreateTransientTask(request, agent, company);
+
+            var requestedDomain = _requestedDomainClassifier.Classify(request, task);
+            var responsibilityDecision = _responsibilityPolicyEvaluator.Evaluate(
+                new ResponsibilityPolicyEvaluationRequest(
+                    request.CompanyId,
+                    agent.Id,
+                    agent.RoleName,
+                    requestedDomain.RequestedDomain,
+                    agent.DataScopes,
+                    agent.EscalationRules,
+                    correlationId));
+            if (responsibilityDecision.RequiresDelegation)
+            {
+                var outOfScopeResult = BuildOutOfScopeResult(request, agent, company, task, responsibilityDecision, startedAtUtc, correlationId);
+                if (persistTaskResult)
+                {
+                    await PersistTaskResultAsync(task.Id, outOfScopeResult, cancellationToken);
+                }
+
+                await PersistOutOfScopeAuditAsync(outOfScopeResult, responsibilityDecision, cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return outOfScopeResult;
+            }
 
             if (!agent.CanReceiveAssignments)
             {
@@ -137,7 +186,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
                 InitiatingActorType = request.InitiatingActorType
             };
 
-            var prompt = _promptBuilder.Build(new PromptBuildRequest(runtimeContext));
+            var prompt = _promptBuilder.Build(new PromptBuildRequest(
+                runtimeContext,
+                DebugMode: _environment.IsProduction() ? PromptDebugMode.Suppressed : PromptDebugMode.NonProduction));
             var toolRequests = ResolveToolInvocations(explicitToolInvocations, task.InputPayload);
             var toolResults = new List<ToolInvocationResult>(toolRequests.Count);
 
@@ -151,6 +202,19 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
                 ? OrchestrationStatusValues.AwaitingApproval
                 : OrchestrationStatusValues.Completed;
             var userFacingOutput = BuildUserFacingOutput(runtimeContext, toolResults);
+            var styleCheck = _styleRuleChecker.Check(userFacingOutput, runtimeContext.Agent.CommunicationProfile);
+            if (!styleCheck.Passed)
+            {
+                _logger.LogWarning(
+                    "Communication style rule check failed. AgentId={AgentId} CompanyId={CompanyId} TaskId={TaskId} Intent={Intent} CorrelationId={CorrelationId} RuleIds={RuleIds}",
+                    agent.Id,
+                    request.CompanyId,
+                    task.Id,
+                    runtimeContext.Intent,
+                    correlationId,
+                    string.Join(",", styleCheck.RuleIds));
+            }
+
             var rationale = BuildRationaleSummary(runtimeContext, groundedContext, toolResults);
             var confidence = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.Failed.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
                 ? 0.4m
@@ -158,8 +222,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             var userOutput = new OrchestrationUserOutput(userFacingOutput);
             var sourceReferences = BuildSourceReferences(groundedContext);
             var toolExecutionReferences = BuildToolExecutionReferences(toolResults);
-            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence, sourceReferences, toolExecutionReferences);
-            var metadata = BuildMetadata(runtimeContext, prompt, toolResults, startedAtUtc, completedAtUtc);
+            var structuredOutput = BuildStructuredOutput(runtimeContext, prompt, toolResults, userFacingOutput, rationale, confidence, sourceReferences, toolExecutionReferences, styleCheck);
+            var metadata = BuildMetadata(runtimeContext, prompt, toolResults, styleCheck, startedAtUtc, completedAtUtc);
             var taskArtifact = BuildTaskArtifact(runtimeContext, status, structuredOutput, rationale, confidence, sourceReferences, toolExecutionReferences);
             var auditArtifacts = BuildAuditArtifacts(runtimeContext, metadata, status, rationale, sourceReferences, completedAtUtc);
             var finalResult = new OrchestrationCompositeFinalResult(userOutput, taskArtifact, auditArtifacts, rationale, sourceReferences, toolExecutionReferences, correlationId);
@@ -193,6 +257,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             {
                 await PersistTaskResultAsync(task.Id, result, cancellationToken);
             }
+            await PersistGenerationAuditAsync(request.CompanyId, runtimeContext, metadata, status, rationale, completedAtUtc, cancellationToken);
             await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
             _dbContext.ChangeTracker.DetectChanges();
 
@@ -326,7 +391,38 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             company.Timezone,
             company.Currency,
             company.Language,
-            company.ComplianceRegion);
+            company.ComplianceRegion,
+            ResolveIdentityPolicy(company.Settings.Extensions));
+    }
+
+    private static PromptIdentityPolicyDto? ResolveIdentityPolicy(IDictionary<string, JsonNode?> extensions)
+    {
+        if (!extensions.TryGetValue("identityPolicy", out var node) || node is not JsonObject identityPolicy)
+        {
+            return null;
+        }
+
+        return new PromptIdentityPolicyDto(
+            GetString(identityPolicy, "role"),
+            GetString(identityPolicy, "seniority"),
+            GetString(identityPolicy, "businessResponsibility"),
+            GetStringArray(identityPolicy, "collaborationNorms"),
+            GetStringArray(identityPolicy, "personalityTraits"),
+            GetString(identityPolicy, "additionalNotes"));
+    }
+
+    private static IReadOnlyList<string> GetStringArray(JsonObject jsonObject, string propertyName)
+    {
+        if (!jsonObject.TryGetPropertyValue(propertyName, out var node) || node is not JsonArray array)
+        {
+            return [];
+        }
+
+        return array
+            .Select(static item => item is JsonValue value && value.TryGetValue<string>(out var text) ? text : null)
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .Select(static text => text!.Trim())
+            .ToList();
     }
 
     private static Guid ResolveAgentId(OrchestrationRequest request, TaskDetailDto? task)
@@ -443,11 +539,6 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             ? new RetrievalSourceLimitOptions(3, 3, 3, 2)
             : new RetrievalSourceLimitOptions(5, 5, 5, 3);
 
-    private static string ResolveRetrievalPurpose(OrchestrationRequest request) =>
-        string.Equals(NormalizeIntent(request.IntentHint, request.ConversationId), OrchestrationIntentValues.Chat, StringComparison.OrdinalIgnoreCase)
-            ? "direct_agent_chat"
-            : "single_agent_task_execution";
-
     private static string EnsureCorrelationId(string? requestedCorrelationId)
     {
         if (!string.IsNullOrWhiteSpace(requestedCorrelationId))
@@ -455,7 +546,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             return requestedCorrelationId.Trim();
         }
 
-        return Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
+        return System.Diagnostics.Activity.Current?.Id ?? Guid.NewGuid().ToString("N");
     }
 
     private static string BuildRetrievalQuery(OrchestrationRequest request, TaskDetailDto task) =>
@@ -660,7 +751,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
         string rationale,
         decimal confidence,
         IReadOnlyList<OrchestrationSourceReference> sourceReferences,
-        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences)
+        IReadOnlyList<OrchestrationToolExecutionReference> toolExecutionReferences,
+        CommunicationStyleRuleCheckResult styleCheck)
     {
         var output = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -681,7 +773,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             ["toolExecutions"] = JsonSerializer.SerializeToNode(toolResults.Select(ToToolExecutionSummary).ToList()),
             ["toolExecutionReferences"] = JsonSerializer.SerializeToNode(toolExecutionReferences),
             ["sourceReferences"] = JsonSerializer.SerializeToNode(sourceReferences),
-            ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count)
+            ["sourceReferenceCount"] = JsonValue.Create(sourceReferences.Count),
+            ["agentCommunicationProfile"] = JsonSerializer.SerializeToNode(context.Agent.CommunicationProfile),
+            ["communicationStyleCheck"] = JsonSerializer.SerializeToNode(styleCheck)
         };
 
         AppendChatPayload(context, output);
@@ -802,6 +896,45 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             context.CorrelationId);
     }
 
+    private async Task PersistGenerationAuditAsync(
+        Guid companyId,
+        SingleAgentRuntimeContext context,
+        OrchestrationMetadata metadata,
+        string status,
+        string? rationale,
+        DateTime occurredUtc,
+        CancellationToken cancellationToken)
+    {
+        var auditMetadata = new Dictionary<string, string?>(metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
+        {
+            ["orchestrationId"] = metadata.OrchestrationId.ToString("N"),
+            ["correlationId"] = metadata.CorrelationId,
+            ["status"] = status
+        };
+
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                companyId,
+                AuditActorTypes.Agent,
+                context.Agent.Id,
+                AuditEventActions.AgentGeneration,
+                AuditTargetTypes.AgentGeneration,
+                context.OrchestrationId.ToString("N"),
+                string.Equals(status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase) ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Pending,
+                rationale,
+                ["single_agent_orchestration", "prompt_builder"],
+                auditMetadata,
+                context.CorrelationId,
+                occurredUtc,
+                AgentName: context.Agent.DisplayName,
+                AgentRole: context.Agent.RoleName,
+                ResponsibilityDomain: context.Agent.Department,
+                PromptProfileVersion: BuildPromptProfileVersion(context.Agent),
+                BoundaryDecisionOutcome: AuditBoundaryDecisionOutcomes.InScope,
+                IdentityReasonCode: context.Agent.CommunicationProfile.IsFallback ? AuditReasonCodes.IdentityFallbackMissingConfig : null),
+            cancellationToken);
+    }
+
     private static IReadOnlyList<OrchestrationAuditArtifact> BuildAuditArtifacts(
         SingleAgentRuntimeContext context,
         OrchestrationMetadata metadata,
@@ -827,8 +960,14 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             ["orchestrationId"] = metadata.OrchestrationId.ToString("N"),
             ["promptId"] = metadata.PromptId.ToString("N"),
             ["correlationId"] = metadata.CorrelationId,
-            ["status"] = status
+            ["status"] = status,
+            ["agentName"] = context.Agent.DisplayName,
+            ["agentRole"] = context.Agent.RoleName,
+            ["responsibilityDomain"] = context.Agent.Department,
+            ["promptProfileVersion"] = BuildPromptProfileVersion(context.Agent),
+            ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope
         };
+        AddIdentityFallbackAuditMetadata(auditMetadata, context.Agent);
 
         return
         [
@@ -852,6 +991,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
         SingleAgentRuntimeContext context,
         PromptBuildResult prompt,
         IReadOnlyList<ToolInvocationResult> toolResults,
+        CommunicationStyleRuleCheckResult styleCheck,
         DateTime startedAtUtc,
         DateTime completedAtUtc)
     {
@@ -865,17 +1005,237 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             context.Intent,
             startedAtUtc,
             completedAtUtc,
+            Also(
+                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["toolExecutionCount"] = toolResults.Count.ToString(),
+                    ["sourceReferenceCount"] = (context.GroundedContext?.Context.Counts.SourceReferences ?? 0).ToString(),
+                    ["agentRoleName"] = context.Agent.RoleName,
+                    ["agentAutonomyLevel"] = context.Agent.AutonomyLevel,
+                    ["agentName"] = context.Agent.DisplayName,
+                    ["agentRole"] = context.Agent.RoleName,
+                    ["responsibilityDomain"] = context.Agent.Department,
+                    ["promptProfileVersion"] = BuildPromptProfileVersion(context.Agent),
+                    ["boundaryDecisionOutcome"] = AuditBoundaryDecisionOutcomes.InScope,
+                    ["taskType"] = context.Task.Type,
+                    ["initiatingActorType"] = context.InitiatingActorType,
+                    ["initiatingActorId"] = context.InitiatingActorId?.ToString("N"),
+                    ["policyInterceptionPoint"] = "tool_executor",
+                    ["communicationProfileSource"] = context.Agent.CommunicationProfile.ProfileSource,
+                    ["communicationProfileFallback"] = context.Agent.CommunicationProfile.IsFallback.ToString(),
+                    ["communicationStylePassed"] = styleCheck.Passed.ToString()
+                },
+                metadata => AddIdentityFallbackAuditMetadata(metadata, context.Agent)));
+    }
+
+    private static string? ResolveRetrievalPurpose(OrchestrationRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.IntentHint))
+        {
+            return request.IntentHint.Trim();
+        }
+
+        return request.ConversationId.HasValue ? "conversation_assistance" : null;
+    }
+
+    private static T Also<T>(T value, Action<T> action)
+    {
+        action(value);
+        return value;
+    }
+
+    private static OrchestrationResult BuildOutOfScopeResult(
+        OrchestrationRequest request,
+        AgentRuntimeProfileDto agent,
+        CompanyRuntimeContext company,
+        TaskDetailDto task,
+        ResponsibilityPolicyDecision decision,
+        DateTime startedAtUtc,
+        string correlationId)
+    {
+        var completedAtUtc = DateTime.UtcNow;
+        var orchestrationId = Guid.NewGuid();
+        var action = new OrchestrationAction(
+            decision.DecisionType,
+            decision.DelegationTarget,
+            null,
+            decision.Reason,
+            decision.RequestedDomain,
+            decision.MatchedRule);
+        var output = $"This request is outside {agent.DisplayName}'s responsibility boundary. {BuildDelegationSentence(decision)}";
+        var structuredOutput = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["schemaVersion"] = JsonValue.Create("2026-04-14"),
+            ["orchestrationId"] = JsonValue.Create(orchestrationId.ToString("N")),
+            ["correlationId"] = JsonValue.Create(correlationId),
+            ["agentId"] = JsonValue.Create(agent.Id.ToString("N")),
+            ["agentDisplayName"] = JsonValue.Create(agent.DisplayName),
+            ["agent_role_name"] = JsonValue.Create(agent.RoleName),
+            ["taskId"] = JsonValue.Create(task.Id.ToString("N")),
+            ["intent"] = JsonValue.Create(NormalizeIntent(request.IntentHint, request.ConversationId)),
+            ["action"] = JsonSerializer.SerializeToNode(action),
+            ["actionType"] = JsonValue.Create(decision.DecisionType),
+            ["requestedDomain"] = JsonValue.Create(decision.RequestedDomain),
+            ["matchedRule"] = JsonValue.Create(decision.MatchedRule),
+            ["delegationTarget"] = JsonValue.Create(decision.DelegationTarget),
+            ["userFacingOutput"] = JsonValue.Create(output),
+            ["rationaleSummary"] = JsonValue.Create(decision.Reason),
+            ["confidenceScore"] = JsonValue.Create(1m)
+        };
+        var metadata = new OrchestrationMetadata(
+            orchestrationId,
+            Guid.Empty,
+            company.CompanyId,
+            task.Id,
+            agent.Id,
+            correlationId,
+            NormalizeIntent(request.IntentHint, request.ConversationId),
+            startedAtUtc,
+            completedAtUtc,
             new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["toolExecutionCount"] = toolResults.Count.ToString(),
-                ["sourceReferenceCount"] = (context.GroundedContext?.Context.Counts.SourceReferences ?? 0).ToString(),
-                ["agentRoleName"] = context.Agent.RoleName,
-                ["agentAutonomyLevel"] = context.Agent.AutonomyLevel,
-                ["taskType"] = context.Task.Type,
-                ["initiatingActorType"] = context.InitiatingActorType,
-                ["initiatingActorId"] = context.InitiatingActorId?.ToString("N"),
-                ["policyInterceptionPoint"] = "tool_executor"
+                ["policyInterceptionPoint"] = "responsibility_policy",
+                ["requestedDomain"] = decision.RequestedDomain,
+                ["matchedRule"] = decision.MatchedRule,
+                ["delegationTarget"] = decision.DelegationTarget,
+                ["delegationAction"] = decision.DecisionType,
+                ["agentRoleName"] = agent.RoleName,
+                ["agentName"] = agent.DisplayName,
+                ["agentRole"] = agent.RoleName,
+                ["responsibilityDomain"] = decision.RequestedDomain,
+                ["promptProfileVersion"] = BuildPromptProfileVersion(agent),
+                ["boundaryDecisionOutcome"] = ResolveBoundaryDecisionOutcome(decision),
+                ["boundaryReasonCode"] = ResolveBoundaryReasonCode(decision)
             });
+        AddIdentityFallbackAuditMetadata((Dictionary<string, string?>)metadata.AuditMetadata, agent);
+        var taskArtifact = new OrchestrationTaskArtifact(task.Id, WorkTaskStatus.Completed.ToStorageValue(), CloneNodes(structuredOutput), decision.Reason, 1m, [], [], correlationId);
+        var auditArtifact = new OrchestrationAuditArtifact(
+            company.CompanyId,
+            AuditActorTypes.Agent,
+            agent.Id,
+            AuditEventActions.AgentResponsibilityOutOfScopeHandled,
+            AuditTargetTypes.AgentResponsibilityPolicy,
+            agent.Id.ToString("N"),
+            AuditEventOutcomes.Denied,
+            decision.Reason,
+            ["single_agent_orchestration", "responsibility_policy"],
+            metadata.AuditMetadata,
+            correlationId,
+            completedAtUtc);
+        var finalResult = new OrchestrationCompositeFinalResult(new OrchestrationUserOutput(output), taskArtifact, [auditArtifact], decision.Reason, [], [], correlationId);
+
+        return new OrchestrationResult(
+            orchestrationId,
+            company.CompanyId,
+            task.Id,
+            agent.Id,
+            OrchestrationStatusValues.Completed,
+            output,
+            structuredOutput,
+            decision.Reason,
+            1m,
+            [],
+            [new OrchestrationArtifact(OrchestrationArtifactTypes.AuditEvent, "responsibility_policy_out_of_scope", structuredOutput)],
+            metadata,
+            correlationId)
+        {
+            UserOutput = new OrchestrationUserOutput(output),
+            TaskArtifact = taskArtifact,
+            AuditArtifacts = [auditArtifact],
+            FinalResult = finalResult,
+            Action = action
+        };
+    }
+
+    private static string BuildDelegationSentence(ResponsibilityPolicyDecision decision) =>
+        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
+            ? $"Escalating to {decision.DelegationTarget}."
+            : $"Delegating to {decision.DelegationTarget}.";
+
+    private async Task PersistOutOfScopeAuditAsync(
+        OrchestrationResult result,
+        ResponsibilityPolicyDecision decision,
+        CancellationToken cancellationToken)
+    {
+        var artifact = result.AuditArtifacts.Single();
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                artifact.CompanyId,
+                artifact.ActorType,
+                artifact.ActorId,
+                artifact.Action,
+                artifact.TargetType,
+                artifact.TargetId,
+                artifact.Outcome,
+                artifact.RationaleSummary,
+                artifact.DataSources,
+                artifact.Metadata,
+                artifact.CorrelationId,
+                PayloadDiffJson: JsonSerializer.Serialize(new
+                {
+                    agentId = result.AgentId,
+                    requestedDomain = decision.RequestedDomain,
+                    matchedRule = decision.MatchedRule,
+                    delegationTarget = decision.DelegationTarget
+                })),
+            cancellationToken);
+
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                artifact.CompanyId,
+                artifact.ActorType,
+                artifact.ActorId,
+                AuditEventActions.BoundaryEnforcement,
+                artifact.TargetType,
+                artifact.TargetId,
+                artifact.Outcome,
+                artifact.RationaleSummary,
+                artifact.DataSources,
+                artifact.Metadata,
+                artifact.CorrelationId,
+                BoundaryDecisionOutcome: ResolveBoundaryDecisionOutcome(decision),
+                BoundaryReasonCode: ResolveBoundaryReasonCode(decision),
+                PayloadDiffJson: JsonSerializer.Serialize(new
+                {
+                    agentId = result.AgentId,
+                    requestedDomain = decision.RequestedDomain,
+                    matchedRule = decision.MatchedRule,
+                    delegationTarget = decision.DelegationTarget
+                })),
+            cancellationToken);
+    }
+
+    private static string BuildPromptProfileVersion(AgentRuntimeProfileDto agent) =>
+        agent.UpdatedUtc.ToUniversalTime().ToString("yyyyMMddHHmmss");
+
+    private static void AddIdentityFallbackAuditMetadata(
+        IDictionary<string, string?> metadata,
+        AgentRuntimeProfileDto agent)
+    {
+        if (!agent.CommunicationProfile.IsFallback)
+        {
+            return;
+        }
+
+        metadata["identityReasonCode"] = AuditReasonCodes.IdentityFallbackMissingConfig;
+        metadata["reasonCode"] = AuditReasonCodes.IdentityFallbackMissingConfig;
+    }
+
+    private static string ResolveBoundaryDecisionOutcome(ResponsibilityPolicyDecision decision) =>
+        string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase)
+            ? AuditBoundaryDecisionOutcomes.EscalatedOutOfScope
+            : AuditBoundaryDecisionOutcomes.DelegatedOutOfScope;
+
+    private static string ResolveBoundaryReasonCode(ResponsibilityPolicyDecision decision)
+    {
+        if (string.Equals(decision.DecisionType, ResponsibilityPolicyDecisionTypes.Escalation, StringComparison.OrdinalIgnoreCase))
+        {
+            return AuditReasonCodes.BoundaryEscalateOutOfScope;
+        }
+
+        return string.Equals(decision.MatchedRule, ResponsibilityPolicyRuleKinds.ExplicitDeny, StringComparison.OrdinalIgnoreCase)
+            ? AuditReasonCodes.BoundaryDelegatePolicyRestriction
+            : AuditReasonCodes.BoundaryDelegateOutOfScope;
     }
 
     private static Dictionary<string, object?> ToToolExecutionSummary(ToolInvocationResult result) =>
@@ -1039,6 +1399,15 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
         _auditEventWriter = auditEventWriter;
     }
 
+    private static Dictionary<string, string?> AddIdentityMetadata(
+        IReadOnlyDictionary<string, string?> metadata,
+        SingleAgentRuntimeContext context) =>
+        new(metadata, StringComparer.OrdinalIgnoreCase)
+        {
+            ["agentName"] = context.Agent.DisplayName,
+            ["agentRole"] = context.Agent.RoleName
+        };
+
     public Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -1056,7 +1425,7 @@ public sealed class OrchestrationAuditWriter : IOrchestrationAuditWriter
                 artifact?.Outcome ?? ResolveAuditOutcome(request.Result.Status),
                 artifact?.RationaleSummary ?? request.Result.RationaleSummary,
                 artifact?.DataSources ?? ["single_agent_orchestration", "prompt_builder", "tool_executor"],
-                artifact?.Metadata ?? BuildFallbackAuditMetadata(request),
+                AddIdentityMetadata(artifact?.Metadata ?? BuildFallbackAuditMetadata(request), request.RuntimeContext),
                 artifact?.CorrelationId ?? request.Result.CorrelationId,
                 artifact?.OccurredUtc ?? request.Result.Metadata.CompletedAtUtc,
                 BuildDataSourcesUsed(request)),

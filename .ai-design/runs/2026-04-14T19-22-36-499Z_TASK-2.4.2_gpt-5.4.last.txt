@@ -1,0 +1,258 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 5c55a8a..7d0db13 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -167,6 +167,7 @@ public static class AuditTargetTypes
+     public const string Agent = "agent";
+     public const string AgentToolExecution = "agent_tool_execution";
+     public const string EscalationPolicy = "escalation_policy";
++    public const string AgentGeneration = "agent_generation";
+     public const string TriggerEvaluation = "trigger_evaluation";
+     public const string TriggerExecutionAttempt = "trigger_execution_attempt";
+     public const string CompanyDocument = "company_document";
+@@ -245,6 +246,8 @@ public static class AuditEventActions
+     public const string DirectChatTaskCreated = "direct_chat.task.created";
+     public const string DirectChatTaskLinked = "direct_chat.task.linked";
+     public const string SingleAgentTaskOrchestrationExecuted = "single_agent_task.orchestration.executed";
++    public const string AgentGeneration = "agent_generation";
++    public const string BoundaryEnforcement = "boundary_enforcement";
+     public const string MultiAgentCollaborationStarted = "multi_agent.collaboration.started";
+     public const string MultiAgentCollaborationPlanCreated = "multi_agent.collaboration.plan_created";
+     public const string MultiAgentWorkerSubtaskCreated = "multi_agent.worker_subtask.created";
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+index 8b1be50..dfba7ed 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAgentToolExecutionService.cs
+@@ -91,6 +91,16 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
+         _dbContext.ToolExecutionAttempts.Add(attempt);
+ 
++        await WriteBoundaryEnforcementAuditAsync(
++            companyId,
++            agentId,
++            command,
++            decision,
++            runtimeProfile,
++            attempt.Id,
++            correlationId,
++            cancellationToken);
++
+         var serializedDecision = SerializeDecision(decision);
+         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
+         {
+@@ -335,6 +345,43 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+         return membership;
+     }
+ 
++    private Task WriteBoundaryEnforcementAuditAsync(
++        Guid companyId,
++        Guid agentId,
++        ExecuteAgentToolCommand command,
++        ToolExecutionDecisionDto decision,
++        AgentRuntimeProfileDto runtimeProfile,
++        Guid executionId,
++        string correlationId,
++        CancellationToken cancellationToken)
++    {
++        var boundaryDecisionOutcome = ResolveBoundaryDecisionOutcome(decision);
++
++        return _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.Agent,
++                agentId,
++                AuditEventActions.BoundaryEnforcement,
++                AuditTargetTypes.AgentToolExecution,
++                executionId.ToString("N"),
++                ResolveBoundaryAuditOutcome(decision),
++                DataSources: ["agent_execution", "policy_guardrail"],
++                CorrelationId: correlationId,
++                RationaleSummary: BuildAuditRationaleSummary(decision),
++                Metadata: BuildAuditMetadata(command, decision),
++                AgentName: runtimeProfile.DisplayName,
++                AgentRole: runtimeProfile.RoleName,
++                ResponsibilityDomain: runtimeProfile.Department,
++                PromptProfileVersion: BuildPromptProfileVersion(runtimeProfile),
++                BoundaryDecisionOutcome: boundaryDecisionOutcome,
++                BoundaryReasonCode: string.Equals(boundaryDecisionOutcome, AuditBoundaryDecisionOutcomes.DeniedByPolicy, StringComparison.OrdinalIgnoreCase)
++                    ? AuditReasonCodes.BoundaryDeniedByPolicy
++                    : null),
++            cancellationToken);
++    }
++
++    private static string BuildPromptProfileVersion(AgentRuntimeProfileDto agent) =>
++        agent.UpdatedUtc.ToUniversalTime().ToString("yyyyMMddHHmmss");
++
+     private static Dictionary<string, string?> BuildAuditMetadata(
+         ExecuteAgentToolCommand command,
+         ToolExecutionDecisionDto decision,
+@@ -633,6 +680,21 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
+ 
+         return "Policy evaluation completed without exposing internal rationale.";
+     }
++
++    private static string ResolveBoundaryAuditOutcome(ToolExecutionDecisionDto decision) =>
++        decision.Outcome switch
++        {
++            PolicyDecisionOutcomeValues.Deny => AuditEventOutcomes.Denied,
++            PolicyDecisionOutcomeValues.RequireApproval => AuditEventOutcomes.Pending,
++            _ => AuditEventOutcomes.Succeeded
++        };
++
++    private static string ResolveBoundaryDecisionOutcome(ToolExecutionDecisionDto decision) =>
++        string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase)
++            ? AuditBoundaryDecisionOutcomes.DeniedByPolicy
++            : AuditBoundaryDecisionOutcomes.InScope;
+ 
+     private static string? TryGetNonEmptyString(IReadOnlyDictionary<string, JsonNode?> metadata, string key)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+index 045f538..b6834cd 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/SingleAgentOrchestrationService.cs
+@@ -248,6 +248,7 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             {
+                 await PersistTaskResultAsync(task.Id, result, cancellationToken);
+             }
++            await PersistGenerationAuditAsync(request.CompanyId, runtimeContext, metadata, status, rationale, completedAtUtc, cancellationToken);
+             await _auditWriter.WriteAsync(new OrchestrationAuditWriteRequest(runtimeContext, prompt, result), cancellationToken);
+             _dbContext.ChangeTracker.DetectChanges();
+ 
+@@ -898,6 +899,39 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+             context.CorrelationId);
+     }
+ 
++    private async Task PersistGenerationAuditAsync(
++        Guid companyId,
++        SingleAgentRuntimeContext context,
++        OrchestrationMetadata metadata,
++        string status,
++        string? rationale,
++        DateTime occurredUtc,
++        CancellationToken cancellationToken)
++    {
++        var auditMetadata = new Dictionary<string, string?>(metadata.AuditMetadata, StringComparer.OrdinalIgnoreCase)
++        {
++            ["orchestrationId"] = metadata.OrchestrationId.ToString("N"),
++            ["correlationId"] = metadata.CorrelationId,
++            ["status"] = status
++        };
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                companyId,
++                AuditActorTypes.Agent,
++                context.Agent.Id,
++                AuditEventActions.AgentGeneration,
++                AuditTargetTypes.AgentGeneration,
++                context.OrchestrationId.ToString("N"),
++                string.Equals(status, OrchestrationStatusValues.Completed, StringComparison.OrdinalIgnoreCase) ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Pending,
++                rationale,
++                ["single_agent_orchestration", "prompt_builder"],
++                auditMetadata,
++                context.CorrelationId,
++                occurredUtc,
++                AgentName: context.Agent.DisplayName,
++                AgentRole: context.Agent.RoleName,
++                ResponsibilityDomain: context.Agent.Department,
++                PromptProfileVersion: BuildPromptProfileVersion(context.Agent),
++                BoundaryDecisionOutcome: AuditBoundaryDecisionOutcomes.InScope,
++                IdentityReasonCode: context.Agent.CommunicationProfile.IsFallback ? AuditReasonCodes.IdentityFallbackMissingConfig : null),
++            cancellationToken);
++    }
++
+     private static IReadOnlyList<OrchestrationAuditArtifact> BuildAuditArtifacts(
+         SingleAgentRuntimeContext context,
+         OrchestrationMetadata metadata,
+@@ -1122,6 +1156,28 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
+                     matchedRule = decision.MatchedRule,
+                     delegationTarget = decision.DelegationTarget
+                 })),
++            cancellationToken);
++
++        await _auditEventWriter.WriteAsync(
++            new AuditEventWriteRequest(
++                artifact.CompanyId,
++                artifact.ActorType,
++                artifact.ActorId,
++                AuditEventActions.BoundaryEnforcement,
++                artifact.TargetType,
++                artifact.TargetId,
++                artifact.Outcome,
++                artifact.RationaleSummary,
++                artifact.DataSources,
++                artifact.Metadata,
++                artifact.CorrelationId,
++                BoundaryDecisionOutcome: ResolveBoundaryDecisionOutcome(decision),
++                BoundaryReasonCode: ResolveBoundaryReasonCode(decision),
++                PayloadDiffJson: JsonSerializer.Serialize(new
++                {
++                    agentId = result.AgentId,
++                    requestedDomain = decision.RequestedDomain,
++                    matchedRule = decision.MatchedRule,
++                    delegationTarget = decision.DelegationTarget
++                })),
+             cancellationToken);
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+index d046a09..3f49e32 100644
+--- a/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+@@ -123,6 +123,21 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, auditEvent.BoundaryDecisionOutcome);
+         Assert.Null(auditEvent.IdentityReasonCode);
+         Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.AgentGeneration &&
++            x.ActorId == seed.AgentId &&
++            x.TargetId == payload.OrchestrationId.ToString("N") &&
++            x.AgentName == "Nora Ledger" &&
++            x.AgentRole == "Finance Manager" &&
++            x.ResponsibilityDomain == "Finance" &&
++            x.PromptProfileVersion != null &&
++            x.BoundaryDecisionOutcome == AuditBoundaryDecisionOutcomes.InScope &&
++            x.IdentityReasonCode != null));
++        Assert.True(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.BoundaryEnforcement &&
++            x.ActorId == seed.AgentId &&
++            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString("N") &&
++            x.BoundaryDecisionOutcome == AuditBoundaryDecisionOutcomes.InScope));
++        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+             x.CompanyId == seed.CompanyId &&
+             x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
+             x.ActorId == seed.AgentId));
+@@ -197,6 +212,15 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal("tool_not_permitted", auditEvent.Metadata["primaryReasonCode"]);
+         Assert.Equal("orch-denial-correlation", auditEvent.CorrelationId);
++
++        var boundaryAudit = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
++            x.CompanyId == seed.CompanyId &&
++            x.Action == AuditEventActions.BoundaryEnforcement &&
++            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString("N"));
++
++        Assert.Equal(AuditBoundaryDecisionOutcomes.DeniedByPolicy, boundaryAudit.BoundaryDecisionOutcome);
++        Assert.Equal(AuditReasonCodes.BoundaryDeniedByPolicy, boundaryAudit.BoundaryReasonCode);
++        Assert.Equal("tool_not_permitted", boundaryAudit.Metadata["primaryReasonCode"]);
+     }
+ 
+     [Theory]
+@@ -286,6 +310,16 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
+         Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, payloadRoot.GetProperty("matchedRule").GetString());
+         Assert.Equal(delegationTarget, payloadRoot.GetProperty("delegationTarget").GetString());
++
++        var boundaryAudit = await dbContext.AuditEvents
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleAsync(x =>
++                x.CompanyId == outOfScopeSeed.CompanyId &&
++                x.Action == AuditEventActions.BoundaryEnforcement &&
++                x.ActorId == outOfScopeSeed.AgentId);
++
++        Assert.Equal(AuditBoundaryDecisionOutcomes.DelegatedOutOfScope, boundaryAudit.BoundaryDecisionOutcome);
++        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, boundaryAudit.BoundaryReasonCode);
+     }
+ 
+     [Fact]
+END_OF_PATCH

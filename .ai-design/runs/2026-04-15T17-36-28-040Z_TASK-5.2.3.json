@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.2.3",
+  "promptPath": ".ai-design/prompts/TASK-5.2.3.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:36:28.040Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-36-28-040Z_TASK-5.2.3_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-36-28-040Z_TASK-5.2.3.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:39:28.361Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "g: 0.65rem;\n+    text-align: left;\n+}\n+\n+.activity-correlation-event:hover,\n+.activity-correlation-event:focus {\n+    border-color: rgba(29, 78, 216, 0.45);\n+}\n+\n+.activity-correlation-event--selected {\n+    background: #eff6ff;\n+    border-color: rgba(29, 78, 216, 0.45);\n+}\n+\n+.activity-correlation-event span,\n+.activity-correlation-event small {\n+    color: #475569;\n+}\n+\n @media (max-width: 575.98px) {\n     .activity-feed-header,\n-    .activity-feed-row {\n+    .activity-feed-row,\n+    .activity-correlation-group__header,\n+    .activity-linked-entity {\n         grid-template-columns: 1fr;\n     }\n+\n+    .activity-correlation-group__header {\n+        display: grid;\n+    }\n+\n+    .activity-linked-entity__status {\n+        justify-content: flex-start;\n+    }\n+}\n+\n+@media (max-width: 991.98px) {\n+    .activity-feed-layout {\n+        grid-template-columns: 1fr;\n+    }\n+\n+    .activity-correlation-panel {\n+        position: static;\n+    }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\nindex 1f1e0d9..598e0e9 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\n@@ -74,6 +74,18 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebAp\n                  x.IsAvailable &&\n                  x.UnavailableReason is null);\n     }\n \n+    [Fact]\n+    public async Task Selecting_missing_activity_item_returns_not_found()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateClient();\n+\n+        var response = await client.GetAsync(\n+            $\"/api/companies/{seed.CompanyId}/activity-feed/{Guid.NewGuid()}/correlation\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "xt-align: left;\n+}\n+\n+.activity-correlation-event:hover,\n+.activity-correlation-event:focus {\n+    border-color: rgba(29, 78, 216, 0.45);\n+}\n+\n+.activity-correlation-event--selected {\n+    background: #eff6ff;\n+    border-color: rgba(29, 78, 216, 0.45);\n+}\n+\n+.activity-correlation-event span,\n+.activity-correlation-event small {\n+    color: #475569;\n+}\n+\n @media (max-width: 575.98px) {\n     .activity-feed-header,\n-    .activity-feed-row {\n+    .activity-feed-row,\n+    .activity-correlation-group__header,\n+    .activity-linked-entity {\n         grid-template-columns: 1fr;\n     }\n+\n+    .activity-correlation-group__header {\n+        display: grid;\n+    }\n+\n+    .activity-linked-entity__status {\n+        justify-content: flex-start;\n+    }\n+}\n+\n+@media (max-width: 991.98px) {\n+    .activity-feed-layout {\n+        grid-template-columns: 1fr;\n+    }\n+\n+    .activity-correlation-panel {\n+        position: static;\n+    }\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\nindex 1f1e0d9..598e0e9 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs\n@@ -74,6 +74,18 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebAp\n                  x.IsAvailable &&\n                  x.UnavailableReason is null);\n     }\n \n+    [Fact]\n+    public async Task Selecting_missing_activity_item_returns_not_found()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateClient();\n+\n+        var response = await client.GetAsync(\n+            $\"/api/companies/{seed.CompanyId}/activity-feed/{Guid.NewGuid()}/correlation\");\n+\n+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);\n+    }\n+\n     [Fact]\n     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()\n     {\nEND_OF_PATCH\ntokens used\n52,606\n",
+  "verbosityMode": "summary"
+}

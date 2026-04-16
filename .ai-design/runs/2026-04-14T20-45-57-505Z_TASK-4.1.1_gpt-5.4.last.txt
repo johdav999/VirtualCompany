@@ -1,0 +1,1065 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 1a2b9a6..a68f0e2 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -9,6 +9,20 @@ public enum CompanyBriefingStatus
+     Failed = 2
+ }
+ 
++public enum CompanyBriefingUpdateJobTriggerType
++{
++    EventDriven = 1,
++    Daily = 2,
++    Weekly = 3
++}
++
++public enum CompanyBriefingUpdateJobStatus
++{
++    Pending = 1,
++    Processing = 2,
++    Retrying = 3,
++    Completed = 4,
++    Failed = 5
++}
++
+ public enum CompanyNotificationChannel
+ {
+     InApp = 1,
+@@ -99,6 +113,81 @@ public static class CompanyBriefingStatusValues
+         };
+ }
+ 
++public static class CompanyBriefingUpdateJobTriggerTypeValues
++{
++    public const string EventDriven = "event_driven";
++    public const string Daily = "daily";
++    public const string Weekly = "weekly";
++
++    private static readonly IReadOnlyDictionary<CompanyBriefingUpdateJobTriggerType, string> Values = new Dictionary<CompanyBriefingUpdateJobTriggerType, string>
++    {
++        [CompanyBriefingUpdateJobTriggerType.EventDriven] = EventDriven,
++        [CompanyBriefingUpdateJobTriggerType.Daily] = Daily,
++        [CompanyBriefingUpdateJobTriggerType.Weekly] = Weekly
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyBriefingUpdateJobTriggerType> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this CompanyBriefingUpdateJobTriggerType triggerType) =>
++        Values.TryGetValue(triggerType, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(triggerType), triggerType, "Unsupported briefing update job trigger type.");
++
++    public static CompanyBriefingUpdateJobTriggerType Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Briefing update job trigger type is required.", nameof(value));
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out var triggerType) ||
++               string.Equals(trimmed, "event", StringComparison.OrdinalIgnoreCase) && (triggerType = CompanyBriefingUpdateJobTriggerType.EventDriven) == CompanyBriefingUpdateJobTriggerType.EventDriven ||
++               Enum.TryParse(trimmed, ignoreCase: true, out triggerType) && Values.ContainsKey(triggerType)
++            ? triggerType
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported briefing update job trigger type value.");
++    }
++}
++
++public static class CompanyBriefingUpdateJobStatusValues
++{
++    public const string Pending = "pending";
++    public const string Processing = "processing";
++    public const string Retrying = "retrying";
++    public const string Completed = "completed";
++    public const string Failed = "failed";
++
++    private static readonly IReadOnlyDictionary<CompanyBriefingUpdateJobStatus, string> Values = new Dictionary<CompanyBriefingUpdateJobStatus, string>
++    {
++        [CompanyBriefingUpdateJobStatus.Pending] = Pending,
++        [CompanyBriefingUpdateJobStatus.Processing] = Processing,
++        [CompanyBriefingUpdateJobStatus.Retrying] = Retrying,
++        [CompanyBriefingUpdateJobStatus.Completed] = Completed,
++        [CompanyBriefingUpdateJobStatus.Failed] = Failed
++    };
++
++    private static readonly IReadOnlyDictionary<string, CompanyBriefingUpdateJobStatus> ReverseValues =
++        Values.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
++
++    public static string ToStorageValue(this CompanyBriefingUpdateJobStatus status) =>
++        Values.TryGetValue(status, out var value)
++            ? value
++            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported briefing update job status.");
++
++    public static CompanyBriefingUpdateJobStatus Parse(string value)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException("Briefing update job status is required.", nameof(value));
++        }
++
++        var trimmed = value.Trim();
++        return ReverseValues.TryGetValue(trimmed, out var status) ||
++               Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status)
++            ? status
++            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported briefing update job status value.");
++    }
++}
++
+ public static class CompanyNotificationChannelValues
+ {
+     public static string ToStorageValue(this CompanyNotificationChannel channel) =>
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index f58f9d0..f05d1b2 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -14,6 +14,10 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     public const string TaskCreated = "task_created";
+     public const string TaskUpdated = "task_updated";
+     public const string DocumentUploaded = "document_uploaded";
++    public const string TaskStatusChanged = "task_status_changed";
++    public const string ApprovalRequested = "approval_requested";
++    public const string ApprovalDecision = "approval_decision";
++    public const string AgentGeneratedAlert = "agent_generated_alert";
+     public const string WorkflowStateChanged = "workflow_state_changed";
+     public const string ApprovalUpdated = "approval_updated";
+     public const string AgentStatusUpdated = "agent_status_updated";
+@@ -23,9 +27,13 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     [
+         TaskCreated,
+         TaskUpdated,
++        TaskStatusChanged,
+         DocumentUploaded,
+         WorkflowStateChanged,
++        ApprovalRequested,
++        ApprovalDecision,
+         ApprovalUpdated,
++        AgentGeneratedAlert,
+         AgentStatusUpdated
+     ];
+ 
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+index 47709fd..d32cb3f 100644
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -101,6 +101,125 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ }
+ 
++public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
++{
++    private const int EventTypeMaxLength = 100;
++    private const int CorrelationIdMaxLength = 128;
++    private const int IdempotencyKeyMaxLength = 300;
++    private const int LastErrorMaxLength = 4000;
++
++    private CompanyBriefingUpdateJob()
++    {
++    }
++
++    public CompanyBriefingUpdateJob(
++        Guid id,
++        Guid companyId,
++        CompanyBriefingUpdateJobTriggerType triggerType,
++        CompanyBriefingType? briefingType,
++        string? eventType,
++        string correlationId,
++        string idempotencyKey,
++        IDictionary<string, JsonNode?>? sourceMetadata,
++        DateTime? nextAttemptAtUtc = null)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        TriggerType = triggerType;
++        BriefingType = briefingType;
++        EventType = NormalizeOptional(eventType, nameof(eventType), EventTypeMaxLength);
++        CorrelationId = NormalizeRequired(correlationId, nameof(correlationId), CorrelationIdMaxLength);
++        IdempotencyKey = NormalizeRequired(idempotencyKey, nameof(idempotencyKey), IdempotencyKeyMaxLength);
++        SourceMetadata = CloneNodes(sourceMetadata);
++        Status = CompanyBriefingUpdateJobStatus.Pending;
++        AttemptCount = 0;
++        NextAttemptAt = nextAttemptAtUtc is null ? DateTime.UtcNow : NormalizeUtc(nextAttemptAtUtc.Value);
++        CreatedAt = DateTime.UtcNow;
++        UpdatedAt = CreatedAt;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public CompanyBriefingUpdateJobTriggerType TriggerType { get; private set; }
++    public CompanyBriefingType? BriefingType { get; private set; }
++    public string? EventType { get; private set; }
++    public string CorrelationId { get; private set; } = null!;
++    public string IdempotencyKey { get; private set; } = null!;
++    public CompanyBriefingUpdateJobStatus Status { get; private set; }
++    public int AttemptCount { get; private set; }
++    public DateTime? NextAttemptAt { get; private set; }
++    public string? LastError { get; private set; }
++    public DateTime? FinalFailedAt { get; private set; }
++    public DateTime CreatedAt { get; private set; }
++    public DateTime UpdatedAt { get; private set; }
++    public Dictionary<string, JsonNode?> SourceMetadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Company Company { get; private set; } = null!;
++
++    public void MarkProcessing(DateTime nowUtc)
++    {
++        Status = CompanyBriefingUpdateJobStatus.Processing;
++        NextAttemptAt = null;
++        UpdatedAt = NormalizeUtc(nowUtc);
++    }
++
++    public void MarkCompleted(DateTime nowUtc)
++    {
++        Status = CompanyBriefingUpdateJobStatus.Completed;
++        NextAttemptAt = null;
++        LastError = null;
++        UpdatedAt = NormalizeUtc(nowUtc);
++    }
++
++    public void ScheduleRetry(DateTime nextAttemptAtUtc, string error)
++    {
++        AttemptCount++;
++        Status = CompanyBriefingUpdateJobStatus.Retrying;
++        NextAttemptAt = NormalizeUtc(nextAttemptAtUtc);
++        LastError = NormalizeOptional(error, nameof(error), LastErrorMaxLength);
++        UpdatedAt = DateTime.UtcNow;
++    }
++
++    public void MarkFailed(string error, DateTime nowUtc)
++    {
++        AttemptCount++;
++        Status = CompanyBriefingUpdateJobStatus.Failed;
++        NextAttemptAt = null;
++        LastError = NormalizeOptional(error, nameof(error), LastErrorMaxLength);
++        FinalFailedAt = NormalizeUtc(nowUtc);
++        UpdatedAt = FinalFailedAt.Value;
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
+ public sealed class CompanyBriefingDeliveryPreference : ICompanyOwnedEntity
+ {
+     private CompanyBriefingDeliveryPreference()
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+new file mode 100644
+index 0000000..9a015be
+--- /dev/null
++++ b/src/VirtualCompany.Application/Briefings/BriefingUpdateJobContracts.cs
+@@ -0,0 +1,51 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Application.Briefings;
++
++public sealed record EnqueueBriefingUpdateJobCommand(
++    Guid CompanyId,
++    string TriggerType,
++    string? BriefingType,
++    string? EventType,
++    string CorrelationId,
++    string IdempotencyKey,
++    Dictionary<string, JsonNode?>? SourceMetadata = null,
++    DateTime? NextAttemptAtUtc = null);
++
++public sealed record BriefingUpdateJobEnqueueResult(
++    Guid JobId,
++    bool Created,
++    string Status,
++    string IdempotencyKey);
++
++public static class BriefingUpdateEventTypes
++{
++    public const string TaskStatusChanged = "task_status_changed";
++    public const string WorkflowStateChanged = "workflow_state_changed";
++    public const string ApprovalRequested = "approval_requested";
++    public const string ApprovalDecision = "approval_decision";
++    public const string Escalation = "escalation";
++    public const string AgentGeneratedAlert = "agent_generated_alert";
++}
++
++public interface IBriefingUpdateJobProducer
++{
++    Task<BriefingUpdateJobEnqueueResult> EnqueueAsync(
++        EnqueueBriefingUpdateJobCommand command,
++        CancellationToken cancellationToken);
++
++    Task<BriefingUpdateJobEnqueueResult> EnqueueEventDrivenAsync(
++        Guid companyId,
++        string eventType,
++        string correlationId,
++        string idempotencyKey,
++        Dictionary<string, JsonNode?>? sourceMetadata,
++        CancellationToken cancellationToken);
++
++    Task ScheduleRetryAsync(
++        Guid companyId,
++        Guid jobId,
++        DateTime nextAttemptAtUtc,
++        string error,
++        CancellationToken cancellationToken);
++
++    Task RecordFinalFailureAsync(
++        Guid companyId,
++        Guid jobId,
++        string error,
++        CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 19d3e18..55afc18 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -47,6 +47,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
++    public DbSet<CompanyBriefingUpdateJob> CompanyBriefingUpdateJobs => Set<CompanyBriefingUpdateJob>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+     public DbSet<ProactiveMessage> ProactiveMessages => Set<ProactiveMessage>();
+     public DbSet<ProactiveMessagePolicyDecision> ProactiveMessagePolicyDecisions => Set<ProactiveMessagePolicyDecision>();
+@@ -97,6 +98,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is WorkflowInstance ||
+                 entry.Entity is WorkflowException ||
+                 entry.Entity is CompanyBriefing ||
++                entry.Entity is CompanyBriefingUpdateJob ||
+                 entry.Entity is Alert)
+             .Select(entry =>
+             {
+@@ -159,6 +161,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyBriefing>()
+             .HasQueryFilter(briefing =>
+                 CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefingUpdateJob>()
++            .HasQueryFilter(job =>
++                CurrentCompanyId.HasValue && job.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
+             .HasQueryFilter(preference =>
+                 CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 6a2440a..7a82a78 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1311,6 +1311,60 @@ internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<Co
+     }
+ }
+ 
++internal sealed class CompanyBriefingUpdateJobConfiguration : IEntityTypeConfiguration<CompanyBriefingUpdateJob>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefingUpdateJob> builder)
++    {
++        builder.ToTable("company_briefing_update_jobs");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.TriggerType)
++            .HasColumnName("trigger_type")
++            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingUpdateJobTriggerTypeValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.BriefingType)
++            .HasColumnName("briefing_type")
++            .HasConversion(
++                value => value.HasValue ? value.Value.ToStorageValue() : null,
++                value => string.IsNullOrWhiteSpace(value) ? null : CompanyBriefingTypeValues.Parse(value))
++            .HasMaxLength(32);
++        builder.Property(x => x.EventType).HasColumnName("event_type").HasMaxLength(100);
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.Status)
++            .HasColumnName("status")
++            .HasConversion(value => value.ToStorageValue(), value => CompanyBriefingUpdateJobStatusValues.Parse(value))
++            .HasMaxLength(32)
++            .IsRequired();
++        builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.NextAttemptAt).HasColumnName("next_attempt_at");
++        builder.Property(x => x.LastError).HasColumnName("last_error").HasMaxLength(4000);
++        builder.Property(x => x.FinalFailedAt).HasColumnName("final_failed_at");
++        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.SourceMetadata)
++            .HasColumnName("source_metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
++        builder.HasIndex(x => new { x.Status, x.NextAttemptAt, x.CreatedAt });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedAt });
++        builder.HasIndex(x => new { x.CompanyId, x.EventType, x.CreatedAt });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class CompanyBriefingDeliveryPreferenceConfiguration : IEntityTypeConfiguration<CompanyBriefingDeliveryPreference>
+ {
+     public void Configure(EntityTypeBuilder<CompanyBriefingDeliveryPreference> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+new file mode 100644
+index 0000000..4e059d3
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Companies/BriefingUpdateJobProducer.cs
+@@ -0,0 +1,204 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
++using VirtualCompany.Application.Briefings;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Companies;
++
++internal sealed class BriefingUpdateJobProducer : IBriefingUpdateJobProducer
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ILogger<BriefingUpdateJobProducer> _logger;
++
++    public BriefingUpdateJobProducer(
++        VirtualCompanyDbContext dbContext,
++        ILogger<BriefingUpdateJobProducer> logger)
++    {
++        _dbContext = dbContext;
++        _logger = logger;
++    }
++
++    public Task<BriefingUpdateJobEnqueueResult> EnqueueEventDrivenAsync(
++        Guid companyId,
++        string eventType,
++        string correlationId,
++        string idempotencyKey,
++        Dictionary<string, JsonNode?>? sourceMetadata,
++        CancellationToken cancellationToken) =>
++        EnqueueAsync(
++            new EnqueueBriefingUpdateJobCommand(
++                companyId,
++                CompanyBriefingUpdateJobTriggerTypeValues.EventDriven,
++                null,
++                eventType,
++                correlationId,
++                idempotencyKey,
++                sourceMetadata),
++            cancellationToken);
++
++    public async Task<BriefingUpdateJobEnqueueResult> EnqueueAsync(
++        EnqueueBriefingUpdateJobCommand command,
++        CancellationToken cancellationToken)
++    {
++        Validate(command);
++
++        var triggerType = CompanyBriefingUpdateJobTriggerTypeValues.Parse(command.TriggerType);
++        var briefingType = string.IsNullOrWhiteSpace(command.BriefingType)
++            ? null
++            : CompanyBriefingTypeValues.Parse(command.BriefingType);
++        var idempotencyKey = command.IdempotencyKey.Trim();
++
++        var existing = await FindExistingAsync(command.CompanyId, idempotencyKey, cancellationToken);
++        if (existing is not null)
++        {
++            _logger.LogInformation(
++                "Skipped duplicate briefing update job for company {CompanyId} with idempotency key {IdempotencyKey}.",
++                command.CompanyId,
++                idempotencyKey);
++            return ToResult(existing, created: false);
++        }
++
++        var job = new CompanyBriefingUpdateJob(
++            Guid.NewGuid(),
++            command.CompanyId,
++            triggerType,
++            briefingType,
++            NormalizeEventType(command.EventType),
++            command.CorrelationId,
++            idempotencyKey,
++            command.SourceMetadata,
++            command.NextAttemptAtUtc);
++
++        _dbContext.CompanyBriefingUpdateJobs.Add(job);
++
++        try
++        {
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        catch (DbUpdateException) when (await TryDetachAndFindExistingAsync(command.CompanyId, idempotencyKey, cancellationToken) is { } duplicate)
++        {
++            _logger.LogInformation(
++                "Skipped concurrently inserted duplicate briefing update job for company {CompanyId} with idempotency key {IdempotencyKey}.",
++                command.CompanyId,
++                idempotencyKey);
++            return ToResult(duplicate, created: false);
++        }
++
++        _logger.LogInformation(
++            "Created briefing update job {JobId} for company {CompanyId}. TriggerType={TriggerType} EventType={EventType} CorrelationId={CorrelationId} IdempotencyKey={IdempotencyKey}.",
++            job.Id,
++            job.CompanyId,
++            job.TriggerType.ToStorageValue(),
++            job.EventType,
++            job.CorrelationId,
++            job.IdempotencyKey);
++
++        return ToResult(job, created: true);
++    }
++
++    public async Task ScheduleRetryAsync(
++        Guid companyId,
++        Guid jobId,
++        DateTime nextAttemptAtUtc,
++        string error,
++        CancellationToken cancellationToken)
++    {
++        var job = await GetJobAsync(companyId, jobId, cancellationToken);
++        job.ScheduleRetry(nextAttemptAtUtc, error);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogWarning(
++            "Scheduled retry for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} NextAttemptAt={NextAttemptAt}.",
++            job.Id,
++            job.CompanyId,
++            job.AttemptCount,
++            job.NextAttemptAt);
++    }
++
++    public async Task RecordFinalFailureAsync(
++        Guid companyId,
++        Guid jobId,
++        string error,
++        CancellationToken cancellationToken)
++    {
++        var job = await GetJobAsync(companyId, jobId, cancellationToken);
++        job.MarkFailed(error, DateTime.UtcNow);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        _logger.LogError(
++            "Recorded final failure for briefing update job {JobId} for company {CompanyId}. AttemptCount={AttemptCount} Error={Error}.",
++            job.Id,
++            job.CompanyId,
++            job.AttemptCount,
++            job.LastError);
++    }
++
++    private async Task<CompanyBriefingUpdateJob> GetJobAsync(Guid companyId, Guid jobId, CancellationToken cancellationToken) =>
++        await _dbContext.CompanyBriefingUpdateJobs
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == jobId, cancellationToken)
++        ?? throw new KeyNotFoundException("Briefing update job not found.");
++
++    private async Task<CompanyBriefingUpdateJob?> TryDetachAndFindExistingAsync(
++        Guid companyId,
++        string idempotencyKey,
++        CancellationToken cancellationToken)
++    {
++        foreach (var entry in _dbContext.ChangeTracker.Entries<CompanyBriefingUpdateJob>().Where(x => x.State == EntityState.Added).ToList())
++        {
++            entry.State = EntityState.Detached;
++        }
++
++        return await FindExistingAsync(companyId, idempotencyKey, cancellationToken);
++    }
++
++    private Task<CompanyBriefingUpdateJob?> FindExistingAsync(
++        Guid companyId,
++        string idempotencyKey,
++        CancellationToken cancellationToken) =>
++        _dbContext.CompanyBriefingUpdateJobs
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(
++                x => x.CompanyId == companyId && x.IdempotencyKey == idempotencyKey,
++                cancellationToken);
++
++    private static void Validate(EnqueueBriefingUpdateJobCommand command)
++    {
++        if (command.CompanyId == Guid.Empty)
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]>
++            {
++                [nameof(command.CompanyId)] = ["Company id is required."]
++            });
++        }
++
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        AddRequired(errors, nameof(command.TriggerType), command.TriggerType, 32);
++        AddRequired(errors, nameof(command.CorrelationId), command.CorrelationId, 128);
++        AddRequired(errors, nameof(command.IdempotencyKey), command.IdempotencyKey, 300);
++
++        if (errors.Count > 0)
++        {
++            throw new BriefingValidationException(errors);
++        }
++    }
++
++    private static void AddRequired(Dictionary<string, string[]> errors, string name, string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            errors[name] = [$"{name} is required."];
++            return;
++        }
++
++        if (value.Trim().Length > maxLength)
++        {
++            errors[name] = [$"{name} must be {maxLength} characters or fewer."];
++        }
++    }
++
++    private static string? NormalizeEventType(string? eventType) =>
++        string.IsNullOrWhiteSpace(eventType) ? null : eventType.Trim();
++
++    private static BriefingUpdateJobEnqueueResult ToResult(CompanyBriefingUpdateJob job, bool created) =>
++        new(
++            job.Id,
++            created,
++            job.Status.ToStorageValue(),
++            job.IdempotencyKey);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index a4f0dc2..46f9b51 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -267,6 +267,7 @@ public static class DependencyInjection
+         services.AddScoped<INotificationInboxService, CompanyNotificationService>();
+         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
+         services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();
++        services.AddScoped<IBriefingUpdateJobProducer, BriefingUpdateJobProducer>();
+         services.AddScoped<ICompanyBriefingService, CompanyBriefingService>();
+         services.AddScoped<CompanyWorkflowService>();
+         services.AddScoped<ICompanyWorkflowService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 328e4fe..da2322a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -25,6 +25,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private readonly IExecutiveDashboardAggregateCache _aggregateCache;
+     private readonly ILogger<CompanyBriefingService> _logger;
+     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
++    private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+ 
+     public CompanyBriefingService(
+         VirtualCompanyDbContext dbContext,
+@@ -32,6 +33,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+         IExecutiveDashboardAggregateCache aggregateCache,
+         ICompanyOutboxEnqueuer outboxEnqueuer,
++        IBriefingUpdateJobProducer briefingUpdateJobProducer,
+         ILogger<CompanyBriefingService> logger)
+     {
+         _dbContext = dbContext;
+@@ -40,6 +42,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         _aggregateCache = aggregateCache;
+         _outboxEnqueuer = outboxEnqueuer;
+         _logger = logger;
++        _briefingUpdateJobProducer = briefingUpdateJobProducer;
+     }
+@@ -199,14 +202,13 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+                         continue;
+                     }
+ 
+-                    var result = await GenerateAsync(
+-                        companyId,
+-                        new GenerateCompanyBriefingCommand(briefingType.ToStorageValue(), nowUtc),
+-                        cancellationToken);
+-                    if (!result.AlreadyExisted)
++                    var result = await EnqueueScheduledBriefingJobAsync(company, briefingType, nowUtc, cancellationToken);
++                    if (result.Created)
+                     {
+                         generated++;
+-                        notifications += result.NotificationsCreated;
++                        _logger.LogInformation(
++                            "Scheduled {BriefingType} briefing update job {JobId} for company {CompanyId}.",
++                            briefingType.ToStorageValue(),
++                            result.JobId,
++                            companyId);
+                     }
+                 }
+                 catch (Exception ex) when (ex is not OperationCanceledException)
+@@ -291,6 +293,38 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         return TimeOnly.FromDateTime(localNow) >= deliveryTime;
+     }
+ 
++    private Task<BriefingUpdateJobEnqueueResult> EnqueueScheduledBriefingJobAsync(
++        DueCompany company,
++        CompanyBriefingType briefingType,
++        DateTime nowUtc,
++        CancellationToken cancellationToken)
++    {
++        var window = ResolveWindow(company.Timezone, briefingType, nowUtc);
++        var triggerType = briefingType == CompanyBriefingType.Daily
++            ? CompanyBriefingUpdateJobTriggerTypeValues.Daily
++            : CompanyBriefingUpdateJobTriggerTypeValues.Weekly;
++        var briefingTypeValue = briefingType.ToStorageValue();
++        var idempotencyKey = $"briefing:{company.Id:N}:{triggerType}:{window.StartUtc:yyyyMMddHHmmss}:{window.EndUtc:yyyyMMddHHmmss}";
++
++        return _briefingUpdateJobProducer.EnqueueAsync(
++            new EnqueueBriefingUpdateJobCommand(
++                company.Id,
++                triggerType,
++                briefingTypeValue,
++                null,
++                $"briefing-schedule:{idempotencyKey}",
++                idempotencyKey,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["briefingType"] = JsonValue.Create(briefingTypeValue),
++                    ["periodStartUtc"] = JsonValue.Create(window.StartUtc),
++                    ["periodEndUtc"] = JsonValue.Create(window.EndUtc),
++                    ["scheduledAtUtc"] = JsonValue.Create(nowUtc),
++                    ["pipeline"] = JsonValue.Create("company_briefing_generation")
++                }),
++            cancellationToken);
++    }
++
+     private async Task<int> AddNotificationsAsync(CompanyBriefing briefing, CancellationToken cancellationToken)
+     {
+         var users = await _dbContext.CompanyMemberships
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index e2ff876..1a46cb4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Cockpit;
++using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
+@@ -184,6 +185,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
+     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
++    private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+ 
+     public CompanyOutboxProcessor(
+         VirtualCompanyDbContext dbContext,
+@@ -198,6 +200,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         IBackgroundExecutionRetryPolicy retryPolicy,
+         IBackgroundExecutionIdentityFactory identityFactory,
+         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
++        IBriefingUpdateJobProducer briefingUpdateJobProducer,
+         ILogger<CompanyOutboxProcessor> logger)
+     {
+         _dbContext = dbContext;
+@@ -213,6 +216,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _retryPolicy = retryPolicy;
+         _identityFactory = identityFactory;
+         _companyExecutionScopeFactory = companyExecutionScopeFactory;
++        _briefingUpdateJobProducer = briefingUpdateJobProducer;
+         _logger = logger;
+     }
+@@ -430,6 +434,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 }
+ 
+                 await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
++                await EnqueueBriefingJobForNotificationAsync(message, payload, cancellationToken);
+                 await _dbContext.SaveChangesAsync(cancellationToken);
+                 break;
+             }
+@@ -454,6 +459,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                     cancellationToken);
+                 await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
++                await EnqueueBriefingJobForPlatformEventAsync(message, payload, cancellationToken);
+                 break;
+             }
+             case CompanyOutboxTopics.ApprovalUpdated:
+@@ -470,6 +476,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                 }
+ 
+                 await InvalidateCockpitAsync(message, payload.SourceEntityType, TryParseGuid(payload.SourceEntityId), cancellationToken);
++                await EnqueueBriefingJobForPlatformEventAsync(message, payload, cancellationToken);
+                 break;
+             }
+@@ -504,6 +511,89 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         }
+     }
+ 
++    private async Task EnqueueBriefingJobForPlatformEventAsync(
++        CompanyOutboxMessage message,
++        PlatformEventEnvelope payload,
++        CancellationToken cancellationToken)
++    {
++        var briefingEventType = NormalizeBriefingEventType(payload);
++        if (briefingEventType is null)
++        {
++            return;
++        }
++
++        var idempotencyKey = $"briefing-event:{payload.CompanyId:N}:{payload.EventId}";
++        var sourceMetadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["sourceOutboxMessageId"] = JsonValue.Create(message.Id.ToString("N")),
++            ["sourceEventId"] = JsonValue.Create(payload.EventId),
++            ["sourceEventType"] = JsonValue.Create(payload.EventType),
++            ["sourceEntityType"] = JsonValue.Create(payload.SourceEntityType),
++            ["sourceEntityId"] = JsonValue.Create(payload.SourceEntityId),
++            ["occurredAtUtc"] = JsonValue.Create(payload.OccurredAtUtc),
++            ["payloadRef"] = JsonValue.Create($"company_outbox_messages/{message.Id:N}"),
++            ["metadata"] = new JsonObject(payload.Metadata.ToDictionary(x => x.Key, x => x.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase))
++        };
++
++        var result = await _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
++            payload.CompanyId,
++            briefingEventType,
++            string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId,
++            idempotencyKey,
++            sourceMetadata,
++            cancellationToken);
++
++        _logger.LogInformation(
++            "Briefing update producer handled supported event {EventType} for company {CompanyId}. JobId={JobId} Created={Created} CorrelationId={CorrelationId}.",
++            briefingEventType,
++            payload.CompanyId,
++            result.JobId,
++            result.Created,
++            payload.CorrelationId);
++    }
++
++    private async Task EnqueueBriefingJobForNotificationAsync(
++        CompanyOutboxMessage message,
++        NotificationDeliveryRequestedMessage payload,
++        CancellationToken cancellationToken)
++    {
++        if (!string.Equals(payload.NotificationType, CompanyNotificationType.Escalation.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
++        {
++            return;
++        }
++
++        var idempotencyKey = $"briefing-event:{payload.CompanyId:N}:escalation:{payload.DedupeKey}";
++        await _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
++            payload.CompanyId,
++            BriefingUpdateEventTypes.Escalation,
++            payload.CorrelationId ?? message.CorrelationId ?? idempotencyKey,
++            idempotencyKey,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["sourceOutboxMessageId"] = JsonValue.Create(message.Id.ToString("N")),
++                ["sourceEntityType"] = JsonValue.Create(payload.RelatedEntityType),
++                ["sourceEntityId"] = payload.RelatedEntityId.HasValue ? JsonValue.Create(payload.RelatedEntityId.Value.ToString("N")) : null,
++                ["notificationType"] = JsonValue.Create(payload.NotificationType),
++                ["payloadRef"] = JsonValue.Create($"company_outbox_messages/{message.Id:N}")
++            },
++            cancellationToken);
++    }
++
++    private static string? NormalizeBriefingEventType(PlatformEventEnvelope payload)
++    {
++        if (string.Equals(payload.EventType, CompanyOutboxTopics.TaskUpdated, StringComparison.OrdinalIgnoreCase))
++        {
++            return BriefingUpdateEventTypes.TaskStatusChanged;
++        }
++
++        if (string.Equals(payload.EventType, CompanyOutboxTopics.WorkflowStateChanged, StringComparison.OrdinalIgnoreCase))
++        {
++            return BriefingUpdateEventTypes.WorkflowStateChanged;
++        }
++
++        if (string.Equals(payload.EventType, CompanyOutboxTopics.ApprovalUpdated, StringComparison.OrdinalIgnoreCase))
++        {
++            return payload.Metadata.TryGetValue("reason", out var reason) &&
++                   string.Equals(reason?.GetValue<string>(), "created", StringComparison.OrdinalIgnoreCase)
++                ? BriefingUpdateEventTypes.ApprovalRequested
++                : BriefingUpdateEventTypes.ApprovalDecision;
++        }
++
++        return null;
++    }
++
+     private async Task InvalidateCockpitAsync(
+         CompanyOutboxMessage message,
+         string? entityType,
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index 4a8c197..79980c9 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -1,6 +1,7 @@
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Alerts;
++using VirtualCompany.Application.Briefings;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Persistence;
+@@ -14,12 +15,17 @@ public sealed class CompanyAlertService : ICompanyAlertService
+ 
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
++    private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+ 
+-    public CompanyAlertService(VirtualCompanyDbContext dbContext, ICompanyMembershipContextResolver membershipContextResolver)
++    public CompanyAlertService(
++        VirtualCompanyDbContext dbContext,
++        ICompanyMembershipContextResolver membershipContextResolver,
++        IBriefingUpdateJobProducer briefingUpdateJobProducer)
+     {
+         _dbContext = dbContext;
+         _membershipContextResolver = membershipContextResolver;
++        _briefingUpdateJobProducer = briefingUpdateJobProducer;
+     }
+@@ -54,6 +60,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         {
+             return deduplicated;
+         }
++        await EnqueueAlertBriefingJobAsync(alert, cancellationToken);
+         return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+     }
+@@ -87,9 +94,32 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         {
+             return deduplicated;
+         }
+ 
++        await EnqueueAlertBriefingJobAsync(alert, cancellationToken);
+         return new AlertMutationResultDto(ToDto(alert), Created: true, Deduplicated: false);
+     }
+ 
++    private Task EnqueueAlertBriefingJobAsync(Alert alert, CancellationToken cancellationToken)
++    {
++        var idempotencyKey = $"briefing-event:{alert.CompanyId:N}:agent-generated-alert:{alert.Id:N}";
++        return _briefingUpdateJobProducer.EnqueueEventDrivenAsync(
++            alert.CompanyId,
++            BriefingUpdateEventTypes.AgentGeneratedAlert,
++            alert.CorrelationId,
++            idempotencyKey,
++            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            {
++                ["sourceEntityType"] = JsonValue.Create("alert"),
++                ["sourceEntityId"] = JsonValue.Create(alert.Id.ToString("N")),
++                ["alertType"] = JsonValue.Create(alert.Type.ToStorageValue()),
++                ["severity"] = JsonValue.Create(alert.Severity.ToStorageValue()),
++                ["status"] = JsonValue.Create(alert.Status.ToStorageValue()),
++                ["sourceAgentId"] = alert.SourceAgentId.HasValue ? JsonValue.Create(alert.SourceAgentId.Value.ToString("N")) : null,
++                ["payloadRef"] = JsonValue.Create($"alerts/{alert.Id:N}")
++            },
++            cancellationToken);
++    }
++
+     public async Task<AlertDto> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414234500_AddCompanyBriefingUpdateJobs.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414234500_AddCompanyBriefingUpdateJobs.cs
+new file mode 100644
+index 0000000..c2dd349
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414234500_AddCompanyBriefingUpdateJobs.cs
+@@ -0,0 +1,78 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddCompanyBriefingUpdateJobs : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "company_briefing_update_jobs",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "TEXT", nullable: false),
++                company_id = table.Column<Guid>(type: "TEXT", nullable: false),
++                trigger_type = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
++                briefing_type = table.Column<string>(type: "TEXT", maxLength: 32, nullable: true),
++                event_type = table.Column<string>(type: "TEXT", maxLength: 100, nullable: true),
++                correlation_id = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
++                idempotency_key = table.Column<string>(type: "TEXT", maxLength: 300, nullable: false),
++                status = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
++                attempt_count = table.Column<int>(type: "INTEGER", nullable: false, defaultValue: 0),
++                next_attempt_at = table.Column<DateTime>(type: "TEXT", nullable: true),
++                last_error = table.Column<string>(type: "TEXT", maxLength: 4000, nullable: true),
++                final_failed_at = table.Column<DateTime>(type: "TEXT", nullable: true),
++                created_at = table.Column<DateTime>(type: "TEXT", nullable: false),
++                updated_at = table.Column<DateTime>(type: "TEXT", nullable: false),
++                source_metadata_json = table.Column<string>(type: "TEXT", nullable: false, defaultValueSql: "'{}'")
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("pk_company_briefing_update_jobs", x => x.id);
++                table.ForeignKey(
++                    name: "fk_company_briefing_update_jobs_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_company_id_event_type_created_at",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "company_id", "event_type", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_company_id_idempotency_key",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "company_id", "idempotency_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_company_id_status_created_at",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "company_id", "status", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "ix_company_briefing_update_jobs_status_next_attempt_at_created_at",
++            table: "company_briefing_update_jobs",
++            columns: new[] { "status", "next_attempt_at", "created_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(
++            name: "company_briefing_update_jobs");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+index 9cf801e..42c87c4 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingSchedulerCoordinatorTests.cs
+@@ -77,7 +77,7 @@ public sealed class BriefingSchedulerCoordinatorTests
+ 
+         public Task<BriefingSchedulerRunResult> GenerateDueAsync(GenerateDueBriefingsCommand command, CancellationToken cancellationToken)
+         {
+-            Calls++;
++            Calls++;
+             return Task.FromResult(_result);
+         }
+ 
+END_OF_PATCH

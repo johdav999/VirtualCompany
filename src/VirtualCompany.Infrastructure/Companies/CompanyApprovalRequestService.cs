@@ -7,8 +7,10 @@ using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -110,6 +112,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             cancellationToken);
 
         EnqueueApprovalNotification(approval);
+        EnqueueApprovalUpdatedEvent(approval, "created");
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
@@ -181,6 +184,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             EnqueueApprovalNotification(approval);
         }
 
+        EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
@@ -453,6 +457,41 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         {
             throw new KeyNotFoundException("Approval target not found.");
         }
+    }
+
+    private void EnqueueApprovalUpdatedEvent(ApprovalRequest approval, string reason)
+    {
+        var eventType = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
+        var occurredAtUtc = approval.UpdatedUtc.Kind == DateTimeKind.Utc
+            ? approval.UpdatedUtc
+            : approval.UpdatedUtc.ToUniversalTime();
+        var eventId = $"{eventType}:{approval.Id:N}:{occurredAtUtc:yyyyMMddHHmmssfffffff}:{reason}";
+
+        _outboxEnqueuer.Enqueue(
+            approval.CompanyId,
+            eventType,
+            new PlatformEventEnvelope(
+                eventId,
+                eventType,
+                occurredAtUtc,
+                approval.CompanyId,
+                eventId,
+                "approval_request",
+                approval.Id.ToString("N"),
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["approvalRequestId"] = JsonValue.Create(approval.Id.ToString("N")),
+                    ["agentId"] = approval.AgentId != Guid.Empty
+                        ? JsonValue.Create(approval.AgentId.ToString("N"))
+                        : null,
+                    ["targetEntityType"] = JsonValue.Create(approval.TargetEntityType),
+                    ["targetEntityId"] = JsonValue.Create(approval.TargetEntityId.ToString("N")),
+                    ["status"] = JsonValue.Create(approval.Status.ToStorageValue()),
+                    ["reason"] = JsonValue.Create(reason)
+                }),
+            eventId,
+            idempotencyKey: $"platform-event:{approval.CompanyId:N}:{eventId}",
+            causationId: approval.Id.ToString("N"));
     }
 
     private static void Validate(CreateApprovalRequestCommand command)

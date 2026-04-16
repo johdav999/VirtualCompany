@@ -1,0 +1,116 @@
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+index dde9cbc..c4f0f41 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyAlertService.cs
+@@ -91,38 +91,7 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         await RequireMembershipAsync(companyId, cancellationToken);
+         Validate(query);
+ 
+-        var alerts = _dbContext.Alerts.AsNoTracking().Where(x => x.CompanyId == companyId);
+-        if (!string.IsNullOrWhiteSpace(query.Type))
+-        {
+-            var type = AlertTypeValues.Parse(query.Type);
+-            alerts = alerts.Where(x => x.Type == type);
+-        }
+-
+-        if (!string.IsNullOrWhiteSpace(query.Severity))
+-        {
+-            var severity = AlertSeverityValues.Parse(query.Severity);
+-            alerts = alerts.Where(x => x.Severity == severity);
+-        }
+-
+-        if (!string.IsNullOrWhiteSpace(query.Status))
+-        {
+-            var status = AlertStatusValues.Parse(query.Status);
+-            alerts = alerts.Where(x => x.Status == status);
+-        }
+-
+-        if (query.CreatedFrom.HasValue)
+-        {
+-            alerts = alerts.Where(x => x.CreatedUtc >= query.CreatedFrom.Value);
+-        }
+-
+-        if (query.CreatedTo.HasValue)
+-        {
+-            alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);
+-        }
+-
++        var alerts = BuildFilteredAlertQuery(companyId, query);
+         var totalCount = await alerts.CountAsync(cancellationToken);
+         var pageSize = Math.Clamp(query.PageSize ?? query.Take ?? DefaultPageSize, 1, MaxPageSize);
+         var skip = query.Page.HasValue
+@@ -141,6 +110,41 @@ public sealed class CompanyAlertService : ICompanyAlertService
+         return new AlertListResultDto(items.Select(ToDto).ToList(), totalCount, skip, pageSize, page, pageSize, totalPages);
+     }
+ 
++    private IQueryable<Alert> BuildFilteredAlertQuery(Guid companyId, ListAlertsQuery query)
++    {
++        var alerts = _dbContext.Alerts.AsNoTracking().Where(x => x.CompanyId == companyId);
++        if (!string.IsNullOrWhiteSpace(query.Type))
++        {
++            var type = AlertTypeValues.Parse(query.Type);
++            alerts = alerts.Where(x => x.Type == type);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Severity))
++        {
++            var severity = AlertSeverityValues.Parse(query.Severity);
++            alerts = alerts.Where(x => x.Severity == severity);
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.Status))
++        {
++            var status = AlertStatusValues.Parse(query.Status);
++            alerts = alerts.Where(x => x.Status == status);
++        }
++
++        if (query.CreatedFrom.HasValue)
++        {
++            alerts = alerts.Where(x => x.CreatedUtc >= query.CreatedFrom.Value);
++        }
++
++        if (query.CreatedTo.HasValue)
++        {
++            alerts = alerts.Where(x => x.CreatedUtc <= query.CreatedTo.Value);
++        }
++
++        return alerts;
++    }
++
+     public async Task<AlertDto> UpdateAsync(Guid companyId, Guid alertId, UpdateAlertCommand command, CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(companyId, cancellationToken);
+diff --git a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+index 79ef596..d4d634b 100644
+--- a/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/AlertIntegrationTests.cs
+@@ -120,6 +120,28 @@ public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFact
+         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Query_without_filters_returns_only_current_tenant_page()
++    {
++        var seed = await SeedCompanyAsync();
++        using var client = CreateAuthenticatedClient();
++
++        await CreateAlertAsync(client, seed.CompanyId, "risk", "high", "open", "fp-tenant-page-1", seed.AgentId);
++        await CreateAlertAsync(client, seed.CompanyId, "anomaly", "medium", "open", "fp-tenant-page-2", seed.AgentId);
++        await CreateAlertAsync(client, seed.OtherCompanyId, "opportunity", "low", "open", "fp-other-tenant-page", null);
++
++        var list = await client.GetFromJsonAsync<AlertListResponse>(
++            $"/api/companies/{seed.CompanyId}/alerts?page=1&pageSize=10");
++
++        Assert.NotNull(list);
++        Assert.Equal(2, list!.TotalCount);
++        Assert.Equal(1, list.Page);
++        Assert.Equal(10, list.PageSize);
++        Assert.Equal(1, list.TotalPages);
++        Assert.Equal(2, list.Items.Count);
++        Assert.All(list.Items, alert => Assert.Equal(seed.CompanyId, alert.CompanyId));
++    }
++
+     [Fact]
+     public async Task Query_supports_filters_pagination_and_tenant_scoping()
+     {
+END_OF_PATCH

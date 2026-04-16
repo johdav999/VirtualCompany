@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.2.2",
+  "promptPath": ".ai-design/prompts/TASK-5.2.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:34:29.491Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-34-29-491Z_TASK-5.2.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-34-29-491Z_TASK-5.2.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:36:26.652Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "solves_correlation_timeline()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateClient();\n+\n+        await PersistActivityAsync(client, seed.CompanyId, \"task_started\", seed.CorrelationId, seed.TaskId, occurredAt: DateTime.UtcNow.AddMinutes(-2));\n+        var selected = await PersistActivityAsync(client, seed.CompanyId, \"tool_executed\", seed.CorrelationId, seed.TaskId, seed.WorkflowInstanceId, seed.ApprovalId, seed.ToolExecutionId, DateTime.UtcNow.AddMinutes(-1));\n+\n+        var timeline = await client.GetFromJsonAsync<ActivityCorrelationTimelineDto>(\n+            $\"/api/companies/{seed.CompanyId}/activity-feed/{selected.EventId}/correlation\");\n+\n+        Assert.NotNull(timeline);\n+        Assert.Equal(seed.CorrelationId, timeline!.CorrelationId);\n+        Assert.Equal(2, timeline.Items.Count);\n+        Assert.NotNull(timeline.SelectedActivityLinks);\n+        Assert.Equal(selected.EventId, timeline.SelectedActivityLinks!.ActivityEventId);\n+        Assert.Contains(\n+            timeline.SelectedActivityLinks.LinkedEntities,\n+            x => x.EntityType == ActivityEntityTypes.ToolExecution &&\n+                 x.IsAvailable &&\n+                 x.UnavailableReason is null);\n+    }\n+\n     [Fact]\n     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateClient();\n@@ -62,10 +84,12 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA\n         Assert.Equal(ActivityEntityTypes.Task, missing.EntityType);\n         Assert.Equal(missingTaskId, missing.EntityId);\n         Assert.Equal(ActivityLinkedEntityAvailability.UnavailableMissing, missing.Availability);\n+        Assert.False(missing.IsAvailable);\n+        Assert.Equal(\"missing\", missing.UnavailableReason);\n         Assert.Null(missing.CurrentStatus);\n     }\n \n     [Fact]\n     public async Task Correlation_timeline_is_tenant_scoped()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "timeline()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = CreateClient();\n+\n+        await PersistActivityAsync(client, seed.CompanyId, \"task_started\", seed.CorrelationId, seed.TaskId, occurredAt: DateTime.UtcNow.AddMinutes(-2));\n+        var selected = await PersistActivityAsync(client, seed.CompanyId, \"tool_executed\", seed.CorrelationId, seed.TaskId, seed.WorkflowInstanceId, seed.ApprovalId, seed.ToolExecutionId, DateTime.UtcNow.AddMinutes(-1));\n+\n+        var timeline = await client.GetFromJsonAsync<ActivityCorrelationTimelineDto>(\n+            $\"/api/companies/{seed.CompanyId}/activity-feed/{selected.EventId}/correlation\");\n+\n+        Assert.NotNull(timeline);\n+        Assert.Equal(seed.CorrelationId, timeline!.CorrelationId);\n+        Assert.Equal(2, timeline.Items.Count);\n+        Assert.NotNull(timeline.SelectedActivityLinks);\n+        Assert.Equal(selected.EventId, timeline.SelectedActivityLinks!.ActivityEventId);\n+        Assert.Contains(\n+            timeline.SelectedActivityLinks.LinkedEntities,\n+            x => x.EntityType == ActivityEntityTypes.ToolExecution &&\n+                 x.IsAvailable &&\n+                 x.UnavailableReason is null);\n+    }\n+\n     [Fact]\n     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()\n     {\n         var seed = await SeedAsync();\n         using var client = CreateClient();\n@@ -62,10 +84,12 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA\n         Assert.Equal(ActivityEntityTypes.Task, missing.EntityType);\n         Assert.Equal(missingTaskId, missing.EntityId);\n         Assert.Equal(ActivityLinkedEntityAvailability.UnavailableMissing, missing.Availability);\n+        Assert.False(missing.IsAvailable);\n+        Assert.Equal(\"missing\", missing.UnavailableReason);\n         Assert.Null(missing.CurrentStatus);\n     }\n \n     [Fact]\n     public async Task Correlation_timeline_is_tenant_scoped()\n     {\nEND_OF_PATCH\ntokens used\n60,276\n",
+  "verbosityMode": "summary"
+}

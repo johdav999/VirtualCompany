@@ -1,0 +1,190 @@
+diff --git a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/BriefingEnums.cs
+@@ -250,9 +250,8 @@ public static class BriefingDeliveryFrequencyValues
+         }
+ 
+         var trimmed = value.Trim();
+-        return ReverseValues.TryGetValue(trimmed, out var frequency) ||
+-               Enum.TryParse(trimmed, ignoreCase: true, out frequency) && Values.ContainsKey(frequency)
++        return ReverseValues.TryGetValue(trimmed, out var frequency)
+             ? frequency
+             : throw new ArgumentOutOfRangeException(nameof(value), value, BriefingPreferenceErrorCodes.InvalidDeliveryFrequency);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -1378,45 +1378,71 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         frequency == BriefingDeliveryFrequency.Weekly && briefingType == CompanyBriefingType.Weekly;
+ 
+     private static ParsedBriefingPreferenceCommand ParsePreferenceCommand(UpsertBriefingPreferenceCommand command)
+     {
++        if (command is null)
++        {
++            throw new BriefingValidationException(new Dictionary<string, string[]>
++            {
++                ["body"] =
++                [
++                    "briefing_preferences.invalid_payload",
++                    "A briefing preference payload is required."
++                ]
++            });
++        }
++
++        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
++        var frequency = default(BriefingDeliveryFrequency);
++        var focusAreas = BriefingFocusAreaValues.AllowedValues;
++        var threshold = default(BriefingSectionPriorityCategory);
++
+         try
+         {
+-            var frequency = BriefingDeliveryFrequencyValues.Parse(command.DeliveryFrequency);
+-            var focusAreas = BriefingFocusAreaValues.NormalizeOrThrow(command.IncludedFocusAreas);
+-            var threshold = BriefingSectionPriorityCategoryValues.Parse(command.PriorityThreshold);
+-            return new ParsedBriefingPreferenceCommand(frequency, focusAreas, threshold);
++            frequency = BriefingDeliveryFrequencyValues.Parse(command.DeliveryFrequency);
+         }
+-        catch (ArgumentOutOfRangeException ex) when (ex.Message.Contains(BriefingPreferenceErrorCodes.UnsupportedFocusArea, StringComparison.OrdinalIgnoreCase))
++        catch (ArgumentOutOfRangeException)
+         {
+-            var details = new List<string> { BriefingPreferenceErrorCodes.UnsupportedFocusArea };
+-            if (ex.ActualValue is string attempted && !string.IsNullOrWhiteSpace(attempted))
+-            {
+-                details.Add($"Unsupported focus areas: {attempted}.");
+-            }
+-
+-            throw new BriefingValidationException(new Dictionary<string, string[]>
+-            {
+-                [nameof(command.IncludedFocusAreas)] = details.ToArray()
+-            });
++            errors[nameof(command.DeliveryFrequency)] =
++            [
++                BriefingPreferenceErrorCodes.InvalidDeliveryFrequency,
++                $"Allowed values: {string.Join(", ", BriefingDeliveryFrequencyValues.AllowedValues)}."
++            ];
+         }
+-        catch (ArgumentOutOfRangeException ex) when (ex.Message.Contains(BriefingPreferenceErrorCodes.InvalidDeliveryFrequency, StringComparison.OrdinalIgnoreCase))
++
++        try
+         {
+-            throw new BriefingValidationException(new Dictionary<string, string[]>
++            focusAreas = BriefingFocusAreaValues.NormalizeOrThrow(command.IncludedFocusAreas);
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            var details = new List<string>
+             {
+-                [nameof(command.DeliveryFrequency)] =
+-                [
+-                    BriefingPreferenceErrorCodes.InvalidDeliveryFrequency,
+-                    $"Allowed values: {string.Join(", ", BriefingDeliveryFrequencyValues.AllowedValues)}."
+-                ]
+-            });
++                BriefingPreferenceErrorCodes.UnsupportedFocusArea,
++                $"Allowed values: {string.Join(", ", BriefingFocusAreaValues.AllowedValues)}."
++            };
++
++            if (ex.ActualValue is string attempted && !string.IsNullOrWhiteSpace(attempted))
++            {
++                details.Add($"Unsupported focus areas: {attempted}.");
++            }
++
++            errors[nameof(command.IncludedFocusAreas)] = details.ToArray();
++        }
++
++        try
++        {
++            threshold = BriefingSectionPriorityCategoryValues.Parse(command.PriorityThreshold);
+         }
+         catch (ArgumentOutOfRangeException)
+         {
+-            throw new BriefingValidationException(new Dictionary<string, string[]>
++            errors[nameof(command.PriorityThreshold)] =
++            [
++                BriefingPreferenceErrorCodes.InvalidPriorityThreshold,
++                "Allowed values: informational, medium, high, critical."
++            ];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new BriefingValidationException(errors);
++        }
++
++        return new ParsedBriefingPreferenceCommand(frequency, focusAreas, threshold);
+-            {
+-                [nameof(command.PriorityThreshold)] =
+-                [
+-                    BriefingPreferenceErrorCodes.InvalidPriorityThreshold,
+-                    "Allowed values: informational, medium, high, critical."
+-                ]
+-            });
+-        }
+     }
+ 
+     private static BriefingPreferenceDto ToDto(UserBriefingPreference preference) =>
+         new(preference.CompanyId, preference.UserId, preference.DeliveryFrequency.ToStorageValue(), preference.IncludedFocusAreas, preference.PriorityThreshold.ToStorageValue(), BriefingPreferenceSource.User.ToStorageValue(), preference.UpdatedUtc);
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingPreferenceIntegrationTests.cs
+@@ -89,6 +89,11 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+         var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+         Assert.Contains("briefing_preferences.unsupported_focus_area", problem!.Errors.SelectMany(x => x.Value));
++
++        var saved = await client.GetFromJsonAsync<BriefingPreferenceResponse>($"/api/companies/{seed.CompanyId}/briefings/preferences/me");
++        Assert.NotNull(saved);
++        Assert.Equal("system_default", saved!.Source);
++        Assert.DoesNotContain("sales_gossip", saved.IncludedFocusAreas);
+     }
+ 
+     [Fact]
+@@ -110,6 +115,42 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApp
+         var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
+         Assert.Contains("briefing_preferences.invalid_delivery_frequency", problem!.Errors.SelectMany(x => x.Value));
+     }
++
++    [Fact]
++    public async Task Enum_style_delivery_frequency_returns_descriptive_4xx_error()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "DailyAndWeekly",
++            includedFocusAreas = new[] { "alerts" },
++            priorityThreshold = "medium"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.Contains("briefing_preferences.invalid_delivery_frequency", problem!.Errors.SelectMany(x => x.Value));
++        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains("daily_and_weekly", StringComparison.OrdinalIgnoreCase));
++    }
++
++    [Fact]
++    public async Task Mixed_valid_and_invalid_focus_areas_fail_cleanly()
++    {
++        var seed = await SeedCompanyAsync(CompanyMembershipRole.Owner);
++        using var client = CreateAuthenticatedClient();
++
++        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/briefings/preferences/me", new
++        {
++            deliveryFrequency = "daily",
++            includedFocusAreas = new[] { "alerts", "ops_rumors", "anomalies" },
++            priorityThreshold = "medium"
++        });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemResponse>();
++        Assert.Contains("briefing_preferences.unsupported_focus_area", problem!.Errors.SelectMany(x => x.Value));
++        Assert.Contains(problem.Errors.SelectMany(x => x.Value), value => value.Contains("ops_rumors", StringComparison.OrdinalIgnoreCase));
++    }
+ 
+     [Fact]
+     public async Task Invalid_priority_threshold_returns_descriptive_4xx_error()
+END_OF_PATCH

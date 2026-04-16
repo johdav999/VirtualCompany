@@ -1,0 +1,182 @@
+diff --git a/src/VirtualCompany.Domain/Entities/AuditEvent.cs b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+index 1d5b7a6..8c4f6f1 100644
+--- a/src/VirtualCompany.Domain/Entities/AuditEvent.cs
++++ b/src/VirtualCompany.Domain/Entities/AuditEvent.cs
+@@ -28,7 +28,8 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         IReadOnlyDictionary<string, string?>? metadata = null,
+         string? correlationId = null,
+         DateTime? occurredUtc = null,
+-        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null)
++        IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null,
++        string? payloadDiffJson = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -61,6 +62,7 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+         RelatedApprovalRequestId = ResolveRelatedId(ApprovalRequestTargetType, "approvalRequestId");
+         RelatedToolExecutionAttemptId = ResolveRelatedId(AgentToolExecutionTargetType, "toolExecutionId", "toolExecutionAttemptId");
+         OccurredUtc = occurredUtc ?? DateTime.UtcNow;
++        PayloadDiffJson = NormalizeOptional(payloadDiffJson, nameof(payloadDiffJson), 16000);
+     }
+ 
+     public Guid Id { get; private set; }
+@@ -84,6 +86,7 @@ public sealed class AuditEvent : ICompanyOwnedEntity
+     public Guid? RelatedApprovalRequestId { get; private set; }
+     public Guid? RelatedToolExecutionAttemptId { get; private set; }
+     public DateTime OccurredUtc { get; private set; }
++    public string? PayloadDiffJson { get; private set; }
+     public Company Company { get; private set; } = null!;
+ 
+     private static string NormalizeRequired(string value, string name, int maxLength)
+diff --git a/src/VirtualCompany.Domain/Enums/AgentEnums.cs b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+index 74e3d1f..a94c9b2 100644
+--- a/src/VirtualCompany.Domain/Enums/AgentEnums.cs
++++ b/src/VirtualCompany.Domain/Enums/AgentEnums.cs
+@@ -16,7 +16,9 @@ public enum AgentAutonomyLevel
+ {
+     Level0 = 0,
+     Level1 = 1,
++    Assisted = 1,
+     Level2 = 2,
++    Guided = 2,
+     Level3 = 3
+ }
+ 
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 32a5e69..14a3c8e 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -15,7 +15,8 @@ public sealed record AuditEventWriteRequest(
+     IReadOnlyDictionary<string, string?>? Metadata = null,
+     string? CorrelationId = null,
+     DateTime? OccurredUtc = null,
+-    IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null);
++    IReadOnlyCollection<AuditDataSourceUsed>? DataSourcesUsed = null,
++    string? PayloadDiffJson = null);
+ 
+ // Business audit history is an explicit application concern.
+ // Technical diagnostics belong on ILogger and must not be inferred from audit records.
+diff --git a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+index 51a5630..24a9b0d 100644
+--- a/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
++++ b/src/VirtualCompany.Infrastructure/Auditing/AuditEventWriter.cs
+@@ -31,7 +31,8 @@ public sealed class AuditEventWriter : IAuditEventWriter
+             auditEvent.Metadata,
+             auditEvent.CorrelationId,
+             auditEvent.OccurredUtc,
+-            BuildDataSourcesUsed(auditEvent)));
++            BuildDataSourcesUsed(auditEvent),
++            auditEvent.PayloadDiffJson));
+         return Task.CompletedTask;
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+index 46a9a7f..01c0eb4 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+@@ -376,10 +376,11 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+                     ["triggerSource"] = request.TriggerSource,
+                     ["triggerEventId"] = request.TriggerEventId,
+                     ["correlationId"] = request.CorrelationId,
+-                    ["sourceType"] = WorkTaskSourceTypes.Agent,
+-                    ["payloadDiff"] = Truncate(diff, 512)
++                    ["sourceType"] = WorkTaskSourceTypes.Agent
+                 },
+                 request.CorrelationId,
+-                nowUtc),
++                nowUtc,
++                PayloadDiffJson: diff),
+             cancellationToken);
+     }
+ 
+@@ -474,9 +475,6 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+         messages.Add(message);
+     }
+ 
+-    private static string Truncate(string value, int maxLength) =>
+-        value.Length <= maxLength ? value : value[..maxLength];
+-
+     private static string BuildDedupeKey(MappedTaskCreationRequest request)
+     {
+         var material = string.Join(
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+index 6ab9e6c..25edaf2 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -501,6 +501,7 @@ internal sealed class AuditEventConfiguration : IEntityTypeConfiguration<AuditEve
+         builder.Property(x => x.RationaleSummary).HasMaxLength(512);
+         builder.Property(x => x.CorrelationId).HasMaxLength(128);
+         builder.Property(x => x.OccurredUtc).IsRequired();
++        builder.Property(x => x.PayloadDiffJson).HasColumnName("payload_diff_json").HasMaxLength(16000);
+         builder.Property(x => x.DataSources)
+             .HasColumnName("data_sources_json")
+             .HasJsonConversion<List<string>>()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414174500_AddAuditEventPayloadDiff.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414174500_AddAuditEventPayloadDiff.cs
+new file mode 100644
+index 0000000..a9b3a72
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260414174500_AddAuditEventPayloadDiff.cs
+@@ -0,0 +1,40 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260414174500_AddAuditEventPayloadDiff")]
++public partial class AddAuditEventPayloadDiff : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var type = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL"
++            ? "character varying(16000)"
++            : "nvarchar(max)";
++
++        migrationBuilder.AddColumn<string>(
++            name: "payload_diff_json",
++            table: "audit_events",
++            type: type,
++            maxLength: 16000,
++            nullable: true);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropColumn(
++            name: "payload_diff_json",
++            table: "audit_events");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index 8fbf16a..e5b4dc1 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -73,6 +73,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.Property<DateTime>("OccurredUtc")
+                         .HasColumnType("datetime2");
+ 
++                    b.Property<string>("PayloadDiffJson")
++                        .HasMaxLength(16000)
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("payload_diff_json");
++
+                     b.Property<string>("Outcome")
+                         .IsRequired()
+                         .HasMaxLength(64)
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+index 4f8c5b2..ac25e13 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -91,7 +91,8 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Equal(agentId.ToString("N"), audit.Metadata["agentId"]);
+         Assert.Equal(companyId.ToString("N"), audit.Metadata["companyId"]);
+         Assert.Equal("condition", audit.Metadata["triggerSource"]);
+-        Assert.Contains("Review inventory drift", audit.Metadata["payloadDiff"]);
++        Assert.NotNull(audit.PayloadDiffJson);
++        Assert.Contains("Review inventory drift", audit.PayloadDiffJson);
+         Assert.True(audit.OccurredUtc > DateTime.UtcNow.AddMinutes(-1));
+     }
+ 
+END_OF_PATCH

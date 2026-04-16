@@ -98,7 +98,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
             {
                 migrationBuilder.Sql(
                     """
-                    IF COL_LENGTH(N'[tasks]', N'correlation_id') IS NULL
+                    IF COL_LENGTH(N'tasks', N'correlation_id') IS NULL
                     BEGIN
                         ALTER TABLE [tasks] ADD [correlation_id] nvarchar(128) NULL;
                     END;
@@ -137,9 +137,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     table.PrimaryKey("PK_agent_task_creation_dedupe", x => x.id);
                     table.ForeignKey(
                         name: "FK_agent_task_creation_dedupe_agents_agent_id",
-                        column: x => x.agent_id,
+                        columns: x => new { x.company_id, x.agent_id },
                         principalTable: "agents",
-                        principalColumn: "id",
+                        principalColumns: new[] { "company_id", "id" },
                         onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_agent_task_creation_dedupe_companies_company_id",
@@ -170,11 +170,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                 name: "IX_agent_task_creation_dedupe_company_id_trigger_source_trigger_event_id_correlation_id",
                 table: "agent_task_creation_dedupe",
                 columns: new[] { "company_id", "trigger_source", "trigger_event_id", "correlation_id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_agent_task_creation_dedupe_agent_id",
-                table: "agent_task_creation_dedupe",
-                column: "agent_id");
 
             migrationBuilder.CreateIndex(
                 name: "IX_agent_task_creation_dedupe_task_id",

@@ -142,6 +142,78 @@ public sealed class BriefingsController : ControllerBase
         }
     }
 
+    [HttpGet("preferences/me")]
+    public async Task<ActionResult<BriefingPreferenceDto>> GetUserPreferencesAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _briefingService.GetUserBriefingPreferenceAsync(companyId, cancellationToken));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPut("preferences/me")]
+    public async Task<ActionResult<BriefingPreferenceDto>> UpsertUserPreferencesAsync(
+        Guid companyId,
+        [FromBody] UpsertBriefingPreferenceCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _briefingService.UpsertUserBriefingPreferenceAsync(companyId, command, cancellationToken));
+        }
+        catch (BriefingValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpGet("tenant-defaults")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<TenantBriefingDefaultDto?>> GetTenantDefaultsAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _briefingService.GetTenantBriefingDefaultAsync(companyId, cancellationToken));
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPut("tenant-defaults")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<TenantBriefingDefaultDto>> UpsertTenantDefaultsAsync(
+        Guid companyId,
+        [FromBody] UpsertBriefingPreferenceCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _briefingService.UpsertTenantBriefingDefaultAsync(companyId, command, cancellationToken));
+        }
+        catch (BriefingValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
     private static string TrimForMobile(string value, int maxLength) =>
         value.Trim().Length <= maxLength ? value.Trim() : value.Trim()[..maxLength].TrimEnd() + "...";
 

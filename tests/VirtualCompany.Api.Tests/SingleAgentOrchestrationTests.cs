@@ -114,6 +114,33 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
         Assert.Equal("orch-test-correlation", auditEvent.CorrelationId);
         Assert.Equal(payload.OrchestrationId.ToString("N"), auditEvent.Metadata["orchestrationId"]);
         Assert.Equal(seed.AgentId, auditEvent.ActorId);
+        Assert.Equal("Nora Ledger", auditEvent.AgentName);
+        Assert.Equal("Finance Manager", auditEvent.AgentRole);
+        Assert.Equal("Finance", auditEvent.ResponsibilityDomain);
+        Assert.NotNull(auditEvent.PromptProfileVersion);
+        Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, auditEvent.BoundaryDecisionOutcome);
+        Assert.Null(auditEvent.IdentityReasonCode);
+        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == AuditEventActions.AgentGeneration &&
+            x.ActorId == seed.AgentId &&
+            x.TargetId == payload.OrchestrationId.ToString("N") &&
+            x.AgentName == "Nora Ledger" &&
+            x.AgentRole == "Finance Manager" &&
+            x.ResponsibilityDomain == "Finance" &&
+            x.PromptProfileVersion != null &&
+            x.BoundaryDecisionOutcome == AuditBoundaryDecisionOutcomes.InScope &&
+            x.IdentityReasonCode != null));
+        Assert.True(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == AuditEventActions.BoundaryEnforcement &&
+            x.ActorId == seed.AgentId &&
+            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString("N") &&
+            x.BoundaryDecisionOutcome == AuditBoundaryDecisionOutcomes.InScope));
+        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
+            x.ActorId == seed.AgentId));
 
         var attempt = await dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ToolExecutions[0].ExecutionId);
         Assert.Equal(seed.CompanyId, attempt.CompanyId);
@@ -189,6 +216,113 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
         Assert.Equal(seed.AgentId, auditEvent.ActorId);
         Assert.Equal("tool_not_permitted", auditEvent.Metadata["primaryReasonCode"]);
         Assert.Equal("orch-denial-correlation", auditEvent.CorrelationId);
+
+        var boundaryAudit = await dbContext.AuditEvents.AsNoTracking().SingleAsync(x =>
+            x.CompanyId == seed.CompanyId &&
+            x.Action == AuditEventActions.BoundaryEnforcement &&
+            x.TargetId == payload.ToolExecutions[0].ExecutionId.ToString("N"));
+
+        Assert.Equal(AuditBoundaryDecisionOutcomes.DeniedByPolicy, boundaryAudit.BoundaryDecisionOutcome);
+        Assert.Equal(AuditReasonCodes.BoundaryDeniedByPolicy, boundaryAudit.BoundaryReasonCode);
+        Assert.Equal("tool_not_permitted", boundaryAudit.Metadata["primaryReasonCode"]);
+    }
+
+    [Theory]
+    [InlineData("Finance Manager", "Nora Ledger", "finance.payments", "legal.contracts", "Legal Lead")]
+    [InlineData("Support Lead", "Ivy Resolve", "support.tickets", "finance.payments", "Finance Manager")]
+    public async Task Responsibility_boundary_returns_normal_or_delegation_result_per_agent_role(
+        string roleName,
+        string displayName,
+        string inScopeDomain,
+        string outOfScopeDomain,
+        string delegationTarget)
+    {
+        var inScopeSeed = await SeedTaskAsync(inScopeDomain, roleName, displayName, $"{inScopeDomain.Split('.')[0]}.*", delegationTarget);
+        var outOfScopeSeed = await SeedTaskAsync(outOfScopeDomain, roleName, displayName, $"{inScopeDomain.Split('.')[0]}.*", delegationTarget);
+        using var client = CreateAuthenticatedClient();
+
+        var inScopeResponse = await client.PostAsJsonAsync($"/api/companies/{inScopeSeed.CompanyId}/tasks/{inScopeSeed.TaskId}/execute", new
+        {
+            agentId = inScopeSeed.AgentId,
+            initiatingActorId = inScopeSeed.UserId,
+            initiatingActorType = "user",
+            correlationId = $"orch-in-scope-{roleName.Replace(" ", "-", StringComparison.OrdinalIgnoreCase)}",
+            intent = "execute_task"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, inScopeResponse.StatusCode);
+        var inScopePayload = await inScopeResponse.Content.ReadFromJsonAsync<OrchestrationResponse>();
+        Assert.NotNull(inScopePayload);
+        Assert.Contains($"{displayName} completed task", inScopePayload!.UserFacingOutput);
+        Assert.Null(inScopePayload.Action);
+
+        var outOfScopeResponse = await client.PostAsJsonAsync($"/api/companies/{outOfScopeSeed.CompanyId}/tasks/{outOfScopeSeed.TaskId}/execute", new
+        {
+            agentId = outOfScopeSeed.AgentId,
+            initiatingActorId = outOfScopeSeed.UserId,
+            initiatingActorType = "user",
+            correlationId = $"orch-out-of-scope-{roleName.Replace(" ", "-", StringComparison.OrdinalIgnoreCase)}",
+            intent = "execute_task"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, outOfScopeResponse.StatusCode);
+        var outOfScopePayload = await outOfScopeResponse.Content.ReadFromJsonAsync<OrchestrationResponse>();
+        Assert.NotNull(outOfScopePayload);
+        Assert.Contains($"outside {displayName}'s responsibility boundary", outOfScopePayload!.UserFacingOutput);
+        Assert.DoesNotContain("completed task", outOfScopePayload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegation, outOfScopePayload.Action!.ActionType);
+        Assert.Equal(delegationTarget, outOfScopePayload.Action.TargetAgentRole);
+        Assert.Equal(outOfScopeDomain, outOfScopePayload.Action.RequestedDomain);
+        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, outOfScopePayload.Action.MatchedRule);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(outOfScopeSeed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+
+        Assert.False(await dbContext.AuditEvents
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(x =>
+                x.CompanyId == inScopeSeed.CompanyId &&
+                x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
+                x.ActorId == inScopeSeed.AgentId));
+
+        var outOfScopeAudit = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(x =>
+                x.CompanyId == outOfScopeSeed.CompanyId &&
+                x.Action == AuditEventActions.AgentResponsibilityOutOfScopeHandled &&
+                x.ActorId == outOfScopeSeed.AgentId);
+
+        Assert.Equal(outOfScopeSeed.AgentId, outOfScopeAudit.ActorId);
+        Assert.Equal(displayName, outOfScopeAudit.AgentName);
+        Assert.Equal(roleName, outOfScopeAudit.AgentRole);
+        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, outOfScopeAudit.BoundaryReasonCode);
+        Assert.Equal(outOfScopeDomain, outOfScopeAudit.Metadata["requestedDomain"]);
+        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, outOfScopeAudit.Metadata["matchedRule"]);
+        Assert.Equal(delegationTarget, outOfScopeAudit.Metadata["delegationTarget"]);
+        Assert.Equal(ResponsibilityPolicyDecisionTypes.Delegation, outOfScopeAudit.Metadata["delegationAction"]);
+        Assert.NotNull(outOfScopeAudit.PayloadDiffJson);
+
+        using var payloadDiff = JsonDocument.Parse(outOfScopeAudit.PayloadDiffJson!);
+        var payloadRoot = payloadDiff.RootElement;
+        Assert.Equal(outOfScopeSeed.AgentId.ToString(), payloadRoot.GetProperty("agentId").GetString());
+        Assert.Equal(outOfScopeDomain, payloadRoot.GetProperty("requestedDomain").GetString());
+        Assert.Equal(ResponsibilityPolicyRuleKinds.DefaultDeny, payloadRoot.GetProperty("matchedRule").GetString());
+        Assert.Equal(delegationTarget, payloadRoot.GetProperty("delegationTarget").GetString());
+
+        var boundaryAudit = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(x =>
+                x.CompanyId == outOfScopeSeed.CompanyId &&
+                x.Action == AuditEventActions.BoundaryEnforcement &&
+                x.ActorId == outOfScopeSeed.AgentId);
+
+        Assert.Equal(AuditBoundaryDecisionOutcomes.DelegatedOutOfScope, boundaryAudit.BoundaryDecisionOutcome);
+        Assert.Equal(AuditReasonCodes.BoundaryDelegateOutOfScope, boundaryAudit.BoundaryReasonCode);
     }
 
     [Fact]
@@ -215,7 +349,12 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
         return client;
     }
 
-    private async Task<SeededTask> SeedTaskAsync()
+    private async Task<SeededTask> SeedTaskAsync(
+        string requestedDomain = "finance.payments",
+        string roleName = "Finance Manager",
+        string displayName = "Nora Ledger",
+        string allowedDomainPattern = "finance.*",
+        string defaultDelegationTarget = "Legal Lead")
     {
         var userId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
@@ -236,8 +375,8 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
                 agentId,
                 companyId,
                 "finance",
-                "Nora Ledger",
-                "Finance Manager",
+                displayName,
+                roleName,
                 "Finance",
                 null,
                 AgentSeniority.Senior,
@@ -246,7 +385,22 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
                 objectives: Payload(("primary", new JsonArray(JsonValue.Create("Protect cash flow")))),
                 kpis: Payload(("targets", new JsonArray(JsonValue.Create("forecast_accuracy")))),
                 tools: Payload(("allowed", new JsonArray(JsonValue.Create("erp")))),
-                scopes: Payload(("execute", new JsonArray(JsonValue.Create("payments")))),
+                scopes: Payload(
+                    ("execute", new JsonArray(JsonValue.Create("payments"))),
+                    ("responsibilityPolicy", new JsonObject
+                    {
+                        ["allowedDomains"] = new JsonArray(JsonValue.Create(allowedDomainPattern)),
+                        ["deniedDomains"] = new JsonArray(JsonValue.Create($"{allowedDomainPattern.TrimEnd('*')}high_risk")),
+                        ["delegationTargets"] = new JsonObject
+                        {
+                            [$"{allowedDomainPattern.TrimEnd('*')}high_risk"] = new JsonObject
+                            {
+                                ["target"] = JsonValue.Create("Chief Financial Officer"),
+                                ["actionType"] = JsonValue.Create("escalation")
+                            },
+                            ["default"] = JsonValue.Create(defaultDelegationTarget)
+                        }
+                    })),
                 thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
                 escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
                 roleBrief: "Execute finance operations through approved tools."));
@@ -261,7 +415,9 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
                 null,
                 "user",
                 userId,
-                Payload(("invoiceId", JsonValue.Create("inv-100")))));
+                Payload(
+                    ("invoiceId", JsonValue.Create("inv-100")),
+                    ("requestedDomain", JsonValue.Create(requestedDomain)))));
             return Task.CompletedTask;
         });
 
@@ -297,6 +453,7 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
         public List<OrchestrationToolExecutionReferenceResponse> ToolExecutionReferences { get; set; } = [];
         public OrchestrationFinalResultResponse? FinalResult { get; set; }
         public List<ToolInvocationResponse> ToolExecutions { get; set; } = [];
+        public OrchestrationActionResponse? Action { get; set; }
     }
 
     private sealed class OrchestrationUserOutputResponse
@@ -325,6 +482,16 @@ public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplica
         public string ToolName { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string CorrelationId { get; set; } = string.Empty;
+    }
+
+    private sealed class OrchestrationActionResponse
+    {
+        public string ActionType { get; set; } = string.Empty;
+        public string? TargetAgentRole { get; set; }
+        public Guid? TargetAgentId { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public string RequestedDomain { get; set; } = string.Empty;
+        public string MatchedRule { get; set; } = string.Empty;
     }
 
     private sealed class OrchestrationFinalResultResponse

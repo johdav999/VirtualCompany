@@ -1,0 +1,313 @@
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilteringIntegrationTests.cs
+@@ -82,6 +82,31 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Assert.Equal(seed.OpsFailedId, legacyOpsFailed.EventId);
+         Assert.Equal(seed.OpsTaskId, legacyOpsFailed.TaskId);
+     }
++
++    [Fact]
++    public async Task Feed_applies_all_supported_filters_together()
++    {
++        var seed = await SeedFilterTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var result = await GetFeedAsync(
++            client,
++            seed.CompanyId,
++            $"agentId={seed.FinanceAgentId}" +
++            "&department=Finance" +
++            $"&task={seed.FinanceTaskId}" +
++            "&eventType=task_completed" +
++            "&status=completed" +
++            $"&from={Escape(seed.BaseTime)}" +
++            $"&to={Escape(seed.BaseTime.AddMinutes(2))}");
++
++        var item = Assert.Single(result.Items);
++        Assert.Equal(seed.FinanceCompletedId, item.EventId);
++        Assert.Equal(seed.FinanceAgentId, item.AgentId);
++        Assert.Equal("Finance", item.Department);
++        Assert.Equal(seed.FinanceTaskId, item.TaskId);
++        Assert.Equal("task_completed", item.EventType);
++        Assert.Equal("completed", item.Status);
++        Assert.InRange(item.OccurredAt, seed.BaseTime, seed.BaseTime.AddMinutes(2).AddTicks(-1));
++    }
+ 
+     [Fact]
+     public async Task Feed_clear_filters_returns_broader_result_set()
+@@ -115,6 +140,47 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Activity_detail_contract_exposes_summary_payload_correlation_links_and_audit_link()
++    {
++        var seed = await SeedAuditLinkTenantAsync();
++        using var client = CreateAuthenticatedClient();
++
++        var feed = await GetFeedAsync(client, seed.CompanyId, "pageSize=20");
++        var linked = Assert.Single(feed.Items.Where(x => x.EventId == seed.LinkedActivityId));
++
++        Assert.Equal("Ops completed tool execution", linked.Summary);
++        Assert.Equal("tool_execution_completed", linked.NormalizedSummary.EventType);
++        Assert.Contains("Operations Agent", linked.NormalizedSummary.SummaryText);
++        Assert.Contains("Payroll export", linked.NormalizedSummary.SummaryText);
++        Assert.Equal("audit-link-corr", linked.CorrelationId);
++        Assert.Equal(seed.TaskId, linked.TaskId);
++        Assert.Equal("Payroll export", linked.RawPayload["targetName"].GetString());
++        Assert.Equal("Operations Agent", linked.RawPayload["actor"].GetString());
++        Assert.Equal(seed.AuditEventId.ToString(), linked.RawPayload["auditEventId"].GetString());
++        Assert.NotNull(linked.AuditLink);
++        Assert.Equal(seed.AuditEventId, linked.AuditLink!.AuditEventId);
++        Assert.Equal($"/audit/{seed.AuditEventId}?companyId={seed.CompanyId}", linked.AuditLink.Href);
++
++        var correlation = await client.GetFromJsonAsync<ActivityCorrelationTimelineResponse>(
++            $"/api/companies/{seed.CompanyId}/activity-feed/{linked.EventId}/correlation");
++
++        Assert.NotNull(correlation);
++        Assert.Equal(seed.CompanyId, correlation!.TenantId);
++        Assert.Equal("audit-link-corr", correlation.CorrelationId);
++        Assert.NotNull(correlation.SelectedActivityLinks);
++        Assert.Equal(linked.EventId, correlation.SelectedActivityLinks!.ActivityEventId);
++        var taskLink = Assert.Single(correlation.SelectedActivityLinks.LinkedEntities.Where(x => x.EntityType == "task"));
++        Assert.Equal(seed.TaskId, taskLink.EntityId);
++        Assert.True(taskLink.IsAvailable);
++        Assert.Equal("Payroll export", taskLink.DisplayText);
++
++        var unlinked = Assert.Single(feed.Items.Where(x => x.EventId == seed.CrossTenantActivityId));
++        Assert.Null(unlinked.AuditLink);
++        Assert.Equal(seed.TaskId, unlinked.TaskId);
++        Assert.Equal("Other tenant audit reference", unlinked.RawPayload["targetName"].GetString());
++        Assert.Equal(seed.OtherAuditEventId.ToString(), unlinked.RawPayload["auditEventId"].GetString());
++    }
++
+     [Fact]
+     public async Task Activity_audit_deep_link_is_tenant_scoped_and_resolves_to_audit_detail()
+     {
+@@ -128,14 +194,20 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Assert.Equal(seed.AuditEventId, linked.AuditLink!.AuditEventId);
+         Assert.Equal($"/audit/{seed.AuditEventId}?companyId={seed.CompanyId}", linked.AuditLink.Href);
+ 
+-        var detail = await client.GetFromJsonAsync<AuditDetailResponse>($"/api/companies/{seed.CompanyId}/audit/{linked.AuditLink.AuditEventId}");
++        var detail = await client.GetFromJsonAsync<AuditDetailResponse>(
++            $"/api/companies/{seed.CompanyId}/audit/{linked.AuditLink.AuditEventId}");
++
+         Assert.NotNull(detail);
+         Assert.Equal(seed.AuditEventId, detail!.Id);
+         Assert.Equal(seed.CompanyId, detail.CompanyId);
++        Assert.Equal(AuditEventActions.AgentToolExecutionExecuted, detail.Action);
++        Assert.Equal(AuditTargetTypes.Agent, detail.TargetType);
++        Assert.Equal(seed.AgentId.ToString(), detail.TargetId);
+ 
+         var crossTenant = Assert.Single(feed.Items.Where(x => x.EventId == seed.CrossTenantActivityId));
+         Assert.Null(crossTenant.AuditLink);
++        var crossTenantDetail = await client.GetAsync($"/api/companies/{seed.CompanyId}/audit/{seed.OtherAuditEventId}");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantDetail.StatusCode);
+     }
+ 
+     private async Task<FilterSeed> SeedFilterTenantAsync()
+@@ -245,6 +317,7 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         var companyId = Guid.NewGuid();
+         var otherCompanyId = Guid.NewGuid();
+         var agentId = Guid.NewGuid();
++        var taskId = Guid.NewGuid();
+         var auditEventId = Guid.NewGuid();
+         var otherAuditEventId = Guid.NewGuid();
+         var linkedActivityId = Guid.NewGuid();
+@@ -257,6 +330,16 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+             dbContext.Companies.AddRange(new Company(companyId, "Activity Audit Tenant"), new Company(otherCompanyId, "Other Activity Audit Tenant"));
+             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+             dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Ops Agent", "Operations Agent", "Operations", null, AgentSeniority.Mid));
++            dbContext.WorkTasks.Add(new WorkTask(
++                taskId,
++                companyId,
++                "ops",
++                "Payroll export",
++                "Task linked from activity detail.",
++                WorkTaskPriority.High,
++                agentId,
++                null,
++                "user",
++                userId));
+             dbContext.AuditEvents.AddRange(
+                 new AuditEvent(
+                     auditEventId,
+@@ -288,11 +371,11 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+                     "completed",
+                     "Ops completed tool execution",
+                     "audit-link-corr",
+-                    SourceWithAudit(auditEventId),
++                    SourceWithAudit(auditEventId, taskId, "Operations Agent", "Payroll export"),
+                     "Operations",
+-                    null,
++                    taskId,
+                     auditEventId),
+                 new ActivityEvent(
+                     crossTenantActivityId,
+                     companyId,
+@@ -302,16 +385,16 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+                     "completed",
+                     "Ops completed unlinked tool execution",
+                     "audit-link-corr",
+-                    SourceWithAudit(otherAuditEventId),
++                    SourceWithAudit(otherAuditEventId, taskId, "Operations Agent", "Other tenant audit reference"),
+                     "Operations",
+-                    null,
++                    taskId,
+                     otherAuditEventId));
+             return Task.CompletedTask;
+         });
+ 
+-        return new AuditLinkSeed(companyId, auditEventId, linkedActivityId, crossTenantActivityId);
++        return new AuditLinkSeed(companyId, agentId, taskId, auditEventId, otherAuditEventId, linkedActivityId, crossTenantActivityId);
+     }
+ 
+     private async Task<ActivityFeedResponse> GetFeedAsync(HttpClient client, Guid companyId, string query)
+@@ -348,12 +431,22 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+             ["department"] = JsonValue.Create(department)
+         };
+ 
+-    private static Dictionary<string, JsonNode?> SourceWithAudit(Guid auditEventId) =>
++    private static Dictionary<string, JsonNode?> SourceWithAudit(Guid auditEventId, Guid taskId, string actor, string targetName) =>
+         new(StringComparer.OrdinalIgnoreCase)
+         {
+             ["sourceType"] = JsonValue.Create("tool_execution"),
+-            ["auditEventId"] = JsonValue.Create(auditEventId)
++            ["auditEventId"] = JsonValue.Create(auditEventId),
++            ["taskId"] = JsonValue.Create(taskId),
++            ["actor"] = JsonValue.Create(actor),
++            ["targetName"] = JsonValue.Create(targetName),
++            ["linkedEntities"] = new JsonArray
++            {
++                new JsonObject
++                {
++                    ["entityType"] = JsonValue.Create("task"),
++                    ["entityId"] = JsonValue.Create(taskId)
++                }
++            }
+         };
+ 
+     private static string Escape(DateTime value) =>
+@@ -371,7 +464,14 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         Guid OpsFailedId,
+         Guid OpsToolStartedId);
+ 
+-    private sealed record AuditLinkSeed(Guid CompanyId, Guid AuditEventId, Guid LinkedActivityId, Guid CrossTenantActivityId);
++    private sealed record AuditLinkSeed(
++        Guid CompanyId,
++        Guid AgentId,
++        Guid TaskId,
++        Guid AuditEventId,
++        Guid OtherAuditEventId,
++        Guid LinkedActivityId,
++        Guid CrossTenantActivityId);
+ 
+     private sealed record ActivityFeedResponse(IReadOnlyList<ActivityEventResponse> Items, string? NextCursor);
+ 
+@@ -389,11 +489,34 @@ public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWe
+         string? Department,
+         Guid? TaskId,
+         ActivityAuditLinkResponse? AuditLink,
+-        Dictionary<string, JsonElement> RawPayload);
++        Dictionary<string, JsonElement> RawPayload,
++        ActivitySummaryResponse NormalizedSummary);
+ 
+     private sealed record ActivityAuditLinkResponse(Guid AuditEventId, string Href);
+ 
+-    private sealed record AuditDetailResponse(Guid Id, Guid CompanyId);
++    private sealed record ActivitySummaryResponse(
++        string EventType,
++        string FormatterKey,
++        string? Actor,
++        string Action,
++        string? Target,
++        string? Outcome,
++        string SummaryText,
++        string Text);
++
++    private sealed record ActivityCorrelationTimelineResponse(
++        Guid TenantId,
++        string CorrelationId,
++        IReadOnlyList<ActivityTimelineItemResponse> Items,
++        ActivityLinkedEntitiesResponse? SelectedActivityLinks);
++
++    private sealed record ActivityTimelineItemResponse(ActivityEventResponse Activity);
++
++    private sealed record ActivityLinkedEntitiesResponse(
++        Guid TenantId,
++        Guid ActivityEventId,
++        IReadOnlyList<ActivityLinkedEntityResponse> LinkedEntities);
++
++    private sealed record ActivityLinkedEntityResponse(
++        string EntityType,
++        Guid EntityId,
++        string DisplayText,
++        bool IsAvailable);
++
++    private sealed record AuditDetailResponse(Guid Id, Guid CompanyId, string Action, string TargetType, string TargetId);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityFeedFilterStateTests.cs
+@@ -35,6 +35,58 @@ public sealed class ActivityFeedFilterStateTests
+         Assert.Equal(to, parameters["to"]);
+     }
+ 
++    [Fact]
++    public void Applying_filters_serializes_shareable_query_string_values()
++    {
++        var companyId = Guid.Parse("6b4558ee-086a-4bbf-b539-2e26ec867be2");
++        var agentId = "71f7f407-a6d1-49bb-bf56-7890e8453102";
++        var taskId = "560bc97c-372f-4b48-a56a-6d79aa3d3b79";
++        var from = new DateTime(2026, 4, 15, 8, 0, 0, DateTimeKind.Utc);
++        var to = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc);
++        var state = new ActivityFeedFilterState
++        {
++            AgentId = $" {agentId} ",
++            Department = " Finance ",
++            TaskId = $" {taskId} ",
++            EventType = " task_completed ",
++            Status = " completed ",
++            Timeframe = ActivityFeedFilterState.Custom,
++            FromUtc = from,
++            ToUtc = to
++        };
++
++        var parameters = state.ToQueryParameters(companyId);
++
++        Assert.Equal(companyId, parameters["companyId"]);
++        Assert.Equal(agentId, parameters["agentId"]);
++        Assert.Equal("Finance", parameters["department"]);
++        Assert.Equal(taskId, parameters["task"]);
++        Assert.Null(parameters["taskId"]);
++        Assert.Equal("task_completed", parameters["eventType"]);
++        Assert.Equal("completed", parameters["status"]);
++        Assert.Equal(ActivityFeedFilterState.Custom, parameters["timeframe"]);
++        Assert.Equal(from, parameters["from"]);
++        Assert.Equal(to, parameters["to"]);
++    }
++
++    [Fact]
++    public void Reload_from_query_string_restores_current_filtered_view_state()
++    {
++        var query = HttpUtility.ParseQueryString("agentId=71f7f407-a6d1-49bb-bf56-7890e8453102&department=Finance&task=560bc97c-372f-4b48-a56a-6d79aa3d3b79&eventType=task_completed&status=completed&timeframe=custom&from=2026-04-15T08%3A00%3A00.0000000Z&to=2026-04-15T12%3A00%3A00.0000000Z");
++
++        var state = ActivityFeedFilterState.FromQuery(query);
++        var apiFilter = state.ToApiFilter();
++
++        Assert.Equal("71f7f407-a6d1-49bb-bf56-7890e8453102", apiFilter.AgentId);
++        Assert.Equal("Finance", apiFilter.Department);
++        Assert.Equal("560bc97c-372f-4b48-a56a-6d79aa3d3b79", apiFilter.TaskId);
++        Assert.Equal("task_completed", apiFilter.EventType);
++        Assert.Equal("completed", apiFilter.Status);
++        Assert.Equal(ActivityFeedFilterState.Custom, apiFilter.Timeframe);
++        Assert.Equal(new DateTime(2026, 4, 15, 8, 0, 0, DateTimeKind.Utc), apiFilter.FromUtc);
++        Assert.Equal(new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc), apiFilter.ToUtc);
++    }
++
+     [Fact]
+     public void Clear_filters_omits_default_query_values()
+     {
+END_OF_PATCH

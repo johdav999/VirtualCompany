@@ -1,0 +1,117 @@
+diff --git a/src/VirtualCompany.Application/Tasks/TaskContracts.cs b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+index 0b8d4d1..9d5e30a 100644
+--- a/src/VirtualCompany.Application/Tasks/TaskContracts.cs
++++ b/src/VirtualCompany.Application/Tasks/TaskContracts.cs
+@@ -170,6 +170,7 @@ public sealed record MappedTaskCreationRequest(
+     string? Description,
+     string Priority,
++    string Status,
+     DateTime? DueAt,
+     Guid? AssignedAgentId,
+     Dictionary<string, JsonNode?> InputPayload);
+diff --git a/src/VirtualCompany.Domain/Entities/TaskEntities.cs b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+index 37f0b9a..f2c1a4c 100644
+--- a/src/VirtualCompany.Domain/Entities/TaskEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/TaskEntities.cs
+@@ -36,7 +36,8 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         Guid? originatingAgentId = null,
+         string? triggerSource = null,
+         string? creationReason = null,
+-        string? triggerEventId = null)
++        string? triggerEventId = null,
++        WorkTaskStatus? status = null)
+     {
+         if (companyId == Guid.Empty)
+         {
+@@ -70,6 +71,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         }
+ 
+         _ = priority.ToStorageValue();
++        _ = (status ?? WorkTaskStatusValues.DefaultStatus).ToStorageValue();
+ 
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+         CompanyId = companyId;
+@@ -78,7 +80,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
+         Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
+         Description = NormalizeOptional(description, nameof(description), DescriptionMaxLength);
+         Priority = priority;
+-        Status = WorkTaskStatusValues.DefaultStatus;
++        Status = status ?? WorkTaskStatusValues.DefaultStatus;
+         AssignedAgentId = assignedAgentId;
+         ParentTaskId = parentTaskId;
+         CreatedByActorType = NormalizeRequired(createdByActorType, nameof(createdByActorType), ActorTypeMaxLength);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+index 66e6843..33ad28a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/ProactiveTaskCreationInfrastructure.cs
+@@ -24,8 +24,11 @@ public sealed class DefaultTriggerToTaskMappingService : ITriggerToTaskMappingSe
+ 
+         var payload = CloneNodes(trigger.Payload);
+         payload["triggerSource"] = JsonValue.Create(trigger.TriggerSource);
++        payload["triggerEventKey"] = JsonValue.Create(trigger.TriggerEventId);
+         payload["triggerEventId"] = JsonValue.Create(trigger.TriggerEventId);
+         payload["correlationId"] = JsonValue.Create(trigger.CorrelationId);
++        payload["sourceType"] = JsonValue.Create(WorkTaskSourceTypes.Agent);
++        payload["creationReason"] = JsonValue.Create(trigger.CreationReason);
+         payload["originatingAgentId"] = JsonValue.Create(trigger.AgentId.ToString("N"));
+ 
+         var title = FirstNonBlank(
+@@ -53,6 +56,7 @@ public sealed class DefaultTriggerToTaskMappingService : ITriggerToTaskMappingSe
+             description,
+             FirstNonBlank(trigger.TaskPriority, ReadString(payload, "priority"), WorkTaskPriority.Normal.ToStorageValue()),
++            WorkTaskStatus.New.ToStorageValue(),
+             trigger.DueAt,
+             trigger.AssignedAgentId ?? trigger.AgentId,
+             payload);
+@@ -255,7 +259,8 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+             WorkTaskSourceTypes.Agent,
+             request.AgentId,
+             request.TriggerSource,
+             request.CreationReason,
+-            request.TriggerEventId);
++            request.TriggerEventId,
++            WorkTaskStatusValues.Parse(request.Status));
+         task.SetDueDate(request.DueAt);
+ 
+         _dbContext.AgentTaskCreationDedupeRecords.Add(new AgentTaskCreationDedupeRecord(
+@@ -435,6 +440,11 @@ public sealed class ProactiveTaskCreationService : IProactiveTaskCreationService
+             AddError(errors, nameof(request.Priority), WorkTaskPriorityValues.BuildValidationMessage(request.Priority));
+         }
+ 
++        if (!WorkTaskStatusValues.TryParse(request.Status, out _))
++        {
++            AddError(errors, nameof(request.Status), WorkTaskStatusValues.BuildValidationMessage(request.Status));
++        }
++
+         if (errors.Count > 0)
+         {
+             throw new TaskValidationException(errors.ToDictionary(x => x.Key, x => x.Value.ToArray(), StringComparer.OrdinalIgnoreCase));
+diff --git a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+index 9af0c2a..9ef77fb 100644
+--- a/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ProactiveTaskCreationServiceTests.cs
+@@ -39,6 +39,9 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Equal("correlation-1", mapped.CorrelationId);
+         Assert.Equal("Review inventory drift", mapped.Title);
+         Assert.Equal("high", mapped.Priority);
++        Assert.Equal(WorkTaskStatus.New.ToStorageValue(), mapped.Status);
++        Assert.Equal(WorkTaskSourceTypes.Agent, mapped.InputPayload["sourceType"]!.GetValue<string>());
++        Assert.Equal("trigger-event-1", mapped.InputPayload["triggerEventKey"]!.GetValue<string>());
+         Assert.Equal(agentId.ToString("N"), mapped.InputPayload["originatingAgentId"]!.GetValue<string>());
+     }
+ 
+@@ -156,6 +159,7 @@ public sealed class ProactiveTaskCreationServiceTests
+                 null,
+                 "",
++                "",
+                 null,
+                 null,
+                 [])));
+@@ -176,6 +180,7 @@ public sealed class ProactiveTaskCreationServiceTests
+         Assert.Contains(nameof(MappedTaskCreationRequest.Title), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.Description), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.Priority), ex.Errors.Keys);
++        Assert.Contains(nameof(MappedTaskCreationRequest.Status), ex.Errors.Keys);
+         Assert.Contains(nameof(MappedTaskCreationRequest.AssignedAgentId), ex.Errors.Keys);
+     }
+END_OF_PATCH

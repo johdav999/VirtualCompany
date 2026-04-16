@@ -57,6 +57,16 @@ public sealed class NotificationInboxTests
     }
 
     [Fact]
+    public void Proactive_message_notification_uses_supported_storage_value()
+    {
+        var notification = CreateNotification(CompanyNotificationType.ProactiveMessage, CompanyNotificationPriority.Normal);
+
+        Assert.Equal(CompanyNotificationType.ProactiveMessage, notification.Type);
+        Assert.Equal("proactive_message", notification.Type.ToStorageValue());
+        Assert.Equal("proactive_message", notification.RelatedEntityType);
+    }
+
+    [Fact]
     public void Notification_priority_sort_places_approvals_then_exceptions_then_briefings()
     {
         var approval = CreateNotification(CompanyNotificationType.ApprovalRequested, CompanyNotificationPriority.High);
@@ -170,7 +180,7 @@ public sealed class NotificationInboxTests
             priority,
             type.ToStorageValue(),
             "Notification body.",
-            type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : "approval_request",
+            type == CompanyNotificationType.BriefingAvailable ? "company_briefing" : type.ToStorageValue(),
             Guid.NewGuid(),
             "/inbox",
             "{}",

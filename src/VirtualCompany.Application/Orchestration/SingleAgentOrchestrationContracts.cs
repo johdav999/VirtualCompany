@@ -159,7 +159,8 @@ public sealed record CompanyRuntimeContext(
     string? Timezone,
     string? Currency,
     string? Language,
-    string? ComplianceRegion);
+    string? ComplianceRegion,
+    PromptIdentityPolicyDto? IdentityPolicy = null);
 
 public sealed record ToolMetadataDto(
     string Name,
@@ -194,11 +195,53 @@ public sealed record PromptSectionDto(
     string Content,
     Dictionary<string, JsonNode?> Metadata);
 
+public sealed record PromptIdentityPolicyDto(
+    string? Role = null,
+    string? Seniority = null,
+    string? BusinessResponsibility = null,
+    IReadOnlyList<string>? CollaborationNorms = null,
+    IReadOnlyList<string>? PersonalityTraits = null,
+    string? AdditionalNotes = null);
+
+public sealed record PromptIdentitySectionDto(
+    string Role,
+    string Seniority,
+    string BusinessResponsibility,
+    IReadOnlyList<string> CollaborationNorms,
+    IReadOnlyList<string> PersonalityTraits,
+    IReadOnlyList<string> AdditionalNotes,
+    IReadOnlyDictionary<string, string> Sources);
+
+public sealed record PromptIdentityTaskOverrides(
+    string? Role = null,
+    string? Seniority = null,
+    string? BusinessResponsibility = null,
+    IReadOnlyList<string>? CollaborationNorms = null,
+    IReadOnlyList<string>? PersonalityTraits = null,
+    string? AdditionalNotes = null);
+
 public sealed record PromptBuildRequest(
     SingleAgentRuntimeContext RuntimeContext,
     IReadOnlyList<MemorySnippet>? MemorySnippets = null,
     IReadOnlyList<PolicyInstruction>? PolicyInstructions = null,
-    IReadOnlyList<ToolSchemaDefinition>? ToolSchemas = null);
+    IReadOnlyList<ToolSchemaDefinition>? ToolSchemas = null,
+    PromptDebugMode DebugMode = PromptDebugMode.Suppressed);
+
+public enum PromptDebugMode
+{
+    Suppressed = 0,
+    NonProduction = 1
+}
+
+public static class PromptIdentityPayloadKeys
+{
+    public const string Role = "identityRole";
+    public const string Seniority = "identitySeniority";
+    public const string BusinessResponsibility = "identityBusinessResponsibility";
+    public const string CollaborationNorms = "identityCollaborationNorms";
+    public const string PersonalityTraits = "identityPersonalityTraits";
+    public const string AdditionalNotes = "identityAdditionalNotes";
+}
 
 public sealed record PromptBuildResult(
     Guid PromptId,
@@ -207,6 +250,7 @@ public sealed record PromptBuildResult(
     Dictionary<string, JsonNode?> Payload,
     string SystemPrompt,
     IReadOnlyList<PromptSectionDto> Sections,
+    PromptIdentitySectionDto ResolvedIdentity,
     IReadOnlyList<ToolSchemaDefinition> ToolSchemas,
     IReadOnlyList<string> SourceReferenceIds,
     DateTime BuiltAtUtc);
@@ -345,7 +389,17 @@ public sealed record OrchestrationResult(
     public IReadOnlyList<OrchestrationToolExecutionReference> ToolExecutionReferences { get; init; } = Array.Empty<OrchestrationToolExecutionReference>();
 
     public OrchestrationCompositeFinalResult? FinalResult { get; init; }
+
+    public OrchestrationAction? Action { get; init; }
 }
+
+public sealed record OrchestrationAction(
+    string ActionType,
+    string? TargetAgentRole,
+    Guid? TargetAgentId,
+    string Reason,
+    string RequestedDomain,
+    string MatchedRule);
 
 public sealed record OrchestrationAuditWriteRequest(
     SingleAgentRuntimeContext RuntimeContext,
@@ -379,6 +433,21 @@ public interface IToolExecutor
 public interface IOrchestrationAuditWriter
 {
     Task WriteAsync(OrchestrationAuditWriteRequest request, CancellationToken cancellationToken);
+}
+
+public sealed record CommunicationStyleRuleViolation(
+    string RuleId,
+    string RuleType,
+    string Message);
+
+public sealed record CommunicationStyleRuleCheckResult(
+    bool Passed,
+    IReadOnlyList<CommunicationStyleRuleViolation> Violations,
+    IReadOnlyList<string> RuleIds);
+
+public interface ICommunicationStyleRuleChecker
+{
+    CommunicationStyleRuleCheckResult Check(string? generatedText, AgentCommunicationProfileDto profile);
 }
 
 public sealed class OrchestrationValidationException : Exception

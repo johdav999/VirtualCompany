@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Workflows;
@@ -436,7 +437,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             Metadata = CloneNodes(workflowEvent.Metadata)
         };
 
-        var triggeredDefinitions = await _dbContext.WorkflowTriggers
+        var candidateTriggers = await _dbContext.WorkflowTriggers
             .IgnoreQueryFilters()
             .Include(x => x.Definition)
             .Where(x =>
@@ -450,12 +451,33 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             .ThenByDescending(x => x.Definition.Version)
             .ToListAsync(cancellationToken);
 
+        var triggeredDefinitions = candidateTriggers
+            .Where(x => MatchesPlatformEventCriteria(x.CriteriaJson, normalizedEvent))
+            .ToList();
+
+        _logger.LogInformation(
+            "Received platform event {EventType} with id {EventId}, correlation {CorrelationId}, and source {SourceEntityType}/{SourceEntityId} for company {CompanyId}.",
+            normalizedEvent.EventType,
+            normalizedEvent.EventId,
+            normalizedEvent.CorrelationId,
+            normalizedEvent.SourceEntityType,
+            normalizedEvent.SourceEntityId,
+            normalizedEvent.CompanyId);
+        _logger.LogInformation(
+            "Matched {MatchedTriggerCount} enabled workflow trigger(s) out of {CandidateTriggerCount} candidate(s) for platform event {EventType} with id {EventId} in company {CompanyId}.",
+            triggeredDefinitions.Count,
+            candidateTriggers.Count,
+            normalizedEvent.EventType,
+            normalizedEvent.EventId,
+            normalizedEvent.CompanyId);
+
         var started = new List<WorkflowInstanceDto>();
         foreach (var trigger in triggeredDefinitions
             .GroupBy(x => x.Definition.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(x => x.Definition.Version).First()))
         {
             var processedEvent = await TryReserveProcessedTriggerEventAsync(
+                useAmbientTransaction: true,
                 normalizedEvent.CompanyId,
                 trigger.Id,
                 eventId,
@@ -476,6 +498,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
 
             try
             {
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
                 var instance = await StartInstanceCoreAsync(
                     normalizedEvent.CompanyId,
                     new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventId),
@@ -483,6 +506,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                     cancellationToken);
                 processedEvent.MarkExecutionCreated(instance.Id);
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
                 started.Add(instance);
 
                 _logger.LogInformation(
@@ -742,7 +766,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         EnqueueWorkflowStateChangedEvent(instance, state, command.OutputPayload);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-
+        
         return ToInstanceDto(instance);
     }
 
@@ -1075,7 +1099,34 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         {
             AddError(errors, nameof(command.EventName), SupportedPlatformEventTypeRegistry.BuildValidationMessage(command.EventName));
         }
+
+        AddConditionCriteriaErrors(errors, command.CriteriaJson);
         ThrowIfInvalid(errors);
+    }
+
+    private static void AddConditionCriteriaErrors(
+        IDictionary<string, List<string>> errors,
+        IDictionary<string, JsonNode?>? criteriaJson)
+    {
+        if (criteriaJson is null)
+        {
+            return;
+        }
+
+        var conditionEntry = criteriaJson.FirstOrDefault(pair =>
+            string.Equals(pair.Key, ConditionExpressionCriteriaMapper.CriteriaConditionKey, StringComparison.OrdinalIgnoreCase));
+        if (conditionEntry.Key is null)
+        {
+            return;
+        }
+
+        var conditionErrors = ConditionExpressionCriteriaMapper.ValidateCriteriaCondition(
+            conditionEntry.Value,
+            $"{nameof(CreateWorkflowTriggerCommand.CriteriaJson)}.{ConditionExpressionCriteriaMapper.CriteriaConditionKey}");
+        foreach (var error in conditionErrors)
+        {
+            AddErrors(errors, error.Key, error.Value);
+        }
     }
 
     private static void Validate(StartManualWorkflowByCodeCommand command)
@@ -1195,6 +1246,17 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
     private static string NormalizeCode(string code) =>
         code.Trim().ToUpperInvariant();
 
+    private static void AddErrors(
+        IDictionary<string, List<string>> errors,
+        string key,
+        IEnumerable<string> messages)
+    {
+        foreach (var message in messages)
+        {
+            AddError(errors, key, message);
+        }
+    }
+
     private static void AddError(IDictionary<string, List<string>> errors, string key, string message)
     {
         if (!errors.TryGetValue(key, out var messages))
@@ -1264,6 +1326,127 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         MatchesConfiguredValue(definition.DefinitionJson, "event", eventName) ||
         MatchesConfiguredValue(definition.DefinitionJson, "trigger", eventName);
 
+    private static bool MatchesPlatformEventCriteria(
+        IReadOnlyDictionary<string, JsonNode?> criteriaJson,
+        PlatformEventEnvelope workflowEvent)
+    {
+        if (criteriaJson.Count == 0)
+        {
+            return true;
+        }
+
+        foreach (var criterion in criteriaJson)
+        {
+            if (criterion.Value is null)
+            {
+                continue;
+            }
+
+            if (!MatchesPlatformEventCriterion(criterion.Key, criterion.Value, workflowEvent))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool MatchesPlatformEventCriterion(
+        string key,
+        JsonNode expected,
+        PlatformEventEnvelope workflowEvent)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return true;
+        }
+
+        var normalizedKey = key.Trim();
+        if (string.Equals(normalizedKey, "eventId", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.EventId);
+        }
+
+        if (string.Equals(normalizedKey, "eventType", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedKey, "eventName", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.EventType);
+        }
+
+        if (string.Equals(normalizedKey, "companyId", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedKey, "tenantId", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.CompanyId.ToString("N")) ||
+                MatchesScalar(expected, workflowEvent.CompanyId.ToString("D"));
+        }
+
+        if (string.Equals(normalizedKey, "correlationId", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.CorrelationId);
+        }
+
+        if (string.Equals(normalizedKey, "sourceEntityType", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.SourceEntityType);
+        }
+
+        if (string.Equals(normalizedKey, "sourceEntityId", StringComparison.OrdinalIgnoreCase))
+        {
+            return MatchesScalar(expected, workflowEvent.SourceEntityId);
+        }
+
+        if (string.Equals(normalizedKey, "metadata", StringComparison.OrdinalIgnoreCase))
+        {
+            return expected is JsonObject metadataCriteria &&
+                metadataCriteria.All(pair =>
+                    workflowEvent.Metadata.TryGetValue(pair.Key, out var actual) &&
+                    MatchesNode(pair.Value, actual));
+        }
+
+        const string metadataDotPrefix = "metadata.";
+        const string metadataColonPrefix = "metadata:";
+        if (normalizedKey.StartsWith(metadataDotPrefix, StringComparison.OrdinalIgnoreCase) ||
+            normalizedKey.StartsWith(metadataColonPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var metadataKey = normalizedKey[(normalizedKey.IndexOfAny(['.', ':']) + 1)..];
+            return workflowEvent.Metadata.TryGetValue(metadataKey, out var actual) &&
+                MatchesNode(expected, actual);
+        }
+
+        // Unqualified criteria keys are treated as metadata filters for compact trigger definitions.
+        return workflowEvent.Metadata.TryGetValue(normalizedKey, out var metadataValue) &&
+            MatchesNode(expected, metadataValue);
+    }
+
+    private static bool MatchesScalar(JsonNode expected, string actual) =>
+        MatchesNode(expected, JsonValue.Create(actual));
+
+    private static bool MatchesNode(JsonNode? expected, JsonNode? actual)
+    {
+        if (expected is null)
+        {
+            return true;
+        }
+
+        if (actual is null)
+        {
+            return false;
+        }
+
+        if (expected is JsonArray anyOf)
+        {
+            return anyOf.Any(item => MatchesNode(item, actual));
+        }
+
+        return string.Equals(JsonScalarComparisonValue(expected), JsonScalarComparisonValue(actual), StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(expected.ToJsonString(), actual.ToJsonString(), StringComparison.Ordinal);
+    }
+
+    private static string JsonScalarComparisonValue(JsonNode node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text.Trim()
+            : node.ToJsonString();
+
     private static bool MatchesConfiguredValue(Dictionary<string, JsonNode?> definitionJson, string sectionName, string value)
     {
         if (!definitionJson.TryGetValue(sectionName, out var node) || node is null)
@@ -1296,7 +1479,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         return false;
     }
 
+    // The processed-event row and workflow instance are persisted in one transaction by callers
+    // so retries cannot leave a committed idempotency marker without its execution request.
     private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(
+        bool useAmbientTransaction,
         Guid companyId,
         Guid triggerId,
         string eventId,
@@ -1311,8 +1497,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                 eventId,
                 DateTime.UtcNow);
             await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);
-
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            if (!useAmbientTransaction)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
             return processedEvent;
         }
         catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))

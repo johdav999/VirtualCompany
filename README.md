@@ -1,3 +1,14 @@
+
+## Agent Communication Profiles
+
+Agent prompt composition resolves a normalized communication profile at generation time. Direct chat, task output, and document or generated-artifact prompts all render the same `Agent identity profile` system section before channel-specific user instructions.
+
+Resolution order:
+
+1. The persisted agent communication profile.
+2. System fallback profile when no explicit profile is configured.
+
+Fallback usage is logged with company, agent, generation path, and correlation identifiers. Runtime profile resolution rereads the persisted agent record for each generation request so operating profile changes are picked up without restarting the service.
 # VirtualCompany
 
 Initial .NET solution setup for the `VirtualCompany` application.
@@ -112,6 +123,19 @@ On first authenticated request, the API provisions or updates the internal `User
 ## Company Context Resolution
 
 Tenant-owned API requests resolve company context from:
+### Executive cockpit performance validation
+
+The executive cockpit supports aggregate dashboard loading plus widget-scoped refresh endpoints under
+`/api/companies/{companyId}/executive-cockpit/widgets/{widgetKey}`. Redis cache keys are scoped by company,
+effective membership role, normalized department filters, time range, and widget/query identity. Dashboard
+cache invalidation is version-token based, so task, workflow, approval, briefing, alert, and agent status
+updates move the company cache namespace without requiring wildcard Redis deletes.
+
+For staging validation, inspect `executive_cockpit_endpoint_latency_ms`,
+`executive_cockpit_cache_hits`, `executive_cockpit_cache_misses`, and
+`executive_cockpit_widget_render_ms` while repeatedly loading the cockpit and refreshing individual widgets.
+Cached dashboard and widget requests should remain below the 2.5 second p95 target.
+
 
 1. Route value `companyId`
 2. Header `X-Company-Id` when a route value is not present
@@ -133,6 +157,16 @@ Request correlation:
 
 TASK-ST-505 adds a deterministic v1 briefing pipeline. The `BriefingScheduler` hosted service scans tenant companies and generates one daily briefing and one weekly executive summary per company-period, using company timezone windows and an idempotent `(company_id, briefing_type, period_start_at, period_end_at)` key.
 
+
+## Executive Cockpit Performance
+
+The executive cockpit uses scoped Redis-backed cache keys for tenant, role, department filters, time range, and widget/query identity. Dashboard invalidation is version-token based so task, workflow, approval, and agent-status updates avoid wildcard Redis scans while making prior namespace entries stale.
+
+Observability details, metric names, example queries, and staging-style performance commands are documented in `docs/executive-cockpit-observability.md`.
+
+The perf harness is disabled unless staging inputs are provided:
+
+`EXECUTIVE_COCKPIT_PERF_BASE_URL=https://staging-api.example.com EXECUTIVE_COCKPIT_PERF_COMPANY_ID=<company-guid> dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --filter ExecutiveCockpitPerformanceTests`
 Briefings aggregate pending approvals, task status highlights, open workflow exceptions, and recent agent tool execution activity. Generated output is stored in `company_briefings`, projected to the executive briefing conversation when an active user exists, and fan-out notification rows are written to `company_notifications`.
 
 Users can read and update in-app/mobile delivery preferences at `api/companies/{companyId}/briefings/preferences`. In-app delivery defaults on, mobile defaults off, and daily/weekly cadence preferences default on. Push provider and email dispatch are intentionally out of scope for this slice.
@@ -153,6 +187,8 @@ The mobile app centralizes this boundary in `MobileCompanionScope` so navigation
 ## Workflow v1
 
 Workflow v1 intentionally supports only predefined, versioned workflow templates from the curated catalog. Admins can review the catalog and start manual workflows, while schedule and internal event starts use the same predefined definitions. Arbitrary workflow graph authoring, builder UX, and custom node/edge editing are intentionally deferred.
+
+Event-driven workflow triggers use the canonical platform event registry: `task.created`, `task.updated`, `document.uploaded`, and `workflow.state_changed`. Platform events carry `eventId`, `eventType`, `occurredAtUtc`, `companyId`, `correlationId`, source entity identifiers, and metadata. Trigger evaluation is tenant-scoped and persists `(company_id, workflow_trigger_id, event_id)` idempotency records so duplicate event delivery does not create duplicate workflow executions for the same trigger/event pair.
 Configuration:
 
 - `Observability:Redis:ConnectionString` enables the Redis readiness check.

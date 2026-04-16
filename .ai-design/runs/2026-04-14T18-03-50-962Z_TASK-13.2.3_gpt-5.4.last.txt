@@ -1,0 +1,89 @@
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index 62d5f37..0c4c3fd 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -10,10 +10,10 @@ public interface ISupportedPlatformEventTypeRegistry
+ 
+ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEventTypeRegistry
+ {
+-    public const string TaskCreated = "task.created";
+-    public const string TaskUpdated = "task.updated";
+-    public const string DocumentUploaded = "document.uploaded";
+-    public const string WorkflowStateChanged = "workflow.state_changed";
++    public const string TaskCreated = "task_created";
++    public const string TaskUpdated = "task_updated";
++    public const string DocumentUploaded = "document_uploaded";
++    public const string WorkflowStateChanged = "workflow_state_changed";
+ 
+     private static readonly string[] EventTypes =
+     [
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+index f678974..25eae1a 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyWorkflowService.cs
+@@ -466,6 +466,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+             .Select(group => group.OrderByDescending(x => x.Definition.Version).First()))
+         {
+             var processedEvent = await TryReserveProcessedTriggerEventAsync(
++                useAmbientTransaction: true,
+                 normalizedEvent.CompanyId,
+                 trigger.Id,
+                 eventId,
+@@ -487,6 +488,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+ 
+             try
+             {
++                await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+                 var instance = await StartInstanceCoreAsync(
+                     normalizedEvent.CompanyId,
+                     new StartWorkflowInstanceCommand(trigger.DefinitionId, trigger.Id, input, WorkflowTriggerType.Event.ToStorageValue(), eventId),
+@@ -494,6 +496,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+                     cancellationToken);
+                 processedEvent.MarkExecutionCreated(instance.Id);
+                 await _dbContext.SaveChangesAsync(cancellationToken);
++                await transaction.CommitAsync(cancellationToken);
+                 started.Add(instance);
+ 
+                 _logger.LogInformation(
+@@ -1441,11 +1444,13 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+         return false;
+     }
+ 
++    // The processed-event row and workflow instance are persisted in one transaction by callers
++    // so retries cannot leave a committed idempotency marker without its execution request.
+     private async Task<ProcessedWorkflowTriggerEvent?> TryReserveProcessedTriggerEventAsync(
++        bool useAmbientTransaction,
+         Guid companyId,
+         Guid triggerId,
+         string eventId,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+@@ -1457,8 +1462,10 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
+                 eventId,
+                 DateTime.UtcNow);
+             await _dbContext.ProcessedWorkflowTriggerEvents.AddAsync(processedEvent, cancellationToken);
+-
+-            await _dbContext.SaveChangesAsync(cancellationToken);
++            if (!useAmbientTransaction)
++            {
++                await _dbContext.SaveChangesAsync(cancellationToken);
++            }
+             return processedEvent;
+         }
+         catch (DbUpdateException ex) when (IsDuplicateProcessedTriggerEvent(ex))
+diff --git a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+index 31ba820..b6f279e 100644
+--- a/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/WorkflowEventTriggerFoundationTests.cs
+@@ -26,7 +26,7 @@ public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebA
+         Assert.Contains(SupportedPlatformEventTypeRegistry.TaskUpdated, registry.SupportedEventTypes);
+         Assert.Contains(SupportedPlatformEventTypeRegistry.DocumentUploaded, registry.SupportedEventTypes);
+         Assert.Contains(SupportedPlatformEventTypeRegistry.WorkflowStateChanged, registry.SupportedEventTypes);
+-        Assert.True(registry.IsSupported("TASK.CREATED"));
++        Assert.True(registry.IsSupported("TASK_CREATED"));
+         Assert.False(registry.IsSupported("task.deleted"));
+     }
+ 
+END_OF_PATCH

@@ -10,19 +10,25 @@ namespace VirtualCompany.Infrastructure.Companies;
 public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileResolver
 {
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAgentCommunicationProfileResolver _communicationProfileResolver;
 
-    public PersistedAgentRuntimeProfileResolver(VirtualCompanyDbContext dbContext)
+    public PersistedAgentRuntimeProfileResolver(
+        VirtualCompanyDbContext dbContext,
+        IAgentCommunicationProfileResolver communicationProfileResolver)
     {
         _dbContext = dbContext;
+        _communicationProfileResolver = communicationProfileResolver;
     }
 
     public async Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
         Guid companyId,
         Guid agentId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? generationPath = null,
+        string? correlationId = null)
     {
         // Runtime resolution must re-read persisted agent state so later orchestration
-        // runs pick up profile edits without depending on request-scoped tenant context.
+        // runs pick up operating and communication profile edits immediately.
         var agent = await _dbContext.Agents
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -32,6 +38,11 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
         {
             throw new KeyNotFoundException("Agent not found.");
         }
+
+        var communicationProfile = _communicationProfileResolver.Resolve(
+            agent.CommunicationProfile,
+            new CommunicationProfileResolutionContext(
+                companyId, agentId, generationPath, correlationId));
 
         return new AgentRuntimeProfileDto(
             agent.Id,
@@ -52,6 +63,7 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             CloneNodes(agent.EscalationRules),
             CloneNodes(agent.TriggerLogic),
             CloneNodes(agent.WorkingHours),
+            communicationProfile,
             agent.CanReceiveAssignments,
             agent.UpdatedUtc,
             agent.AutonomyLevel.ToStorageValue());

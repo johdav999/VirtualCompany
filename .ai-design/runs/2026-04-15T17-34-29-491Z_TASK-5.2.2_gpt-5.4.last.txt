@@ -1,0 +1,278 @@
+diff --git a/src/VirtualCompany.Application/Activity/ActivityContracts.cs b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+index 5b3a2df..a31cb95 100644
+--- a/src/VirtualCompany.Application/Activity/ActivityContracts.cs
++++ b/src/VirtualCompany.Application/Activity/ActivityContracts.cs
+@@ -28,12 +28,14 @@ public sealed record ActivityLinkedEntityDto(
+     string EntityId,
+     string Availability,
+     string DisplayText,
+     string? CurrentStatus,
+     DateTime? LastUpdatedAt,
++    bool IsAvailable,
++    string? UnavailableReason,
+     Dictionary<string, JsonNode?> Metadata);
+ 
+ public sealed record ActivityTimelineItemDto(
+     ActivityEventDto Activity,
+     ActivityEntityReferenceDto? PrimaryTarget,
+     IReadOnlyList<ActivityLinkedEntityDto> LinkedEntities);
+ 
+ public sealed record ActivityCorrelationTimelineQuery(
+-    string CorrelationId,
++    string? CorrelationId = null,
+     Guid? SelectedActivityEventId = null);
+ 
+ public sealed record ActivityCorrelationTimelineDto(
+     Guid TenantId,
+     string CorrelationId,
+@@ -65,10 +67,11 @@ public interface IActivityEventStore
+ {
+     Task<ActivityEventDto> PersistAsync(Guid tenantId, PersistActivityEventCommand command, CancellationToken cancellationToken);
+     Task<ActivityFeedPageDto> QueryFeedAsync(Guid tenantId, ActivityFeedQuery query, CancellationToken cancellationToken);
+     Task<ActivityCorrelationTimelineDto> QueryCorrelationTimelineAsync(Guid tenantId, ActivityCorrelationTimelineQuery query, CancellationToken cancellationToken);
++    Task<ActivityCorrelationTimelineDto> QueryCorrelationTimelineForActivityAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken);
+     Task<ActivityLinkedEntitiesDto> QueryLinkedEntitiesAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken);
+ }
+ 
+ public interface IEntityLinkResolutionService
+ {
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+index 7a3bf8e..a89e40d 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfActivityEventStore.cs
+@@ -102,13 +102,32 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(tenantId, cancellationToken);
+         ValidateCorrelationQuery(query);
+ 
+-        var correlationId = query.CorrelationId.Trim();
++        var correlationId = query.CorrelationId?.Trim();
++        if (string.IsNullOrWhiteSpace(correlationId))
++        {
++            var selectedActivityEventId = query.SelectedActivityEventId
++                ?? throw BuildValidationException(nameof(query.SelectedActivityEventId), "SelectedActivityEventId is required when CorrelationId is not supplied.");
++
++            var selectedCorrelation = await _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
++                .Where(x => x.CompanyId == tenantId && x.Id == selectedActivityEventId)
++                .Select(x => x.CorrelationId)
++                .SingleOrDefaultAsync(cancellationToken);
++
++            if (selectedCorrelation is null)
++            {
++                throw new KeyNotFoundException("Activity event was not found.");
++            }
++
++            correlationId = selectedCorrelation;
++        }
++
+         var events = await _dbContext.ActivityEvents.IgnoreQueryFilters().AsNoTracking()
+             .Where(x => x.CompanyId == tenantId && x.CorrelationId == correlationId)
+             .OrderBy(x => x.OccurredUtc)
+             .ThenBy(x => x.Id)
+             .Take(MaxCorrelationEvents)
+@@ -141,19 +160,29 @@ public sealed class EfActivityEventStore : IActivityEventStore
+         if (query.SelectedActivityEventId is Guid selectedActivityEventId)
+         {
+             var selected = events.FirstOrDefault(x => x.Id == selectedActivityEventId);
+-            if (selected is not null)
++            if (selected is null)
+             {
+-                selectedLinks = new ActivityLinkedEntitiesDto(
+-                    tenantId,
+-                    selectedActivityEventId,
+-                    referencesByEvent[selectedActivityEventId]
+-                        .Select(reference => resolved[ActivityEntityTypes.ToKey(reference.EntityType, reference.EntityId)])
+-                        .ToList());
++                throw new KeyNotFoundException("Activity event was not found for the requested correlation.");
+             }
++
++            selectedLinks = new ActivityLinkedEntitiesDto(
++                tenantId,
++                selectedActivityEventId,
++                referencesByEvent[selectedActivityEventId]
++                    .Select(reference => resolved[ActivityEntityTypes.ToKey(reference.EntityType, reference.EntityId)])
++                    .ToList());
+         }
+ 
+         return new ActivityCorrelationTimelineDto(tenantId, correlationId, items, selectedLinks);
+     }
+ 
++    public Task<ActivityCorrelationTimelineDto> QueryCorrelationTimelineForActivityAsync(
++        Guid tenantId,
++        Guid activityEventId,
++        CancellationToken cancellationToken) =>
++        QueryCorrelationTimelineAsync(
++            tenantId,
++            new ActivityCorrelationTimelineQuery(SelectedActivityEventId: activityEventId),
++            cancellationToken);
++
+     public async Task<ActivityLinkedEntitiesDto> QueryLinkedEntitiesAsync(Guid tenantId, Guid activityEventId, CancellationToken cancellationToken)
+     {
+         await RequireMembershipAsync(tenantId, cancellationToken);
+@@ -202,8 +231,17 @@ public sealed class EfActivityEventStore : IActivityEventStore
+     private static void ValidateCorrelationQuery(ActivityCorrelationTimelineQuery query)
+     {
+         var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+-        AddRequired(errors, nameof(query.CorrelationId), query.CorrelationId, 128);
++        AddOptional(errors, nameof(query.CorrelationId), query.CorrelationId, 128);
++
++        if (string.IsNullOrWhiteSpace(query.CorrelationId) && !query.SelectedActivityEventId.HasValue)
++        {
++            errors[nameof(query.CorrelationId)] = ["CorrelationId or SelectedActivityEventId is required."];
++        }
++
++        if (!string.IsNullOrWhiteSpace(query.CorrelationId) && query.CorrelationId.Trim().Length > 128)
++        {
++            errors[nameof(query.CorrelationId)] = ["CorrelationId must be 128 characters or fewer."];
++        }
+ 
+         if (query.SelectedActivityEventId == Guid.Empty)
+         {
+             errors[nameof(query.SelectedActivityEventId)] = ["SelectedActivityEventId cannot be empty."];
+diff --git a/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs b/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs
+index fba0d5d..3f28fcb 100644
+--- a/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs
++++ b/src/VirtualCompany.Infrastructure/Activity/EfEntityLinkResolutionService.cs
+@@ -164,8 +164,16 @@ public sealed class EfEntityLinkResolutionService : IEntityLinkResolutionService
+         DateTime lastUpdatedAt,
+         Dictionary<string, JsonNode?>? metadata = null) =>
+-        new(entityType, entityId, ActivityLinkedEntityAvailability.Available, displayText, currentStatus, lastUpdatedAt, metadata ?? []);
++        new(entityType, entityId, ActivityLinkedEntityAvailability.Available, displayText, currentStatus, lastUpdatedAt, true, null, metadata ?? []);
+ 
+     private static ActivityLinkedEntityDto Missing(string entityType, Guid entityId) =>
+-        new(entityType, entityId, ActivityLinkedEntityAvailability.UnavailableMissing, "Unavailable linked entity", null, null, []);
++        Unavailable(entityType, entityId, ActivityLinkedEntityAvailability.UnavailableMissing, "missing");
++
++    private static ActivityLinkedEntityDto Unavailable(
++        string entityType,
++        Guid entityId,
++        string availability,
++        string unavailableReason) =>
++        new(entityType, entityId, availability, "Unavailable linked entity", null, null, false, unavailableReason, []);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+index e912aa0..20c446b 100644
+--- a/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
++++ b/src/VirtualCompany.Api/Controllers/ActivityFeedController.cs
+@@ -47,10 +47,31 @@ public sealed class ActivityFeedController : ControllerBase
+         try
+         {
+             return Ok(await _activityEvents.QueryCorrelationTimelineAsync(companyId, new ActivityCorrelationTimelineQuery(correlationId, selectedActivityEventId), cancellationToken));
+         }
+         catch (ActivityFeedValidationException ex)
+         {
+             return ValidationProblem(ex.Errors);
+         }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++        catch (UnauthorizedAccessException)
++        {
++            return Forbid();
++        }
++    }
++
++    [HttpGet("{activityEventId:guid}/correlation")]
++    public async Task<ActionResult<ActivityCorrelationTimelineDto>> GetCorrelationTimelineForActivityAsync(
++        Guid companyId,
++        Guid activityEventId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _activityEvents.QueryCorrelationTimelineForActivityAsync(companyId, activityEventId, cancellationToken));
++        }
++        catch (ActivityFeedValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+@@ -58,10 +79,14 @@ public sealed class ActivityFeedController : ControllerBase
+     }
+ 
+     [HttpGet("{activityEventId:guid}/links")]
+     public async Task<ActionResult<ActivityLinkedEntitiesDto>> GetLinkedEntitiesAsync(
+         Guid companyId,
+         Guid activityEventId,
+         CancellationToken cancellationToken)
+     {
+         try
+         {
+             return Ok(await _activityEvents.QueryLinkedEntitiesAsync(companyId, activityEventId, cancellationToken));
+@@ -70,10 +95,18 @@ public sealed class ActivityFeedController : ControllerBase
+         {
+             return NotFound();
+         }
+         catch (UnauthorizedAccessException)
+         {
+             return Forbid();
+         }
+     }
++
++    [HttpGet("/api/timeline/correlations/{correlationId}")]
++    public Task<ActionResult<ActivityCorrelationTimelineDto>> GetCorrelationTimelineAliasAsync(
++        Guid correlationId,
++        CancellationToken cancellationToken)
++    {
++        ModelState.AddModelError("companyId", "Company-scoped route /api/companies/{companyId}/activity-feed/correlations/{correlationId} is required.");
++        return Task.FromResult<ActionResult<ActivityCorrelationTimelineDto>>(ValidationProblem(ModelState));
++    }
+ 
+     [HttpPost("/internal/companies/{companyId:guid}/activity-events")]
+     public async Task<ActionResult<ActivityEventDto>> PersistAsync(
+diff --git a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+index 9f00a4d..d6736aa 100644
+--- a/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ActivityCorrelationIntegrationTests.cs
+@@ -44,10 +44,32 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.WorkflowInstance && x.CurrentStatus == WorkflowInstanceStatus.Running.ToStorageValue());
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Approval && x.CurrentStatus == ApprovalRequestStatus.Pending.ToStorageValue());
+         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.ToolExecution && x.CurrentStatus == ToolExecutionStatus.Started.ToStorageValue());
+     }
+ 
++    [Fact]
++    public async Task Selecting_activity_item_resolves_correlation_timeline()
++    {
++        var seed = await SeedAsync();
++        using var client = CreateClient();
++
++        await PersistActivityAsync(client, seed.CompanyId, "task_started", seed.CorrelationId, seed.TaskId, occurredAt: DateTime.UtcNow.AddMinutes(-2));
++        var selected = await PersistActivityAsync(client, seed.CompanyId, "tool_executed", seed.CorrelationId, seed.TaskId, seed.WorkflowInstanceId, seed.ApprovalId, seed.ToolExecutionId, DateTime.UtcNow.AddMinutes(-1));
++
++        var timeline = await client.GetFromJsonAsync<ActivityCorrelationTimelineDto>(
++            $"/api/companies/{seed.CompanyId}/activity-feed/{selected.EventId}/correlation");
++
++        Assert.NotNull(timeline);
++        Assert.Equal(seed.CorrelationId, timeline!.CorrelationId);
++        Assert.Equal(2, timeline.Items.Count);
++        Assert.NotNull(timeline.SelectedActivityLinks);
++        Assert.Equal(selected.EventId, timeline.SelectedActivityLinks!.ActivityEventId);
++        Assert.Contains(
++            timeline.SelectedActivityLinks.LinkedEntities,
++            x => x.EntityType == ActivityEntityTypes.ToolExecution &&
++                 x.IsAvailable &&
++                 x.UnavailableReason is null);
++    }
++
+     [Fact]
+     public async Task Linked_entities_endpoint_represents_missing_entities_explicitly()
+     {
+         var seed = await SeedAsync();
+         using var client = CreateClient();
+@@ -62,10 +84,12 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA
+         Assert.Equal(ActivityEntityTypes.Task, missing.EntityType);
+         Assert.Equal(missingTaskId, missing.EntityId);
+         Assert.Equal(ActivityLinkedEntityAvailability.UnavailableMissing, missing.Availability);
++        Assert.False(missing.IsAvailable);
++        Assert.Equal("missing", missing.UnavailableReason);
+         Assert.Null(missing.CurrentStatus);
+     }
+ 
+     [Fact]
+     public async Task Correlation_timeline_is_tenant_scoped()
+     {
+END_OF_PATCH

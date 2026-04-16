@@ -1,0 +1,371 @@
+diff --git a/src/VirtualCompany.Application/Cockpit/DepartmentDashboardVisibility.cs b/src/VirtualCompany.Application/Cockpit/DepartmentDashboardVisibility.cs
+new file mode 100644
+index 0000000..31213c5
+--- /dev/null
++++ b/src/VirtualCompany.Application/Cockpit/DepartmentDashboardVisibility.cs
+@@ -0,0 +1,72 @@
++namespace VirtualCompany.Application.Cockpit;
++
++using System.Text.Json.Nodes;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Domain.Enums;
++
++public static class RequiredDepartmentDashboardSections
++{
++    private static readonly IReadOnlyDictionary<string, int> RequiredDisplayOrder =
++        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
++        {
++            ["finance"] = 10,
++            ["sales"] = 20,
++            ["support"] = 30,
++            ["operations"] = 40
++        };
++
++    public static IReadOnlyList<string> OrderedDepartmentKeys { get; } =
++        ["finance", "sales", "support", "operations"];
++
++    public static int GetDisplayOrder(string departmentKey, int fallbackDisplayOrder) =>
++        RequiredDisplayOrder.TryGetValue(departmentKey, out var displayOrder)
++            ? displayOrder
++            : fallbackDisplayOrder;
++}
++
++public static class DepartmentDashboardVisibility
++{
++    public static bool IsVisibleToMembership(
++        IReadOnlyDictionary<string, JsonNode?> visibility,
++        ResolvedCompanyMembershipContext membership,
++        Guid companyId)
++    {
++        if (membership.CompanyId != companyId || membership.Status != CompanyMembershipStatus.Active)
++        {
++            return false;
++        }
++
++        return IsVisibleToRole(visibility, membership.MembershipRole);
++    }
++
++    public static bool IsVisibleToRole(
++        IReadOnlyDictionary<string, JsonNode?> visibility,
++        CompanyMembershipRole membershipRole)
++    {
++        if (!TryReadRoles(visibility, out var roles))
++        {
++            return false;
++        }
++
++        var roleValue = membershipRole.ToStorageValue();
++        return roles.Any(role => string.Equals(role, roleValue, StringComparison.OrdinalIgnoreCase));
++    }
++
++    private static bool TryReadRoles(
++        IReadOnlyDictionary<string, JsonNode?> visibility,
++        out IReadOnlyList<string> roles)
++    {
++        roles = [];
++        if (!visibility.TryGetValue("roles", out var rolesNode) ||
++            rolesNode is not JsonArray configuredRoles ||
++            configuredRoles.Count == 0)
++        {
++            return false;
++        }
++
++        roles = configuredRoles
++            .OfType<JsonValue>()
++            .Select(node => node.TryGetValue<string>(out var role) ? role.Trim() : string.Empty)
++            .Where(role => !string.IsNullOrWhiteSpace(role))
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToArray();
++
++        return roles.Count > 0;
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+index 23bc94d..d482d4b 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyDepartmentDashboardConfigurationService.cs
+@@ -56,14 +56,15 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
+             .AsNoTracking()
+             .Include(x => x.Widgets)
+             .Where(x => x.CompanyId == query.CompanyId && x.IsEnabled)
+-            .OrderBy(x => x.DisplayOrder)
++            .OrderBy(x => RequiredDepartmentDashboardSections.GetDisplayOrder(x.Department, x.DisplayOrder))
++            .ThenBy(x => x.DisplayOrder)
+             .ThenBy(x => x.Department)
+             .ToListAsync(cancellationToken);
+ 
+-        var roleValue = membership.MembershipRole.ToStorageValue();
+         var visibleConfigs = configs
+-            .Where(x => IsVisibleToRole(x.Visibility, roleValue))
++            .Where(x => DepartmentDashboardVisibility.IsVisibleToMembership(x.Visibility, membership, query.CompanyId))
+             .ToList();
+ 
++        // Visible empty sections are returned with fallback metadata so the client can render a stable composition.
+         if (visibleConfigs.Count == 0)
+         {
+             return new DepartmentDashboardConfigurationDto(
+@@ -83,9 +84,9 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
+             {
+                 var departmentMetrics = metrics.GetValueOrDefault(config.Department, DepartmentDashboardMetrics.Empty);
+                 var widgets = config.Widgets
+-                    .Where(x => x.IsEnabled && IsVisibleToRole(x.Visibility, roleValue))
++                    .Where(x => x.IsEnabled && DepartmentDashboardVisibility.IsVisibleToMembership(x.Visibility, membership, query.CompanyId))
+                     .OrderBy(x => x.DisplayOrder)
+-                    .ThenBy(x => x.WidgetKey, StringComparer.OrdinalIgnoreCase)
++                    .ThenBy(x => x.WidgetKey)
+                     .Select(widget =>
+                     {
+                         var summaryValue = ResolveSummaryValue(departmentMetrics, widget.SummaryBinding);
+@@ -105,10 +106,10 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
+                 return new DepartmentDashboardSectionDto(
+                     config.Id,
+                     config.Department,
+                     config.DisplayName,
+-                    config.DisplayOrder,
++                    RequiredDepartmentDashboardSections.GetDisplayOrder(config.Department, config.DisplayOrder),
+                     true,
+                     config.Icon,
+                     departmentMetrics.HasData,
+                     departmentMetrics.ToSummaryCounts(),
+                     !departmentMetrics.HasData,
+@@ -261,20 +262,6 @@ public sealed class CompanyDepartmentDashboardConfigurationService : IDepartment
+             _ => 0
+         };
+ 
+-    private static bool IsVisibleToRole(IReadOnlyDictionary<string, JsonNode?> visibility, string roleValue)
+-    {
+-        if (!visibility.TryGetValue("roles", out var rolesNode) || rolesNode is not JsonArray roles || roles.Count == 0)
+-        {
+-            return false;
+-        }
+-
+-        return roles
+-            .OfType<JsonValue>()
+-            .Any(x => x.TryGetValue<string>(out var configuredRole) &&
+-                      string.Equals(configuredRole, roleValue, StringComparison.OrdinalIgnoreCase));
+-    }
+-
+     private static DepartmentDashboardNavigationDto ReadNavigation(
+         IReadOnlyDictionary<string, JsonNode?> metadata,
+         string fallbackLabel,
+@@ -366,10 +353,10 @@ internal static class DefaultDepartmentDashboardConfigSeeds
+ 
+     public static IReadOnlyList<DashboardDepartmentConfig> Create(Guid companyId) =>
+     [
+-        Department(companyId, "finance", "Finance", 10, "cash-stack", Roles("owner", "admin", "finance_approver"), "Approvals", "Review finance approvals", DepartmentDashboardSummaryBindings.PendingApprovals, "Spend anomalies", "Review exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Invoice queue", "Open finance tasks", DepartmentDashboardSummaryBindings.OpenTasks),
+-        Department(companyId, "sales", "Sales", 20, "graph-up", ExecutiveRoles, "Pipeline", "Active sales workflows", DepartmentDashboardSummaryBindings.ActiveWorkflows, "Open deals", "Open sales tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Follow-ups", "Completed sales tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days),
+-        Department(companyId, "support", "Support", 30, "headset", Roles("owner", "admin", "manager", "support_supervisor"), "Open tickets", "Open support tasks", DepartmentDashboardSummaryBindings.OpenTasks, "SLA risk", "Support exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Escalations", "Pending support approvals", DepartmentDashboardSummaryBindings.PendingApprovals),
+-        Department(companyId, "operations", "Operations", 40, "gear", ExecutiveRoles, "Workflow exceptions", "Open workflow exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Task backlog", "Open operations tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Throughput", "Completed operations tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days)
++        Department(companyId, "finance", "Finance", RequiredDepartmentDashboardSections.GetDisplayOrder("finance", 10), "cash-stack", Roles("owner", "admin", "finance_approver"), "Approvals", "Review finance approvals", DepartmentDashboardSummaryBindings.PendingApprovals, "Spend anomalies", "Review exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Invoice queue", "Open finance tasks", DepartmentDashboardSummaryBindings.OpenTasks),
++        Department(companyId, "sales", "Sales", RequiredDepartmentDashboardSections.GetDisplayOrder("sales", 20), "graph-up", ExecutiveRoles, "Pipeline", "Active sales workflows", DepartmentDashboardSummaryBindings.ActiveWorkflows, "Open deals", "Open sales tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Follow-ups", "Completed sales tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days),
++        Department(companyId, "support", "Support", RequiredDepartmentDashboardSections.GetDisplayOrder("support", 30), "headset", Roles("owner", "admin", "manager", "support_supervisor"), "Open tickets", "Open support tasks", DepartmentDashboardSummaryBindings.OpenTasks, "SLA risk", "Support exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Escalations", "Pending support approvals", DepartmentDashboardSummaryBindings.PendingApprovals),
++        Department(companyId, "operations", "Operations", RequiredDepartmentDashboardSections.GetDisplayOrder("operations", 40), "gear", ExecutiveRoles, "Workflow exceptions", "Open workflow exceptions", DepartmentDashboardSummaryBindings.WorkflowExceptions, "Task backlog", "Open operations tasks", DepartmentDashboardSummaryBindings.OpenTasks, "Throughput", "Completed operations tasks", DepartmentDashboardSummaryBindings.CompletedTasksLast7Days)
+     ];
+ 
+     private static DashboardDepartmentConfig Department(
+diff --git a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+index 3f438ca..3a2f590 100644
+--- a/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/ExecutiveCockpitDashboard.razor
+@@ -211,11 +211,10 @@
+                             </div>
+                             <dl class="cockpit-kpi-list mb-0 mt-3">
+-                                <div><dt>Active agents</dt><dd>@SummaryCount(section, "active_agents")</dd></div>
+-                                <div><dt>Open tasks</dt><dd>@SummaryCount(section, "open_tasks")</dd></div>
+-                                <div><dt>Done 7d</dt><dd>@SummaryCount(section, "completed_tasks_7d")</dd></div>
+-                                <div><dt>Approvals</dt><dd>@SummaryCount(section, "pending_approvals")</dd></div>
+-                                <div><dt>Workflows</dt><dd>@SummaryCount(section, "active_workflows")</dd></div>
++                                @foreach (var count in SectionSummaryCounts(section))
++                                {
++                                    <div><dt>@FormatSummaryLabel(count.Key)</dt><dd>@count.Value</dd></div>
++                                }
+                             </dl>
+                             @if (section.IsEmpty)
+                             {
+@@ -275,7 +274,7 @@
+         try
+         {
+             dashboard = await ApiClient.GetAsync(CompanyId);
+-            departmentSections = dashboard?.DepartmentSections.OrderBy(x => x.DisplayOrder).ToList() ?? [];
++            departmentSections = dashboard?.DepartmentSections ?? [];
+         }
+         catch (OnboardingApiException ex)
+         {
+@@ -299,8 +298,15 @@
+     private static string NormalizeCssToken(string? value) =>
+         string.IsNullOrWhiteSpace(value) ? "neutral" : value.Trim().ToLowerInvariant().Replace("_", "-");
+ 
+-    private static int SummaryCount(DepartmentDashboardSectionViewModel section, string key) =>
+-        section.SummaryCounts.TryGetValue(key, out var value) ? value : 0;
++    private static IEnumerable<KeyValuePair<string, int>> SectionSummaryCounts(DepartmentDashboardSectionViewModel section) =>
++        section.SummaryCounts
++            .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase);
++
++    private static string FormatSummaryLabel(string key) =>
++        string.Join(
++            " ",
++            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
++                .Select(word => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..]));
+ 
+     private static string TrendGlyph(string? direction) =>
+         string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase) ? "Up" :
+diff --git a/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+index 78b6618..d4c5e62 100644
+--- a/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/DepartmentDashboardConfigurationIntegrationTests.cs
+@@ -6,6 +6,7 @@ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Auth;
+ using Xunit;
++using VirtualCompany.Application.Cockpit;
+ 
+ namespace VirtualCompany.Api.Tests;
+ 
+@@ -77,6 +78,60 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFix
+         Assert.Equal(["finance"], financeDashboard!.Sections.Select(x => x.DepartmentKey).ToArray());
+     }
+ 
++    [Fact]
++    public async Task Widget_visibility_is_filtered_inside_visible_sections()
++    {
++        var userId = Guid.NewGuid();
++        var companyId = Guid.NewGuid();
++        var departmentConfigId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "dashboard-widget-owner@example.com", "Widget Owner", "dev-header", "dashboard-widget-owner"));
++            dbContext.Companies.Add(new Company(companyId, "Widget Visibility Company"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            var section = new DashboardDepartmentConfig(
++                departmentConfigId,
++                companyId,
++                "finance",
++                "Finance",
++                99,
++                true,
++                "cash-stack",
++                Nodes(("label", JsonValue.Create("Open Finance")), ("route", JsonValue.Create($"/dashboard?companyId={companyId}&department=finance"))),
++                Roles("owner"),
++                Nodes(("title", JsonValue.Create("Finance is ready")), ("message", JsonValue.Create("Finance has no activity yet."))));
++
++            section.AddWidget(new DashboardWidgetConfig(
++                Guid.NewGuid(),
++                companyId,
++                departmentConfigId,
++                "finance_owner_widget",
++                "Owner widget",
++                "summary_count",
++                20,
++                true,
++                DepartmentDashboardSummaryBindings.OpenTasks,
++                Nodes(("label", JsonValue.Create("Open owner widget")), ("route", JsonValue.Create($"/dashboard?companyId={companyId}&department=finance&widget=owner"))),
++                Roles("owner"),
++                Nodes(("title", JsonValue.Create("Owner widget")), ("message", JsonValue.Create("Owner data is empty.")))));
++            section.AddWidget(new DashboardWidgetConfig(
++                Guid.NewGuid(),
++                companyId,
++                departmentConfigId,
++                "finance_admin_widget",
++                "Admin-only widget",
++                "summary_count",
++                10,
++                true,
++                DepartmentDashboardSummaryBindings.PendingApprovals,
++                Nodes(("label", JsonValue.Create("Open admin widget")), ("route", JsonValue.Create($"/dashboard?companyId={companyId}&department=finance&widget=admin"))),
++                Roles("admin"),
++                Nodes(("title", JsonValue.Create("Admin widget")), ("message", JsonValue.Create("Admin data is empty.")))));
++            dbContext.DashboardDepartmentConfigs.Add(section);
++            return Task.CompletedTask;
++        });
++
++        using var client = CreateAuthenticatedClient("dashboard-widget-owner", "dashboard-widget-owner@example.com");
++        var response = await client.GetAsync($"/api/companies/{companyId}/executive-cockpit/department-sections");
++        var dashboard = await response.Content.ReadFromJsonAsync<DepartmentDashboardConfigurationResponse>();
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var finance = Assert.Single(dashboard!.Sections, x => x.DepartmentKey == "finance");
++        Assert.Equal(10, finance.DisplayOrder);
++        var widget = Assert.Single(finance.Widgets);
++        Assert.Equal("finance_owner_widget", widget.WidgetKey);
++        Assert.DoesNotContain(finance.Widgets, x => x.WidgetKey == "finance_admin_widget");
++    }
++
+     [Fact]
+     public async Task Department_sections_are_tenant_scoped()
+     {
+@@ -149,6 +204,22 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFix
+         });
+     }
+ 
++    [Fact]
++    public void Visibility_evaluator_denies_missing_roles_and_cross_tenant_context()
++    {
++        var companyId = Guid.NewGuid();
++        var otherCompanyId = Guid.NewGuid();
++        var membership = new VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext(
++            Guid.NewGuid(),
++            companyId,
++            Guid.NewGuid(),
++            "Policy Company",
++            CompanyMembershipRole.Owner,
++            CompanyMembershipStatus.Active);
++
++        Assert.False(DepartmentDashboardVisibility.IsVisibleToMembership(new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase), membership, companyId));
++        Assert.False(DepartmentDashboardVisibility.IsVisibleToMembership(Roles("owner"), membership, otherCompanyId));
++        Assert.True(DepartmentDashboardVisibility.IsVisibleToMembership(Roles("owner"), membership, companyId));
++    }
++
+     private HttpClient CreateAuthenticatedClient(string subject, string email)
+     {
+         var client = _factory.CreateClient();
+@@ -175,6 +246,17 @@ public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFix
+         return companyId;
+     }
+ 
++    private static Dictionary<string, JsonNode?> Roles(params string[] roles) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["roles"] = new JsonArray(roles.Select(role => JsonValue.Create(role)).ToArray<JsonNode?>())
++        };
++
++    private static Dictionary<string, JsonNode?> Nodes(params (string Key, JsonNode? Value)[] properties) =>
++        properties.ToDictionary(
++            pair => pair.Key,
++            pair => pair.Value?.DeepClone(),
++            StringComparer.OrdinalIgnoreCase);
++
+     private sealed class DepartmentDashboardConfigurationResponse
+     {
+         public Guid CompanyId { get; set; }
+diff --git a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+index f86e28a..51bdb82 100644
+--- a/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/ExecutiveCockpitDashboardIntegrationTests.cs
+@@ -52,6 +52,8 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+         Assert.True(dashboard.EmptyStateFlags.NoPendingApprovals);
+         Assert.True(dashboard.EmptyStateFlags.NoAlerts);
+         Assert.Equal(["finance", "sales", "support", "operations"], dashboard.DepartmentSections.Select(x => x.DepartmentKey).ToArray());
++        Assert.Equal([10, 20, 30, 40], dashboard.DepartmentSections.Select(x => x.DisplayOrder).ToArray());
++        Assert.All(dashboard.DepartmentSections, section => Assert.All(section.Widgets, widget => Assert.True(widget.IsVisible)));
+         Assert.All(dashboard.DepartmentSections, section =>
+         {
+             Assert.False(section.HasData);
+@@ -281,7 +283,13 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
+         public string DepartmentKey { get; set; } = string.Empty;
++        public int DisplayOrder { get; set; }
+         public bool HasData { get; set; }
+         public Dictionary<string, int> SummaryCounts { get; set; } = [];
+         public List<DepartmentDashboardWidgetResponse> Widgets { get; set; } = [];
+     }
+-    private sealed class DepartmentDashboardWidgetResponse { public string WidgetType { get; set; } = string.Empty; public DepartmentDashboardNavigationResponse Navigation { get; set; } = new(); }
++    private sealed class DepartmentDashboardWidgetResponse
++    {
++        public string WidgetType { get; set; } = string.Empty;
++        public bool IsVisible { get; set; }
++        public DepartmentDashboardNavigationResponse Navigation { get; set; } = new();
++    }
+     private sealed class DepartmentDashboardNavigationResponse { public string Route { get; set; } = string.Empty; }
+     private sealed class ExecutiveCockpitActivityResponse { public Guid Id { get; set; } public string? Route { get; set; } }
+END_OF_PATCH

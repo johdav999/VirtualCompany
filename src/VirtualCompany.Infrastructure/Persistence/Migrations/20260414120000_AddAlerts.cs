@@ -65,9 +65,9 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                 });
 
             migrationBuilder.CreateIndex(name: "IX_alerts_company_id_created_at", table: "alerts", columns: new[] { "company_id", "created_at" });
-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_type", table: "alerts", columns: new[] { "company_id", "type" });
-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_severity", table: "alerts", columns: new[] { "company_id", "severity" });
-            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_status", table: "alerts", columns: new[] { "company_id", "status" });
+            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_type_created_at", table: "alerts", columns: new[] { "company_id", "type", "created_at" });
+            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_severity_created_at", table: "alerts", columns: new[] { "company_id", "severity", "created_at" });
+            migrationBuilder.CreateIndex(name: "IX_alerts_company_id_status_created_at", table: "alerts", columns: new[] { "company_id", "status", "created_at" });
             migrationBuilder.CreateIndex(name: "IX_alerts_company_id_fingerprint", table: "alerts", columns: new[] { "company_id", "fingerprint" });
             migrationBuilder.CreateIndex(name: "IX_alerts_source_agent_id", table: "alerts", column: "source_agent_id");
             migrationBuilder.CreateIndex(

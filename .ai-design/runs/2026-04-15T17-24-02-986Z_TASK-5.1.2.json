@@ -1,0 +1,29 @@
+{
+  "taskId": "TASK-5.1.2",
+  "promptPath": ".ai-design/prompts/TASK-5.1.2.prompt.md",
+  "runTests": false,
+  "documentCode": true,
+  "startedAt": "2026-04-15T17:24:02.986Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-04-15T17-24-02-986Z_TASK-5.1.2_gpt-5.4.last.txt -m gpt-5.4 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-04-15T17-24-02-986Z_TASK-5.1.2.json",
+  "modelsTried": [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.4",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-04-15T17:26:21.897Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "s/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs\nindex 1ef95c0..3dc5b33 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs\n@@ -108,6 +108,22 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Tenant_alias_agent_activity_endpoint_is_tenant_scoped()\n+    {\n+        var seed = await SeedTenantAsync();\n+        using var client = CreateAuthenticatedClient();\n+        var persisted = await PersistAsync(\n+            client,\n+            seed.CompanyId,\n+            seed.AgentId,\n+            \"task_completed\",\n+            DateTime.UtcNow,\n+            \"completed\",\n+            \"Alias activity\",\n+            \"corr-alias\");\n+\n+        var result = await client.GetFromJsonAsync<ActivityFeedResponse>($\"/api/tenants/{seed.CompanyId}/agent-activity?pageSize=10\");\n+\n+        Assert.NotNull(result);\n+        var item = Assert.Single(result!.Items);\n+        Assert.Equal(persisted.EventId, item.EventId);\n+    }\n+\n     [Fact]\n     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()\n     {\n@@ -218,7 +234,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n                 status,\n                 summary,\n                 correlationId,\n-                sourceMetadata = new Dictionary<string, object?>\n+                source = new Dictionary<string, object?>\n                 {\n                     [\"sourceType\"] = \"task\",\n                     [\"sourceId\"] = Guid.NewGuid()\n@@ -283,5 +299,5 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         string Status,\n         string Summary,\n         string? CorrelationId,\n-        Dictionary<string, object?> SourceMetadata);\n+        Dictionary<string, object?> Source);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "i.Tests/ActivityFeedIntegrationTests.cs\nindex 1ef95c0..3dc5b33 100644\n--- a/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/ActivityFeedIntegrationTests.cs\n@@ -108,6 +108,22 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);\n     }\n \n+    [Fact]\n+    public async Task Tenant_alias_agent_activity_endpoint_is_tenant_scoped()\n+    {\n+        var seed = await SeedTenantAsync();\n+        using var client = CreateAuthenticatedClient();\n+        var persisted = await PersistAsync(\n+            client,\n+            seed.CompanyId,\n+            seed.AgentId,\n+            \"task_completed\",\n+            DateTime.UtcNow,\n+            \"completed\",\n+            \"Alias activity\",\n+            \"corr-alias\");\n+\n+        var result = await client.GetFromJsonAsync<ActivityFeedResponse>($\"/api/tenants/{seed.CompanyId}/agent-activity?pageSize=10\");\n+\n+        Assert.NotNull(result);\n+        var item = Assert.Single(result!.Items);\n+        Assert.Equal(persisted.EventId, item.EventId);\n+    }\n+\n     [Fact]\n     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()\n     {\n@@ -218,7 +234,7 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n                 status,\n                 summary,\n                 correlationId,\n-                sourceMetadata = new Dictionary<string, object?>\n+                source = new Dictionary<string, object?>\n                 {\n                     [\"sourceType\"] = \"task\",\n                     [\"sourceId\"] = Guid.NewGuid()\n@@ -283,5 +299,5 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat\n         string Status,\n         string Summary,\n         string? CorrelationId,\n-        Dictionary<string, object?> SourceMetadata);\n+        Dictionary<string, object?> Source);\n }\nEND_OF_PATCH\ntokens used\n59,408\n",
+  "verbosityMode": "summary"
+}

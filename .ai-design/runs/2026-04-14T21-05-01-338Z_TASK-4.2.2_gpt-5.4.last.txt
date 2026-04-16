@@ -1,0 +1,881 @@
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -32,7 +32,7 @@ public sealed record BriefingAggregateItemDto(
+     DateTime OccurredUtc,
+     Dictionary<string, JsonNode?> Metadata,
+     IReadOnlyList<BriefingSourceReferenceDto> References);
+-{
++public sealed record BriefingAggregateItemDetailsDto
+     public Guid? AgentId { get; init; }
+     public Guid? CompanyEntityId { get; init; }
+     public Guid? WorkflowInstanceId { get; init; }
+@@ -40,7 +40,22 @@ public sealed record BriefingAggregateItemDto(
+     public string? EventCorrelationId { get; init; }
+     public string? Assessment { get; init; }
+ }
++
++public sealed record BriefingAggregateItemDto(
++    string Section,
++    string Title,
++    string Summary,
++    string? Severity,
++    string? Status,
++    string? SourceEntityType,
++    Guid? SourceEntityId,
++    DateTime OccurredUtc,
++    Dictionary<string, JsonNode?> Metadata,
++    IReadOnlyList<BriefingSourceReferenceDto> References)
++{
++    public Guid? AgentId { get; init; }
++    public Guid? CompanyEntityId { get; init; }
++    public Guid? WorkflowInstanceId { get; init; }
++    public Guid? TaskId { get; init; }
++    public string? EventCorrelationId { get; init; }
++    public string? Assessment { get; init; }
++}
++
+ public sealed record BriefingAggregateResultDto(
+     Guid CompanyId,
+     string BriefingType,
+@@ -79,7 +94,8 @@ public sealed record BriefingInsightContributionDto(
+     string Topic,
+     string Narrative,
+     string? Assessment,
+-    Dictionary<string, JsonNode?> Metadata);
++    Dictionary<string, JsonNode?> Metadata,
++    Guid? ContributionId = null);
+ 
+ public sealed record BriefingInsightAggregationRequest(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+--- a/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
++++ b/src/VirtualCompany.Application/Briefings/BriefingContracts.cs
+@@ -20,27 +20,13 @@ public sealed record BriefingSourceReferenceDto(
+ public sealed record BriefingSectionDto(
+     string Name,
+     IReadOnlyList<string> Items);
+ 
+-public sealed record BriefingAggregateItemDto(
+-    string Section,
+-    string Title,
+-    string Summary,
+-    string? Severity,
+-    string? Status,
+-    string? SourceEntityType,
+-    Guid? SourceEntityId,
+-    DateTime OccurredUtc,
+-    Dictionary<string, JsonNode?> Metadata,
+-    IReadOnlyList<BriefingSourceReferenceDto> References);
+-public sealed record BriefingAggregateItemDetailsDto
+-    public Guid? AgentId { get; init; }
+-    public Guid? CompanyEntityId { get; init; }
+-    public Guid? WorkflowInstanceId { get; init; }
+-    public Guid? TaskId { get; init; }
+-    public string? EventCorrelationId { get; init; }
+-    public string? Assessment { get; init; }
+-}
+-
+ public sealed record BriefingAggregateItemDto(
+     string Section,
+     string Title,
+     string Summary,
+diff --git a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+@@ -1,4 +1,5 @@
++using System.Collections.ObjectModel;
+ using System.Text.Json.Nodes;
+ using VirtualCompany.Domain.Enums;
+ 
+ namespace VirtualCompany.Domain.Entities;
+@@ -63,10 +64,12 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+     public DateTime CreatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public Message? Message { get; private set; }
++    public ICollection<CompanyBriefingSection> Sections { get; private set; } = new List<CompanyBriefingSection>();
+ 
+     public void AttachMessage(Guid messageId)
+     {
+         if (messageId == Guid.Empty)
+         {
+             throw new ArgumentException("MessageId cannot be empty.", nameof(messageId));
+@@ -95,6 +98,232 @@ public sealed class CompanyBriefing : ICompanyOwnedEntity
+             : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+ }
+ 
++public sealed class CompanyBriefingSection : ICompanyOwnedEntity
++{
++    private const int SectionKeyMaxLength = 256;
++    private const int TitleMaxLength = 200;
++    private const int GroupingTypeMaxLength = 64;
++    private const int GroupingKeyMaxLength = 256;
++    private const int EventCorrelationIdMaxLength = 128;
++    private const int NarrativeMaxLength = 8000;
++    private const int ConflictSummaryMaxLength = 2000;
++
++    private CompanyBriefingSection()
++    {
++    }
++
++    public CompanyBriefingSection(
++        Guid id,
++        Guid companyId,
++        Guid briefingId,
++        string sectionKey,
++        string title,
++        string groupingType,
++        string groupingKey,
++        string narrative,
++        bool isConflicting,
++        string? conflictSummary,
++        Guid? companyEntityId,
++        Guid? workflowInstanceId,
++        Guid? taskId,
++        string? eventCorrelationId,
++        IDictionary<string, JsonNode?>? sourceReferences)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (briefingId == Guid.Empty)
++        {
++            throw new ArgumentException("BriefingId is required.", nameof(briefingId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        BriefingId = briefingId;
++        SectionKey = NormalizeRequired(sectionKey, nameof(sectionKey), SectionKeyMaxLength);
++        Title = NormalizeRequired(title, nameof(title), TitleMaxLength);
++        GroupingType = NormalizeRequired(groupingType, nameof(groupingType), GroupingTypeMaxLength);
++        GroupingKey = NormalizeRequired(groupingKey, nameof(groupingKey), GroupingKeyMaxLength);
++        Narrative = NormalizeRequired(narrative, nameof(narrative), NarrativeMaxLength);
++        IsConflicting = isConflicting;
++        ConflictSummary = NormalizeOptional(conflictSummary, nameof(conflictSummary), ConflictSummaryMaxLength);
++        CompanyEntityId = NormalizeOptionalGuid(companyEntityId);
++        WorkflowInstanceId = NormalizeOptionalGuid(workflowInstanceId);
++        TaskId = NormalizeOptionalGuid(taskId);
++        EventCorrelationId = NormalizeOptional(eventCorrelationId, nameof(eventCorrelationId), EventCorrelationIdMaxLength);
++        SourceReferences = CloneNodes(sourceReferences);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid BriefingId { get; private set; }
++    public string SectionKey { get; private set; } = null!;
++    public string Title { get; private set; } = null!;
++    public string GroupingType { get; private set; } = null!;
++    public string GroupingKey { get; private set; } = null!;
++    public Guid? CompanyEntityId { get; private set; }
++    public Guid? WorkflowInstanceId { get; private set; }
++    public Guid? TaskId { get; private set; }
++    public string? EventCorrelationId { get; private set; }
++    public string Narrative { get; private set; } = null!;
++    public bool IsConflicting { get; private set; }
++    public string? ConflictSummary { get; private set; }
++    public Dictionary<string, JsonNode?> SourceReferences { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public CompanyBriefing Briefing { get; private set; } = null!;
++    public ICollection<CompanyBriefingContribution> Contributions { get; private set; } = new List<CompanyBriefingContribution>();
++
++    private static Guid? NormalizeOptionalGuid(Guid? value) =>
++        value is null || value == Guid.Empty ? null : value;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
++public sealed class CompanyBriefingContribution : ICompanyOwnedEntity
++{
++    private const int SourceEntityTypeMaxLength = 100;
++    private const int SourceLabelMaxLength = 300;
++    private const int SourceStatusMaxLength = 100;
++    private const int SourceRouteMaxLength = 2048;
++    private const int TopicMaxLength = 300;
++    private const int AssessmentMaxLength = 200;
++    private const int NarrativeMaxLength = 8000;
++    private const int EventCorrelationIdMaxLength = 128;
++
++    private CompanyBriefingContribution()
++    {
++    }
++
++    public CompanyBriefingContribution(
++        Guid id,
++        Guid companyId,
++        Guid sectionId,
++        Guid agentId,
++        string sourceEntityType,
++        Guid sourceEntityId,
++        string sourceLabel,
++        string? sourceStatus,
++        string? sourceRoute,
++        DateTime timestampUtc,
++        decimal? confidenceScore,
++        IDictionary<string, JsonNode?>? confidenceMetadata,
++        Guid? companyEntityId,
++        Guid? workflowInstanceId,
++        Guid? taskId,
++        string? eventCorrelationId,
++        string topic,
++        string narrative,
++        string? assessment,
++        IDictionary<string, JsonNode?>? metadata)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (sectionId == Guid.Empty)
++        {
++            throw new ArgumentException("SectionId is required.", nameof(sectionId));
++        }
++
++        if (confidenceScore is < 0 or > 1)
++        {
++            throw new ArgumentOutOfRangeException(nameof(confidenceScore), "ConfidenceScore must be between 0 and 1.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SectionId = sectionId;
++        AgentId = agentId;
++        SourceEntityType = NormalizeRequired(sourceEntityType, nameof(sourceEntityType), SourceEntityTypeMaxLength);
++        SourceEntityId = sourceEntityId;
++        SourceLabel = NormalizeRequired(sourceLabel, nameof(sourceLabel), SourceLabelMaxLength);
++        SourceStatus = NormalizeOptional(sourceStatus, nameof(sourceStatus), SourceStatusMaxLength);
++        SourceRoute = NormalizeOptional(sourceRoute, nameof(sourceRoute), SourceRouteMaxLength);
++        TimestampUtc = NormalizeUtc(timestampUtc);
++        ConfidenceScore = confidenceScore;
++        ConfidenceMetadata = CloneNodes(confidenceMetadata);
++        CompanyEntityId = NormalizeOptionalGuid(companyEntityId);
++        WorkflowInstanceId = NormalizeOptionalGuid(workflowInstanceId);
++        TaskId = NormalizeOptionalGuid(taskId);
++        EventCorrelationId = NormalizeOptional(eventCorrelationId, nameof(eventCorrelationId), EventCorrelationIdMaxLength);
++        Topic = NormalizeRequired(topic, nameof(topic), TopicMaxLength);
++        Narrative = NormalizeRequired(narrative, nameof(narrative), NarrativeMaxLength);
++        Assessment = NormalizeOptional(assessment, nameof(assessment), AssessmentMaxLength);
++        Metadata = CloneNodes(metadata);
++        CreatedUtc = DateTime.UtcNow;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SectionId { get; private set; }
++    public Guid AgentId { get; private set; }
++    public string SourceEntityType { get; private set; } = null!;
++    public Guid SourceEntityId { get; private set; }
++    public string SourceLabel { get; private set; } = null!;
++    public string? SourceStatus { get; private set; }
++    public string? SourceRoute { get; private set; }
++    public DateTime TimestampUtc { get; private set; }
++    public decimal? ConfidenceScore { get; private set; }
++    public Dictionary<string, JsonNode?> ConfidenceMetadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public Guid? CompanyEntityId { get; private set; }
++    public Guid? WorkflowInstanceId { get; private set; }
++    public Guid? TaskId { get; private set; }
++    public string? EventCorrelationId { get; private set; }
++    public string Topic { get; private set; } = null!;
++    public string Narrative { get; private set; } = null!;
++    public string? Assessment { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public CompanyBriefingSection Section { get; private set; } = null!;
++
++    private static Guid? NormalizeOptionalGuid(Guid? value) =>
++        value is null || value == Guid.Empty ? null : value;
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    private static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
++
+ public sealed class CompanyBriefingUpdateJob : ICompanyOwnedEntity
+ {
+     private const int EventTypeMaxLength = 100;
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -46,6 +46,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
++    public DbSet<CompanyBriefingSection> CompanyBriefingSections => Set<CompanyBriefingSection>();
++    public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
+     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+     public DbSet<CompanyBriefingUpdateJob> CompanyBriefingUpdateJobs => Set<CompanyBriefingUpdateJob>();
+     public DbSet<CompanyNotification> CompanyNotifications => Set<CompanyNotification>();
+@@ -98,6 +100,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is ConversationTaskLink ||
+                 entry.Entity is CompanyBriefing ||
++                entry.Entity is CompanyBriefingSection ||
++                entry.Entity is CompanyBriefingContribution ||
+                 entry.Entity is CompanyBriefingUpdateJob ||
+                 entry.Entity is Alert)
+             .Select(entry =>
+@@ -161,6 +165,12 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<CompanyBriefing>()
+             .HasQueryFilter(briefing =>
+                 CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefingSection>()
++            .HasQueryFilter(section =>
++                CurrentCompanyId.HasValue && section.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CompanyBriefingContribution>()
++            .HasQueryFilter(contribution =>
++                CurrentCompanyId.HasValue && contribution.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<CompanyBriefingUpdateJob>()
+             .HasQueryFilter(job =>
+                 CurrentCompanyId.HasValue && job.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs
+@@ -1308,6 +1308,130 @@ internal sealed class CompanyBriefingConfiguration : IEntityTypeConfiguration<Co
+     }
+ }
+ 
++internal sealed class CompanyBriefingSectionConfiguration : IEntityTypeConfiguration<CompanyBriefingSection>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefingSection> builder)
++    {
++        builder.ToTable("company_briefing_sections");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.BriefingId).HasColumnName("briefing_id").IsRequired();
++        builder.Property(x => x.SectionKey).HasColumnName("section_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.GroupingType).HasColumnName("grouping_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.GroupingKey).HasColumnName("grouping_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.CompanyEntityId).HasColumnName("company_entity_id");
++        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
++        builder.Property(x => x.TaskId).HasColumnName("task_id");
++        builder.Property(x => x.EventCorrelationId).HasColumnName("event_correlation_id").HasMaxLength(128);
++        builder.Property(x => x.Narrative).HasColumnName("narrative").IsRequired();
++        builder.Property(x => x.IsConflicting).HasColumnName("is_conflicting").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.ConflictSummary).HasColumnName("conflict_summary").HasMaxLength(2000);
++        builder.Property(x => x.SourceReferences)
++            .HasColumnName("source_refs_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.BriefingId });
++        builder.HasIndex(x => new { x.BriefingId, x.SectionKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.GroupingType, x.GroupingKey });
++        builder.HasIndex(x => new { x.CompanyId, x.CompanyEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.EventCorrelationId });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Briefing)
++            .WithMany(x => x.Sections)
++            .HasForeignKey(x => x.BriefingId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CompanyBriefingContributionConfiguration : IEntityTypeConfiguration<CompanyBriefingContribution>
++{
++    public void Configure(EntityTypeBuilder<CompanyBriefingContribution> builder)
++    {
++        builder.ToTable("company_briefing_contributions");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SectionId).HasColumnName("section_id").IsRequired();
++        builder.Property(x => x.AgentId).HasColumnName("agent_id").IsRequired();
++        builder.Property(x => x.SourceEntityType).HasColumnName("source_entity_type").HasMaxLength(100).IsRequired();
++        builder.Property(x => x.SourceEntityId).HasColumnName("source_entity_id").IsRequired();
++        builder.Property(x => x.SourceLabel).HasColumnName("source_label").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.SourceStatus).HasColumnName("source_status").HasMaxLength(100);
++        builder.Property(x => x.SourceRoute).HasColumnName("source_route").HasMaxLength(2048);
++        builder.Property(x => x.TimestampUtc).HasColumnName("contributed_at").IsRequired();
++        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasPrecision(5, 4);
++        builder.Property(x => x.ConfidenceMetadata)
++            .HasColumnName("confidence_metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CompanyEntityId).HasColumnName("company_entity_id");
++        builder.Property(x => x.WorkflowInstanceId).HasColumnName("workflow_instance_id");
++        builder.Property(x => x.TaskId).HasColumnName("task_id");
++        builder.Property(x => x.EventCorrelationId).HasColumnName("event_correlation_id").HasMaxLength(128);
++        builder.Property(x => x.Topic).HasColumnName("topic").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.Narrative).HasColumnName("narrative").IsRequired();
++        builder.Property(x => x.Assessment).HasColumnName("assessment").HasMaxLength(200);
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.SectionId });
++        builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.TimestampUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SourceEntityType, x.SourceEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.CompanyEntityId });
++        builder.HasIndex(x => new { x.CompanyId, x.WorkflowInstanceId });
++        builder.HasIndex(x => new { x.CompanyId, x.TaskId });
++        builder.HasIndex(x => new { x.CompanyId, x.EventCorrelationId });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Section)
++            .WithMany(x => x.Contributions)
++            .HasForeignKey(x => x.SectionId)
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
+ internal sealed class CompanyBriefingUpdateJobConfiguration : IEntityTypeConfiguration<CompanyBriefingUpdateJob>
+ {
+     public void Configure(EntityTypeBuilder<CompanyBriefingUpdateJob> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyBriefingService.cs
+@@ -94,6 +94,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+ 
+         var existing = await _dbContext.CompanyBriefings
+             .IgnoreQueryFilters()
++            .Include(x => x.Sections)
++                .ThenInclude(x => x.Contributions)
+             .AsNoTracking()
+             .SingleOrDefaultAsync(
+                 x => x.CompanyId == companyId &&
+@@ -151,6 +153,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             sourceRefs,
+             message?.Id);
+         _dbContext.CompanyBriefings.Add(briefing);
++        AddStructuredSections(companyId, briefing.Id, aggregate.StructuredSections);
+ 
+         var notificationsCreated = await AddNotificationsAsync(briefing, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -225,6 +228,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var briefings = await _dbContext.CompanyBriefings
+             .AsNoTracking()
+             .Where(x => x.CompanyId == companyId)
++            .Include(x => x.Sections)
++                .ThenInclude(x => x.Contributions)
+             .GroupBy(x => x.BriefingType)
+             .Select(x => x.OrderByDescending(briefing => briefing.GeneratedUtc).First())
+             .ToListAsync(cancellationToken);
+@@ -460,7 +465,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+         var approvalRows = await _dbContext.ApprovalRequests
+             .IgnoreQueryFilters()
+             .AsNoTracking()
+-            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
++            .Where(x => x.CompanyId == companyId && x.Status == ApprovalRequestStatus.Pending)
+             .OrderByDescending(x => x.CreatedUtc)
+             .Take(10)
+             .Select(x => new { x.Id, x.AgentId, x.ApprovalType, x.TargetEntityType, x.TargetEntityId, x.Status, x.CreatedUtc, x.ToolExecutionAttemptId })
+@@ -645,6 +650,81 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             .ToList();
+ 
++    private void AddStructuredSections(Guid companyId, Guid briefingId, IReadOnlyList<AggregatedBriefingSectionDto> sections)
++    {
++        foreach (var section in sections)
++        {
++            var sectionEntity = new CompanyBriefingSection(
++                Guid.NewGuid(),
++                companyId,
++                briefingId,
++                section.SectionKey,
++                section.Title,
++                section.GroupingType,
++                section.GroupingKey,
++                section.Narrative,
++                section.IsConflicting,
++                section.IsConflicting ? section.Narrative : null,
++                section.Contributions.Select(x => x.CompanyEntityId).FirstOrDefault(x => x.HasValue),
++                section.Contributions.Select(x => x.WorkflowInstanceId).FirstOrDefault(x => x.HasValue),
++                section.Contributions.Select(x => x.TaskId).FirstOrDefault(x => x.HasValue),
++                section.Contributions.Select(x => x.EventCorrelationId).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["items"] = JsonSerializer.SerializeToNode(section.RelatedReferences, SerializerOptions)
++                });
++
++            _dbContext.CompanyBriefingSections.Add(sectionEntity);
++
++            foreach (var contribution in section.Contributions.Where(x => x.CompanyId == companyId))
++            {
++                var reference = contribution.SourceReference;
++                var confidenceMetadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["confidence"] = JsonValue.Create(contribution.Confidence)
++                };
++                foreach (var pair in contribution.Metadata)
++                {
++                    confidenceMetadata[pair.Key] = pair.Value?.DeepClone();
++                }
++
++                _dbContext.CompanyBriefingContributions.Add(new CompanyBriefingContribution(
++                    contribution.ContributionId ?? Guid.NewGuid(),
++                    companyId,
++                    sectionEntity.Id,
++                    contribution.AgentId,
++                    reference.EntityType,
++                    reference.EntityId,
++                    reference.Label,
++                    reference.Status,
++                    reference.Route,
++                    contribution.TimestampUtc,
++                    contribution.Confidence,
++                    confidenceMetadata,
++                    contribution.CompanyEntityId,
++                    contribution.WorkflowInstanceId,
++                    contribution.TaskId,
++                    contribution.EventCorrelationId,
++                    contribution.Topic,
++                    contribution.Narrative,
++                    contribution.Assessment,
++                    contribution.Metadata));
++            }
++        }
++    }
++
++    private static IReadOnlyList<AggregatedBriefingSectionDto> ToStructuredSectionDtos(CompanyBriefing briefing)
++    {
++        if (briefing.Sections.Count == 0)
++        {
++            return [];
++        }
++
++        return briefing.Sections
++            .OrderBy(section => section.CreatedUtc)
++            .ThenBy(section => section.SectionKey, StringComparer.OrdinalIgnoreCase)
++            .Select(section => ToStructuredSectionDto(briefing.CompanyId, section))
++            .ToList();
++    }
++
+     private static string RenderBody(string companyName, CompanyBriefingType type, BriefingWindow window, BriefingAggregate aggregate)
+     {
+         var builder = new StringBuilder();
+@@ -836,11 +916,12 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+     private Task<CompanyBriefingDto> ToDtoAsync(CompanyBriefing briefing, CancellationToken cancellationToken) =>
+-        Task.FromResult(ToDto(briefing));
++        Task.FromResult(ToDto(briefing));
+ 
+     private static CompanyBriefingDto ToDto(CompanyBriefing briefing)
+     {
+         var references = briefing.SourceReferences.TryGetValue("items", out var node) && node is not null
+@@ -851,7 +932,8 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             : briefing.SummaryBody;
+         var structuredSections = briefing.StructuredPayload.TryGetValue("structuredSections", out var sectionsNode) && sectionsNode is not null
+             ? JsonSerializer.Deserialize<List<AggregatedBriefingSectionDto>>(sectionsNode.ToJsonString(), SerializerOptions) ?? []
+             : [];
++        structuredSections = ToStructuredSectionDtos(briefing).ToList() is { Count: > 0 } persistedSections ? persistedSections : structuredSections;
+ 
+         return new CompanyBriefingDto(
+             briefing.Id,
+@@ -865,6 +947,72 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
+             StructuredSections = structuredSections
+         };
+     }
++
++    private static AggregatedBriefingSectionDto ToStructuredSectionDto(Guid companyId, CompanyBriefingSection section)
++    {
++        var contributions = section.Contributions
++            .OrderByDescending(contribution => contribution.TimestampUtc)
++            .ThenBy(contribution => contribution.AgentId)
++            .Select(contribution => new BriefingInsightContributionDto(
++                companyId,
++                null,
++                contribution.AgentId,
++                new BriefingSourceReferenceDto(
++                    contribution.SourceEntityType,
++                    contribution.SourceEntityId,
++                    contribution.SourceLabel,
++                    contribution.SourceStatus,
++                    contribution.SourceRoute),
++                contribution.TimestampUtc,
++                contribution.ConfidenceScore,
++                contribution.CompanyEntityId,
++                contribution.WorkflowInstanceId,
++                contribution.TaskId,
++                contribution.EventCorrelationId,
++                contribution.Topic,
++                contribution.Narrative,
++                contribution.Assessment,
++                contribution.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase),
++                contribution.Id))
++            .ToList();
++
++        var viewpoints = contributions
++            .Where(contribution => !string.IsNullOrWhiteSpace(contribution.Assessment))
++            .GroupBy(contribution => contribution.Assessment!.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
++            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
++            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
++            .Select(group => new BriefingConflictViewpointDto(
++                group.First().Assessment!,
++                group.Select(contribution => contribution.AgentId).Where(agentId => agentId != Guid.Empty).Distinct().OrderBy(agentId => agentId).ToList(),
++                group.Select(contribution => contribution.Narrative).Where(narrative => !string.IsNullOrWhiteSpace(narrative)).Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList(),
++                group.Select(contribution => contribution.SourceReference)
++                    .GroupBy(reference => new { EntityType = reference.EntityType.Trim().ToLowerInvariant(), reference.EntityId })
++                    .Select(grouping => grouping.First())
++                    .ToList()))
++            .ToList();
++
++        var relatedReferences = section.SourceReferences.TryGetValue("items", out var referencesNode) && referencesNode is not null
++            ? JsonSerializer.Deserialize<List<BriefingSourceReferenceDto>>(referencesNode.ToJsonString(), SerializerOptions) ?? []
++            : contributions.Select(contribution => contribution.SourceReference)
++                .GroupBy(reference => new { EntityType = reference.EntityType.Trim().ToLowerInvariant(), reference.EntityId })
++                .Select(group => group.First())
++                .ToList();
++
++        return new AggregatedBriefingSectionDto(
++            section.SectionKey,
++            section.Title,
++            section.GroupingType,
++            section.GroupingKey,
++            section.Narrative,
++            section.IsConflicting,
++            contributions,
++            section.IsConflicting ? viewpoints : [],
++            relatedReferences);
++    }
+ 
+     private static CompanyBriefingDeliveryPreferenceDto ToDto(CompanyBriefingDeliveryPreference preference) =>
+         new(preference.CompanyId, preference.UserId, preference.InAppEnabled, preference.MobileEnabled, preference.DailyEnabled, preference.WeeklyEnabled, preference.PreferredDeliveryTime, preference.PreferredTimezone, preference.UpdatedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415023000_AddCompanyBriefingSectionsAndContributions.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415023000_AddCompanyBriefingSectionsAndContributions.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260415023000_AddCompanyBriefingSectionsAndContributions.cs
+@@ -0,0 +1,186 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260415023000_AddCompanyBriefingSectionsAndContributions")]
++public partial class AddCompanyBriefingSectionsAndContributions : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        var isPostgres = ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL";
++        var guidType = isPostgres ? "uuid" : "uniqueidentifier";
++        var dateTimeType = isPostgres ? "timestamp with time zone" : "datetime2";
++        var boolType = isPostgres ? "boolean" : "bit";
++        var decimalType = isPostgres ? "numeric(5,4)" : "decimal(5,4)";
++        var jsonType = isPostgres ? "jsonb" : "nvarchar(max)";
++        var jsonDefault = isPostgres ? "'{}'::jsonb" : "N'{}'";
++        var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
++        var string100Type = isPostgres ? "character varying(100)" : "nvarchar(100)";
++        var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
++        var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
++        var string256Type = isPostgres ? "character varying(256)" : "nvarchar(256)";
++        var string300Type = isPostgres ? "character varying(300)" : "nvarchar(300)";
++        var string2000Type = isPostgres ? "character varying(2000)" : "nvarchar(2000)";
++        var string2048Type = isPostgres ? "character varying(2048)" : "nvarchar(2048)";
++        var longTextType = isPostgres ? "text" : "nvarchar(max)";
++
++        migrationBuilder.CreateTable(
++            name: "company_briefing_sections",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                briefing_id = table.Column<Guid>(type: guidType, nullable: false),
++                section_key = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                title = table.Column<string>(type: string200Type, maxLength: 200, nullable: false),
++                grouping_type = table.Column<string>(type: string64Type, maxLength: 64, nullable: false),
++                grouping_key = table.Column<string>(type: string256Type, maxLength: 256, nullable: false),
++                company_entity_id = table.Column<Guid>(type: guidType, nullable: true),
++                workflow_instance_id = table.Column<Guid>(type: guidType, nullable: true),
++                task_id = table.Column<Guid>(type: guidType, nullable: true),
++                event_correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                narrative = table.Column<string>(type: longTextType, nullable: false),
++                is_conflicting = table.Column<bool>(type: boolType, nullable: false, defaultValue: false),
++                conflict_summary = table.Column<string>(type: string2000Type, maxLength: 2000, nullable: true),
++                source_refs_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_briefing_sections", x => x.id);
++                table.ForeignKey("FK_company_briefing_sections_company_briefings_briefing_id", x => x.briefing_id, "company_briefings", "id", onDelete: ReferentialAction.Cascade);
++                table.ForeignKey("FK_company_briefing_sections_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "company_briefing_contributions",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: guidType, nullable: false),
++                company_id = table.Column<Guid>(type: guidType, nullable: false),
++                section_id = table.Column<Guid>(type: guidType, nullable: false),
++                agent_id = table.Column<Guid>(type: guidType, nullable: false),
++                source_entity_type = table.Column<string>(type: string100Type, maxLength: 100, nullable: false),
++                source_entity_id = table.Column<Guid>(type: guidType, nullable: false),
++                source_label = table.Column<string>(type: string300Type, maxLength: 300, nullable: false),
++                source_status = table.Column<string>(type: string100Type, maxLength: 100, nullable: true),
++                source_route = table.Column<string>(type: string2048Type, maxLength: 2048, nullable: true),
++                contributed_at = table.Column<DateTime>(type: dateTimeType, nullable: false),
++                confidence_score = table.Column<decimal>(type: decimalType, nullable: true),
++                confidence_metadata_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                company_entity_id = table.Column<Guid>(type: guidType, nullable: true),
++                workflow_instance_id = table.Column<Guid>(type: guidType, nullable: true),
++                task_id = table.Column<Guid>(type: guidType, nullable: true),
++                event_correlation_id = table.Column<string>(type: string128Type, maxLength: 128, nullable: true),
++                topic = table.Column<string>(type: string300Type, maxLength: 300, nullable: false),
++                narrative = table.Column<string>(type: longTextType, nullable: false),
++                assessment = table.Column<string>(type: string200Type, maxLength: 200, nullable: true),
++                metadata_json = table.Column<string>(type: jsonType, nullable: false, defaultValueSql: jsonDefault),
++                created_at = table.Column<DateTime>(type: dateTimeType, nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_company_briefing_contributions", x => x.id);
++                table.ForeignKey("FK_company_briefing_contributions_company_briefing_sections_section_id", x => x.section_id, "company_briefing_sections", "id", onDelete: ReferentialAction.Cascade);
++                table.ForeignKey("FK_company_briefing_contributions_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_briefing_id_section_key", "company_briefing_sections", new[] { "briefing_id", "section_key" }, unique: true);
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_briefing_id", "company_briefing_sections", new[] { "company_id", "briefing_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_company_entity_id", "company_briefing_sections", new[] { "company_id", "company_entity_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_event_correlation_id", "company_briefing_sections", new[] { "company_id", "event_correlation_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_grouping_type_grouping_key", "company_briefing_sections", new[] { "company_id", "grouping_type", "grouping_key" });
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_task_id", "company_briefing_sections", new[] { "company_id", "task_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_sections_company_id_workflow_instance_id", "company_briefing_sections", new[] { "company_id", "workflow_instance_id" });
++
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_agent_id_contributed_at", "company_briefing_contributions", new[] { "company_id", "agent_id", "contributed_at" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_company_entity_id", "company_briefing_contributions", new[] { "company_id", "company_entity_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_event_correlation_id", "company_briefing_contributions", new[] { "company_id", "event_correlation_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_section_id", "company_briefing_contributions", new[] { "company_id", "section_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_source_entity_type_source_entity_id", "company_briefing_contributions", new[] { "company_id", "source_entity_type", "source_entity_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_task_id", "company_briefing_contributions", new[] { "company_id", "task_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_company_id_workflow_instance_id", "company_briefing_contributions", new[] { "company_id", "workflow_instance_id" });
++        migrationBuilder.CreateIndex("IX_company_briefing_contributions_section_id", "company_briefing_contributions", "section_id");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "company_briefing_contributions");
++        migrationBuilder.DropTable(name: "company_briefing_sections");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs b/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs
+--- a/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/BriefingInsightAggregationServiceTests.cs
+@@ -110,6 +110,7 @@ public sealed class BriefingInsightAggregationServiceTests
+         var taskId = Guid.NewGuid();
+         var timestamp = DateTime.SpecifyKind(DateTime.UtcNow.AddMinutes(-15), DateTimeKind.Utc);
++        var contributionId = Guid.NewGuid();
+ 
+         var result = _service.Aggregate(new BriefingInsightAggregationRequest(
+             companyId,
+@@ -124,7 +125,8 @@ public sealed class BriefingInsightAggregationServiceTests
+                     taskId: taskId,
+                     timestampUtc: timestamp,
+                     confidence: 0.82m,
+-                    metadata: new Dictionary<string, JsonNode?> { ["sourceSystem"] = JsonValue.Create("ops") })
++                    metadata: new Dictionary<string, JsonNode?> { ["sourceSystem"] = JsonValue.Create("ops") },
++                    contributionId: contributionId)
+             ]));
+ 
+         var contribution = Assert.Single(Assert.Single(result.Sections).Contributions);
+@@ -135,6 +137,7 @@ public sealed class BriefingInsightAggregationServiceTests
+         Assert.Equal(timestamp, contribution.TimestampUtc);
+         Assert.Equal(0.82m, contribution.Confidence);
+         Assert.Equal("ops", contribution.Metadata["sourceSystem"]!.GetValue<string>());
++        Assert.Equal(contributionId, contribution.ContributionId);
+         Assert.Equal("task", contribution.SourceReference.EntityType);
+     }
+ 
+@@ -200,7 +203,8 @@ public sealed class BriefingInsightAggregationServiceTests
+         string narrative = "The agent reported a briefing insight.",
+         string? assessment = "aligned",
+         DateTime? timestampUtc = null,
+         decimal? confidence = null,
+-        Dictionary<string, JsonNode?>? metadata = null)
++        Dictionary<string, JsonNode?>? metadata = null,
++        Guid? contributionId = null)
+     {
+         var sourceReference = new BriefingSourceReferenceDto(
+             taskId.HasValue ? "task" : "insight",
+@@ -223,6 +227,7 @@ public sealed class BriefingInsightAggregationServiceTests
+             topic,
+             narrative,
+             assessment,
+-            metadata ?? []);
++            metadata ?? [],
++            contributionId);
+     }
+ }
+END_OF_PATCH
